@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>地图编辑器</title>
+<script>
+// 双击 index.html 打开时浏览器是 file:// 协议，ES module 会被 CORS 拦掉，
+// 与其让控制台刷一堆看不懂的报错，不如直接说清楚该怎么办。
+if (location.protocol === 'file:') {
+  document.addEventListener('DOMContentLoaded', function () {
+    document.body.innerHTML =
+      '<div style="max-width:620px;margin:12vh auto;padding:32px 36px;'
+      + 'font:15px/1.9 \'Segoe UI\',\'Microsoft YaHei\',sans-serif;color:#dfe6ef;'
+      + 'background:#151a21;border:1px solid #28313d;border-radius:12px">'
+      + '<div style="font:700 24px/1 Georgia,serif;color:#c9a227;letter-spacing:2px;'
+      + 'margin-bottom:22px">地图编辑器</div>'
+      + '<p style="margin:0 0 18px">这个页面<b>不能直接双击打开</b>。'
+      + '浏览器的安全策略不允许 <code style="color:#f0d98a">file://</code> '
+      + '加载 ES 模块和地图数据，所以必须走本地服务。</p>'
+      + '<p style="margin:0 0 10px;color:#8e9bab">回到项目文件夹，任选一种：</p>'
+      + '<p style="margin:0 0 8px">① 双击 <b style="color:#f0d98a">启动.bat</b></p>'
+      + '<p style="margin:0 0 22px">② 命令行里跑 '
+      + '<code style="color:#f0d98a">python server.py</code></p>'
+      + '<p style="margin:0;color:#8e9bab;font-size:13px">'
+      + '服务起来后它会自动打开浏览器，地址是 '
+      + '<code style="color:#f0d98a">http://127.0.0.1:8777/</code></p>'
+      + '</div>';
+  });
+}
+</script>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+
+  <header class="toolbar">
+    <div class="brand">
+      <span class="brand-mark" id="brand-mark">PDX</span>
+      <span class="brand-text">地图编辑器</span>
+    </div>
+
+    <div class="tool-group" id="tier-group">
+      <span class="group-label">视图</span>
+      <div class="segmented" data-role="tier"></div>
+    </div>
+
+    <div class="tool-group" id="tool-group">
+      <span class="group-label">工具</span>
+      <div class="segmented" data-role="tool"></div>
+    </div>
+
+    <div class="spacer"></div>
+
+    <div class="tool-group actions" id="author-row">
+      <a class="btn ghost" id="btn-author">永夜廿九</a>
+    </div>
+
+    <div class="tool-group actions" id="settings-row">
+      <button class="btn ghost" id="btn-tutorial">教程</button>
+      <button class="btn ghost" id="btn-settings">设置</button>
+    </div>
+
+    <div class="tool-group actions" id="export-row">
+      <button class="btn ghost" id="btn-export">导出 ▾</button>
+      <div class="dropdown" id="export-menu" hidden>
+        <button class="btn ghost" id="btn-png">导出窗口</button>
+        <button class="btn ghost" id="btn-png-full">导出整图</button>
+        <button class="btn ghost" id="btn-project">导出涂色</button>
+        <button class="btn ghost" id="btn-import">导入涂色</button>
+      </div>
+    </div>
+
+    <div class="tool-group actions" id="history-row">
+      <button class="btn ghost" id="btn-undo" disabled>↶</button>
+      <button class="btn ghost" id="btn-redo" disabled>↷</button>
+      <button class="btn ghost" id="btn-reset">清除</button>
+    </div>
+  </header>
+
+  <div class="body">
+    <aside class="sidebar" id="sidebar">
+
+      <section class="panel" id="display-panel">
+        <div class="panel-head"><h2>显示</h2></div>
+        <div class="tool-group actions stack">
+    <div class="tool-group" id="titles-group">
+      <span class="group-label" id="title-group-label">头衔</span>
+      <label class="switch" id="sw-titles">
+        <input type="checkbox" id="show-titles" checked>
+        <span>颜色</span>
+      </label>
+      <label class="switch" id="sw-border-title">
+        <input type="checkbox" id="show-border-title" checked>
+        <span>边界</span>
+      </label>
+      <label class="switch" id="sw-labels">
+        <input type="checkbox" id="show-labels" checked>
+        <span>名称</span>
+      </label>
+      <label class="switch" id="parent-border-row-ck3">
+        <input type="checkbox" id="show-parent-border-ck3">
+        <span>父级边界</span>
+      </label>
+    </div>
+
+    <div class="tool-group" id="power-group">
+      <span class="group-label">势力</span>
+      <label class="switch">
+        <input type="checkbox" id="show-power-color" checked>
+        <span>颜色</span>
+      </label>
+      <label class="switch">
+        <input type="checkbox" id="show-power-border">
+        <span>边界</span>
+      </label>
+    </div>
+
+    <div class="tool-group" id="region-group">
+      <span class="group-label">地区</span>
+      <label class="switch">
+        <input type="checkbox" id="show-region-color">
+        <span>颜色</span>
+      </label>
+      <label class="switch">
+        <input type="checkbox" id="show-region-border" checked>
+        <span>边界</span>
+      </label>
+      <label class="switch">
+        <input type="checkbox" id="show-region-name">
+        <span>名称</span>
+      </label>
+      <label class="switch" id="parent-border-row">
+        <input type="checkbox" id="show-parent-border">
+        <span>父级边界</span>
+      </label>
+    </div>
+
+    <div class="tool-group">
+      <span class="group-label">填色</span>
+      <label class="switch">
+        <input type="checkbox" id="show-paint" checked>
+        <span>颜色</span>
+      </label>
+
+      <label class="switch">
+        <input type="checkbox" id="show-border-paint" checked>
+        <span>边界</span>
+      </label>
+      <label class="switch">
+        <input type="checkbox" id="show-labels-paint" checked>
+        <span>名称</span>
+      </label>
+
+    </div>
+
+        </div>
+
+          <div class="tool-group" id="waste-group">
+            <span class="group-label" id="waste-label">荒地</span>
+            <label class="switch" id="waste-row">
+              <input type="checkbox" id="show-waste">
+              <span>允许</span>
+            </label>
+            <label class="switch" id="waste-auto-row">
+              <input type="checkbox" id="waste-auto">
+              <span>自动</span>
+            </label>
+            <button class="btn tiny ghost" id="waste-clear">清除荒地填色</button>
+          </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>当前颜色</h2>
+          <span class="hint" id="brush-target">—</span>
+        </div>
+        <div class="brush">
+          <div class="swatch big" id="brush-swatch"></div>
+          <!-- 点色块弹的就是它：跟设置页里那些 <input type="color"> 同一个系统取色器 ✓
+               （藏在旁边、不进布局；别用 display:none，某些浏览器就不弹了 ✗） -->
+          <input type="color" id="brush-color" class="swatch-input" aria-label="取色">
+          <div class="brush-fields">
+            <label>HEX <input type="text" id="brush-hex" maxlength="7" spellcheck="false" autocomplete="off"></label>
+            <div class="rgb-row">
+              <label>R <input type="number" id="brush-r" min="0" max="255"></label>
+              <label>G <input type="number" id="brush-g" min="0" max="255"></label>
+              <label>B <input type="number" id="brush-b" min="0" max="255"></label>
+            </div>
+            <label>标记
+              <input type="text" id="brush-label" spellcheck="false" autocomplete="off">
+            </label>
+          </div>
+        </div>
+        <div class="label-pick" id="label-pick" hidden>
+          <span id="label-pick-hint">这个颜色在数据里归好几个头衔，挑一个当标记：</span>
+          <select id="label-select"></select>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>悬停地块</h2>
+          <span class="hint" id="hover-pid">—</span>
+        </div>
+        <div class="chain" id="hover-chain">
+          <p class="empty">把鼠标移到地图上看看。</p>
+        </div>
+      </section>
+
+      <section class="panel grow">
+        <div class="panel-head">
+          <h2 id="hdr-search">查找头衔</h2>
+          <span class="hint" id="search-count"></span>
+        </div>
+        <!-- autocomplete=off：**别让浏览器把它当"要记的表单"** ✗
+             以前没有这一条，Chrome 就把你打过的词存进「保存的信息」，
+             下次一点搜索框就弹那个白色下拉（"荒谬法律""Kurds" …）——
+             那不是我们画的界面，是浏览器的自动填充。
+             顺带：那个下拉开着时按回车，浏览器会拿它当"选中建议"，
+             跟"回车跳第一条结果"撞车 ✓ 关掉就都安静了。 -->
+        <input type="search" id="search" placeholder="" autocomplete="off"
+               spellcheck="false" autocorrect="off" autocapitalize="off">
+        <div class="results" id="results">
+          <p class="empty">支持中文名、英文名、c_/d_/k_/e_ 开头的 key</p>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head"><h2>最近使用</h2></div>
+        <div class="palette" id="palette"></div>
+      </section>
+
+    </aside>
+
+    <main class="stage" id="stage">
+      <canvas id="map"></canvas>
+      <canvas id="overlay"></canvas>
+      <div class="hover-card" id="hover-card" hidden></div>
+      <div class="zoom-box">
+        <button class="btn tiny" id="btn-zoom-out">−</button>
+        <button class="btn tiny" id="btn-zoom-in">＋</button>
+        <button class="btn tiny" id="btn-zoom-fit">⤢</button>
+      </div>
+      <div class="toast" id="toast" hidden></div>
+
+      <div class="boot" id="boot">
+        <div class="boot-inner">
+          <div class="boot-title" id="boot-title">地图编辑器</div>
+
+          <div class="map-pick" id="map-pick" hidden>
+            <div class="map-pick-hint">选一张地图</div>
+            <div class="map-pick-list" id="map-pick-list"></div>
+          </div>
+
+          <div id="boot-progress">
+            <div class="boot-step" id="boot-step">正在准备…</div>
+            <div class="boot-bar"><i id="boot-bar"></i></div>
+          </div>
+
+          <!-- 署名：谁做的、去哪找人。href 由 app.js 按 AUTHOR 填（换主页只改那一处 ✓） -->
+          <div class="boot-author">
+            <span>永夜廿九 制作</span>
+            <a class="boot-author-link" id="author-link" target="_blank" rel="noopener">B 站主页 →</a>
+            <span class="boot-ver" id="boot-ver"></span>
+          </div>
+        </div>
+      </div>
+    </main>
+
+  </div>
+
+  <footer class="statusbar">
+    <span id="status-meta">—</span>
+    <div class="spacer"></div>
+    <span id="status-pos">—</span>
+    <span id="status-zoom">—</span>
+    <span id="status-changes">改动 0</span>
+  </footer>
+
+</div>
+<script src="js/tutorial.js"></script>
+<script type="module" src="js/app.js"></script>
+
+  <!-- 二级设置页（右上角「设置」开） -->
+  <div class="modal" id="settings" hidden>
+    <div class="modal-box">
+      <div class="modal-head">
+        <h2>设置</h2>
+        <button class="btn ghost" id="set-close">关闭</button>
+      </div>
+
+      <div class="set-grid">
+        <div class="set-col">
+          <h3>颜色</h3>
+          <label class="set-row"><span>空白地区</span><input type="color" id="set-bg"></label>
+          <label class="set-row"><span>不可通行区域</span><input type="color" id="set-impass"></label>
+          <label class="set-row"><span>海洋</span><input type="color" id="set-sea"></label>
+          <label class="set-row"><span>不可通行海域</span><input type="color" id="set-impass-sea"></label>
+          <label class="set-row"><span>湖泊</span><input type="color" id="set-lake"></label>
+          <label class="set-row"><span>河流</span><input type="color" id="set-river"></label>
+        </div>
+
+        <div class="set-col">
+          <h3>边界</h3>
+          <label class="set-row"><span>基准线宽</span><input type="range" id="set-w" min="0.5" max="4" step="0.1"></label>
+          <label class="set-row"><span>填色线宽</span><input type="range" id="set-pw" min="0.5" max="2" step="0.05"></label>
+          <label class="set-row"><span>默认边界浓度</span><input type="range" id="set-da" min="0" max="100" step="5"></label>
+          <label class="set-row"><span>省份边界浓度</span><input type="range" id="set-pa" min="0" max="100" step="5"></label>
+          <label class="set-row"><span>地区边界浓度</span><input type="range" id="set-ra" min="0" max="100" step="5"></label>
+          <label class="set-row"><span>势力边界浓度</span><input type="range" id="set-ca" min="0" max="100" step="5"></label>
+        </div>
+
+        <div class="set-col">
+          <h3>导出图例</h3>
+          <label class="set-row"><span>导出时显示</span><input type="checkbox" id="set-legend"></label>
+          <label class="set-row"><span>图例标题</span><input type="text" id="set-legend-title" maxlength="40" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"></label>
+          <label class="set-row"><span>位置</span>
+            <select id="set-legend-pos">
+              <option value="tl">左上</option>
+              <option value="tr">右上</option>
+            </select>
+          </label>
+          <div class="legend-list" id="legend-list"></div>
+        </div>
+
+        <div class="set-col">
+          <h3>名字等</h3>
+          <label class="set-row"><span>字号倍率</span><input type="range" id="set-font" min="0.5" max="2" step="0.05"></label>
+          <div class="set-row"><span></span><button class="btn ghost" id="set-reset">恢复默认</button></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 改名小弹窗（改名工具点了之后开） -->
+  <div class="modal" id="rename" hidden>
+    <div class="modal-box rename-box">
+      <div class="modal-head"><h2>改名</h2></div>
+      <input type="text" id="rename-input" class="rename-input" placeholder="新的名字" autocomplete="off">
+      <div class="rename-foot">
+        <button class="btn ghost" id="rename-cancel">取消</button>
+        <button class="btn" id="rename-ok">确定</button>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
