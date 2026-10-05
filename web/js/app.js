@@ -2,6 +2,15 @@
  * CK3 地图编辑'—'主逻辑'
  */
 
+// 开发版是真 ES module（index.html 只加载本文件）——别的模块都得显式 import。
+// 单文件版由 build_standalone.py 剥掉这些行、按序拍平，两边的加载方式都兼容。
+import { DATA, api, decompress, embeddedMapKeys, isEmbedded, setDataDir, setEmbeddedMap } from './data.js';
+import { MapRenderer } from './gl.js';
+import { LabelLayer } from './labels.js';
+import { TileMap } from './tilemap.js';
+import { makeZip, makeZipAsync } from './zip.js';
+import { encodeBMP24 } from './bmp.js';
+
 const $ = (id) => document.getElementById(id);
 
 /**
