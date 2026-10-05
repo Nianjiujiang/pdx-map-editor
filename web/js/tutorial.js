@@ -285,7 +285,15 @@
   }
 
   /* ---------------------------------------------------------------- 提示条 */
+  /**
+   * 教程自己的那两条浮条（「教程走完啦 ✓」+ 九秒后那句"第一次玩？点顶栏教程"）
+   * **也关掉了** ✓（用户：这些提示都去掉好了）
+   * 想开回来的话：把下面这行 return 注释掉 ✓ 显示逻辑原封不动都在这儿 ✓
+   * 教程本身不受影响 ✓ —— 九步的卡片是另一套 UI ✓ 参考线、文案全在 ✓
+   */
   function tutorialToast(msg) {
+    return;
+    /* eslint-disable no-unreachable */
     const el = document.createElement('div');
     el.className = 'tut-toast';
     el.textContent = msg;

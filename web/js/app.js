@@ -282,8 +282,23 @@ function prettyName(s) {
   return s.charAt(0) + s.slice(1).toLowerCase();
 }
 
+/**
+ * 浮条（toast）—— **整个关掉了** ✗（用户：这些提示都去掉好了）
+ *
+ * 为什么是"关掉"而不是"一条条删"：
+ *   二十几条文案留着，以后想开回来（或者自己改词）改一个 false 就够了 ✓
+ *   删掉的话，那些话就永远找不回来了 ✗
+ *
+ * 出错的情况**不静默**：往控制台留一行 ✓
+ *   这样界面上干干净净 ✓ 真出毛病时按 F12 也查得到原因 ✓
+ *   （玩家看不到 = 不打扰 ✓ 我们自己排查时还在 ✓）
+ */
+const TOAST_OFF = true;
+
 let toastTimer = 0;
 function toast(msg, isErr = false) {
+  if (isErr) console.warn('[提示] ' + msg);
+  if (TOAST_OFF) return;                      // 开关关着 → 什么都不显示 ✓
   const el = $('toast');
   el.textContent = msg;
   el.className = 'toast' + (isErr ? ' err' : '');
@@ -1643,7 +1658,10 @@ function searchJumpScale(tid) {
 
 function flyTo(tid, targetScale = null) {
   const t = state.titles;
-  if (t.lx[tid] == null) return toast(`这个${GAME.entity}没有地盘，定位不了。`, true);
+  // **跳不了就安静地不跳** ✓：定位是附赠功能 ✓ 没有地盘（或没算出标签点）就没得跳 ✗
+  // 以前这里弹一条"这个势力没有地盘，定位不了" ✗ —— 可搜势力本来就不是为了定位 ✓
+  // （用户原话：本来搜势力就不需要定位啊 ✗）
+  if (t.lx[tid] == null) return;
   state.cam.cx = t.lx[tid];
   state.cam.cy = t.ly[tid];
   if (targetScale) state.cam.scale = clamp(targetScale, minScale(), 12);
@@ -2670,8 +2688,12 @@ function runSearch() {
     row.appendChild(tier);
     row.appendChild(name);
     row.appendChild(cnt);
-    // **点行 = 定位**（要看它在哪才走这条 ✓）
-    row.onclick = () => jumpToResult(tid);
+    // **势力行（带国家 tag 的那些）= 只取色取名，不跳镜头** ✓
+    // 跟上面"国家行"同一个规矩 ✓ —— 搜一个势力，图的是"把它的颜色和名字拿来用" ✓
+    // 定位只是附赠 ✗（要看它在哪，用地区 / 省份那些条目 ✓）
+    // 而且这层里有些势力在这张图上根本没有地盘 ✓ 本来也跳不了 ✓ 更不该弹个错
+    if (r.tag) row.onclick = () => { setBrush(_col, false); setBrushLabel(t.names[tid]); };
+    else row.onclick = () => jumpToResult(tid);   // 地区 / 省份：点行 = 定位 ✓
     box.appendChild(row);
   }
 }
@@ -2983,14 +3005,51 @@ function projectData() {
   return out;
 }
 
+/* ---- 暂存：**按地图分开存** ----------------------------------------------
+ * 这里原本就是这么设计的（"localStorage 防手滑刷新，导出文件做备份"）✓
+ * 后来被关成了空函数 ✗ —— 用户现在明确要求：**回主菜单不许把画的东西弄丢** ✓
+ * 所以重新启用，而且比原来更细：键里带上"哪张图" ✓
+ * 钢铁雄心4 的原版 / 修改边界版、以及各代游戏之间，都不会串味 ✓
+ */
+const STASH_KEY = 'pdx-map-editor/stash/v1';
+
+/** 认地图用：换地图数据就对不上 ✓（有 stashKey 就用它，没有就按数据特征拼） */
+function mapKeyOf(meta) {
+  if (!meta) return '';
+  if (meta.stashKey) return String(meta.stashKey);
+  return [meta.game, meta.mapWidth, meta.mapHeight, meta.numTitles,
+          meta.numProvinces].join('|');
+}
+function stashBox() {
+  try { return JSON.parse(localStorage.getItem(STASH_KEY) || '{}') || {}; } catch (e) { return {}; }
+}
+/** 把当前这张图上的涂色写进暂存区 ✓ 写不进去（无痕模式、配额满）返回 false ✓ */
+function stashNow() {
+  try {
+    const k = mapKeyOf(state.meta);
+    if (!k || !state.titles) return false;
+    const box = stashBox();
+    box[k] = projectData();
+    localStorage.setItem(STASH_KEY, JSON.stringify(box));
+    return true;
+  } catch (e) { return false; }
+}
+
 function saveProject() {
-  // **不落 localStorage**：刷新之后涂色不留（要用"导出涂色"存成文件）。
-  // 一句话说清：这里的自动保存只会让人以为涂的东西一直在，反而容易丢。
+  // 涂完停手 0.8 秒（scheduleSave）就悄悄写一份 ✓
+  // 这样**手滑刷新 / 误关标签页 / 回主菜单**都能原样接上 ✓
+  stashNow();
 }
 
 function loadProject() {
-  // 自动恢复也关掉：既然不保存，就别让以前存下的旧涂色在刷新后冒出来。
-  return 0;
+  // 只有回到**同一张图**才接上 ✓ 换了地图当然不接（压根不是一套数据）✓
+  try {
+    const k = mapKeyOf(state.meta);
+    if (!k) return 0;
+    const data = stashBox()[k];
+    if (!data) return 0;
+    return applyProject(data) || 0;
+  } catch (e) { return 0; }
 }
 
 /**
@@ -3111,15 +3170,14 @@ function importJSON(file) {
 }
 
 function resetAll() {
+  // **静默执行，不弹提示** ✓ —— 「清除」是你亲手按的 ✗ 不用再告诉你一遍
   const all = new Set([...state.painted, ...state.changed]);
-  if (!all.size) return toast('现在就是原始配色');
-  const n = all.size;
+  if (!all.size) return;
   for (const tid of all) restoreTitle(tid);
   state.history.undo.length = 0;
   state.history.redo.length = 0;
   updateHistoryUI();
   renderHoverCard(state.hover.pid);
-  toast(`已还原 ${n} ${GAME.entity}。`);
 
   recomputePainted();   // 手绘层变了：让自动填色跟着重算
 }
@@ -3128,6 +3186,39 @@ function resetAll() {
 
 function bindEvents() {
   const stage = $('stage');
+
+  /* ---- 回主菜单（选地图那一页）：右上角那个按钮，或者键盘 Esc ----------
+   * 换地图要把数据、渲染器、整套状态全部重来一遍，这个 app 里没有
+   * "重新初始化"的口子 ✗ —— 自造一套很容易把状态搞乱 ✓
+   * 页面自带的启动流程（boot）干的正好就是这件事 ✓ 所以走重新加载这条路 ✓
+   * 回主菜单之前**先把涂色存进暂存区** ✓ 再选同一张图会自动接上 ✓
+   */
+  const goHome = () => {
+    const boot = $('boot');
+    if (boot && getComputedStyle(boot).display !== 'none') return;   // 还在启动/选图阶段 ✓ 别动
+    let dirty = 0;
+    try { dirty = (state.changed && state.changed.size) || 0; } catch (e) { dirty = 0; }
+    if (dirty > 0 && !stashNow()) {
+      // 存不进暂存区（无痕模式 / 配额满）才问一句 ✗ 至少不静默丢
+      if (!window.confirm('这台浏览器不让暂存，回主菜单会丢掉还没导出的涂色（改动 ' + dirty + ' 处）。\n'
+        + '想留着就先点「导出 ▾ → 导出涂色」存一份。\n\n确定要回主菜单吗？')) return;
+    }
+    location.reload();
+  };
+  const homeBtn = $('btn-home');
+  if (homeBtn) homeBtn.addEventListener('click', goHome);
+
+  /* **Esc 只管一件事：回主菜单** ✓（用户定的 —— 不再一层层退 ✗）
+   * 所以这里不判断"输入框里没里""有没有弹层开着" —— 按下去就是回主菜单 ✓
+   * 但要把事件**抢在别人前面吃掉** ✓ 不然改名框、导出菜单各自的 Esc 也会跟着响应，
+   * 那就又变成"两个功能"了 ✗（先 preventDefault，再 stopImmediatePropagation）
+   */
+  window.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' && e.key !== 'Esc') return;
+    e.preventDefault();
+    if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+    goHome();
+  });
 
   stage.addEventListener('wheel', (e) => {
     e.preventDefault();
@@ -4618,9 +4709,9 @@ async function boot() {
     setTimeout(() => $('boot').classList.add('done'), 220);
     setTimeout(() => { $('boot').style.display = 'none'; }, 900);
 
-    // 上次没画完的，接着'
-    const restored = loadProject();
-    if (restored) toast(`接着上次：恢复了 ${restored} ${GAME.entity}的涂色`);
+    // 上次没画完的，接着来 —— **静默接上** ✓ 不弹提示
+    //（回到同一张图，画的东西原样在那儿就够了 ✗ 不用再飘一条"恢复了 N 个势力"打断你）
+    loadProject();
   } catch (e) {
     console.error(e);
     setBoot('出错了：' + e.message, 100);

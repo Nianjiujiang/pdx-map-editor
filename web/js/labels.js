@@ -538,7 +538,15 @@ export class LabelLayer {
       if (p.w > 0) {
         const need = String(p.name).length * size;        // 这些字大约要多宽（汉字方块 ≈ 字号）
         const room = p.w * this.scale * 0.92;             // 版图里能用的宽度
-        if (need > room) size = Math.max(5, size * (room / need));
+        if (need > room) {
+          // **最多只缩到自然字号的 7 成** ✓ 别压得太死 ✗
+          // 以前是 size × (room/need)，一句话也不留余地 —— 名字比版图宽三倍，
+          // 字号就被砍成三分之一，砍到底还有 5px 的硬地板，结果就是蚂蚁字 ✓
+          // 现在：宁可让长名字压出版图一点点（反正底下没有别的东西挡着），
+          // 也不许它缩到看不清 ✓ 真要更狠更松，就调下面这个 0.7 ✓
+          const SHRINK_FLOOR = 0.7;
+          size = Math.max(size0 * SHRINK_FLOOR, size * (room / need));
+        }
       }
       S[n] = size;
       HOT[n] = false;
