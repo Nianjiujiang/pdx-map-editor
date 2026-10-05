@@ -114,6 +114,12 @@ if (location.protocol === 'file:') {
         <input type="checkbox" id="show-power-border">
         <span>边界</span>
       </label>
+      <!-- 原先是「填色」那组的「名称」✓ 按用户要求挪到「势力」这边 ✓
+           开关还是同一个 id ✓ 所以效果完全不变 ✓ -->
+      <label class="switch">
+        <input type="checkbox" id="show-labels-paint" checked>
+        <span>名称</span>
+      </label>
     </div>
 
     <div class="tool-group" id="region-group">
@@ -146,10 +152,6 @@ if (location.protocol === 'file:') {
       <label class="switch">
         <input type="checkbox" id="show-border-paint" checked>
         <span>边界</span>
-      </label>
-      <label class="switch">
-        <input type="checkbox" id="show-labels-paint" checked>
-        <span>名称</span>
       </label>
 
     </div>
