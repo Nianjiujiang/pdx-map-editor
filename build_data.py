@@ -251,13 +251,14 @@ def build_special_titles(
     base_index: int,
     sea_groups: list[tuple[str, list[int]]] | None = None,
     special_names: dict[str, str] | None = None,
-) -> tuple[list[Title], np.ndarray, list[str], np.ndarray, list[int], np.ndarray]:
+) -> tuple[list[Title], np.ndarray, list[str], np.ndarray, list[int], np.ndarray, list[int]]:
     """给制不出头衔的地块分类；海/湖/河一类一个伪头衔，**荒地每块一个**。
 
     :param blank: 长度 n_prov 的 bool 表，True 表示这个省份在**所有**层级
                   都没有头衔（也就是海、湖、河、山这些）。
     :returns: (伪头衔列表, 全层共用的归属数组, 分类统计文字,
-               只落在最细那层的归属数组, 逐块荒地的地块号)
+               只落在最细那层的归属数组, 逐块荒地的地块号, 海块的逐块归属,
+               逐块荒地的**真实节点号**（与地块号一一对应）)
     """
     assign = np.full(n_prov, -1, dtype=np.int64)
     fine_assign = np.full(n_prov, -1, dtype=np.int64)   # 只有"逐块荒地"会用到
@@ -265,6 +266,7 @@ def build_special_titles(
     titles: list[Title] = []
     stats: list[str] = []
     waste_pids: list[int] = []
+    waste_tids: list[int] = []   # 跟 waste_pids 一一对应：建一个节点记一个序号
 
     for key, label, rgb, sources in SPECIAL_CATEGORIES:
         wanted: set[int] = set()
@@ -327,14 +329,16 @@ def build_special_titles(
         # ② 荒地额外：**每块地一个节点**，只占最细那一层
         if key in SETTABLE_CATEGORIES:
             for pid in candidates.tolist():
-                fine_assign[pid] = base_index + len(titles)
+                _tid = base_index + len(titles)   # 序号在建节点时记下，别事后反推
+                fine_assign[pid] = _tid
                 wt = Title(f"wl_{pid}", tier=TIER_ORDER[-1])
                 wt.color = rgb
                 titles.append(wt)
                 waste_pids.append(int(pid))
+                waste_tids.append(_tid)
             stats.append(f"→ 逐块 {len(candidates)} 个")
 
-    return titles, assign, stats, fine_assign, waste_pids, low_assign
+    return titles, assign, stats, fine_assign, waste_pids, low_assign, waste_tids
 
 
 # ------------------------------------------------------------------ 头衔
@@ -553,7 +557,7 @@ def main() -> int:
 
     _sea_groups = []   # 海域分组已废弃（按要求删掉）
     _special_names: dict[str, str] = {}
-    special, assign, stats, fine_assign, waste_pids, low_assign = build_special_titles(
+    special, assign, stats, fine_assign, waste_pids, low_assign, waste_tids = build_special_titles(
         terrain, n_prov, blank, len(ordered), _sea_groups, _special_names)
     log("地形类别：" + "，".join(stats) if stats else "地形类别：无")
 
@@ -583,8 +587,11 @@ def main() -> int:
     def _is_water_key(k: str) -> bool:
         return k in WATER_KEYS or k.startswith("#sea_grp_") or k.startswith("wz_")
     water_tids = {len(ordered) + k for k, sp in enumerate(special) if _is_water_key(sp.key)}
-    waste_base = len(ordered) + len(special) - len(waste_pids)
-    waste_tids = [waste_base + i for i in range(len(waste_pids))]
+    # 逐块荒地的**真实节点号**直接来自 build_special_titles（建节点时记的）。
+    # 以前在这里拿"special 尾部恰好连续 len(waste_pids) 个"反推 waste_base，
+    # 可 #wasteland 的共享粗层节点插在两组逐块节点中间 —— 一差就差一位：
+    # 第一块山地漏出 meta["wasteland"]、面积和标注位置整体错位一格。
+    waste_tid_of = dict(zip(waste_pids, waste_tids))
     # 粗层那两个共享伪头衔也算"荒地"（荒漠涂色关着时它们要显示灰）
     for k, sp in enumerate(special):
         if sp.key in SETTABLE_CATEGORIES:
@@ -725,17 +732,21 @@ def main() -> int:
     # 逐块荒地节点：它只管自己那一块地，面积和位置就取那一块的
     # （以前没给，于是 area=0、lx=null —— 标签层按面积排序时它们全挤在 (0,0)，
     #   挑视口会挑到它们头上，一个名字都画不出来）
-    for i, pid in enumerate(waste_pids):
-        idx = waste_base + i
+    # 逐块荒地节点：它只管自己那一块地，面积和位置就取那一块的
+    # （以前没给，于是 area=0、lx=null —— 标签层按面积排序时它们全挤在 (0,0)，
+    #   挑视口会挑到它们头上，一个名字都画不出来）
+    for pid in waste_pids:
+        idx = waste_tid_of[pid]
         area[idx] = int(counts[pid])
+        prov_count[idx] = 1   # 一个节点就是一个省份（assign 里查不到它，别信上面那轮）
 
     # 伪头衔那一段的位置：只有**逐块荒地**有（它就是个有像素的地块），海/湖/河没有。
     # 位置直接从那一块的像素重心来 —— 别的地方（area/位置数组）都只覆盖真实头衔，
     # 伪头衔这一段是在拼 payload 时才补的，所以这里按"补空"的口径一起算。
     _waste_pos: dict[int, tuple[float, float]] = {}
-    for i, pid in enumerate(waste_pids):
+    for pid in waste_pids:
         if 0 < pid < len(pcx) and not np.isnan(pcx[pid]):
-            _waste_pos[waste_base + i] = (float(pcx[pid]), float(pcy[pid]))
+            _waste_pos[waste_tid_of[pid]] = (float(pcx[pid]), float(pcy[pid]))
 
     def _pad_pos(arr, which: int):
         tail = []
