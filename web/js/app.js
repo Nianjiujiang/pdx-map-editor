@@ -2605,7 +2605,9 @@ function applyGameText() {
   if (typeof renderer !== 'undefined' && renderer) {
     renderer.setShowTitles(state.showTitles);
     renderer.setShowPaint(state.showPaint);
-    renderer.setShowWaste(false);   // 荒地**恒为荒地色** ✓（「允许」只管能不能涂 ✓）
+    // 同一处 bug 的另一个入口：程序化恢复状态（换图/导入）也会走到这里，
+    // 无条件推 false 会把荒地涂色藏掉 —— 口径与下面的 change 处理器一致
+    renderer.setShowWaste(state.showWaste || state.wasteAuto);
     // 边界的状态存在**复选框**上（state 里没有 showBorderTitle 字段 ✗
     // —— 传 undefined 会被 !! 变成 false，把边界关掉）
     const _bt = $('show-border-title');
@@ -3610,7 +3612,11 @@ function bindEvents() {
   });
   $('show-waste').addEventListener('change', (e) => {
     state.showWaste = e.target.checked;
-    renderer.setShowWaste(false);   // 荒地**恒为荒地色** ✓（「允许」只管能不能涂 ✓）
+    // 勾着「允许」（或「自动」还开着）就该显示荒地的涂色 —— 着色器里
+    // uShowWaste==0 会把手绘色也一起盖成灰，推 false 的老写法让用户涂了
+    // 也看不见（跟 setWasteAuto 里那条推 true 的路自相矛盾，README 也承诺
+    // 允许之后"像普通地块一样涂"）。自动开着时取消勾选不藏自动色。
+    renderer.setShowWaste(state.showWaste || state.wasteAuto);
     labelDirty = true;
   });
   // 「清除自动填色」：把自动涂的颜色还原（开关开着也没关系，下次触发会重算）
