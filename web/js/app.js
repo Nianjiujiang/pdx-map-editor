@@ -633,7 +633,10 @@ function applyLutOverrides() {
     '#wasteland': s.impass };
   for (let i = 0; i < K.length; i++) {
     const c = want[String(K[i])];
-    if (c) renderer.setLutColor(i, c[0], c[1], c[2]);
+    // 自定义色是 null（「恢复默认」）也要把 LUT 写回**烘数据时的原色** ——
+    // 直接跳过的话，之前盖上去的自定义海/湖/河颜色会一直残留在显存里
+    const o = c || state.titles.colors[i];
+    if (o) renderer.setLutColor(i, o[0], o[1], o[2]);
   }
 }
 
@@ -1580,10 +1583,18 @@ function paintAt(pid, tid) {
         const _pids = playerGroupPidsAt(pid);
         if (_pids.length) {
           const _fine = TIER_COUNT - 1;
+          // 一次点击 = **一步**历史（跟擦除那边一个规矩）：先把整族要动的
+          // 地块拍快照，再逐个涂（各自不记账），最后合成一条 patch ——
+          // 不然撤销要按 N 次 Ctrl+Z，中途还露半涂状态。
+          const _targets = [];
           for (const _q of _pids) {
             const _t = titleAt(_q, _fine);
-            if (_t != null && _t !== NO_TITLE) paintTitle(_t, to);
+            if (_t != null && _t !== NO_TITLE && _targets.indexOf(_t) < 0) _targets.push(_t);
           }
+          const _snaps = [];
+          for (const _t of _targets) _snaps.push(...snapshotPids(_t));
+          for (const _t of _targets) paintTitle(_t, to, true);
+          pushPatches(_snaps);
           return;
         }
         // 认不出族（没有同色同标签的）→ 退回只涂点中这块 ✓
@@ -1597,7 +1608,7 @@ function paintAt(pid, tid) {
     paintTitle(tid, to);
 }
 
-function paintTitle(tid, rgb) {
+function paintTitle(tid, rgb, noHistory) {
   // 头衔重刷会影响显示颜色 → 荒地那套**全量重算** ✓
   state._wasteDirty = null;
   const c = [rgb[0] | 0, rgb[1] | 0, rgb[2] | 0];
@@ -1612,7 +1623,7 @@ function paintTitle(tid, rgb) {
   state.paintColor.set(tid, c);
   syncPaint(tid, c, false);
   state.painted.add(tid);
-  pushPatches(_snap);
+  if (!noHistory) pushPatches(_snap);   // noHistory：调用方（整族涂）自己合成一条
   state.changed.add(tid);
   updateStatus();
   blocksDirty = true;
@@ -2367,6 +2378,7 @@ function undo() {
   if (!op) return;
   for (const p of op.patches) applySide(p.from);
   recomputePainted();
+  updateStatus();       // "改动 N"跟着历史走，不然撤销后还停在旧数
   state.history.redo.push(op);
   updateHistoryUI();
   scheduleSave();
@@ -2379,6 +2391,7 @@ function redo() {
   if (!op) return;
   for (const p of op.patches) applySide(p.to);
   recomputePainted();
+  updateStatus();       // 同 undo
   state.history.undo.push(op);
   updateHistoryUI();
   scheduleSave();
@@ -4421,6 +4434,12 @@ function rebuildPaintBlocks(all = false, unpainted = false) {
       if (g5 && (!bestG || g5.w > bestG.w)) bestG = g5;
     }
     if (bestG) bestG.isHomeland = true;
+  }
+
+  // 旧键清一清：改色/换标记重涂后族身份串就换了新的，旧键连着几千个 pid 的
+  // 数组原样挂着（只增不减），长会话里越攒越多 —— 这轮没再出现的直接扔。
+  for (const k3 of Object.keys(homelandOf)) {
+    if (!(k3 in capOf)) delete homelandOf[k3];
   }
 
   // 每族只留一片露名字：优先"含首都那片"，其次"挨着首都那片"，最后才"面积最大那片"
