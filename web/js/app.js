@@ -4483,6 +4483,7 @@ function rebuildPaintBlocks(all = false, unpainted = false) {
     out.push({ name, x: g.x / g.w, y: g.y / g.w, area: g.w, rgb: g.rgb,
                w: Math.max(0, (g.maxx || 0) - (g.minx || 0)),   // 横向跨度 ✓（限字号用 ✓）
                tid: nameTidOf(_p0n),   // 这一坨代表哪个头衔 ✓（图例里改名要写回它 ✓）
+               pids: g.pids,   // 图例算"这一族涂出来的面积"要用（legendEntries）
                _key: g.key, _hasCap: !!g.hasCap, _capPid: g.capPid || 0 });
   }
   out.sort((a, b) => b.area - a.area);   // 大的先摆'
