@@ -3468,7 +3468,11 @@ function bindEvents() {
   const WHEEL_K = 0.0016;
   stage.addEventListener('wheel', (e) => {
     e.preventDefault();
-    zoomBy(Math.exp(-e.deltaY * WHEEL_K), e.clientX, e.clientY);
+    // Firefox 的滚轮默认是"行"模式（一格 ±3），不换算的话一格只缩 ~0.5%；
+    // "页"模式同样换算回像素量级，几个浏览器手感才一致。
+    const dy = e.deltaMode === 1 ? e.deltaY * 33
+      : e.deltaMode === 2 ? e.deltaY * 800 : e.deltaY;
+    zoomBy(Math.exp(-dy * WHEEL_K), e.clientX, e.clientY);
   }, { passive: false });
 
   stage.addEventListener('mousedown', (e) => {
@@ -3477,7 +3481,10 @@ function bindEvents() {
       $('map').style.cursor = 'grabbing';
       e.preventDefault();
     } else if (e.button === 0 && state.tool !== 'view') {
-      painting = true;
+      // 只有涂色/擦除支持按住拖动连发 —— 定都/改名这些单击工具不置 painting，
+      // 要不然从 A 拖到 B 会沿路连发（定都一路设过去、改名弹窗被反复重开，
+      // 正打到一半的名字也被清掉）。
+      painting = (state.tool === 'paint' || state.tool === 'erase');
       actAt(e.clientX, e.clientY);
       e.preventDefault();
     }
@@ -3875,7 +3882,11 @@ function bindEvents() {
   $('search').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
       e.preventDefault();
-      if (searchHits.length) jumpToResult(searchHits[0]);
+      // README 承诺"跳到第一条**能定位**的结果" —— 排最前的可能是个没地盘的头衔，
+      // 直接 jumpToResult 会对着它 toast 完就结束；先找第一条真有坐标的。
+      const _t = state.titles || {};
+      const hit = searchHits.find((x) => x != null && _t.lx && _t.lx[x] != null);
+      jumpToResult(hit != null ? hit : searchHits[0]);   // 全都定不了位：仍走第一条，让它弹"没有地盘"
       return;
     }
     if (e.key === 'Escape') {
@@ -3890,7 +3901,10 @@ function bindEvents() {
   stage.addEventListener('drop', (e) => {
     e.preventDefault();
     const f = e.dataTransfer.files[0];
-    if (f && f.name.endsWith('.json')) importJSON(f);
+    if (!f) return;
+    // Windows 常见的「方案.JSON」也别漏掉 —— 大小写敏感的 endsWith 会静默忽略它
+    if (f.type === 'application/json' || /\.json$/i.test(f.name)) importJSON(f);
+    else toast('只认 JSON 涂色文件（*.json）', true);
   });
 }
 
@@ -5024,7 +5038,7 @@ async function boot() {
     if (isEmbedded()) setEmbeddedMap(chosen.emb);
     else setDataDir(chosen.dir);
 
-    setBoot(`读取'{chosen.label}」的元数据…`, 6);
+    setBoot(`读取「${chosen.label}」的元数据…`, 6);
     const meta = await api.meta();
     if (!meta || !meta.numTitles) throw new Error('data/ 里还没生成好缓存，先跑 python build_data.py');
     state.meta = meta;
