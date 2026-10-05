@@ -485,9 +485,14 @@ export class MapRenderer {
     this.gl = gl;
 
     const maxTex = gl.getParameter(gl.MAX_TEXTURE_SIZE);
-    if (maxTex < this.mapW || maxTex < this.mapH) {
-      throw new Error(`显卡最大纹理 ${maxTex}px，装不下这张地图（${this.mapW}×${this.mapH}）。`);
+    // **地图比"单张贴图上限"大时不再拒绝** ✓ —— setData 里会把它就地切成一块块贴图 ✓
+    // （手机 GPU 常见上限只有 4096 / 8192：CK3 9216×4608、EU5 8192×4096、
+    //   米勒投影 11680×5760 都塞不进一张 ✗ 以前这里直接抛错 → 整张图加载不出来 ✗）
+    // 只有小到连一块切片都放不下的设备才真的没救 ✓
+    if (maxTex < 256) {
+      throw new Error(`这个设备的贴图上限只有 ${maxTex}px，放不下任何地图切片。`);
     }
+    this.maxTex = maxTex;
 
     const prog = gl.createProgram();
     gl.attachShader(prog, compile(gl, gl.VERTEX_SHADER, VERT));
@@ -604,6 +609,34 @@ export class MapRenderer {
     return true;
   }
 
+  /**
+   * 把**整张** id 图按块传进数组纹理 ✓
+   * 用在"设备上限装不下整图、我们当场切块"这条路上（没有 tiles.json ✓ 数据全在内存里 ✓）。
+   * 带 tiles.json 的按视野逐块喂，不走这里 ✓
+   */
+  uploadAllTiles(ids, layout) {
+    const m = this.meta;
+    const buf = new Uint16Array(layout.tileW * layout.tileH);
+    const at = (a, b) => (ids.subarray ? ids.subarray(a, b) : ids.slice(a, b));
+    for (let r = 0; r < layout.rows; r++) {
+      for (let c = 0; c < layout.cols; c++) {
+        const x0 = c * layout.tileW;
+        const y0 = r * layout.tileH;
+        buf.fill(0);                       // 右/下边缘不足一块的地方补 0（= 无省份 ✓）
+        for (let y = 0; y < layout.tileH; y++) {
+          const sy = y0 + y;
+          if (sy >= m.mapHeight) break;
+          const n = Math.min(layout.tileW, m.mapWidth - x0);
+          if (n <= 0) break;
+          const src = sy * m.mapWidth + x0;
+          buf.set(at(src, src + n), y * layout.tileW);
+        }
+        this.uploadTile(r * layout.cols + c, buf);
+      }
+    }
+    console.log(`就地切块：已上传 ${layout.cols * layout.rows} 块 ✓`);
+  }
+
   async setData({ provinceIds, titlemap, colors, tiles }) {
     const gl = this.gl;
     const m = this.meta;
@@ -627,19 +660,43 @@ export class MapRenderer {
         + `需要 ${m.mapWidth * m.mapHeight} 个（${m.mapWidth}×${m.mapHeight}）`
         + `，而且没传分块清单 tiles ✗`);
     }
-    this.provTex = tiles
+    // **装不下就当场切块** ✓ 不依赖 tiles.json（单文件版没有那个清单 ✗）
+    // 切块走的是渲染器**本来就有的**那条分块通路（TEXTURE_2D_ARRAY ✓
+    // 电脑版那张 16384 的 EU5 就是这么跑的 ✓）→ 着色器 / 拾取 / 涂色全都不用改 ✓
+    // 只在"设备上限装不下这张图"时才生效 ✓ 电脑上什么都不变 ✓
+    let layout = tiles || null;
+    if (!layout && provinceIds) {
+      const lim = this.maxTex || gl.getParameter(gl.MAX_TEXTURE_SIZE);
+      if (m.mapWidth > lim || m.mapHeight > lim) {
+        const tileW = Math.max(1, Math.min(m.mapWidth, lim));
+        const tileH = Math.max(1, Math.min(m.mapHeight, lim));
+        layout = {
+          tileW, tileH,
+          cols: Math.ceil(m.mapWidth / tileW),
+          rows: Math.ceil(m.mapHeight / tileH),
+          synthetic: true,
+        };
+        console.log(`贴图上限 ${lim}px 装不下 ${m.mapWidth}×${m.mapHeight}`
+          + ` → 就地切成 ${layout.cols}×${layout.rows} 块（每块 ${tileW}×${tileH}）`);
+      }
+    }
+
+    this.provTex = layout
       ? makeTexture(gl, 1, 1, gl.R16UI, gl.RED_INTEGER, gl.UNSIGNED_SHORT,
                     new Uint16Array(1), gl.NEAREST)
       : makeTexture(gl, m.mapWidth, m.mapHeight, gl.R16UI,
                     gl.RED_INTEGER, gl.UNSIGNED_SHORT, provinceIds, gl.NEAREST);
 
-    // 分块路径：只有数据目录里带了 tiles.json（原尺寸那套）才启用 ✓
-    this.tileInfo = tiles || null;
-    this.useTiles = tiles ? 1 : 0;
-    if (tiles) {
-      const first = new Uint16Array(tiles.tileW * tiles.tileH);
-      this.provArrTex = this.makeTileArray(tiles.tileW, tiles.tileH,
-        tiles.cols * tiles.rows, first);
+    // 分块路径：数据目录带了 tiles.json ✓ 或者上面就地切了块 ✓
+    this.tileInfo = layout || null;
+    this.useTiles = layout ? 1 : 0;
+    if (layout) {
+      const first = new Uint16Array(layout.tileW * layout.tileH);
+      this.provArrTex = this.makeTileArray(layout.tileW, layout.tileH,
+        layout.cols * layout.rows, first);
+      // 就地切的那条：数据全在内存里 ✓ 立刻逐块传上去 ✓
+      // （带 tiles.json 的那条不用管 —— app 会按视野逐块喂给 uploadTile ✓）
+      if (layout.synthetic) this.uploadAllTiles(provinceIds, layout);
     } else {
       // 没有分块数据时也建一张 1×1 的数组纹理 —— 采样器不完整的话，
       // 有些驱动会直接报错（哪怕这一路根本没被采样）。uUseTiles 仍是 0 ✓。

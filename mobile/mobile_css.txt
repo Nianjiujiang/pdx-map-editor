@@ -1,0 +1,532 @@
+/* ===========================================================================
+   手机版界面（**这个文件只打进手机版** ✓ 电脑版一个字节不动 ✓）
+   —— 一级界面：地图 + 左上返回 / 右上导入导出 / 底部四个入口
+      二级界面：从底部滑上来的下拉面板，内容直接搬桌面那几块 ✓
+   宽屏打开（电脑上调试）时，整体收进一个手机大小的框里居中 ✓
+   =========================================================================== */
+
+/* ── 一级界面：六个入口 ───────────────────────────────────────────── */
+#mob-ui { position: fixed; inset: 0; z-index: 57; pointer-events: none; }
+#mob-ui > * { pointer-events: auto; }
+
+#mob-topbar {
+  position: absolute; top: 0; left: 0; right: 0; height: 54px;
+  display: flex; align-items: center; gap: 8px; padding: 8px 10px;
+  background: linear-gradient(#0b0f14f2, #0b0f1400);
+}
+#mob-topbar .mob-gap { flex: 1 1 auto; }
+.mob-btn {
+  min-height: 38px; padding: 0 14px; border-radius: 19px;
+  border: 1px solid #2b3743; background: rgba(13, 19, 26, .92); color: #e8eef6;
+  font: 600 14px/1 "Microsoft YaHei", system-ui, sans-serif;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .45); backdrop-filter: blur(6px);
+}
+.mob-btn.gold { border-color: #c9a94e; color: #f0d98a; }
+.mob-btn:active { transform: translateY(1px); }
+.mob-btn[hidden] { display: none; }
+
+/* 底部四个入口 */
+#mob-dock {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px;
+  padding: 8px 8px calc(8px + env(safe-area-inset-bottom, 0px));
+  background: linear-gradient(#0b0f1400, #0b0f14f7 42%);
+}
+#mob-dock button {
+  min-height: 52px; padding: 4px 2px; border-radius: 12px;
+  border: 1px solid #26313d; background: rgba(13, 19, 26, .94); color: #dfe7f0;
+  font: 600 13px/1.35 "Microsoft YaHei", system-ui, sans-serif;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .45);
+}
+#mob-dock button i { font-style: normal; font-size: 17px; line-height: 1; }
+#mob-dock button.on { border-color: #c9a94e; color: #f0d98a; background: rgba(36, 29, 16, .95); }
+
+/* 面板打开时点一下地图也能收起 ✓ */
+#mob-backdrop {
+  position: absolute; inset: 0; background: rgba(0, 0, 0, .42);
+  opacity: 0; pointer-events: none; transition: opacity .22s;
+}
+#mob-backdrop.on { opacity: 1; pointer-events: auto; }
+
+/* ── 二级界面：从按钮**正上方**弹出来的那一栏（上拉菜单那种 ✓）──────── */
+#mob-sheet {
+  position: absolute; z-index: 61;
+  max-height: 62vh; display: flex; flex-direction: column;
+  background: #0d131a; border-radius: 16px;
+  border: 1px solid #2b3743;
+  box-shadow: 0 -14px 44px rgba(0, 0, 0, .66), 0 0 0 1px rgba(0, 0, 0, .3);
+  /* 左 / 下 / 宽 由 JS 按"哪个按钮被按了"算出来 ✓ */
+  opacity: 0; transform: translateY(16px) scale(.97);
+  transform-origin: bottom center; pointer-events: none;
+  transition: opacity .18s ease, transform .24s cubic-bezier(.16, 1, .3, 1);
+}
+#mob-sheet.on { opacity: 1; transform: none; pointer-events: auto; }
+/* 按钮在上半屏（比如顶栏那个「导入导出」）→ 那一栏往下弹，尖角翻到顶上 ✓ */
+#mob-sheet.below { transform-origin: top center; }
+#mob-sheet.below::after {
+  bottom: auto; top: -9px;
+  border-top: 0; border-bottom: 9px solid #2b3743;
+}
+#mob-sheet.below::before {
+  bottom: auto; top: -7px;
+  border-top: 0; border-bottom: 7px solid #0d131a;
+}
+/* 指向按钮的小尖角：像真的从那个按钮上长出来的 ✓ */
+#mob-sheet::after {
+  content: ''; position: absolute; bottom: -9px; left: var(--tail-x, 50%);
+  margin-left: -9px; width: 0; height: 0;
+  border-left: 9px solid transparent; border-right: 9px solid transparent;
+  border-top: 9px solid #2b3743;
+}
+#mob-sheet::before {
+  content: ''; position: absolute; bottom: -7px; left: var(--tail-x, 50%);
+  margin-left: -7px; width: 0; height: 0; z-index: 1;
+  border-left: 7px solid transparent; border-right: 7px solid transparent;
+  border-top: 7px solid #0d131a;
+}
+#mob-sheet-head {
+  flex: none; display: flex; align-items: center; gap: 10px;
+  padding: 12px 14px 10px; border-bottom: 1px solid #1d2833;
+}
+#mob-sheet-head b { font-size: 15px; color: #f0d98a; letter-spacing: .5px; }
+#mob-sheet-head span { flex: 1 1 auto; color: #7d8b9c; font-size: 12px; }
+#mob-sheet-x {
+  min-height: 34px; padding: 0 12px; border-radius: 17px; border: 1px solid #2b3743;
+  background: #131b23; color: #cfd9e4; font: 600 13px/1 "Microsoft YaHei", system-ui, sans-serif;
+}
+#mob-sheet-body {
+  flex: 1 1 auto; overflow-y: auto; -webkit-overflow-scrolling: touch;
+  padding: 10px 12px calc(20px + env(safe-area-inset-bottom, 0px));
+}
+.mob-group { display: block; }
+.mob-group[hidden] { display: none !important; }
+.mob-group > .panel {
+  border: 0; border-radius: 0; margin: 0 0 12px; padding: 0; background: none;
+}
+.mob-group .panel-head { padding: 6px 2px 8px; }
+.mob-group .panel-head h2 { font-size: 14px; color: #9fb0c2; }
+
+/* ── 悬停那套手机上手没法用 ✓ 全藏掉（跟随鼠标的信息卡 + 侧栏里的归属链）──── */
+#hover-card { display: none !important; }
+#hover-chain { display: none !important; }
+
+/* ── 「设置」= 一排标签按钮 + 下面跟着换内容 ────────────────────────── */
+/* 顶上那个多余的总标题行不要了 ✗ */
+.mob-set-title { display: none; }
+.mob-tabs {
+  display: flex; flex-wrap: wrap; gap: 8px;
+  padding-bottom: 12px; margin-bottom: 10px; border-bottom: 1px solid #1d2833;
+}
+/* **设置这一栏高度锁死** ✓ 换标签时不许变 ✗ */
+#mob-sheet.tall { height: 58vh; max-height: 58vh; }
+#mob-sheet.tall #mob-sheet-body { display: flex; flex-direction: column; }
+#mob-sheet.tall .mob-group { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+#mob-sheet.tall .mob-panes { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+.mob-tab {
+  min-height: 38px; padding: 0 14px; border-radius: 19px;
+  border: 1px solid #26313d; background: #101820; color: #cfd9e4;
+  font: 600 14px/1 "Microsoft YaHei", system-ui, sans-serif;
+}
+.mob-tab.on { border-color: #c9a94e; color: #f0d98a; background: rgba(36, 29, 16, .95); }
+.mob-pane[hidden] { display: none !important; }
+.mob-pane .set-col { display: block; }
+/* 每页顶上那行小标题（颜色/边界/名字等/导出图例）跟标签重复 ✗ 去掉 ✓ */
+.mob-pane .set-col h3, .mob-pane h3 { display: none; }
+/* 显示页顶上那个「显示」标题同样是重复的 ✗ 去掉 ✓ */
+#display-panel .panel-head { display: none; }
+
+/* **一页就是一块** ✓ 不许出现"两段"的观感 ✗
+   （搬进来的是两个节点：显示面板 + 那一栏设置 ✓ 把它们的边距/边框/内边距全抹平 ✓） */
+.mob-pane > .panel {
+  margin: 0; padding: 0; border: 0; background: none; box-shadow: none;
+}
+.mob-pane > .panel + .set-col, .mob-pane .set-col { margin: 0; padding: 0; border: 0; }
+.mob-pane .set-col > *:first-child { margin-top: 0; }
+.mob-pane .set-row, .mob-pane .switch, .mob-pane label { margin-top: 0; margin-bottom: 0; }
+.mob-pane .set-row { min-height: 32px; }
+.mob-pane .switch { min-height: 32px; }
+.mob-pane .set-row:last-child, .mob-pane .switch:last-child { margin-bottom: 0; }
+
+/* ── 面板内一律对齐（用户嫌不整齐 ✗）────────────────────────────────
+   问题在：每行的勾选框个数不一样（势力 2 个、地区 4 个 ✓），
+   于是"颜色/边界"在每行里起跑线不同 ✗ 看着就乱 ✓
+   办法：给行首的组名和每个勾选框**定死宽度** ✓ 自然就成列了 ✓
+   ────────────────────────────────────────────────────────────────── */
+.mob-pane .tool-group, .mob-pane .set-col, .mob-pane > .panel {
+  margin: 0 !important; padding: 0 !important; border: 0 !important; background: none !important;
+}
+.mob-pane .tool-group + .tool-group { margin-top: 6px !important; }
+.mob-pane .group-label {
+  display: inline-block; min-width: 42px; text-align: left; color: #8b9aab;
+}
+.mob-pane .switch {
+  display: inline-flex; align-items: center; min-width: 76px; gap: 5px;
+  min-height: 32px; margin: 0;
+}
+.mob-pane .switch input[type="checkbox"] { margin: 0; }
+/* 「恢复默认」别甩到右边去 ✗ 跟着左边对齐 ✓ */
+.mob-pane .set-row > span:empty { display: none; }
+.mob-pane #set-reset, .mob-pane .set-row button { margin-right: auto; }
+.mob-pane .set-row { display: flex; align-items: center; gap: 10px; min-height: 34px; }
+.mob-pane .set-row > span:first-child { min-width: 76px; color: #cfd9e4; }
+
+/* 工具 / 视图：**一行一个选项、占满整栏** ✓
+   （踩过坑：第一版只写了 .mob-pane ✗ 那是"设置"里四个标签页的类名 ✓
+     而工具/视图是 .mob-group → 规则没命中 → 还是一排小胶囊 ✗
+     所以这里两个都写上 ✓ 反正面板里的分段按钮都该一行一个 ✓） */
+.mob-pane .segmented, .mob-group .segmented {
+  display: block !important; flex-wrap: nowrap !important; width: 100% !important;
+}
+.mob-pane .segmented button, .mob-group .segmented button {
+  display: block !important; width: 100% !important; flex: none !important;
+  margin: 5px 0 !important; min-height: 38px; text-align: left; padding: 0 12px;
+  border-radius: 10px;
+}
+.mob-pane .segmented button:first-child, .mob-group .segmented button:first-child { margin-top: 0; }
+.mob-pane .segmented button:last-child, .mob-group .segmented button:last-child { margin-bottom: 0; }
+/* 分段按钮里那个小小的层级角标（1936 后面那个 1）也摆整齐点 ✓ */
+.mob-group .segmented button i, .mob-pane .segmented button i { color: #7d8b9c; font-style: normal; }
+.mob-author-row { margin-top: 18px; border-top: 1px dashed #26313d; padding-top: 12px; }
+.mob-author-row .btn, .mob-author-row a { min-height: 40px; }
+
+/* 面板里的控件：手指点得到就行 ✓ 不用搞那么松散、那么大 ✗ */
+#mob-sheet-head { padding: 9px 12px 8px; }
+#mob-sheet-head b { font-size: 14px; }
+#mob-sheet-body { padding: 8px 10px calc(14px + env(safe-area-inset-bottom, 0px)); }
+.mob-tabs { gap: 6px; padding-bottom: 8px; margin-bottom: 8px; }
+.mob-tab { min-height: 32px; padding: 0 12px; font-size: 13px; border-radius: 16px; }
+#mob-sheet .switch { min-height: 34px; font-size: 14px; }
+#mob-sheet .switch input[type="checkbox"] { width: 18px; height: 18px; }
+#mob-sheet .segmented { flex-wrap: wrap; gap: 6px; }
+#mob-sheet .segmented button { min-height: 32px; padding: 0 11px; font-size: 13px; }
+#mob-sheet .chip { width: 32px; height: 32px; }
+#mob-sheet .palette { gap: 8px; flex-wrap: wrap; }
+#mob-sheet .result { min-height: 34px; }
+#mob-sheet .chain-row { min-height: 34px; }
+#mob-sheet input[type="text"], #mob-sheet input[type="number"] { font-size: 13.5px; padding: 6px 8px; }
+#mob-sheet .btn { min-height: 34px; padding: 0 12px; font-size: 13px; }
+#mob-sheet .set-row { min-height: 34px; font-size: 13px; }
+#mob-sheet .set-col { margin: 0; }
+#mob-sheet .panel-head { padding: 4px 2px 6px; }
+#mob-sheet .panel-head h2 { font-size: 13px; }
+.mob-author-row { margin-top: 12px; padding-top: 10px; }
+.mob-author-row .btn, .mob-author-row a { min-height: 34px; font-size: 13px; }
+
+/* ── 地图：一级界面就它一个 ───────────────────────────────────────── */
+.toolbar { display: none !important; }        /* 顶栏全部搬进面板了 ✓ */
+.sidebar { display: none !important; }        /* 左栏内容也搬进去了 ✓ */
+.body, .stage { height: 100%; }
+.stage { width: 100%; }
+#stage { touch-action: none; }
+.statusbar {
+  position: absolute; left: 0; right: 0; bottom: 66px;   /* 浮在四个入口上方 ✓ */
+  display: flex; flex-wrap: nowrap; align-items: center;  /* **不许换行** ✗（换行就变成竖着摞一串 — 了 ✓）*/
+  gap: 12px; padding: 4px 12px; font-size: 12px;
+  overflow-x: auto; overflow-y: hidden; white-space: nowrap;
+  background: linear-gradient(#0b0f1400, #0b0f14cc 60%);
+  pointer-events: none;
+}
+.statusbar > * { flex: none; pointer-events: auto; }
+.statusbar .spacer { display: none; }
+#status-meta { display: none; }        /* 那串「N 个头衔 · N 个地块 · 尺寸」手机上没人看 ✓ */
+#status-pos { order: -1; }
+
+/* 悬停卡 / 缩放条 / 教程卡片 */
+.hover-card { max-width: 72vw; font-size: 13px; padding: 8px 10px; border-radius: 10px; z-index: 50; }
+.zoom-box { right: 10px; bottom: 86px; }
+#tutCard { max-width: calc(100vw - 24px); padding: 14px 16px; border-radius: 12px; }
+#tutCard button { min-height: 42px; padding: 0 16px; font-size: 14px; }
+
+/* 设置那个弹窗在手机版用不上了 ✓ —— 内容整块搬进了「设置」二级面板 ✗ 不再套第三层 */
+#settings { display: none !important; }
+
+/* 改名弹窗还是要的 ✓ 竖屏全屏、一栏 */
+.modal { align-items: stretch; justify-content: stretch; padding: 0; }
+.modal-box {
+  width: 100% !important; max-width: none; height: 100%; max-height: none;
+  border-radius: 0; border: 0; overflow-y: auto; padding: 14px 14px 96px;
+  -webkit-overflow-scrolling: touch;
+}
+.modal-head { position: sticky; top: -14px; z-index: 2; padding: 12px 0 10px; background: #0f151c; }
+.set-grid { grid-template-columns: 1fr !important; gap: 14px; }
+.set-row { min-height: 44px; }
+.legend-row { min-height: 44px; }
+
+/* 启动页：单列大按钮 */
+.boot-inner { width: 100%; padding: 16px 14px; }
+.boot-title { font-size: 24px; }
+.map-pick-list { grid-template-columns: 1fr !important; gap: 10px; }
+.map-pick-list > * { min-height: 56px; }
+.boot-author { font-size: 12px; flex-wrap: wrap; gap: 6px; }
+
+/* 顶栏左边那个「永夜廿九」小胶囊（贴在「返回」右边 ✓）*/
+#mob-mid { flex: 1 1 auto; }
+#mob-topbar .mob-author, #mob-mid .btn, #mob-mid a {
+  min-height: 34px; padding: 0 13px; border-radius: 17px; line-height: 34px;
+  border: 1px solid #2b3743; background: rgba(13, 19, 26, .92); color: #e8eef6;
+  font: 600 13px/1 "Microsoft YaHei", system-ui, sans-serif; text-decoration: none;
+}
+
+/* ===========================================================================
+   宽屏打开时（电脑上调试）：把一切收进一个手机大小的框里居中 ✓
+   真手机上窗口本来就窄，这条不生效 ✓
+   =========================================================================== */
+@media (min-width: 561px) {
+  body { display: flex; align-items: center; justify-content: center; background: #06090c; }
+  #app {
+    position: relative; width: 430px; max-width: 100vw; height: min(932px, 95vh);
+    border-radius: 24px; overflow: hidden; border: 1px solid #26313d;
+    box-shadow: 0 30px 90px rgba(0, 0, 0, .75), 0 0 0 8px rgba(255, 255, 255, .02);
+  }
+  #mob-sheet, #mob-backdrop, #mob-ui, #mob-intro, #rename { position: absolute; }
+  #mob-backdrop { border-radius: 24px; }
+  #tutLayer { position: absolute; }
+  .boot-inner { padding: 16px 14px; }
+}
+
+/* 导出下拉里那些项，摊到面板里要长得像按钮 ✓ */
+.mob-group .menu-item, .mob-group #export-menu button {
+  display: block; width: 100%; text-align: left;
+  min-height: 46px; margin: 6px 0; padding: 0 14px;
+  border-radius: 10px; border: 1px solid #26313d;
+  background: #101820; color: #e8eef6;
+  font: 600 15px/46px "Microsoft YaHei", system-ui, sans-serif;
+}
+
+/* ===========================================================================
+   面板内瘦身（用户嫌臃肿 ✗）
+   ① 桌面那套"组名"（视图 / 工具 这种小字）在手机面板里是重复的 → 藏掉 ✓
+   ② 分段按钮外面那层圆角壳（边框 + 内边距）去掉 → 只留按钮本身 ✓
+   ③ 标题那一行压扁、收紧 ✓
+   =========================================================================== */
+.mob-group .group-label { display: none !important; }
+.mob-group .segmented, .mob-pane .segmented {
+  padding: 0 !important; border: 0 !important; background: none !important;
+  border-radius: 0 !important; box-shadow: none !important; gap: 0 !important;
+}
+.mob-group .segmented button, .mob-pane .segmented button {
+  min-height: 34px !important; margin: 4px 0 !important;
+  border-radius: 8px !important; font-size: 13.5px !important;
+}
+.mob-group .tool-group, .mob-pane .tool-group { margin: 0 !important; padding: 0 !important; }
+#mob-sheet-head { padding: 7px 10px 7px !important; }
+#mob-sheet-head b { font-size: 14px !important; }
+#mob-sheet-x { min-height: 28px !important; padding: 0 10px !important; font-size: 12.5px !important; border-radius: 14px !important; }
+#mob-sheet-body { padding: 6px 9px calc(12px + env(safe-area-inset-bottom, 0px)) !important; }
+
+/* ===========================================================================
+   用户嫌臃肿的最后一刀：
+   ① 顶部那条（金标题 + 收起）**整条去掉** ✓
+      —— 点同一个入口按钮就能收回 ✓ 左上「返回」也行 ✓ 点地图也行 ✓ 三种都够 ✓
+   ② **横向溢出堵住** ✓（之前底部冒出一条横向滑块 ✗ 说明里面某块比面板宽 ✓）
+      → 面板体只许竖着滚 ✓ 里面的行允许换行 ✓ 勾选框窄一点 ✓
+   =========================================================================== */
+#mob-sheet-head { display: none !important; }
+#mob-sheet, #mob-sheet-body, .mob-group, .mob-pane, .mob-subs {
+  overflow-x: hidden !important; max-width: 100% !important;
+}
+.mob-group *, .mob-pane * { max-width: 100%; }
+.mob-pane .set-row, .mob-group .tool-group, .mob-pane .tool-group {
+  flex-wrap: wrap !important; row-gap: 4px !important;
+}
+.mob-pane .switch, .mob-group .switch {
+  min-width: 62px !important; flex: 0 1 auto !important;
+}
+.mob-pane .group-label, .mob-group .group-label { min-width: 34px !important; }
+.mob-pane .set-row > span:first-child { min-width: 58px !important; }
+/* 面板体自身的滚动条也别露出来 ✓ */
+#mob-sheet-body { scrollbar-width: none; }
+#mob-sheet-body::-webkit-scrollbar { width: 0; height: 0; }
+
+/* ===========================================================================
+   滑块彻底根治（用户：该死的滑块 ✗）
+   ① 面板体和里面每一层都不许有横向滚动 ✓
+   ② 纵向滚动条也不画出来 ✓（能滚，但别露那根灰条 ✗）
+   ③ 行内容再压一档，四个勾选框老老实实排得下 ✓
+   =========================================================================== */
+#mob-sheet, #mob-sheet-body, .mob-group, .mob-pane, .mob-subs,
+.mob-group > *, .mob-pane > * { overflow-x: hidden !important; }
+#mob-sheet-body, .mob-pane, .mob-group { scrollbar-width: none !important; -ms-overflow-style: none; }
+#mob-sheet-body::-webkit-scrollbar, .mob-pane::-webkit-scrollbar,
+.mob-group::-webkit-scrollbar { width: 0 !important; height: 0 !important; display: none !important; }
+.mob-pane .switch, .mob-group .switch { min-width: 0 !important; margin-right: 2px !important; }
+.mob-pane .switch span, .mob-group .switch span { font-size: 13px !important; white-space: nowrap; }
+.mob-pane .switch input[type="checkbox"], .mob-group .switch input[type="checkbox"] {
+  width: 16px !important; height: 16px !important;
+}
+.mob-pane .group-label, .mob-group .group-label { min-width: 30px !important; font-size: 12.5px !important; }
+.mob-pane .set-row > span:first-child { min-width: 54px !important; font-size: 13px !important; }
+
+/* ===========================================================================
+   手机上哪来的键盘 ✗
+   ① 工具按钮尾巴上的 Q/W/E…、年份按钮上的小数字 —— 全是快捷键 ✓ 一律藏掉 ✓
+   ② 滚动条：面板里**任何一层**都不许画出来 ✓（能滚，但别露 ✗）
+   ③ 按钮再紧一档，工具那一栏 148px 就够了 ✓
+   =========================================================================== */
+.mob-group .k, .mob-pane .k { display: none !important; }
+#mob-sheet, #mob-sheet * { scrollbar-width: none !important; -ms-overflow-style: none !important; }
+#mob-sheet::-webkit-scrollbar, #mob-sheet *::-webkit-scrollbar {
+  width: 0 !important; height: 0 !important; display: none !important;
+}
+.mob-group .segmented button, .mob-pane .segmented button {
+  margin: 3px 0 !important; min-height: 32px !important; font-size: 13px !important;
+}
+.mob-group { padding-bottom: 0 !important; }
+
+/* ===========================================================================
+   手机版的「教程」= 一个介绍弹窗（不再是逐步引导 ✓）
+   直接复用 app 原有的 .modal 体系 ✓ 所以竖屏自动全屏、可滚动 ✓
+   =========================================================================== */
+#mob-intro { display: flex; }
+#mob-intro[hidden] { display: none !important; }
+#mob-intro .mi-box { padding: 14px 16px 20px; }
+#mob-intro .modal-head { position: sticky; top: -14px; background: #0f151c; }
+#mob-intro .modal-head h2 { font-size: 17px; color: #f0d98a; }
+.mi-body { font-size: 14px; line-height: 1.85; color: #cdd7e2; }
+.mi-body h4 {
+  margin: 16px 0 4px; font-size: 14px; color: #f0d98a;
+  border-left: 3px solid #c9a94e; padding-left: 8px;
+}
+.mi-body p { margin: 0 0 8px; }
+.mi-body strong { color: #fff; }
+.mi-body .mi-lead { color: #e8eef6; }
+
+/* ===========================================================================
+   顶栏那几个胶囊（返回 / 永夜廿九 / 教程 / 文件）**一律 flex 居中** ✓
+   —— 之前用 line-height 撑高度 ✗ 字体行盒上下留白不对称 ✓
+      中文尤其明显，看着就是"字比胶囊中心高一点点" ✗
+      flex + align-items:center + line-height:1 才是真正的垂直居中 ✓
+   =========================================================================== */
+#mob-topbar .mob-btn,
+#mob-topbar .mob-author,
+#mob-topbar a.mob-author,
+#mob-topbar a.btn {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  height: 34px !important;
+  min-height: 34px !important;
+  padding: 0 13px !important;
+  line-height: 1 !important;
+  border-radius: 17px !important;
+  font-size: 13px !important;
+  box-sizing: border-box !important;
+}
+
+/* 坐标在手机上是废的 ✗（没有悬停 → 永远显示「—」）→ 去掉 ✓ */
+#status-pos { display: none !important; }
+.statusbar { justify-content: flex-start !important; gap: 14px !important; }
+.statusbar #status-changes { font-weight: 600; }
+
+/* ===========================================================================
+   教程那个介绍窗 = **居中的圆角卡片** ✓ 不是全屏 ✗（用户要求）
+   （之前复用了"设置弹窗竖屏全屏"那套 → 于是铺满整屏 ✓ 太唬人 ✗）
+   =========================================================================== */
+#mob-intro {
+  display: flex !important;
+  align-items: center !important; justify-content: center !important;
+  padding: 14px !important;
+}
+#mob-intro .modal-box {
+  width: 100% !important; max-width: 420px !important;
+  height: auto !important; max-height: 76vh !important;
+  border-radius: 16px !important; border: 1px solid #2b3743 !important;
+  padding: 12px 16px 18px !important;
+  overflow-y: auto; scrollbar-width: none;
+}
+#mob-intro .modal-box::-webkit-scrollbar { width: 0; height: 0; display: none; }
+#mob-intro .modal-head { position: static !important; padding: 4px 0 10px !important; }
+#mob-intro .mi-body { font-size: 13.5px; line-height: 1.8; }
+
+/* 底部那条状态栏（缩放 / 改动 N）也**整条藏掉** ✓（用户要求 ✓） */
+.statusbar { display: none !important; }
+
+/* ===========================================================================
+   文件那栏（导出整图 / 导出涂色 / 导入 / 撤销 / 重做 / 清除）
+   **跟工具那栏一个样式**：一行一个、占满整栏、左对齐 ✓
+   =========================================================================== */
+.mob-group[data-group="io"] button,
+.mob-group[data-group="io"] .menu-item,
+.mob-group[data-group="io"] a.btn {
+  display: block !important; width: 100% !important; text-align: left !important;
+  min-height: 34px !important; margin: 4px 0 !important; padding: 0 12px !important;
+  border-radius: 8px !important; font: 600 13.5px/34px "Microsoft YaHei", system-ui, sans-serif !important;
+  border: 1px solid #26313d !important; background: #101820 !important; color: #e8eef6 !important;
+}
+.mob-group[data-group="io"] > * { margin: 0 !important; padding: 0 !important; }
+#btn-export { display: none !important; }
+
+/* ===========================================================================
+   顶栏正中间那对「撤销 / 重做」✓
+   圆圈按钮、跟顶栏其它胶囊一样高 ✓ 禁用时是灰的（原样式保留 ✓）
+   =========================================================================== */
+#mob-mid { display: flex; align-items: center; justify-content: center; }
+.mob-undo { display: inline-flex; align-items: center; gap: 6px; }
+.mob-icobtn {
+  display: inline-flex !important; align-items: center !important; justify-content: center !important;
+  width: 34px !important; height: 34px !important; min-width: 34px !important;
+  padding: 0 !important; line-height: 1 !important;
+  border-radius: 50% !important; border: 1px solid #2b3743 !important;
+  background: rgba(13, 19, 26, .92) !important; color: #e8eef6 !important;
+  font-size: 15px !important; box-sizing: border-box !important;
+}
+.mob-icobtn:disabled { opacity: .38 !important; }
+
+/* ===========================================================================
+   当前工具 / 当前颜色（顶栏下面左边那个小胶囊 ✓）
+   色块 + 工具名 ✓ 点一下开「工具」面板 ✓
+   =========================================================================== */
+#mob-now {
+  position: absolute; top: 60px; left: 10px; z-index: 58;
+  display: inline-flex; align-items: center; gap: 7px;
+  min-height: 32px; padding: 0 12px 0 8px; border-radius: 16px;
+  border: 1px solid #2b3743; background: rgba(13, 19, 26, .92); color: #e8eef6;
+  font: 600 13px/1 "Microsoft YaHei", system-ui, sans-serif;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .45); backdrop-filter: blur(6px);
+}
+#mob-now.on { border-color: #c9a94e; color: #f0d98a; }
+#mob-now .mn-sw {
+  width: 18px; height: 18px; border-radius: 5px; background: #c83232;
+  border: 1px solid rgba(255, 255, 255, .35); box-shadow: 0 0 0 1px rgba(0, 0, 0, .5) inset;
+}
+
+/* ===========================================================================
+   撤销 / 重做：**相对整条顶栏居中** ✓
+   （以前放在中间那个 flex 槽里 ✗ 可左右两边宽度不一样 → 看着就是偏的 ✗）
+   =========================================================================== */
+#mob-topbar { position: absolute; }
+.mob-undo {
+  position: absolute !important; left: 50% !important; top: 50% !important;
+  transform: translate(-50%, -50%) !important;
+}
+/* 底部那条渐变交给 JS 按当前颜色画 ✓ 这里只留个兜底 */
+#mob-dock { transition: background .25s linear; }
+#mob-dock button { background: rgba(13, 19, 26, .94); }
+
+/* 双保险：状态栏里那三项（缩放百分比 / 坐标 / 改动）**点名禁掉** ✓
+   （万一以后有人把 .statusbar 那条 display:none 删了，这三项也照样不冒出来 ✓） */
+#status-zoom, #status-pos, #status-changes, #status-meta { display: none !important; }
+.statusbar { display: none !important; visibility: hidden !important; height: 0 !important; }
+
+/* 显示页里「势力 / 地区 / 填色」这几个前缀**必须留着** ✓
+   （上一版我一刀切把 .group-label 全藏了 ✗ 结果那三个前缀也没了 ✓ 用户骂得对 ✓） */
+.mob-pane .group-label {
+  display: inline-block !important;
+  min-width: 34px !important;
+  color: #8b9aab !important;
+  font-size: 12.5px !important;
+}
+
+/* 设置页的内容区：高度由 JS 量完锁住 ✓ 切标签时不许变 ✗ */
+.mob-panes { display: block; }
+.mob-pane { display: block; }
+
+/* ===========================================================================
+   顶栏那个返回箭头（手机版 ✓ 用户要"就一个箭头"）
+   方块按钮、箭头居中、点得到的尺寸 ✓ 比带字的胶囊更省地方 ✓
+   =========================================================================== */
+#mob-topbar .mob-back-arrow {
+  width: 38px !important; min-width: 38px !important; padding: 0 !important;
+  font-size: 17px !important; line-height: 1 !important;
+}
