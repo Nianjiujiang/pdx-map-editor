@@ -550,6 +550,8 @@ def main() -> int:
         {"lake": set(np.nonzero(is_lake)[0].tolist()),
          "sea": set(np.nonzero(is_sea)[0].tolist())},
         n_prov, blank, n_real, categories=SPECIAL_CATEGORIES, fine_tier=TIER_ORDER[-1],
+        groups=_sr_groups, group_split=_group_split,
+        group_key="#sea", name_sink=_special_names,
         )
     log("锁住的地形：" + ("，".join(stats) if stats else "无"))
     sel = assign >= 0

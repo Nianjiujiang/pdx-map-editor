@@ -308,10 +308,11 @@ def read_sea_areas(map_dir: Path, sea_pids: set[int]) -> list[tuple[str, list[in
         p_area = map_dir / "map" / "area.txt"      # 传进来的是游戏根目录时兜一下
     if not p_area.is_file():
         return []
-    txt = p_area.read_text(encoding="utf-8", errors="ignore")
     out: list[tuple[str, list[int]]] = []
-    for name, body in re.findall(r"^(\w+)\s*=\s*\{([^}]*)\}", txt, re.M | re.S):
-        pids = [int(x) for x in re.findall(r"\d+", body)]
+    # 用 E.parse_areas 切（大括号配对）：area.txt 里 50 个区带 color = { r g b }，
+    # 正则 [^}]* 会在 color 的收尾大括号处腰斩，把颜色分量当省份号、真省份全丢
+    areas, _cols = E.parse_areas(p_area)
+    for name, pids in areas.items():
         if not pids or not (set(pids) & sea_pids):
             continue
         out.append((name, pids))    # 传原始键（baltic_area），起名时走汉化查中文 ✓
@@ -859,6 +860,8 @@ def main() -> int:
     log(f"  海区 {len(_sea_areas)} 个（区域/地区两层整片区，省份层逐块）")
     special, assign, stats, fine_assign, waste_pids, _low_assign, waste_tids = build_special_titles(
         terrain, n_prov, blank, n_real, fine_tier=TIER_ORDER[-1],
+        groups=_sea_areas, group_split=TIER_ORDER.index("pr"),
+        group_key="#sea", name_sink=_special_names,
         )
     # 逐块荒地的名字：从同名省份借（Title 有 __slots__，加不了新属性）
     log("地形类别：" + ("，".join(stats) if stats else "无"))
