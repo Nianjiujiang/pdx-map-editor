@@ -36,3 +36,9 @@ auto-demo.html
 
 promo.html
 promo-live.html
+
+# —— 手机版单文件（构建产物：python mobile/build.py 出 ✓ 走 Release 附件发布，不进仓库 ✓）
+pdx-map-editor-mobile.html
+
+# —— 封面那几个成品图（本地生成的，不进仓库 ✓）
+封面_*.png
