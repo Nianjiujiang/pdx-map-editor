@@ -409,7 +409,10 @@ async function allProvinceIds() {
   const out = new Uint16Array(m.mapW * m.mapH);
   for (let r = 0; r < m.rows; r++) {
     for (let c = 0; c < m.cols; c++) {
-      const t = await state.tileMap.get(r, c);
+      let t = null;
+      try {
+        t = await state.tileMap.get(r, c);
+      } catch (e) { continue; }   // 单块拉取失败：跳过（重试归 tileMap 自己管），别让整次导出崩掉
       if (!t) continue;
       const x0 = c * m.tileW, y0 = r * m.tileH;
       const w = Math.min(m.tileW, m.mapW - x0), h = Math.min(m.tileH, m.mapH - y0);
@@ -5108,6 +5111,7 @@ async function boot() {
     setBoot('上传到显卡', 88);
     await nextTick();
     renderer = new MapRenderer($('map'), meta);
+    renderer.onContextLost = () => toast('显卡把 WebGL 上下文弄丢了，地图画不下去了 —— 请刷新页面重试。', true);
     await renderer.setData({
       provinceIds: state.provinceIds,
       titlemap: state.titlemap,

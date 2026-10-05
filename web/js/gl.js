@@ -598,6 +598,16 @@ export class MapRenderer {
     if (!gl) throw new Error('这个浏览器/显卡不支持 WebGL2，换 Chrome 或 Edge 试试。');
     this.gl = gl;
 
+    // 显卡驱动重置 / 显存吃紧时浏览器会把 WebGL 上下文整个收走 —— 不接住的话
+    // 每帧 GL 调用全部静默 no-op，画面冻结成白板还没任何提示。preventDefault
+    // 表示"我们知道出事了"；真恢复要重建全部纹理，直接提示用户刷新最稳。
+    this.onContextLost = null;
+    canvas.addEventListener('webglcontextlost', (e) => {
+      e.preventDefault();
+      this.dirty = false;
+      if (this.onContextLost) this.onContextLost();
+    });
+
     const maxTex = gl.getParameter(gl.MAX_TEXTURE_SIZE);
     // **地图比"单张贴图上限"大时不再拒绝** ✓ —— setData 里会把它就地切成一块块贴图 ✓
     // （手机 GPU 常见上限只有 4096 / 8192：CK3 9216×4608、EU5 8192×4096、
