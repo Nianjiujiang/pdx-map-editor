@@ -327,7 +327,7 @@ def build_special_titles(lists: dict[str, set[int]], n_prov: int, blank: np.ndar
     """给海/湖/荒地各造一个伪头衔；**荒地额外每块一个**。
 
     返回 (头衔列表, 全层共用的归属, 统计文字, 只占最细层的归属, 逐块荒地的地块号,
-          分组类别的逐块归属)。
+          分组类别的逐块归属, 逐块荒地的**真实节点号**)。
 
     :param categories: 默认用 EU4 那套；HOI4 只有海和湖，自己传一份。
     :param fine_tier: 逐块荒地落在哪一层（EU4 是 "pr" 省份层）。
@@ -345,6 +345,7 @@ def build_special_titles(lists: dict[str, set[int]], n_prov: int, blank: np.ndar
     titles: list[Title] = []
     stats: list[str] = []
     waste_pids: list[int] = []
+    waste_tids: list[int] = []   # 跟 waste_pids 一一对应：建一个节点记一个序号
 
     for key, label, rgb, source in (categories or SPECIAL_CATEGORIES):
         if source is None:
@@ -412,14 +413,16 @@ def build_special_titles(lists: dict[str, set[int]], n_prov: int, blank: np.ndar
         # ② 荒地：每块地一个节点，只占最细那层
         if key in SETTABLE_CATEGORIES:
             for pid in cand.tolist():
-                fine_assign[pid] = base_index + len(titles)
+                _tid = base_index + len(titles)   # 序号在建节点时记下，别事后反推
+                fine_assign[pid] = _tid
                 wt = Title(f"wl_{pid}", tier=fine_tier)
                 wt.color = rgb
                 titles.append(wt)
                 waste_pids.append(int(pid))
+                waste_tids.append(_tid)
             stats.append(f"→ 逐块 {len(cand)} 个")
 
-    return titles, assign, stats, fine_assign, waste_pids, low_assign
+    return titles, assign, stats, fine_assign, waste_pids, low_assign, waste_tids
 
 
 def largest_block_centre(pids, offsets, neigh, counts, pcx, pcy):
@@ -854,7 +857,7 @@ def main() -> int:
     _sea_areas = read_sea_areas(overlay or (root / "map"), _sea_pids)
     _special_names: dict[str, str] = {}
     log(f"  海区 {len(_sea_areas)} 个（区域/地区两层整片区，省份层逐块）")
-    special, assign, stats, fine_assign, waste_pids, _low_assign = build_special_titles(
+    special, assign, stats, fine_assign, waste_pids, _low_assign, waste_tids = build_special_titles(
         terrain, n_prov, blank, n_real, fine_tier=TIER_ORDER[-1],
         )
     # 逐块荒地的名字：从同名省份借（Title 有 __slots__，加不了新属性）
@@ -877,9 +880,9 @@ def main() -> int:
     left = int(np.count_nonzero((titlemap[0] == NO_TITLE) & present))
     log(f"有像素但仍是空白的格子：{left}")
 
-    # 荒地节点序号 + 那两个共享伪头衔（前端"荒漠·涂色"关着时它们要显示灰）
-    waste_base = n_real + len(special) - len(waste_pids)
-    waste_tids = [waste_base + i for i in range(len(waste_pids))]
+    # 荒地节点序号（建节点时记下的真实序号）+ 那两个共享伪头衔
+    #（前端"荒漠·涂色"关着时它们要显示灰）
+    waste_tid_of = dict(zip(waste_pids, waste_tids))
     water_tids = set()
     for k, sp in enumerate(special):
         if sp.key in ("#sea", "#lake"):
@@ -950,6 +953,13 @@ def main() -> int:
     for i, m in enumerate(members):
         if m:
             area[i] = int(counts[np.fromiter(m, dtype=np.int64)].sum())
+    # 逐块荒地节点只写在最细一层，上面的循环把 r>0 的伪头衔全跳过了 ——
+    # 它们的 provCount/area 恒 0（CK3 那边修过的同一个坑，EU4 漏了）。
+    # 按"一个节点一块地"补上，标签层按面积排序才有它的份。
+    for pid in waste_pids:
+        idx = waste_tid_of[pid]
+        prov_count[idx] = 1
+        area[idx] = int(counts[pid])
 
     # 11. 标注位置：取**像素最多的那一块地**的几何中心（见 largest_block_centre）
     #

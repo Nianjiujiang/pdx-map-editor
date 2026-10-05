@@ -546,7 +546,7 @@ def main() -> int:
     _special_names: dict[str, str] = {}
     _group_split = TIER_ORDER.index("st")          # 1936/1939/sr 用整片，st/pr 逐块
     log(f"  战略区分组 {len(_sr_groups)} 个（粗层整片、{TAIL_TIERS[1]}/{TAIL_TIERS[2]} 逐块）")
-    special, assign, stats, _fine_assign, _waste_pids, _low_assign = build_special_titles(
+    special, assign, stats, _fine_assign, _waste_pids, _low_assign, _waste_tids = build_special_titles(
         {"lake": set(np.nonzero(is_lake)[0].tolist()),
          "sea": set(np.nonzero(is_sea)[0].tolist())},
         n_prov, blank, n_real, categories=SPECIAL_CATEGORIES, fine_tier=TIER_ORDER[-1],

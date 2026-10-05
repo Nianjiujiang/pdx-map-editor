@@ -329,7 +329,7 @@ def main() -> int:
     # 8. 海 / 湖 / 不可通行
     blank = (np.all(titlemap == NO_TITLE, axis=0) & present) | (impassable & present)
     log(f"完全没有归属的地块：{int(blank.sum())} 个")
-    special, assign, stats, fine_assign, waste_pids, _low_assign = build_special_titles(
+    special, assign, stats, fine_assign, waste_pids, _low_assign, _waste_tids = build_special_titles(
         {"sea_starts": set(np.nonzero(is_sea)[0].tolist()),
          "lakes": set(np.nonzero(is_lake)[0].tolist())},
         n_prov, blank, n_real, categories=SPECIAL_CATEGORIES,
@@ -345,9 +345,9 @@ def main() -> int:
     if sel2.any():
         titlemap[len(TIER_ORDER) - 1, sel2] = fine_assign[sel2].astype(np.uint16)
 
-    # 荒地节点序号 + 那两个共享伪头衔（前端"荒漠·涂色"关着时它们要显示灰）
-    waste_base = n_real + len(special) - len(waste_pids)
-    waste_tids = [waste_base + i for i in range(len(waste_pids))]
+    # 荒地节点序号（建节点时记下的真实序号）+ 那个共享伪头衔
+    #（前端"荒漠·涂色"关着时它要显示灰）
+    waste_tids = list(_waste_tids)
     water_tids = set()
     for k, sp in enumerate(special):
         if sp.key in ("#sea", "#lake"):
