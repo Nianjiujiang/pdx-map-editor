@@ -523,15 +523,20 @@ def main() -> int:
         f" / 战略 {len(used_sr)} / 州 {len(used_state)} / 省份 {len(land_pids)}）")
 
     # 7. 归属表
+    # 行号按 TIER_ORDER 现查 —— TIER_ORDER 是按 bookmarks 动态生成的，
+    # 剧本数不是 2 时写死的 2/3/4 会整表错位（甚至 IndexError）。
+    _r_sr = TIER_ORDER.index("sr")
+    _r_st = TIER_ORDER.index("st")
+    _r_pr = TIER_ORDER.index("pr")
     titlemap = np.full((len(TIER_ORDER), n_prov), NO_TITLE, dtype=np.uint16)
     for p in land_pids:
-        titlemap[4, p] = index_of[prov_key(p)]
+        titlemap[_r_pr, p] = index_of[prov_key(p)]
         sid = prov_state.get(p)
         if sid is not None:
-            titlemap[3, p] = index_of[f"STATE_{sid}"]
+            titlemap[_r_st, p] = index_of[f"STATE_{sid}"]
         rid = prov_sr.get(p)
         if rid is not None:
-            titlemap[2, p] = index_of[f"STRATEGICREGION_{rid}"]
+            titlemap[_r_sr, p] = index_of[f"STRATEGICREGION_{rid}"]
         for i, label in enumerate(ERA_LABELS):
             tag = owners[i].get(p)
             if tag:
@@ -747,12 +752,13 @@ def main() -> int:
         "tierNames": [TIER_NAME[t] for t in TIER_ORDER],
         "tierKeys": [TIER_KEY[t] for t in TIER_ORDER],
         "entity": "省份",
-        "defaultTier": 3,               # 州是 HOI4 真正的基本单位，而且全都有名字
+        "defaultTier": TIER_ORDER.index("st"),   # 州是 HOI4 真正的基本单位，而且全都有名字
         # **全部 tag** 的名字 + 颜色（含当前年代没地盘的）—— 搜索/取色要用 ✓
         # 名字先放 tag：中文名由 patch_wasteland 从 titles.json 统一补 ✓
         "countryTags": {tag: {"n": tag_names.get(tag, tag), "c": list(c)}
                         for tag, c in sorted(tag_colors.items())},
-        "labelZoom": [20, 20, 45, 95, 165],
+        # 年份层 20，sr/st/pr 递进 —— 剧本数变了也不能缺值（缺值 = 那层不画标签）
+        "labelZoom": [20] * len(ERA_LABELS) + [45, 95, 165][:len(TAIL_TIERS)],
         "eraDates": [f"{y}.{m}.{d}" for (y, m, d) in ERA_DATES],
         # 开局剧本：日期和名字都是从 common/bookmarks 读的（DLC 会改那些文件），
         # 工具栏按钮的 tooltip 会把它显示出来
