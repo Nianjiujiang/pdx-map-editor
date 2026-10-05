@@ -237,11 +237,21 @@ def main() -> int:
     tree = ROOT / "data_eu4" / "titles.json"
     if tree.is_file():
         T = json.loads(tree.read_text(encoding="utf-8"))
-        real = [i for i in range(len(T["keys"])) if T["tiers"][i] < 5]
+
+        def _pseudo(k: str) -> bool:
+            return k.startswith(("#", "wl_", "wz_"))
+
+        # 别拿 tier 下标卡"真节点"——年份模式的省份层是 5，<5 会把几千个省份
+        # 全漏掉，虚报"全部有中文"。按 key 前缀认伪头衔更稳。
+        real = [i for i in range(len(T["keys"])) if not _pseudo(T["keys"][i])]
         miss = []
         for i in real:
             k = T["keys"][i]
-            ek = f"PROV{k[2:]}" if k.startswith("p_") else k
+            # 省份键 p_<pid> → PROV<pid>；年份国家键 1444_SWE → SWE（zh 里存的是 tag）
+            if k.startswith("p_"):
+                ek = f"PROV{k[2:]}"
+            else:
+                ek = re.sub(r"^\d{4}_", "", k)
             if ek not in zh:
                 miss.append((k, T["namesEn"][i] if T.get("namesEn") else ""))
         if miss:

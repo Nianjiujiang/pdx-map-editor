@@ -58,8 +58,9 @@ def strip_comments(src: str) -> str:
 
 
 def read_text(path: Path) -> str:
-    """EU4 几乎所有数据文件都是 cp1252。"""
-    return path.read_text(encoding="latin-1", errors="replace")
+    """EU4 几乎所有数据文件都是 cp1252（不是 latin-1 —— 0x9A š、0x97 — 这些
+    高区字节 latin-1 解出来是看不见的控制符，得按 cp1252 映射回标点）。"""
+    return path.read_text(encoding="cp1252", errors="replace")
 
 
 def parse_groups(path: Path) -> dict[str, str]:
