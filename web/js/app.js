@@ -2959,6 +2959,21 @@ async function exportFullPNG() {
         glCanvas.width = tw;
         glCanvas.height = th;
         renderer.setView(tx, ty, tw, th);
+        // 分块图（EU5 原尺寸）：这一块的省份 id 瓦片多半还没进显存 ——
+        // 平时靠 frame() 按视野异步补，导出必须先逐块拉齐再渲染，
+        // 否则没看过的区域全渲成 0 号省份的底色。
+        if (state.tileMap && renderer.provArrTex && renderer.tileInfo) {
+          const jobs = [];
+          for (const [r, c] of state.tileMap.tilesInView({ x: tx, y: ty, w: tw, h: th })) {
+            const layer = r * state.tiles.cols + c;
+            const cached = state.tileMap.cache.get(`${r}_${c}`);
+            if (cached) { renderer.uploadTile(layer, cached); continue; }
+            jobs.push(state.tileMap.get(r, c).then((tile) => {
+              if (tile) renderer.uploadTile(layer, tile);
+            }).catch(() => {}));
+          }
+          await Promise.all(jobs);
+        }
         renderer.dirty = true;
         renderer.render();
         ctx.drawImage(glCanvas, 0, 0, tw, th, tx, ty, tw, th);
@@ -3025,14 +3040,35 @@ async function exportMod() {
     (skipped ? `（另${skipped} 个海/山地块跳过）` : '') + '，解压丢到 mod 文件夹即可');
 }
 
-/** Paradox 的文件是 cp1252。常用西文都0xA0-0xFF 这一带，低字节原样写就对 */
+/** Paradox 的文件是 cp1252。0xA0-0xFF 低字节原样写；0x80-0x9F 那一带在
+ *  Unicode 里是别的码位（’ " … 这些常用标点），要查表映射回 cp1252；
+ *  实在表示不了的（中文这些）降级成 '?'。 */
+const CP1252_HI = {
+  0x20AC: 0x80, 0x201A: 0x82, 0x0192: 0x83, 0x201E: 0x84, 0x2026: 0x85,
+  0x2020: 0x86, 0x2021: 0x87, 0x02C6: 0x88, 0x2030: 0x89, 0x0160: 0x8A,
+  0x2039: 0x8B, 0x0152: 0x8C, 0x017D: 0x8E, 0x2018: 0x91, 0x2019: 0x92,
+  0x201C: 0x93, 0x201D: 0x94, 0x2022: 0x95, 0x2013: 0x96, 0x2014: 0x97,
+  0x02DC: 0x98, 0x2122: 0x99, 0x0161: 0x9A, 0x203A: 0x9B, 0x0153: 0x9C,
+  0x017E: 0x9E, 0x0178: 0x9F,
+};
+
 function toCp1252(str) {
   const out = new Uint8Array(str.length);
   for (let i = 0; i < str.length; i++) {
     const c = str.charCodeAt(i);
-    out[i] = c <= 0xFF ? c : 0x3F;      // 超出范围的字降级''?'
+    out[i] = (c < 0x80 || (c >= 0xA0 && c <= 0xFF)) ? c
+      : (CP1252_HI[c] != null ? CP1252_HI[c] : 0x3F);
   }
   return out;
+}
+
+/** 这串字是不是每个都能写进 cp1252（决定 definition.csv 用不用降级到英文名） */
+function isCp1252Safe(s) {
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (!((c < 0x80) || (c >= 0xA0 && c <= 0xFF) || CP1252_HI[c] != null)) return false;
+  }
+  return true;
 }
 
 /**
@@ -3097,7 +3133,12 @@ async function exportModEU4() {
       if (seen.has(key)) dup++;
       seen.add(key);
     }
-    lines.push(`${pid};${col[i]};${col[i + 1]};${col[i + 2]};${t.provinceNames[pid] || ''};x`);
+    // definition.csv 是 cp1252：名字里只要有一个写不进的字（中文整个名字、
+    // 或混着的）就整串降级到缓存里留的原版名（旧缓存没有这张表就留空）
+    const _nm = [t.provinceNames && t.provinceNames[pid],
+                 t.provinceNamesEn && t.provinceNamesEn[pid], '']
+      .find((s) => s && isCp1252Safe(String(s))) || '';
+    lines.push(`${pid};${col[i]};${col[i + 1]};${col[i + 2]};${_nm};x`);
   }
 
   const vm = /(\d+)\.(\d+)/.exec(meta.gameVersion || '');
@@ -3788,6 +3829,14 @@ function bindEvents() {
   const _wrap = (fn) => (ev) => { _closeMenu(); return fn(ev); };
   $('btn-png').onclick = _wrap(exportViewPNG);
   $('btn-png-full').onclick = _wrap(exportFullPNG);
+  // 「导出 mod」：只有 CK3 / EU4 有这条路（GAME.exportKind），别的游戏收起来不显示
+  const _btnMod = $('btn-mod');
+  if (_btnMod && GAME.exportKind !== 'none') {
+    _btnMod.hidden = false;
+    _btnMod.textContent = GAME.exportKind === 'eu4' ? '导出 EU4 mod' : '导出 CK3 mod';
+    if (GAME.exportTip) _btnMod.title = GAME.exportTip;
+    _btnMod.onclick = _wrap(GAME.exportKind === 'eu4' ? exportModEU4 : exportMod);
+  }
   $('btn-project').onclick = _wrap(exportProject);
   // 「导入涂色」：跟拖文件进来是同一个入口（importJSON），只是一个选文件、一个拖
   $('btn-import').onclick = _wrap(() => {
