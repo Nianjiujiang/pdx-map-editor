@@ -646,11 +646,22 @@ def main() -> int:
         (DATA / "tiles.json").write_text(_json.dumps(manifest), encoding="utf-8")
         log(f"  分块 {cols}×{rows} 张（每张 {TILE_W}×{TILE_H}）→ tiles/ + tiles.json")
 
+    # 整条管线把 id/节点号写进 uint16（R16UI 纹理、titlemap、tiles、邻接表）——
+    # 超过 65535 会**静默回绕**，前端的 id 全部错乱。EU5 是 16384×8192 的大图，
+    # 碎色一多就有真实风险，写盘前加一道护栏。
+    if n_prov > 65535 or n_nodes > 65535:
+        raise SystemExit(f"!! 省份数 {n_prov} / 节点数 {n_nodes} 超过 uint16 上限 65535："
+                         "先加大降采样 scale 减少碎色，或把载体换成 uint32")
+
     log("写出缓存 …")
     raw = titlemap.astype("<u2").tobytes()
     packed = zlib.compress(raw, 9)
     (DATA / "titlemap.bin").write_bytes(packed)
     log(f"  titlemap.bin  {len(raw)/1024:.0f} KB → {len(packed)/1024:.0f} KB")
+
+    # hide_label 是按当时的 names 定长的，后面追加的伪头衔没跟着长 —— 写盘前补齐
+    if len(hide_label) < len(names):
+        hide_label += [False] * (len(names) - len(hide_label))
 
     payload = {
         "keys": [plain(k) for k in keys], "names": names, "namesEn": names_en,
@@ -670,7 +681,7 @@ def main() -> int:
         "lx": [None if np.isnan(v) else round(float(v), 1) for v in lx],
         "ly": [None if np.isnan(v) else round(float(v), 1) for v in ly],
         "gx": [None if np.isnan(v) else round(float(v), 1) for v in lx],
-        "gy": [None if np.isnan(v) else round(float(v), 1) for v in ly],
+        "gy": [None if np.isnan(v) else round(float(v), 1) for v in ly],   # 原来错写成 lx，y 坐标全是 x 的
     }
     (DATA / "titles.json").write_text(
         json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
@@ -694,10 +705,12 @@ def main() -> int:
         "tierKeys": [TIER_KEY[t] for t in TIER_ORDER],
         # **全部 tag** 的名字 + 颜色（含当前年代没地盘的）—— 搜索/取色要用 ✓
         # 名字先放 tag：中文名由 patch_wasteland 从 titles.json 统一补 ✓
+        # color = map_XXX（named）和直接写死 rgb/hsv（ccol）的国家都要收进来
         "countryTags": {tag: {"n": (zh.get(tag) or zh.get(str(tag).lower()) or zh.get(str(tag).upper())
-                        or en.get(tag) or en.get(str(tag).lower()) or tag),
-                      "c": list(named[cmap[tag]])}
-                      for tag in sorted(cmap) if cmap.get(tag) in named},
+                                    or en.get(tag) or en.get(str(tag).lower()) or tag),
+                              "c": list(named[cmap[tag]] if cmap.get(tag) in named else ccol[tag])}
+                        for tag in sorted(set(cmap) | set(ccol))
+                        if cmap.get(tag) in named or tag in ccol},
         "defaultTier": len(TIER_ORDER) - 1, "labelZoom": [12, 30, 60, 120, 240],   # 1337 那层门槛要低于全图视角（8192 宽的图约 16%）
         "eraDates": ["1337.4.1"], "noTitle": NO_TITLE, "specialPrefix": "#",
         "colorLutWidth": 256, "lockedKinds": [],

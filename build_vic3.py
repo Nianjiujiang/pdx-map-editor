@@ -281,9 +281,21 @@ def main() -> int:
     for parent, kids in sorted(groups.items()):
         base = 210.0
         if parent in srs:
+            # 完整的三扇区 RGB→hue 公式：原来只写了 max==R 那个扇区的分支
+            # 还对一切颜色套用 —— 纯绿算出 0°（真 120°）、纯蓝算出 300°（真 240°）
             r, g, b = srs[parent].color
-            base = (0.0 if max(r, g, b) == 0 else
-                    (60.0 * ((g - b) / max(r, g, b)) % 360.0))
+            mx = max(r, g, b)
+            if mx == 0 or mx == min(r, g, b):
+                base = 210.0
+            else:
+                d = mx - min(r, g, b)
+                if mx == r:
+                    h = ((g - b) / d) % 6
+                elif mx == g:
+                    h = (b - r) / d + 2
+                else:
+                    h = (r - g) / d + 4
+                base = (60.0 * h) % 360.0
         placed: list = []
         for i, key in enumerate(kids):
             col = pick_color((base + i * 17.0) % 360.0, 62.0, placed)
