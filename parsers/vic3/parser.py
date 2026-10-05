@@ -133,8 +133,9 @@ def parse_strategic_regions(dir_path: Path) -> dict[str, StrategicRegion]:
                 continue
             states = _words(block_get(value, "states"))
             col = as_float_list(block_get(value, "map_color"))
-            rgb = (min(255, int(col[0] * 255)), min(255, int(col[1] * 255)),
-                   min(255, int(col[2] * 255))) if len(col) >= 3 else None
+            # round 不是 int：0~1 浮点 × 255 用 int() 截断会系统性少 1（0.5→127 应 128）
+            rgb = (min(255, round(col[0] * 255)), min(255, round(col[1] * 255)),
+                   min(255, round(col[2] * 255))) if len(col) >= 3 else None
             out[key] = StrategicRegion(
                 key=key,
                 states=[s for s in states if s.startswith("STATE_")],

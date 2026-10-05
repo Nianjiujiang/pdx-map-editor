@@ -237,16 +237,13 @@ def scan_top_level(buf: bytes, want: int, limit: int = 40):
 
 def find_table(buf: bytes, key: int, depth: int = 0, lo: int = 0, hi: int | None = None,
                max_depth: int = 4):
-    """递归找第一个 key == ``key`` 的元素，返回其 payload 起点。"""
+    """在本层元素里找 key == ``key`` 的第一个，返回其 payload 起点。"""
     hi = len(buf) if hi is None else hi
     r = Reader(buf, lo)
     while r.p + 2 <= hi:
-        key_at = r.p
-        key = r.u16()
-        start = r.p
-        if key == key_at:          # 不可能，只为可读性
-            pass
-        if key == key and depth >= 0:
+        cur = r.u16()          # 读到的 token；别覆盖形参 key（原来 `key = r.u16()`
+        start = r.p            #  + `if key == key` 恒真，永远返回第一个元素）
+        if cur == key and depth >= 0:
             return start
         skip_value(r)
         if r.p > hi:

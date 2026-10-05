@@ -70,12 +70,19 @@ def _owner_in(pairs, dlcs) -> str | None:
     **``X = { transfer_state = … }``**（国家作用域，原来漏掉的就是它 ✗）。
 
     会穿过 ``IF / ELSE / ELSE_IF``（并按 ``limit`` 里的 DLC 条件决定进不进）。
+
+    Paradox 的效果按顺序生效、**后写覆盖先写**（``_effect_tag`` 的注释也是
+    这么写的）—— 所以不能扫到第一个就 return，得记下最后一个生效的。
+    原来的"首个命中即返回"会把「先 owner = CHI、后 IF{transfer_state_to = XSM}」
+    读成 CHI，DLC 移交整个被丢掉。
     """
+    got: str | None = None
     for k, v in pairs:
         if not isinstance(k, str):
             continue
         if k in ("owner", "transfer_state_to") and isinstance(v, str):
-            return v
+            got = v
+            continue
         ku = k.upper()
         if ku in ("IF", "ELSE", "ELSE_IF", "AND", "OR"):
             if not isinstance(v, list):
@@ -83,15 +90,15 @@ def _owner_in(pairs, dlcs) -> str | None:
             lim = [b for a, b in v if isinstance(a, str) and a.upper() == "LIMIT"]
             if ku in ("IF", "ELSE_IF") and lim and not _limit_ok(lim[0], dlcs):
                 continue
-            got = _owner_in(v, dlcs)
-            if got:
-                return got
+            sub = _owner_in(v, dlcs)
+            if sub:
+                got = sub
             continue
         if _TAG_KEY.match(k) and isinstance(v, list):
             for a, _b in v:
                 if a == "transfer_state":
-                    return k
-    return None
+                    got = k
+    return got
 
 
 class State(NamedTuple):
