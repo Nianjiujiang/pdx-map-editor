@@ -1,0 +1,38 @@
+# ── 本地文件夹：备份包（一个 27 MB ✗）、临时脚本、探针 —— 都不上传 ✓
+_local/
+
+# ── 数据缓存：由 build_*.py 从**你自己的游戏安装**烘出来（几十 MB，而且是人家的游戏数据 ✓）
+#    单文件版已经把它们烘进 HTML 了，仓库里不用再放一份
+data/
+data_*/
+data.zip
+backup_*.zip
+
+# ── EU4 中文名表：内容来自**汉化模组**（不是我们的东西 ✗）
+#    自己要用就跑：python extract_eu4_zh.py   （会在 workshop 里找汉化 mod）
+#    不放仓库的代价只是"自己重烘 EU4 数据时国名是英文"，单文件版里的中文名不受影响 ✓
+eu4_names_zh.json
+
+# ── 跟编辑器无关的私人材料
+世界观/
+novels/
+.novel-writer/
+
+# ── Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# ── 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── 自动演示（生成物：编辑器本体 + _local 里的演示脚本，35 MB，不进仓库 ✓）
+auto-demo.html
+
+promo.html
+promo-live.html
