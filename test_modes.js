@@ -1973,7 +1973,7 @@ const factory = new Function(
     if ((st.meta.eraDates || []).length) {       // CK3 没有年代层 → 这条不适用 ✓
       // 细层（非剧本视图）**也要画**，而且跟剧本层**同一套规则** ✓
       //   涂色线：浓度 = 涂色边界浓度、实心、也比本层粗
-      //   基层：开「父级边界」= 省份档 / 没开 = 默认档
+      //   基层：**一律**省份档（「默认边界浓度」那一档已经去掉了 ✓）
       //   父级：地区（父级）档
       const _fine3 = st.meta.tierNames.length - 1;
       const _svGrain3 = st.grain, _svPB3 = st.showParentBorderTitle;
@@ -1985,7 +1985,6 @@ const factory = new Function(
       const _ca = ((st.set && st.set.ca != null ? st.set.ca : 100) / 100);
       const _pa = ((st.set && st.set.pa != null ? st.set.pa : 50) / 100);
       const _ra = ((st.set && st.set.ra != null ? st.set.ra : 75) / 100);
-      const _da = ((st.set && st.set.da != null ? st.set.da : 75) / 100);
       ok('细层（非剧本视图）→ 填色边界**也画** ✓',
          !!ex.renderer.borderPaint, String(ex.renderer.borderPaint));
       ok('细层的涂色线浓度 = 涂色边界浓度，且比本层那条实（实心压在上面）✓',
@@ -2002,9 +2001,9 @@ const factory = new Function(
       st.showParentBorderTitle = false;
       st._parentSig = null; ex.syncParentBorder();
       const _baseOff = ex.renderer.borderStrength;
-      ok('细层：基层浓度跟着「父级边界」走（开=省份档 / 关=默认档）✓',
-         Math.abs(_baseOn - _pa) < 0.01 && Math.abs(_baseOff - _da) < 0.01,
-         `开=${_baseOn} 期望 ${_pa} / 关=${_baseOff} 期望 ${_da}`);
+      ok('细层：基层浓度**不跟**「父级边界」走，一律省份档 ✓',
+         Math.abs(_baseOn - _pa) < 0.01 && Math.abs(_baseOff - _pa) < 0.01,
+         `开=${_baseOn} / 关=${_baseOff} 都该是省份档 ${_pa}`);
       ok('细层：开了「父级边界」→ 父级那条吃地区（父级）档 ✓',
          _parA != null && Math.abs(_parA - _ra) < 0.01,
          `父级A=${_parA} 期望 ${_ra}`);
@@ -3381,8 +3380,8 @@ const factory = new Function(
          `本层A=${ex.renderer.borderStrength} / 涂色档=${ca}`);
       st.grain = fineS;                      // 开了粒度 → 本层变成粒度那层，不该再吃涂色档 ✓
       ex.syncParentBorder();
-      ok('剧本 + 粒度：本层是粒度层（不是势力层）→ 仍旧省份/默认档 ✓',
-         Math.abs(ex.renderer.borderStrength - (st.showParentBorderTitle ? 0.5 : 0.75)) < 0.01,
+      ok('剧本 + 粒度：本层是粒度层（不是势力层）→ 一律省份档 ✓',
+         Math.abs(ex.renderer.borderStrength - 0.5) < 0.01,
          `本层A=${ex.renderer.borderStrength}`);
       st.grain = svG2; st.showParentBorderTitle = svPB2; st.tier = svT3;
       ex.syncParentBorder();
@@ -3502,9 +3501,27 @@ const factory = new Function(
     } else {
       ok('（这一层本来就要描，跳过"不描"的检查）', true, '-');
     }
-    ok('离开最细那层：浓度按当前设置走（开父级=省份档 50 / 没开=默认档 75）',
-       Math.abs(ex.renderer.borderStrength - (st.showParentBorderTitle ? 0.5 : 0.75)) < 0.01,
+    ok('离开最细那层：浓度一律省份档 50（不再分"有没有链" ✓）',
+       Math.abs(ex.renderer.borderStrength - 0.5) < 0.01,
        'borderStrength=' + ex.renderer.borderStrength + ' 父级=' + st.showParentBorderTitle);
+    // 「默认边界浓度」（da）这一档已经整个去掉了 ✓（用户定的 ✓）
+    //   子级那条**任何时候**都吃省份档；旧存档里残留的 da 不许再影响它 ✓
+    {
+      let _hadDa = false, _svDa;
+      if (st.set) { _hadDa = 'da' in st.set; _svDa = st.set.da; st.set.da = 40; }
+      st._parentSig = null; ex.syncParentBorder();
+      const _aDa = ex.renderer.borderStrength;
+      if (st.set) { if (_hadDa) st.set.da = _svDa; else delete st.set.da; }
+      st._parentSig = null; ex.syncParentBorder();
+      const _h = require('fs').readFileSync('web/index.html', 'utf8');
+      const _a = require('fs').readFileSync('web/js/app.js', 'utf8');
+      ok('「默认边界浓度」去掉后：残留的 da 不再影响本层（仍省份档 50）✓',
+         Math.abs(_aDa - 0.5) < 0.01, `borderStrength=${_aDa}`);
+      ok('设置页与代码里都没有这一档了 ✓（控件、字段、绑定全撤 ✓）',
+         !_h.includes('set-da') && !_h.includes('默认边界浓度')
+         && !_a.includes('set.da') && !_a.includes("'set-da'"),
+         `page=${_h.includes('set-da')} code=${_a.includes('set.da')}`);
+    }
     // 剧本 + 粒度：边界也该调淡（画面是剧本配色，低级单位只是描边参考）
     {
       const savedG = st.grain;
@@ -3514,9 +3531,8 @@ const factory = new Function(
       st.tier = ERA0;                    // 剧本/年代那一层
       st.grain = fine;                   // 粒度落在低级单位上
       ex.syncParentBorder();
-      ok('剧本 + 粒度：本层浓度随设置走（开父级=省份 50 / 没开=默认 75）',
-         st.grain != null
-         && Math.abs(ex.renderer.borderStrength - (st.showParentBorderTitle ? 0.5 : 0.75)) < 0.01,
+      ok('剧本 + 粒度：本层浓度一律省份档（跟「父级边界」无关 ✓）',
+         st.grain != null && Math.abs(ex.renderer.borderStrength - 0.5) < 0.01,
          `grain=${st.grain} 浓度=${ex.renderer.borderStrength} 父级=${st.showParentBorderTitle}`);
       if ((st.meta.eraDates || []).length) {
         ok('开粒度时链只有两条：上一层 + 剧本那一层（中间层不画）',
