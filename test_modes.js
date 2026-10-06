@@ -745,8 +745,9 @@ const factory = new Function(
 
   const st = ex.state;
   // ---- 剧本层的探针 ----------------------------------------------------------
-  // 第 0 层现在是**空白剧本**（除了海/湖/荒地全是无主 —— 见 patch_blank_era.py ✓），
-  // 所以测试里"剧本层"不能再写死第 0 层：现找一个**真有主**的剧本层 ✓
+  // **空白剧本**挂在剧本块最右边（1444 / 1618 / 1789 / 空白剧本 / 区域…✓ 见 patch_blank_era.py），
+  // 所以"离当前视图最近的那个剧本层"（app 里的 countryTier()）在细层视图下要把它跳过去 ✓
+  // 测试里统一用下面这两个：ERA0 = 第一个**有主**的剧本层；countryT = 跟 app 同一套 ✓
   // （CK3 没有剧本层：N_ERA=0、ERA0 取 0，跟着老规矩走 ✓）
   const N_ERA = (st.meta.eraDates || []).length;
   /** 空白剧本那一层（没有就是 -1 ✓） */
@@ -767,8 +768,15 @@ const factory = new Function(
     }
     return 0;
   })();
-  /** 按名字现查某一层（'1444' / '省份' / '空白' ✓）—— 别再用写死的下标 ✓ */
+  /** 按名字现查某一层（'1444' / '省份' / '空白剧本' ✓）—— 别再用写死的下标 ✓ */
   const tierOf = (nm) => (st.meta.tierNames || []).indexOf(nm);
+  /** 跟 app 的 countryTier() 一套：细层视图下"最近的那个剧本层"要跳过空白剧本 ✓ */
+  const countryT = () => {
+    if (N_ERA <= 0) return st.tier;
+    if (st.tier < N_ERA) return st.tier;
+    const last = N_ERA - 1;
+    return (BLANK_T === last && last > 0) ? last - 1 : last;
+  };
   // **用自己的色 + 自己的名涂自己那块 → 两边必须同色同标记** ✓
   //   （数据层对不上，填色那趟就会平白划一条线 ✗ 用户报过 ✓ 这条锁死它 ✓）
   {
@@ -776,8 +784,7 @@ const factory = new Function(
       const r0 = ex.renderer;
       const n = st.meta.numProvinces;
       const tm = st.titlemap;
-      const nEra = (st.meta.eraDates && st.meta.eraDates.length) || 0;
-      const ct = nEra > 0 ? Math.min(st.tier, nEra - 1) : st.tier;
+      const ct = countryT();          // 跟 app 的 countryTier() 一套 ✓（跳过空白剧本 ✓）
       const row = ct * n;
       const nReal = st.meta.numRealTitles != null ? st.meta.numRealTitles : 1e9;
       const counts = new Map();
@@ -1239,7 +1246,7 @@ const factory = new Function(
         ex.setGrain(null);
         ex.setTier(tierOf('省份') >= 0 ? tierOf('省份') : st.meta.tierNames.length - 1);
         ex.pressTier(BLANK_T);
-        ok('从细层按「空白」= 切到那一层（跟别的剧本一个规矩 ✓）',
+        ok('从细层按「空白剧本」= 切到那一层（跟别的剧本一个规矩 ✓）',
            st.tier === BLANK_T, `tier=${st.tier} grain=${st.grain}`);
         ex.setGrain(null);
         st.tier = _svT;
@@ -1561,20 +1568,20 @@ const factory = new Function(
   // 其余各层原样往后挪一位 ✓（patch_blank_era.py 干的就是这件事 ✓）
   const want = isEU4
     ? { id: 'eu4', key: 'eu4-map-editor/v1', tier: 6, entity: '省份',
-        badges: ['空白', '1444', '1618', '1789', '区域', '地区', '省'],
-        names: ['空白', '1444', '1618', '1789', '区域', '地区', '省份'], brand: 'EU' }
+        badges: ['1444', '1618', '1789', '空白剧本', '区域', '地区', '省'],
+        names: ['1444', '1618', '1789', '空白剧本', '区域', '地区', '省份'], brand: 'EU' }
     : isHoi4
     ? { id: 'hoi4', key: 'hoi4-map-editor/v1', tier: 4, entity: '省份',
-        badges: ['空白', '1936', '1939', '战略', '地区', '省'],
-        names: ['空白', '1936', '1939', '战略', '地区', '省份'], brand: 'HOI' }
+        badges: ['1936', '1939', '空白剧本', '战略', '地区', '省'],
+        names: ['1936', '1939', '空白剧本', '战略', '地区', '省份'], brand: 'HOI' }
     : isVic3
     ? { id: 'vic3', key: 'vic3-map-editor/v1', tier: 3, entity: '省份',
-        badges: ['空白', '1836', '战略', '地区', '省'],
-        names: ['空白', '1836', '战略', '地区', '省份'], brand: 'VIC' }
+        badges: ['1836', '空白剧本', '战略', '地区', '省'],
+        names: ['1836', '空白剧本', '战略', '地区', '省份'], brand: 'VIC' }
     : isEu5
     ? { id: 'eu5', key: 'eu5-map-editor/v1', tier: 4, entity: '地点',
-        badges: ['空白', '国家', '区域', '地区', '省', '地点'],
-        names: ['空白', '1337', '区域', '地区', '省份', '地点'], brand: 'EU' }
+        badges: ['国家', '空白剧本', '区域', '地区', '省', '地点'],
+        names: ['1337', '空白剧本', '区域', '地区', '省份', '地点'], brand: 'EU' }
     : { id: 'ck3', key: 'ck3-map-editor/v1', tier: 3, entity: '头衔',
         badges: ['e_', 'k_', 'd_', 'c_', 'b_'],
         names: ['帝国', '王国', '公爵领', '伯爵领', '男爵领'], brand: 'CK' };
@@ -2303,14 +2310,14 @@ const factory = new Function(
 
   if (isEU4) {
     console.log('\n=== 2c. 三个年份视图取代了大洲/大区/区域 ===');
-    // 第 0 层是空白剧本 ✓，三个年份从第 1 层起 ✓
-    const three = (pid) => [1, 2, 3].map((i) => st.titles.names[ex.titleAt(pid, i)]).join('/');
-    ok('顶部四层是空白 + 三个年份，后面接 区域/地区/省份',
+    // 三个年份在 0/1/2 ✓；**空白剧本**接在它们右边（第 3 层 ✓）
+    const three = (pid) => [0, 1, 2].map((i) => st.titles.names[ex.titleAt(pid, i)]).join('/');
+    ok('顶部四层是三个年份 + 空白剧本，后面接 区域/地区/省份',
        JSON.stringify(st.meta.tierNames)
-       === JSON.stringify(['空白', '1444', '1618', '1789', '区域', '地区', '省份']),
+       === JSON.stringify(['1444', '1618', '1789', '空白剧本', '区域', '地区', '省份']),
        JSON.stringify(st.meta.tierNames));
-    ok('年份带上了具体日期（空白那层没有年份 ✓）', JSON.stringify(st.meta.eraDates) ===
-       JSON.stringify(['', '1444.11.11', '1618.1.1', '1789.7.14']), JSON.stringify(st.meta.eraDates));
+    ok('年份带上了具体日期（空白剧本那层没有年份 ✓）', JSON.stringify(st.meta.eraDates) ===
+       JSON.stringify(['1444.11.11', '1618.1.1', '1789.7.14', '']), JSON.stringify(st.meta.eraDates));
     ok('洲/大区不再单独成层，但地区的上一级（区域）回来了',
        !/大洲|大区/.test(st.meta.tierNames.join('')) && /区域/.test(st.meta.tierNames.join('')),
        st.meta.tierNames.join('/'));
@@ -2319,10 +2326,10 @@ const factory = new Function(
     ok('耶姆特兰 挪威 → 丹麦 → 瑞典', three(10) === '挪威/丹麦/瑞典', three(10));
     ok('伦敦在 1789 属于大不列颠', three(236).endsWith('大不列颠'), three(236));
     ok('同一个国家在不同年份是各自独立的节点（否则涂一处会连带另一处）',
-       ex.titleAt(1, 1) !== ex.titleAt(1, 2),
-       `1444 的瑞典 #${ex.titleAt(1, 1)} vs 1618 的瑞典 #${ex.titleAt(1, 2)}`);
-    ok('1444 层有 665 个国家', st.titles.tiers.filter((x) => x === 1).length === 665,
-       String(st.titles.tiers.filter((x) => x === 1).length));
+       ex.titleAt(1, 0) !== ex.titleAt(1, 1),
+       `1444 的瑞典 #${ex.titleAt(1, 0)} vs 1618 的瑞典 #${ex.titleAt(1, 1)}`);
+    ok('1444 层有 665 个国家', st.titles.tiers.filter((x) => x === ERA0).length === 665,
+       String(st.titles.tiers.filter((x) => x === ERA0).length));
 
     console.log('\n=== 2d. 标注位置一律几何中心 ===');
     {
@@ -2541,7 +2548,7 @@ const factory = new Function(
       const view = { x: -1e7, y: -1e7, w: 2e7, h: 2e7 };   // 视口拉满，别把点筛掉 ✓
       // 只读检查：动过的状态跑完原样还回去 ✓
       const keep = { tier: st.tier, paint: st.showLabelsPaint, ovr: st.countryNameOverride };
-      st.tier = Math.min(st.tier, nEra0 - 1);
+      st.tier = ERA0;                              // 一个有主的剧本层 ✓（空白层本来就没国名 ✓）
       st.countryNameOverride = null;
       st.showLabelsPaint = true;
       ex.rebuildPaintBlocks(true);                  // 剧本层：全图重分组 ✓

@@ -13,14 +13,16 @@
 
 几个约定（改动这儿之前先看）：
 
-* **插在剧本块的最前面**（index 0）✓ —— 因为 app 里"离当前视图最近的那个剧本"
-  是 `Math.min(tier, eraDates.length - 1)`（= 剧本块最后一层）。空白层要是插在
-  最后，细层视图下那个"最近剧本"就变成空白层了 ✗ → 「更新国名」、
-  无主地的身份、国名落点那一套全跟着变 ✗。
-* 插一层 = **所有层级下标整体 +1**，所以下面这些一起挪：
+* **插在剧本块的最右边**（region 就是 `eraDates` 的末尾 ✓）：
+  视图那一排读作 `1444 / 1618 / 1789 / 空白剧本 / 区域 / 地区 / 省份` ✓
+  ⚠ 因为这样一插，"离当前视图最近的剧本层"（app 里的 `min(tier, eraDates.length-1)`）
+  在细层视图下就指向空白层了 ✗ —— app 那边专门有个 `countryTier()` 把空白层跳过去 ✓
+  （它按 `meta.tiers` 里的 `'blank'` 认 ✓ 空白层不在最后的老数据自动退回老行为 ✓）
+* 插一层 = **它后面的层级下标整体 +1**（它前面的不动 ✓），所以下面这些要一起挪：
   meta 的 `tiers / tierNames / tierKeys / labelZoom / eraDates /
-  wastelandAutoByTier / bookmarks / defaultTier`，以及 titles.json 的 `tiers` ✓
-* 空白层那一行**照抄最细那层的伪头衔**（海/湖/荒地/不可通行），
+  wastelandAutoByTier / bookmarks` 插一格 ✓、`defaultTier` 在后面就 +1 ✓，
+  以及 titles.json 的 `tiers`（下标 ≥ 插入位置的那些 +1 ✓）
+* 空白层那一行**照抄最细那层的背景地形**（海/湖/荒地/不可通行），
   其余一律写成 `noTitle` ✓
 
 CK3 不加（它本来就没有剧本层 ✓）。
@@ -43,8 +45,8 @@ except Exception:
 DEFAULT_DIRS = ("data_eu4", "data_eu4_hd", "data_hoi4", "data_hoi4_alt",
                 "data_vic3", "data_eu5", "data_eu5_full")
 
-BLANK_KEY = "blank"       # meta.tiers 里那一格（app 拿它当层级 key 用）
-BLANK_NAME = "空白"        # 视图那一排按钮上写的字
+BLANK_KEY = "blank"        # meta.tiers 里那一格（app 拿它当层级 key 用）
+BLANK_NAME = "空白剧本"     # 视图那一排按钮上写的字
 
 
 def patch(data_dir: Path | str, quiet: bool = False) -> dict:
@@ -76,13 +78,22 @@ def patch(data_dir: Path | str, quiet: bool = False) -> dict:
     def is_bg(t: int) -> bool:
         return str(keys[t]).startswith("#") or t in wl
 
-    # ---- 空白那一行：照抄最细那层的**背景地形**（海 / 湖 / 荒地 ✓）
+    # ---- 插在**剧本块的最右边**（= 最后一个剧本之后、第一个地理层之前 ✓）
     tm = np.frombuffer(zlib.decompress(tm_p.read_bytes()),
                        dtype="<u2").reshape(rows, n).copy()
-    fine = rows - 1
+    fine = rows - 1                      # 最细那一层：陆地上全是真头衔 ✓
+    k = len(M.get("eraDates") or [])     # 真剧本的层数 = 插入位置 ✓
     if BLANK_KEY in tiers:
-        # 已经加过：只把**那一行**按最新规则重写一遍 ✓（幂等，反复跑不会越改越歪 ✓）
-        k = tiers.index(BLANK_KEY)
+        k -= 1                           # 已经加过：eraDates 里已经把空白那一格算进去了 ✓
+        # 已经加过：位置/名字都对 → 只把**那一行**按最新规则重写一遍 ✓
+        #（幂等，反复跑不会越改越歪 ✓）；位置或名字不对 → 说一声，别静默留着旧布局 ✗
+        old_k = tiers.index(BLANK_KEY)
+        old_name = (M.get("tierNames") or [])[old_k] if old_k < len(M.get("tierNames") or []) else ""
+        if old_k != k or old_name != BLANK_NAME:
+            say(f"  {D}: 已经有「{old_name}」层（第 {old_k} 层），"
+                f"但位置/名字跟现在这套对不上（应该是第 {k} 层「{BLANK_NAME}」）—— "
+                f"先把旧的去掉再跑，或者从备份还原一份干净的重来 ✓")
+            return {"dir": str(D), "skipped": "stale-layout", "tier": old_k}
         blank = np.full(n, no_title, dtype="<u2")
         keep = 0
         for pid in range(1, n):
@@ -90,15 +101,15 @@ def patch(data_dir: Path | str, quiet: bool = False) -> dict:
             if t != no_title and t < len(keys) and is_bg(t):
                 blank[pid] = t
                 keep += 1
-        tm[k] = blank
+        tm[old_k] = blank
         tm_p.write_bytes(zlib.compress(tm.astype("<u2").tobytes(), 6))
-        say(f"  {D}: 已经有「{BLANK_NAME}」层（第 {k} 层）—— 只把那一行按最新规则重写 ✓"
+        say(f"  {D}: 已经有「{BLANK_NAME}」层（第 {old_k} 层）—— 只把那一行按最新规则重写 ✓"
             f"（背景地形 {keep} 格 · 其余 {n - 1 - keep} 块无主）")
-        return {"dir": str(D), "refreshed": True, "tier": k, "bgCells": keep}
+        return {"dir": str(D), "refreshed": True, "tier": old_k, "bgCells": keep}
 
     blank = np.full(n, no_title, dtype="<u2")
     keep = 0
-    ref = tm[fine]                      # 最细那一层：陆地上全是真头衔 ✓
+    ref = tm[fine]
     for pid in range(1, n):
         t = int(ref[pid])
         if t != no_title and t < len(keys) and is_bg(t):
@@ -109,31 +120,31 @@ def patch(data_dir: Path | str, quiet: bool = False) -> dict:
         return {"dir": str(D), "skipped": "no-bg"}
 
     new_tm = np.empty((rows + 1, n), dtype="<u2")
-    new_tm[0] = blank
-    new_tm[1:] = tm
+    new_tm[:k] = tm[:k]
+    new_tm[k] = blank
+    new_tm[k + 1:] = tm[k:]
     tm_p.write_bytes(zlib.compress(new_tm.astype("<u2").tobytes(), 6))
 
-    # ---- meta / titles：所有按层级排的数组整体后移一位 ✓
-    k = 0
+    # ---- meta / titles：按层级排的数组在 k 处插一格，k 后面的下标整体 +1 ✓
     _insert = lambda key, val: (M[key].insert(k, val)
                                 if isinstance(M.get(key), list) else None)
     M["tiers"].insert(k, BLANK_KEY)
     _insert("tierNames", BLANK_NAME)
     _insert("tierKeys", BLANK_NAME)
-    _insert("labelZoom", (M.get("labelZoom") or [20])[0])      # 跟原第一层同档 ✓
+    _insert("labelZoom", (M.get("labelZoom") or [20])[k if k < len(M.get("labelZoom") or []) else 0])
     _insert("eraDates", "")
     _insert("wastelandAutoByTier", [])                          # 没有主 → 无从自动上色 ✓
     if isinstance(M.get("bookmarks"), list):
         M["bookmarks"].insert(k, {"date": "", "key": "", "name": BLANK_NAME,
                                   "default": False})
-    if isinstance(M.get("defaultTier"), int):
-        M["defaultTier"] += 1
-    T["tiers"] = [int(t) + 1 for t in t_tiers]
+    if isinstance(M.get("defaultTier"), int) and M["defaultTier"] >= k:
+        M["defaultTier"] += 1                     # 在空白层右边 → 跟着挪 ✓
+    T["tiers"] = [int(t) + 1 if int(t) >= k else int(t) for t in t_tiers]
 
     meta_p.write_text(json.dumps(M, ensure_ascii=False, indent=2), encoding="utf-8")
     tit_p.write_text(json.dumps(T, ensure_ascii=False, separators=(",", ":")),
                      encoding="utf-8")
-    say(f"  {D}: 加了「{BLANK_NAME}」层（第 0 层）· 层数 {rows} → {rows + 1} · "
+    say(f"  {D}: 加了「{BLANK_NAME}」层（第 {k} 层，剧本块最右边）· 层数 {rows} → {rows + 1} · "
         f"这一层留了 {keep} 个背景地形格（海/湖/荒地）· 其余 {n - 1 - keep} 块全无主")
     return {"dir": str(D), "added": True, "tier": k, "bgCells": keep,
             "rowsBefore": rows, "rowsAfter": rows + 1}
