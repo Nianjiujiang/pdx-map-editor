@@ -956,16 +956,13 @@ function syncLayerSwitches() {
      */
     const _anyBorderOn = !!(state.showPowerBorder || state.showRegionBorder || state.showBorderPaint);
     if (renderer.showWater !== _anyBorderOn) { renderer.showWater = _anyBorderOn; renderer.dirty = true; }
-    /* 粗细：**取链上最后一级**（= 势力 / 国家那一圈 ✓）
-     *   不能取"最粗那条" ✗ —— 那只是**大概率**是势力 ✓ 不保证 ✓（用户追问过 ✓）
-     *   填色边界用的就是这个精确写法（爷爷那一级 ✓），这里跟它保持一致 ✓
-     *   链是空的时候（没有上级）就退回本层基准宽 ✓ */
-    const _wi = Math.min(renderer.extraCount || 0, (renderer.extraWs ? renderer.extraWs.length : 0)) - 1;
-    const _wChain = _wi >= 0 ? renderer.extraWs[_wi] : renderer.borderWidth;
-    if (isFinite(_wChain) && _wChain > 0 && Math.abs(renderer.waterW - _wChain) > 0.01) {
-      renderer.waterW = _wChain;
-      renderer.dirty = true;
-    }
+    /* 粗细：**固定 1** ✓（用户定的 ✓）
+     *   以前这里取"链上最后一级"（= 势力 / 国家那一圈），链空时退回本层宽 ✗ ——
+     *   于是水域线跟着"开不开剧本 / 有没有粒度"在 1.5 和 1.0 之间跳 ✗
+     *   荒地边界同理（它连带跟着本层那条线走 ✓）→ 现在两条都钉死 1 ✓
+     *   浓度那边不用管：着色器里写死实心（水域、荒地都是 ✓）*/
+    if (Math.abs(renderer.waterW - 1) > 0.001) { renderer.waterW = 1; renderer.dirty = true; }
+    if (Math.abs(renderer.wasteW - 1) > 0.001) { renderer.wasteW = 1; renderer.dirty = true; }
     /* 三个水域色：**必须跟 LUT 里真正生效的那个颜色一致** ✓
      *
      * ⚠ 两个坑我都踩过 ✗

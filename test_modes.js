@@ -222,6 +222,28 @@ function ok(name, cond, extra = '') {
        && !g2.includes('shownOf('), 'ok');
   }
 
+  // 水域 / 荒地两条边界：**固定宽 1 + 实心** ✓（用户定的 ✓）
+  //   水域：一直是这样（浓度写死实心）✓ 只是粗细以前取"链上最粗那条" ✗ → 现在钉死 1 ✓
+  //   荒地：以前**没有自己这一趟** —— 边缘是头衔那趟顺手画的 ✗ → 宽度浓度跟着"本层那条线"
+  //         在 1.5+实心（剧本层）和 1.0+50%（细层）之间跳 ✗
+  //         现在两头一起改：头衔那几趟把荒地边**让出来**（wasteOnly=false ✓），
+  //         另开一趟 dWaste 按固定档画 ✓（只加新的不让旧的 = 同一条缝画两遍 ✗）
+  {
+    const g3 = require('fs').readFileSync('web/js/gl.js', 'utf8');
+    const nWaste = (g3.match(/, true\)\);/g) || []).length;
+    const nNorm = (g3.match(/, false\)\);/g) || []).length;
+    ok('水域 / 荒地边界：各自固定宽 1，浓度实心 ✓',
+       g3.includes('uniform float uWaterW;') && g3.includes('uniform float uWasteW;')
+       && g3.includes('if (_hasWaste != wasteOnly) continue;')
+       && g3.includes('float bwd  = 1.0 - smoothstep(bwwd - ramp, bwwd + ramp, dWaste);')
+       && g3.includes('gl.uniform1f(u.uWasteW, this.wasteW);'),
+       `uWasteW 声明=${g3.includes('uniform float uWasteW;')}`
+       + ` 上传=${g3.includes('gl.uniform1f(u.uWasteW, this.wasteW);')}`);
+    ok('荒地边只由"荒地那一趟"画（头衔那几趟都把它让出来 ✓）',
+       nWaste === 4 && nNorm === 8,
+       `wasteOnly=true 的调用 ${nWaste} 个 / false 的 ${nNorm} 个`);
+  }
+
   // 主菜单与 F5 的分工：接完必须把存档**写回 localStorage**
   // （只删内存里那份没用 ✗ 刷新还会从旧的读回来 → 涂色怎么清都清不掉 ✓ 踩过 ✓）
   {
@@ -3497,6 +3519,26 @@ const factory = new Function(
            ex.renderer.extraWs[0] < ex.renderer.extraWs[ex.renderer.extraCount - 1],
            `${ex.renderer.extraWs[0].toFixed(2)} < `
            + `${ex.renderer.extraWs[ex.renderer.extraCount - 1].toFixed(2)}`);
+        // **水域 / 荒地两条线钉死 1** ✓（用户定的 ✓）——
+        // 以前水域取"链上最粗那条"、荒地借本层那条线 ✗ → 开不开剧本会变 ✗
+        ex.syncLayerSwitches();
+        ok('水域 / 荒地边界：粗细恒为 1（不跟链、不跟本层那条线 ✓）',
+           Math.abs(ex.renderer.waterW - 1) < 0.001 && Math.abs(ex.renderer.wasteW - 1) < 0.001,
+           `waterW=${ex.renderer.waterW} wasteW=${ex.renderer.wasteW}`
+           + ` 链上最粗=${ex.renderer.extraWs[ex.renderer.extraCount - 1].toFixed(2)}`
+           + ` 本层=${ex.renderer.borderWidth.toFixed(2)}`);
+        {
+          // 换个状态再看一遍：剧本层 + 没粒度（本层那条线这时是 1.5 的势力线 ✓）也不许动
+          const _svG2 = st.grain, _svT3 = st.tier;
+          st.grain = null; st.tier = ERA0;
+          ex.syncParentBorder(); ex.syncLayerSwitches();
+          ok('水域 / 荒地边界：换成"剧本层 + 没粒度"（本层 1.5）也还是 1 ✓',
+             Math.abs(ex.renderer.waterW - 1) < 0.001 && Math.abs(ex.renderer.wasteW - 1) < 0.001,
+             `waterW=${ex.renderer.waterW} wasteW=${ex.renderer.wasteW}`
+             + ` 本层=${ex.renderer.borderWidth.toFixed(2)}`);
+          st.grain = _svG2; st.tier = _svT3;
+          ex.syncParentBorder(); ex.syncLayerSwitches();
+        }
       } else {
         ok('CK3（头衔体系）：地理链只描父级一层（"爷爷"是填色的线，不是地理单位）',
            ex.renderer.extraCount === 1 && ex.renderer.extraTiers[0] === fine - 1,
