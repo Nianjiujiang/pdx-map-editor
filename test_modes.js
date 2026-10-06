@@ -250,6 +250,16 @@ function ok(name, cond, extra = '') {
        //   于是荒地轮廓看着还是**子级的宽浓**（细 + 50%）✗ 用户报的"怎么还是子级" ✓
        `按真头衔分家=${g3.includes('_byReal')}`
        + ` wasteOnly=true 的调用 ${nWaste} 个 / false 的 ${nNorm} 个`);
+    // 荒地的判据**只看 LUT 那个标记**，不许再挂"必须是伪头衔"的前置 ✗
+    //   EU5 的荒地序号混在真头衔范围内（1819 个里 1818 个 < numRealTitles ✗）→
+    //   一挂前置，EU5 的荒地缝全落到本层那条 50% 的线上 ✗（用户报过 ✓）
+    //   （"这局有多少这种荒地"的数据事实，在那几个探针后面打 ✓ 那儿才拿得到 state）
+    {
+      const _m = /bool _hasWaste = [^;]+;/.exec(g3);
+      ok('荒地判据只看 LUT 标记（不许加"必须是伪头衔"的前置 ✗ —— EU5 会全变 50%）',
+         !!_m && _m[0] === 'bool _hasWaste = wasteAlphaOf(t) > 0.5 || wasteAlphaOf(tt) > 0.5;',
+         _m ? _m[0] : '(没找到)');
+    }
   }
 
   // 主菜单与 F5 的分工：接完必须把存档**写回 localStorage**
@@ -778,6 +788,15 @@ const factory = new Function(
   })();
   /** 按名字现查某一层（'1444' / '省份' / '空白剧本' ✓）—— 别再用写死的下标 ✓ */
   const tierOf = (nm) => (st.meta.tierNames || []).indexOf(nm);
+  {
+    // 数据层的事实：这局荒地里有多少**序号在真头衔范围内**
+    //   EU5 全是这种（所以 shader 里那条判据绝不许挂"必须是伪头衔"的前置 ✗）
+    const _wl = st.meta.wasteland || [];
+    const _nr = Number(st.meta.numRealTitles) || 0;
+    const _below = _wl.filter((x) => x < _nr).length;
+    console.log(`    （这局荒地 ${_wl.length} 个，序号在**真头衔范围内**的 ${_below} 个`
+      + ' —— EU5 全是这种 ✓ 别的模式一般是 0 ✓）');
+  }
   /** 跟 app 的 countryTier() 一套：细层视图下"最近的那个剧本层"要跳过空白剧本 ✓ */
   const countryT = () => {
     if (N_ERA <= 0) return st.tier;

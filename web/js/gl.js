@@ -290,17 +290,22 @@ float rayDistTitle(ivec2 ip, vec2 f, ivec2 dir, uint t, int R, int tier, bool wa
      *   → 把对岸那条线当成本格的边界画上来（线就跑到岸两边去了 ✗）*/
     if (isWaterAt(q) != _wSelf) break;
     uint tt = tier < 0 ? tidAt(q) : titleAt(pidAt(q), tier);
-    // **海与海之间不画边界**（海岸线保留）✓
-    // 注意两件事：
-    //   · 荒地也是伪头衔（>= uRealTitles），但它**该有边界** ——
-    //     所以两侧都不是荒地时才跳过（LUT 的 alpha 就是荒地标记 ✓）
+    // **海与海之间不画边界**（海岸线保留）✓ —— 这个跳过只管"两侧都是伪头衔、
+    // 而且都不是荒地"的情形 ✓（荒地在下面**单独判**，不靠伪头衔这个身份 ✗）
     //   · **无主地（NONE）不是地形，是地** —— 它跟海之间那条就是海岸线，
     //     得画 ✓（以前把 NONE 一起算成"伪头衔"，无主地挨着海那条海岸线
     //     就整条没了 ✗）
     bool _tw = (t != NONE && t >= uint(uRealTitles));
     bool _uw = (tt != NONE && tt >= uint(uRealTitles));
-    // **这一格算不算"荒地边"**：两侧里有一侧是荒地（LUT alpha 那个标记 ✓）
-    bool _hasWaste = (_tw && wasteAlphaOf(t) > 0.5) || (_uw && wasteAlphaOf(tt) > 0.5);
+    /* **这一格算不算"荒地边"**：一门心思看 LUT 那个荒地标记 ✓
+     *   ⚠ 不许再加"必须是伪头衔（>= uRealTitles）"的前置 ✗ ——
+     *     那是 CK3 / EU4 那类数据的习惯，**EU5 不成立**：
+     *     EU5 的荒地节点序号**混在真头衔范围内**（1819 个荒地里有 1818 个 < numRealTitles ✗，
+     *     阿卜杜勒库里岛那种 —— 打空白剧本补丁时踩过同一个坑 ✓）
+     *     加了那个前置 → EU5 的荒地缝**一条都进不来** ✗ → 全落到"本层那条线"上（50%）✗
+     *     用户报的"EU5 的荒地不会像其他那样划界，用的全是 50%" ✓ 就是它 ✓
+     *   （wasteAlphaOf 自己对 NONE 返回 0 ✓ 所以无主地不会被误判成荒地 ✓）*/
+    bool _hasWaste = wasteAlphaOf(t) > 0.5 || wasteAlphaOf(tt) > 0.5;
     /* **荒地边单独走一趟**（wasteOnly）✓ —— 宽浓吃「填色边界」那套 ✓（用户定的 ✓）
      *   也就是"以国家为准"：跟势力/填色那条线一样粗、一样浓 ✓
      *   —— 这一趟管的是**所有**带荒地的缝：荒地 ↔ 国家 ✓、荒地 ↔ 荒地 ✓、
@@ -314,6 +319,7 @@ float rayDistTitle(ivec2 ip, vec2 f, ivec2 dir, uint t, int R, int tier, bool wa
      *   理由：以前荒地边缘是这一趟顺手画的 ✗ → 跟着"本层那条线"在
      *   1.5+实心（剧本层）和 1.0+50%（细层）之间跳 ✗ */
     if (_hasWaste != wasteOnly) continue;
+    // 两侧都是伪头衔、且都不是荒地 → 海与海之间那种，不画 ✓
     if (_tw && _uw) {
       float wa = wasteAlphaOf(t);
       float wb = wasteAlphaOf(tt);
