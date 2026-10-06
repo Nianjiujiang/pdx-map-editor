@@ -649,7 +649,7 @@ const MODULES = ['data.js', 'zip.js', 'bmp.js', 'gl.js', 'labels.js', 'tilemap.j
 let js = MODULES.map((n) => `// ==== ${n} ====\n` + stripModule(fs.readFileSync(path.join(ROOT, 'web', 'js', n), 'utf8'))).join('\n\n');
 
 // 把结尾那次 boot() 摘掉，改由测试自己触发，并开几个探针出去
-js = js.replace(/\nboot\(\);\s*$/, '\n');
+js = js.replace(/\nboot\(\);\n/, '\n');   // 只摘 boot(); 这一行（结尾还有注释和 initTutorial 挂钩，\s*$ 永远配不上）
 js += `
 return {
   boot, state, GAMES, MAP_CHOICES,
@@ -2000,9 +2000,15 @@ const factory = new Function(
     console.log('\n=== 2d. 标注位置一律几何中心 ===');
     {
       const pos = st.provPos;      // 每 3 个 float：质心 x、质心 y、像素数
+      // 省份层下标各游戏不一样（EU4 是 5、HOI4 是 4）—— 按 p_ 前缀认，
+      // 写死 4 的话 EU4 下选到的是地区层，整条断言空转
+      let provTier = -1;
+      for (let i2 = 0; i2 < T.keys.length; i2++) {
+        if (T.keys[i2].startsWith('p_')) { provTier = T.tiers[i2]; break; }
+      }
       let off = 0, n = 0;
       for (let i = 0; i < T.keys.length; i++) {
-        if (T.tiers[i] !== 4) continue;
+        if (T.tiers[i] !== provTier) continue;
         const pid = Number(T.keys[i].slice(2));
         n++;
         if (Math.abs(T.lx[i] - pos[pid * 3]) > 0.51 ||
@@ -2305,8 +2311,9 @@ const factory = new Function(
 
   console.log('\n=== 2b. 名字语种与搜索 ===');
   if (isHoi4) {
-    // —— 临时测量（只打印，跑完删）：涂完两省之后账本里到底写了什么 ——
+    // —— 临时测量（只打印）：涂完两省之后账本里到底写了什么 ——
     {
+      const histLen0 = st.history.undo.length;
       const stT = st.meta.tierNames.indexOf('地区');
       const prT = st.meta.tierNames.indexOf('省份');
       const n2 = st.meta.numProvinces;
@@ -2330,6 +2337,10 @@ const factory = new Function(
       const ps = last.patches || [];
       console.log('  [量] 历史栈=', st.history.undo.length, ' 末笔 patches=', ps.length,
                   ' 其中涉及这两个 pid 的=', JSON.stringify(ps.filter((x) => pids.includes(x.pid))));
+      // 量完收拾干净：撤涂色、把测量产生的历史截回去 —— 别把残留带进后面的断言
+      for (const q2 of pTids) { if (st.painted.has(q2)) ex.restoreTitle(q2, true); }
+      if (st.painted.has(sTid)) ex.restoreTitle(sTid, true);
+      st.history.undo.length = histLen0;
     }
 
   } else {
@@ -3239,7 +3250,7 @@ const factory = new Function(
     const country = ex.titleAt(anchor, 0);
     let target = -1, mate = -1;
     for (let p = 1; p < NP; p++) {
-      if (tm[p] !== country || tm[4 * NP + p] === ex.titleAt(anchor, LAST_TIER)) continue;
+      if (tm[p] !== country || tm[(st.meta.tierNames.length - 1) * NP + p] === ex.titleAt(anchor, LAST_TIER)) continue;
       if (target < 0) target = p; else { mate = p; break; }
     }
     ok('找得到同国但不同省份的两块地', target > 0 && mate > 0, `#${target} / #${mate}`);
