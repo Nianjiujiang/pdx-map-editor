@@ -220,7 +220,7 @@ const state = {
   set: {
     bg: null, waste: null, sea: null, lake: null, impass: null,
   impassSea: null, river: null,
-    w: null, da: 75, pa: 50, ra: 75, ca: 100, pw: 1, font: 1,
+    w: null, pa: 50, ra: 75, ca: 100, pw: 1, font: 1,
     // 导出图例（用户要的：相关设置都放在「设置」这一页 ✓）
     legend: false, legendTitle: '', legendPos: 'tl',
   },
@@ -616,7 +616,7 @@ function paintWasteGrey() {
 /** 设置页的出厂值（点「恢复默认」就回到这里） */
 const SET_DEFAULTS = {
   bg: null, waste: null, sea: null, lake: null, impass: null,
-  w: null, da: 75, pa: 50, ra: 75, ca: 100, pw: 1, font: 1,
+  w: null, pa: 50, ra: 75, ca: 100, pw: 1, font: 1,
 };
 
 /** 把设置里那几种颜色盖到 LUT 的特殊节点上（海 / 湖 / 不可通行） */
@@ -1098,12 +1098,12 @@ function syncParentBorder() {
     }
   }
   // 「父级边界」关着 → **不要链**，只留本层那一条线 ✓（必须放在构造之后 ✗）
-  // 但"本来会有上两层"这件事要记着：那样本层（儿子）仍旧保持 50% 半透明 ✓
+  //   本层的浓淡**跟这条开关无关** ✓ —— 子级那条一律吃省份档（见下面 _bs ✓）
   //
   // **「爷爷级」= 玩家填色的那条线**（链上最粗、实心那一级），不是更高的地理单位 ✓
-  // 所以 CK3 里「头衔·边界」+「填色·边界」一起开时：本层 0.5 / 父级 0.75 / 填色线 1.0
-  const _paintIsTop = nEra === 0 && !!state.showBorderPaint && !!state.showBorderTitle;
-  const hasGrand = (list.length + (_paintIsTop ? 1 : 0)) >= 2;
+  // 所以 CK3 里「头衔·边界」+「填色·边界」一起开时：本层 0.5 / 父级 0.75 / 填色线 1.0 ✓
+  // （以前这里还算过一个 hasGrand / _paintIsTop 用来"本层要不要压到 50%" ✗ ——
+  //   现在本层**一律** 50%，那两个变量就都撤了 ✓）
   /* 「父级边界」关着 → 不要**中间那些父辈** ✓ 但**不能把整条链清空** ✗
    * 用户报的：剧本视图 + 开了粒度 + **只勾「势力 · 边界」**（父级边界没勾 ✗）
    *   → 那条"势力 / 国家"线是挂在**链上**的一环 ✓
@@ -1130,22 +1130,19 @@ function syncParentBorder() {
     list[k].alpha = isEraRing ? _CA : _RA;
   }
 
-  // 本层（基层）那条线的浓度，按**「父级边界」这个设置**走：
-  //   没开 → 默认边界浓度（75）—— 图上就一条线，不必压淡
-  //   开了 → 省份边界浓度（50）—— 上面还压着几条实线，层级才分得清
-  // 另有一条老规矩要一起留着：**"本来会有上两层"**（比如剧本层 + 开了粒度）
-  // 哪怕上一级被藏起来了，本层（儿子）仍旧压成 50% ✓（hasGrand 就是为它算的）
+  // **子级（本层）那条线：任何时候都吃「省份边界浓度」（默认 50 ✓ 用户定的 ✓）**
+  //   以前它分两档：有链（或"本来会有上两层"）→ 50，孤零零一条 → 默认档 75 ✗
+  //   现在「默认边界浓度」这一档**整个去掉了** ✓（设置页那一行也删了 ✓）
+  //   → 「父级边界」这个开关只管**链本身画不画**，不再改本层的浓淡 ✓
   //
   // **例外（用户定的）：「势力 · 边界」= 国家/tag 那一层，一律吃「势力边界浓度」** ✓
   //   （设置页那一档，内部字段仍叫 ca —— 以前它显示成「涂色边界浓度」）
   //   以前它在剧本视图里吃「省份/默认」（50/75），跑到链上当父辈时又吃这一档（100）✗
   //   → 同一根线两种浓淡。现在统一按这一档（默认 100 = 实心 ✓）
   //   注意判的是**编辑层**（editTier）不是视图层 ✗：开着粒度时"本层"是粒度那层（省份），
-  //   它不是势力边界，仍旧该吃省份/默认档 ✓
-  const _DA = ((state.set && state.set.da != null ? state.set.da : 75) / 100);
+  //   它不是势力边界，仍旧该吃省份档 ✓
   const _isPowerBase = nEra > 0 && editTier() < nEra;
-  const _bs = _isPowerBase ? _CA
-                           : ((state.showParentBorderTitle || hasGrand) ? _PA : _DA);
+  const _bs = _isPowerBase ? _CA : _PA;
   if (state._borderStrengthBase == null) state._borderStrengthBase = renderer.borderStrength;
   if (renderer.borderStrength !== _bs && _bs != null) {
     renderer.borderStrength = _bs;
@@ -3770,7 +3767,6 @@ function bindEvents() {
       put('set-impass-sea', _now('impassSea', '#impassable_sea'));
       put('set-river', _now('river', '#river'));
       put('set-w', s.w != null ? s.w : (state._borderWidthBase || 1.6));
-      put('set-da', s.da != null ? s.da : 75);
       put('set-pa', s.pa != null ? s.pa : 50);
       put('set-ra', s.ra != null ? s.ra : 75);
   put('set-ca', s.ca != null ? s.ca : 100);
@@ -3809,7 +3805,6 @@ function bindEvents() {
       if (el) el.addEventListener('input', () => { state.set[key] = Number(el.value); applySettings(); });
     };
     bindRange('set-w', 'w');
-    bindRange('set-da', 'da');
     bindRange('set-pa', 'pa');
     bindRange('set-ra', 'ra');
   bindRange('set-ca', 'ca');
