@@ -222,12 +222,13 @@ function ok(name, cond, extra = '') {
        && !g2.includes('shownOf('), 'ok');
   }
 
-  // 水域 / 荒地两条边界：**固定宽 1 + 实心** ✓（用户定的 ✓）
-  //   水域：一直是这样（浓度写死实心）✓ 只是粗细以前取"链上最粗那条" ✗ → 现在钉死 1 ✓
-  //   荒地：以前**没有自己这一趟** —— 边缘是头衔那趟顺手画的 ✗ → 宽度浓度跟着"本层那条线"
+  // 水域 / 荒地两条边界（用户定的 ✓）
+  //   水域：一直画、浓度实心、粗细 = 1 格 × 基准线宽（不跟链 ✗）
+  //   荒地：以前**没有自己这一趟** —— 边缘是头衔那趟顺手画的 ✗ → 宽浓跟着"本层那条线"
   //         在 1.5+实心（剧本层）和 1.0+50%（细层）之间跳 ✗
-  //         现在两头一起改：头衔那几趟把荒地边**让出来**（wasteOnly=false ✓），
-  //         另开一趟 dWaste 按固定档画 ✓（只加新的不让旧的 = 同一条缝画两遍 ✗）
+  //         现在两头一起改：头衔那几趟把**所有**荒地缝让出来（wasteOnly=false ✓），
+  //         另开一趟 dWaste 按**「填色边界」那套宽浓**画 ✓
+  //         （只加新的不让旧的 = 同一条缝画两遍，粗的压细的 ✗）
   {
     const g3 = require('fs').readFileSync('web/js/gl.js', 'utf8');
     const nWaste = (g3.match(/, true\)\);/g) || []).length;
@@ -241,12 +242,14 @@ function ok(name, cond, extra = '') {
        `水域 uniform=${g3.includes('uniform float uWaterW;')}`
        + ` 荒地吃填色宽=${g3.includes('bwwd = 0.5 * uPaintBorderW')}`
        + ` 荒地吃填色浓=${g3.includes('bwd * uPaintBorderA')}`);
-    ok('荒地缝的归属：带真头衔的（荒地↔国家）归国家那趟、纯荒地缝才归荒地那趟 ✓',
-       g3.includes('bool _byReal = (t != NONE && t < uint(uRealTitles))')
-       && g3.includes('|| (tt != NONE && tt < uint(uRealTitles));')
-       && g3.includes('bool _want = wasteOnly ? (_hasWaste && !_byReal) : (!_hasWaste || _byReal);')
+    ok('荒地缝全归荒地那趟（含荒地↔国家 ✓）—— 本层/多级那几趟一律让出来 ✓',
+       g3.includes('if (_hasWaste != wasteOnly) continue;')
+       && !g3.includes('_byReal')
        && nWaste === 4 && nNorm === 8,
-       `_byReal=${g3.includes('_byReal')} wasteOnly=true 的调用 ${nWaste} 个 / false 的 ${nNorm} 个`);
+       // ⚠ 以前这里按"另一侧是不是真头衔"分过家 ✗：荒地↔国家 被判给本层那条线，
+       //   于是荒地轮廓看着还是**子级的宽浓**（细 + 50%）✗ 用户报的"怎么还是子级" ✓
+       `按真头衔分家=${g3.includes('_byReal')}`
+       + ` wasteOnly=true 的调用 ${nWaste} 个 / false 的 ${nNorm} 个`);
   }
 
   // 主菜单与 F5 的分工：接完必须把存档**写回 localStorage**
