@@ -3870,8 +3870,8 @@ const factory = new Function(
   }
 
   console.log('\n=== 3d. 导入带 clearEraNames 的配色之后，剧本层国名不能空 ===');
-  // 世界观那几份文件（世界观/输出/worldview_*.json）是**按省**涂的：key 是 p_236
-  // 这种省份层 key，名字在 labels 里，并且声明 clearEraNames 要求清掉原版那三套国名。
+  // 有一类导入件是**按省**涂的：key 是 p_236 这种省份层 key，名字在 labels 里，
+  // 并且声明 clearEraNames 要求清掉原版那三套国名。
   // 原版名清掉是**文件要求的**，但"涂过的地"名字在标签层（导入文件里的 labels）——
   // 导入之后剧本层必须照旧把国名画出来 ✗
   // 以前 rebuildPaintBlocks 的 all 分支拿 titles.names 当门槛：原版名一空，
@@ -3882,7 +3882,7 @@ const factory = new Function(
       console.log('  （CK3 没有年代层 / 剧本层，这条不适用 —— 跳过）');
     } else {
       const fine0 = st.meta.tiers.length - 1;
-      // 造一份「跟世界观文件同格式」的导入件：十几个省 + 每省一个名字
+      // 造一份这样的导入件：十几个省 + 每省一个名字
       const keys0 = [], tids0 = [];
       for (let p = 1; p < st.meta.numProvinces && keys0.length < 12; p++) {
         if (!(st.provPos[p * 3 + 2] > 0)) continue;
@@ -3935,7 +3935,7 @@ const factory = new Function(
   }
 
   // ==== 3e. 导入带 clearEraNames 的配色：国名该落**首都那片**，不是最大那片 ====
-  // 世界观那些文件是照着"每个省的原版国家"上色的（名字就是那个国家的名字），
+  // 这类导入件是照着"每个省的原版国家"上色的（名字就是那个国家的名字），
   // 而 clearEraNames 把原版国名整层清掉了 —— 清掉之后"数据首都"那条路
   //（族的名字 == 哪个国的名字）还能不能认出来？认不出就只能落到最大那片 ✗
   {
@@ -3972,7 +3972,7 @@ const factory = new Function(
           const pk = st.titles.keys[t5b];
           if (!pk) continue;
           titles5[pk] = [40, 120, 200];
-          labels5[pk] = pick.nm;      // 名字直接用**国家本名**（跟世界观文件一个路子）
+          labels5[pk] = pick.nm;      // 名字直接用**国家本名**（按省上色的导入件就是这么写的）
         }
         const svT5 = st.tier, svG5 = st.grain, svL5 = st.showLabelsPaint;
         const svN5 = st._blocksAll, svNT5 = st._blocksTier;
