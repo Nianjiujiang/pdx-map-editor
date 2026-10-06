@@ -9,10 +9,12 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import posixpath
 import re
 import sys
 import threading
 import time
+import urllib.parse
 import webbrowser
 import zipfile
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -39,20 +41,35 @@ class Handler(SimpleHTTPRequestHandler):
 
     # ---------------------------------------------------------- 路由
     def translate_path(self, path: str) -> str:
-        raw = path.split("?", 1)[0].split("#", 1)[0]
+        # 父类会先 normpath 掉 `..`，这里整个重写了就得自己做 —— 不然
+        # GET /../server.py 这类路径会被 OS 解析到 WEB 之外，本机任意
+        # 进程都能借这个端口读文件。
+        raw = urllib.parse.unquote(path.split("?", 1)[0].split("#", 1)[0])
+        denied = str(ROOT / "__denied__")   # 必然不存在的路径 → 404
         # /data/、/data_miller/ 之类都映射到项目下的同名目录
         m = re.match(r"^/(data[a-z0-9_]*)/(.*)$", raw)
         if m:
-            return str(ROOT / m.group(1) / m.group(2))
+            sub = posixpath.normpath(m.group(2))
+            if sub.startswith(".."):
+                return denied
+            return str(ROOT / m.group(1) / sub)
         if raw.startswith("/api/"):
-            return str(WEB)  # API 不走文件系统
+            return denied   # API 不走文件系统（未知 API 由 do_GET/do_POST 回 404）
         if raw in ("/", ""):
             return str(WEB / "index.html")
-        return str(WEB / raw.lstrip("/"))
+        rel = posixpath.normpath(raw.lstrip("/"))
+        if rel in ("", "."):
+            return str(WEB / "index.html")
+        if rel.startswith(".."):
+            return denied
+        return str(WEB / rel)
 
     def do_GET(self):  # noqa: N802
-        if self.path.split("?")[0] == "/api/status":
+        route = self.path.split("?")[0]
+        if route == "/api/status":
             return self.send_json(self.status_payload())
+        if route.startswith("/api/"):
+            return self.send_json({"ok": False, "error": "unknown api"}, 404)
         return super().do_GET()
 
     def do_POST(self):  # noqa: N802
@@ -117,7 +134,9 @@ class Handler(SimpleHTTPRequestHandler):
         changes = payload.get("changes") or []   # [{key, tier, color:[r,g,b]}]
         mod_name = (payload.get("name") or "CK3颜色编辑").strip() or "CK3颜色编辑"
         if not changes:
-            return self.send_error(400, "没有改动可以导出")
+            # send_error 的短语要按 latin-1 编码，中文会直接把错误路径炸掉
+            #（客户端收到的是连接被掐断，不是 400）
+            return self.send_json({"ok": False, "error": "还没有改过任何颜色"}, 400)
 
         # 按层级分组，写多个文件，方便在 CK3 里单独关掉某一层
         by_tier: dict[str, list[dict]] = {}
@@ -134,7 +153,8 @@ class Handler(SimpleHTTPRequestHandler):
             z.writestr(
                 "descriptor.mod",
                 "\n".join([
-                    f'name="{mod_name}"',
+                    # name 原样嵌进引号 —— 名字里带个引号 descriptor.mod 就废了
+                    f'name="{mod_name.replace(chr(34), chr(39)).replace(chr(10), " ")}"',
                     'version="1.0.0"',
                     'tags={ "Utilities" }',
                     'supported_version="1.16.*"',
