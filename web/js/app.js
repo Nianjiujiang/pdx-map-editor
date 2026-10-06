@@ -2654,11 +2654,19 @@ function updateStatus() {
 }
 
 function setTier(tier) {
+  if (state.tier !== tier) {
+    state.tier = tier;
+    renderer.setTier(tier);
+    renderer.setEditTier(editTier());
+  }
+  /* **换层当场把跟层级绑的那几个开关也同步过来** ✓
+   *   （颜色 / 本层边界 / 名称那几个的值是按"当前视图属于哪一类"解析出来的 ✓）
+   *   ✗ 不能等帧循环里那次 syncLayerSwitches()：它以前跑在 renderer.render() **之后**，
+   *     于是换层后的第一帧是"新层的归属表 + 旧层的颜色开关" ——
+   *     表现就是切层时屏幕上闪一帧**另一层原版的五颜六色**（省份位图那种图）✗
+   *     （帧循环那边也已经挪到 render() 之前 ✓ 两头都堵上 ✓） */
+  syncLayerSwitches();
   syncParentBorder();
-  if (state.tier === tier) return;
-  state.tier = tier;
-  renderer.setTier(tier);
-  renderer.setEditTier(editTier());
   refreshTierButtons();
   // **换层 = 换了一批色块** ✓ 分组要重算 ✓
   //（图例列表本身不去当场刷 ✗ —— 按用户的主意：只在"点图例 / 导出"时才更新 ✓）
@@ -3899,6 +3907,16 @@ function frame() {
         }
       }
     } catch (e) { /* ok */ }
+  // ---- **跟层级绑的那几个开关：必须在 render() 之前同步** ----
+  //   颜色 / 本层边界 / 名称那几个的值，是按"当前视图属于哪一类"（势力 or 地区）
+  //   现算出来写回 state 再推给渲染器的（见 syncLayerSwitches ✓）。
+  //   它们以前排在 renderer.render() **之后** ✗ → 换层后的第一帧是
+  //   "**新层的归属表 + 旧层的颜色开关**" ✗：切到剧本、或从剧本切回细层时，
+  //   屏幕上会闪一帧**另一层原版的五颜六色**（省份位图那种图）✗
+  //   （现在 setTier() 也会当场同步一次 ✓ 这里再兜一道：别让任何状态变更晚一帧 ✓）
+  wasteWatch();
+  syncLayerSwitches();
+  syncParentBorder();
   // ---- 分块（EU5 原尺寸）：按视野补齐缺的块、离开视野的自然被缓存淘汰 ----
   // 半尺寸那套 state.tileMap 是 null → 这段整个跳过 ✓
   if (state.tileMap && renderer && renderer.provArrTex && renderer.tileInfo) {
@@ -3938,9 +3956,8 @@ function frame() {
     drawLabels(viewRect());
     labelDirty = false;
   }
-  wasteWatch();
-  syncLayerSwitches();
-  syncParentBorder();
+  // 上面那三条（wasteWatch / syncLayerSwitches / syncParentBorder）
+  // **已经挪到 render() 之前了** ✓ —— 放这儿会让画面晚一帧才跟上 ✗
   requestAnimationFrame(frame);
 }
 

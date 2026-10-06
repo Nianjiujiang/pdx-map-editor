@@ -1317,6 +1317,26 @@ const factory = new Function(
     }
   }
 
+  // 换层时"跟层级绑的那几个开关"必须**当场**同步 ✓
+  //   以前 syncLayerSwitches() 排在 renderer.render() 之后 ✗ → 换层后第一帧是
+  //   "新层的归属表 + 旧层的颜色开关" → 屏幕上闪一帧**另一层原版的五颜六色** ✗
+  if (N_ERA > 0) {
+    const svT = st.tier, svG = st.grain;
+    const svPC = st.showPowerColor, svRC = st.showRegionColor;
+    const fineT = tierOf('省份') >= 0 ? tierOf('省份') : st.meta.tierNames.length - 1;
+    st.showPowerColor = true; st.showRegionColor = false;
+    ex.setTier(ERA0);
+    ok('切到剧本层：颜色开关**当场**解析成「势力·颜色」✓',
+       ex.renderer.showTitles === true && st.showTitles === true,
+       `renderer.showTitles=${ex.renderer.showTitles} state=${st.showTitles}`);
+    ex.setTier(fineT);
+    ok('切回细层：当场解析成「地区·颜色」（默认关 → 不露原版五颜六色 ✓）',
+       ex.renderer.showTitles === false && st.showTitles === false,
+       `renderer.showTitles=${ex.renderer.showTitles} state=${st.showTitles}`);
+    st.showPowerColor = svPC; st.showRegionColor = svRC;
+    ex.setGrain(svG); ex.setTier(svT);
+  }
+
   // 自动荒地：开了之后，渲染器要显示**荒地自己的颜色**（不然自动上的色看不见）✓
   if ((st.meta.wasteland || []).length && get('waste-auto') && ex.wasteApply) {
     const svAuto = st.wasteAuto, svWaste = st.showWaste, svR = ex.renderer.showWaste;
