@@ -75,6 +75,7 @@ def _owner_in(pairs, dlcs) -> str | None:
     这么写的）—— 所以不能扫到第一个就 return，得记下最后一个生效的。
     原来的"首个命中即返回"会把「先 owner = CHI、后 IF{transfer_state_to = XSM}」
     读成 CHI，DLC 移交整个被丢掉。
+    （这处修法来自 v1.5 的代码审查 PR #1 ✓）
     """
     got: str | None = None
     for k, v in pairs:

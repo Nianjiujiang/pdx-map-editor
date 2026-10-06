@@ -6,10 +6,8 @@
 // 单文件版由 build_standalone.py 剥掉这些行、按序拍平，两边的加载方式都兼容。
 import { DATA, api, decompress, embeddedMapKeys, isEmbedded, setDataDir, setEmbeddedMap } from './data.js';
 import { MapRenderer } from './gl.js';
-import { LabelLayer } from './labels.js';
+import { LabelLayer, computeLabelZoom } from './labels.js';
 import { TileMap } from './tilemap.js';
-import { makeZip, makeZipAsync } from './zip.js';
-import { encodeBMP24 } from './bmp.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -3021,168 +3019,6 @@ async function exportFullPNG() {
   }, 'image/png');
 }
 
-async function exportMod() {
-  const { changes, skipped } = exportPayload();
-  if (!changes.length) {
-    return toast(skipped
-      ? '改动全落在海、山这些地块上，游戏里没有对应文件可写'
-      : '还没有改过任何颜色', true);
-  }
-
-  const TIER_LABEL = { e: '帝国', k: '王国', d: '公爵', c: '伯爵', b: '男爵' };
-  const files = [{
-    name: 'descriptor.mod',
-    data: ['name="CK3颜色编辑"', 'version="1.0.0"', 'tags={ "Utilities" }',
-           'supported_version="1.16.*"', 'path="mod/ck3_colors"'].join('\n') + '\n',
-  }];
-
-  // 按层级分文件，方便以后在启动器里单独关掉某一'
-  const byTier = new Map();
-  for (const ch of changes) {
-    if (!byTier.has(ch.tier)) byTier.set(ch.tier, []);
-    byTier.get(ch.tier).push(ch);
-  }
-  for (const [tier, items] of byTier) {
-    const lines = [
-      `# ${TIER_LABEL[tier] || tier}颜色（由 CK3 地图编辑器导出）`,
-      '# 只写了颜色，其它字段保持游戏原样',
-      '',
-    ];
-    for (const ch of items.slice().sort((a, b) => (a.key < b.key ? -1 : 1))) {
-      lines.push(`${ch.key} = {`,
-                 `\tcolor = { ${ch.color[0]} ${ch.color[1]} ${ch.color[2]} }`,
-                 '}', '');
-    }
-    files.push({ name: `common/landed_titles/zz_editor_${tier}.txt`, data: lines.join('\n') });
-  }
-
-  const zip = makeZip(files);
-  download(new Blob([zip], { type: 'application/zip' }), `${GAME.filePrefix}_colors_${Date.now()}.zip`);
-  toast(`导出 ${changes.length} 个${GAME.entity}的颜色` +
-    (skipped ? `（另${skipped} 个海/山地块跳过）` : '') + '，解压丢到 mod 文件夹即可');
-}
-
-/** Paradox 的文件是 cp1252。0xA0-0xFF 低字节原样写；0x80-0x9F 那一带在
- *  Unicode 里是别的码位（’ " … 这些常用标点），要查表映射回 cp1252；
- *  实在表示不了的（中文这些）降级成 '?'。 */
-const CP1252_HI = {
-  0x20AC: 0x80, 0x201A: 0x82, 0x0192: 0x83, 0x201E: 0x84, 0x2026: 0x85,
-  0x2020: 0x86, 0x2021: 0x87, 0x02C6: 0x88, 0x2030: 0x89, 0x0160: 0x8A,
-  0x2039: 0x8B, 0x0152: 0x8C, 0x017D: 0x8E, 0x2018: 0x91, 0x2019: 0x92,
-  0x201C: 0x93, 0x201D: 0x94, 0x2022: 0x95, 0x2013: 0x96, 0x2014: 0x97,
-  0x02DC: 0x98, 0x2122: 0x99, 0x0161: 0x9A, 0x203A: 0x9B, 0x0153: 0x9C,
-  0x017E: 0x9E, 0x0178: 0x9F,
-};
-
-function toCp1252(str) {
-  const out = new Uint8Array(str.length);
-  for (let i = 0; i < str.length; i++) {
-    const c = str.charCodeAt(i);
-    out[i] = (c < 0x80 || (c >= 0xA0 && c <= 0xFF)) ? c
-      : (CP1252_HI[c] != null ? CP1252_HI[c] : 0x3F);
-  }
-  return out;
-}
-
-/** 这串字是不是每个都能写进 cp1252（决定 definition.csv 用不用降级到英文名） */
-function isCp1252Safe(s) {
-  for (let i = 0; i < s.length; i++) {
-    const c = s.charCodeAt(i);
-    if (!((c < 0x80) || (c >= 0xA0 && c <= 0xFF) || CP1252_HI[c] != null)) return false;
-  }
-  return true;
-}
-
-/**
- * EU4 的「导mod」跟 CK3 完全是两回事'
- *
- * CK3 的颜色写common/landed_titles 的文本里，导出几txt 就完事'
- * EU4 的省份颜'*只存在于 map/provinces.bmp**——颜色就是省份的身份'
- * 'definition.csv 一一对应，没有任何文本文件能覆盖它'
- * 所以这里把省份图按你涂的颜色重画一遍，再重写一份对得上definition.csv'
- * 一起打mod'
- */
-async function exportModEU4() {
-  const t = state.titles;
-  const meta = state.meta;
-  const n = meta.numProvinces;
-  const W = meta.mapWidth;
-  const H = meta.mapHeight;
-  const base = t.provinceColors;
-  if (!base) return toast('这份缓存里没有省份原色，重跑一次 build_eu4.py', true);
-
-  const paint = renderer && renderer.paintData;
-  const col = new Uint8Array(n * 3);
-  const pos = state.provPos;
-  let painted = 0;
-  for (let pid = 1; pid < n; pid++) {
-    const i = pid * 3;
-    if (paint && paint[pid * 4 + 3] > 0) {
-      col[i] = paint[pid * 4];
-      col[i + 1] = paint[pid * 4 + 1];
-      col[i + 2] = paint[pid * 4 + 2];
-      painted++;
-    } else {
-      const b = base[pid];
-      if (b) { col[i] = b[0]; col[i + 1] = b[1]; col[i + 2] = b[2]; }
-    }
-  }
-  if (!painted) return toast('还没有涂过任何东西', true);
-
-  toast('正在重画省份图');
-  await new Promise((r) => setTimeout(r, 0));
-
-  const ids = await allProvinceIds();
-  const rgb = new Uint8Array(W * H * 3);
-  for (let p = 0, k = 0; p < W * H; p++, k += 3) {
-    const pid = ids[p];
-    if (pid > 0 && pid < n) {
-      const i = pid * 3;
-      rgb[k] = col[i]; rgb[k + 1] = col[i + 1]; rgb[k + 2] = col[i + 2];
-    }
-  }
-  const bmp = encodeBMP24(rgb, W, H);
-
-  // definition.csv 得跟着一起改，否则游戏按颜色认不出省'
-  const lines = ['province;red;green;blue;x;x'];
-  const seen = new Set();
-  let dup = 0;
-  for (let pid = 1; pid < n; pid++) {
-    const i = pid * 3;
-    // 只在图上真占着地的省份里查'—'随机新世界那些本来就共用颜色
-    if (!pos || pos[pid * 3 + 2] > 0) {
-      const key = (col[i] << 16) | (col[i + 1] << 8) | col[i + 2];
-      if (seen.has(key)) dup++;
-      seen.add(key);
-    }
-    // definition.csv 是 cp1252：名字里只要有一个写不进的字（中文整个名字、
-    // 或混着的）就整串降级到缓存里留的原版名（旧缓存没有这张表就留空）
-    const _nm = [t.provinceNames && t.provinceNames[pid],
-                 t.provinceNamesEn && t.provinceNamesEn[pid], '']
-      .find((s) => s && isCp1252Safe(String(s))) || '';
-    lines.push(`${pid};${col[i]};${col[i + 1]};${col[i + 2]};${_nm};x`);
-  }
-
-  const vm = /(\d+)\.(\d+)/.exec(meta.gameVersion || '');
-  const files = [
-    {
-      name: 'descriptor.mod',
-      data: [`name="${GAME.modName}"`, 'version="1.0.0"', 'tags={ "Utilities" }',
-             `supported_version="${vm ? vm[1] + '.' + vm[2] + '.*' : '1.*'}"`,
-             'path="mod/eu4_province_colors"'].join('\n') + '\n',
-    },
-    { name: 'map/provinces.bmp', data: bmp },
-    { name: 'map/definition.csv', data: toCp1252(lines.join('\n') + '\n') },
-  ];
-
-  toast(`正在压缩 ${(bmp.length / 1048576).toFixed(0)} MB 的省份图…`);
-  await new Promise((r) => setTimeout(r, 0));
-  const zip = await makeZipAsync(files);
-  download(new Blob([zip], { type: 'application/zip' }), `${GAME.filePrefix}_provinces_${Date.now()}.zip`);
-  toast(`导出 ${painted} 个省份的配色` +
-    (dup ? `；有 ${dup} 个颜色撞了，游戏可能认错省份，建议改开一些` : '') +
-    '。解压丢到 mod 文件夹即可');
-}
 
 /**
  * 工程的存取'
@@ -3861,14 +3697,6 @@ function bindEvents() {
   const _wrap = (fn) => (ev) => { _closeMenu(); return fn(ev); };
   $('btn-png').onclick = _wrap(exportViewPNG);
   $('btn-png-full').onclick = _wrap(exportFullPNG);
-  // 「导出 mod」：只有 CK3 / EU4 有这条路（GAME.exportKind），别的游戏收起来不显示
-  const _btnMod = $('btn-mod');
-  if (_btnMod && GAME.exportKind !== 'none') {
-    _btnMod.hidden = false;
-    _btnMod.textContent = GAME.exportKind === 'eu4' ? '导出 EU4 mod' : '导出 CK3 mod';
-    if (GAME.exportTip) _btnMod.title = GAME.exportTip;
-    _btnMod.onclick = _wrap(GAME.exportKind === 'eu4' ? exportModEU4 : exportMod);
-  }
   $('btn-project').onclick = _wrap(exportProject);
   // 「导入涂色」：跟拖文件进来是同一个入口（importJSON），只是一个选文件、一个拖
   $('btn-import').onclick = _wrap(() => {
@@ -5148,6 +4976,9 @@ async function boot() {
     // 数据里给省份位图用的技术色，一开「荒漠 · 涂色 / 自动」就是一片怪色 ✗
     paintWasteGrey();
     syncParentBorder();
+    // **地名门槛按这张图自己的地块大小现算** ✓（不再吃 meta 里写死那套 ——
+    //  那套是照某一张图调的，换个尺寸/换个游戏就对不上：地块小的图地名会提早糊出来）
+    meta.labelZoom = computeLabelZoom(meta, titles);
     labels = new LabelLayer($('overlay'), titles, meta);
 
     setBoot('就绪', 100);

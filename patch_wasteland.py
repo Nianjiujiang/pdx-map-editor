@@ -233,6 +233,68 @@ def _detect(M: dict, T: dict) -> str:
     return "other"
 
 
+def fix_label_positions(M: dict, T: dict, ids, tm, say) -> None:
+    """按**最终这张图**重算每个头衔的标注位置（lx / ly / blockArea）。
+
+    一直是 prov_pos 重算了、头衔的 lx/ly 没重算 ✗ —— 于是"位置是在另一张图上
+    算的"那种数据集（EU5 两份就是）名字会落到别人 / 水的地盘上：实测 EU5 有
+    21.7% 的头衔中招，波利尼西亚那种横跨接缝的直接掉进地图正中的大洋 ✗（用户报的）。
+
+    规矩跟 build_data / build_eu4 一致：**取像素最多的那块连通域的重心** ✓
+    （凹形地块的重心压在邻居身上是正常的；这里抓的是"整块跑偏"）
+    """
+    from build_data import build_adjacency as _adj_fn          # noqa: PLC0415
+    from build_eu4 import largest_block_centre as _lbc          # noqa: PLC0415
+    n2 = int(M["numProvinces"])
+    _adj = _adj_fn(ids, n2)
+    _off = np.frombuffer(_adj, dtype=np.uint32, count=n2 + 1)
+    _ngb = np.frombuffer(_adj, dtype=np.uint16, offset=(n2 + 1) * 4)
+    _flat = ids.ravel().astype(np.int64)
+    _cnt = np.bincount(_flat, minlength=n2)[:n2]
+    _ys, _xs = np.mgrid[0:ids.shape[0], 0:ids.shape[1]]
+    _den = np.maximum(_cnt, 1)
+    _pcx = (np.bincount(_flat, weights=_xs.ravel().astype(np.float64),
+                        minlength=n2)[:n2] / _den).astype(np.float32)
+    _pcy = (np.bincount(_flat, weights=_ys.ravel().astype(np.float64),
+                        minlength=n2)[:n2] / _den).astype(np.float32)
+    _real = M.get("numRealTitles") or M.get("numTitles") or len(T["keys"])
+    _has_ba = "blockArea" in T and len(T["blockArea"]) == len(T["lx"])
+    _no = int(M.get("noTitle", 65535))
+    # **只有年份层（国名）不动** ✓ —— 那是"国家"（V3 的 1836 / EU4 的三个年份 /
+    # EU5 的 1337 / HOI4 的 1936·1939），名字有它自己那套规矩，别拿"地区"的去改 ✗
+    # CK3 没有年份层 → 五层全是法理地区（帝国/王国也算 ✓ 用户点名的），全改 ✓
+    _n_country = len(M.get("eraDates") or [])
+    _moved = 0
+    _outside = 0
+    for _lv in range(_n_country, len(M["tiers"])):
+        _row = tm[_lv]
+        _agg: dict[int, list[int]] = {}
+        for _pid in np.nonzero(_row != _no)[0]:
+            _agg.setdefault(int(_row[_pid]), []).append(int(_pid))
+        for _tid, _pids in _agg.items():
+            if _tid >= _real:
+                continue
+            _cc = _lbc(_pids, _off, _ngb, _cnt, _pcx, _pcy)
+            if _cc is None:
+                continue
+            _x, _y = round(float(_cc[0]), 1), round(float(_cc[1]), 1)
+            if T["lx"][_tid] != _x or T["ly"][_tid] != _y:
+                _moved += 1
+            T["lx"][_tid] = _x
+            T["ly"][_tid] = _y
+            if _has_ba:
+                T["blockArea"][_tid] = int(_cc[2])
+            # 自检：名字落在自己没有的地块上就记一笔（凹形的会有一点，整块跑偏的很多）
+            _px, _py = int(round(_x)), int(round(_y))
+            if not (0 <= _px < ids.shape[1] and 0 <= _py < ids.shape[0]):
+                _outside += 1
+            else:
+                _pid2 = int(ids[_py, _px])
+                if _pid2 < 0 or _pid2 >= n2 or int(tm[_lv, _pid2]) != _tid:
+                    _outside += 1
+    say(f"    标注位置按本图重算：动了 {_moved} 个，落在别人格子上的 {_outside} 个")
+
+
 def patch(data_dir: Path | str, quiet: bool = False) -> dict:
     """把一份缓存加工好（幂等，可重复跑）。"""
     D = Path(data_dir)
@@ -264,10 +326,19 @@ def patch(data_dir: Path | str, quiet: bool = False) -> dict:
     wl = set(M.get("wasteland") or [])
     if not wl:
         say(f"  {D}: 没有荒地，跳过")
-        # 改名只落在内存里，这里 return 之前必须自己写盘 ——
-        # 落盘在函数末尾，这条 early return 会把它整个吞掉（V3 / EU5 正是这条路 ✗）
+        # **标注位置照样要重算** ✓ —— 这条 early return 以前直接把整段跳过了 ✗
+        # （HOI4 / V3 正是这条路：一份没有荒地的数据集，标注位置永远是构建脚本
+        #   当时算的那份，歪了也没人管 ✗）
+        try:
+            _tm0 = np.frombuffer(zlib.decompress(tm_p.read_bytes()),
+                                 dtype="<u2").reshape(rows, n)
+            _ids0 = np.frombuffer(zlib.decompress(id_p.read_bytes()),
+                                  dtype="<u2").reshape(M["mapHeight"], M["mapWidth"])
+            fix_label_positions(M, T, _ids0, _tm0, say)
+        except Exception as exc:                     # noqa: BLE001
+            say(f"    （标注位置没重算：{type(exc).__name__}: {exc}）")
+        tit_p.write_text(json.dumps(T, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
         if renamed:
-            tit_p.write_text(json.dumps(T, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
             meta_p.write_text(json.dumps(M, ensure_ascii=False, indent=2), encoding="utf-8")
         return {"dir": str(D), "skipped": "no-wasteland"}
     mode = _detect(M, T)
@@ -492,6 +563,14 @@ def patch(data_dir: Path | str, quiet: bool = False) -> dict:
             pos = np.stack([sx / den, sy / den, cnt2.astype(np.float64)],
                            axis=1).astype(np.float32)
             (D / "prov_pos.bin").write_bytes(zlib.compress(pos.tobytes(), 6))
+
+    # ---- 头衔的标注位置也按最终这张图重算一遍（见 fix_label_positions）----
+    # 只算"地区"层，国名层（年份层 / CK3 的帝国·王国）不动 ✓
+    if T.get("lx") is not None:
+        try:
+            fix_label_positions(M, T, ids, tm, say)
+        except Exception as exc:                     # noqa: BLE001
+            say(f"    （标注位置没重算：{type(exc).__name__}: {exc}）")
 
     tit_p.write_text(json.dumps(T, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     meta_p.write_text(json.dumps(M, ensure_ascii=False, indent=2), encoding="utf-8")

@@ -745,3 +745,16 @@ function bindMobile() {
     _clearHl();
   } catch (e) { /* ✓ */ }
 }
+
+// ================================================================ 手机端：点地块不高亮
+// 触屏没有"把鼠标移开"这个动作 —— 手指点一下，高亮就黏在屏幕上消不掉 ✗
+// 看着像"这块被选中了"，所以手机端**任何情况下都不点亮**（信息卡照常出 ✓）
+{
+  const _hlDesk = applyHoverHighlight;
+  applyHoverHighlight = function (pid) {
+    _hlDesk(pid || 0, null);     // 状态照旧更新：卡片 / 光标逻辑还要用 ✓
+    renderer.hoverPid = 0;       // 单块高亮：关 ✓
+    renderer.hoverPaintOn = 0;   // 整族高亮（同色一族一起亮）：也关 ✓
+    renderer.setHover(null);
+  };
+}
