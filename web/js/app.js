@@ -356,8 +356,7 @@ function setCapitalAt(pid) {
       const lab = state.provLabel ? (state.provLabel[pid] | 0) : -1;
       // 定都的键必须跟**族身份**一致 ✓：同显示色 + 同显示名
       // （以前写的是 C|r,g,b|L<标签号> ✗ → 跟族的新身份对不上 ✗ → 点了也不生效 ✗）
-      const _nEra0 = (state.meta.eraDates && state.meta.eraDates.length) || 0;
-      const _ct0 = _nEra0 > 0 ? Math.min(state.tier, _nEra0 - 1) : state.tier;
+      const _ct0 = countryTier();      // 该剧本 = 最近的**有主**剧本层 ✓（空白剧本不算 ✓）
       const _tidC = titleAt(pid, _ct0);
       const _nmC = lab >= 0
         ? String(state.labelNames[lab] || '')
@@ -2332,7 +2331,7 @@ function syncAllPaintLabels() {
    *   ① 改成 `state.tier` ✗（视图停在细层时就不是剧本了 ✓ 你要的是"该剧本" ✓）
    *   ② 改成 `editTier()` ✗（会把粒度掺进来 ✓ 你特意说不要 ✓ 被当场抓 ✓）
    */
-  const ct = nEra > 0 ? Math.min(state.tier, nEra - 1) : state.tier;
+  const ct = countryTier();          // 该剧本 = 最近的**有主**剧本层 ✓（空白剧本不算 ✓）
   /* **逐块地取"它自己"的归属** ✓（一个州半边日本半边中国 → 5 块日本 5 块中国 ✓）
    *   绝不能按州整体给一个名字 ✗ 也绝不能取不到就写 0 ✗
    *   （"标记被清空"就是这个 0 ✓ 用户抓到的 ✓）
@@ -2520,6 +2519,34 @@ function updateHistoryUI() {
 function eraTierCount() {
   const m = state.meta;
   return (m && m.eraDates && m.eraDates.length) || 0;
+}
+
+/** 「空白剧本」在剧本块里的下标（没有就是 -1 ✓）—— 从数据里读（meta.tiers 里那个 'blank' ✓）*/
+function blankTierIndex() {
+  if (state._blankTier === undefined) {
+    state._blankTier = ((state.meta && state.meta.tiers) || []).indexOf('blank');
+  }
+  return state._blankTier;
+}
+
+/**
+ * **离当前视图最近的那个"有主"剧本层** ✓
+ *
+ * 用途：细层视图里"这块地原来是哪个国家"（更新国名 / 族的身份 / 国名落点 / 定都的标记名 ✓）。
+ * 停在剧本层时就是它自己 ✓ —— **空白剧本也算它自己**（那一层本来就谁都没有 ✓，
+ * 所以在那儿画出来的东西才叫"你自己的国" ✓）。
+ *
+ * ⚠ 别写回 `min(tier, eraDates.length - 1)`：空白剧本挂在**剧本块最右边** ✓，
+ *   细层视图下"最近的那个剧本"就变成空白层了 ✗ → 原版国名/身份全没了 ✗
+ *   （空白层不在最后时（老数据）这条自动退回老行为 ✓）
+ */
+function countryTier() {
+  const n = eraTierCount();
+  if (n <= 0) return state.tier;
+  if (state.tier < n) return state.tier;          // 停在剧本层：就是它自己 ✓
+  const last = n - 1;
+  if (blankTierIndex() === last && last > 0) return last - 1;
+  return last;
 }
 
 /** 此刻**动手**按哪一层走 */
@@ -3862,8 +3889,7 @@ function frame() {
      * 仍旧用那个键做闸（层 / 涂色数 / 标记名数变了才重算），不然每帧几万次白跑。*/ 
     try {
       if (renderer) {
-        const _nEraF = (state.meta && state.meta.eraDates && state.meta.eraDates.length) || 0;
-        const _ctF = _nEraF > 0 ? Math.min(state.tier, _nEraF - 1) : state.tier;
+        const _ctF = countryTier();    // 该层看的是"最近的**有主**剧本层" ✓
         const _keyF = _ctF + '|' + (state.painted ? state.painted.size : 0)
           + '|' + ((state.labelNames && state.labelNames.length) || 0);
         if (state._lblPassKey !== _keyF) {
@@ -3988,8 +4014,7 @@ function applyHoverHighlight(pid, hl) {
     renderer.hoverPaint = [grp[0] / 255, grp[1] / 255, grp[2] / 255];
     // **标记也要算上** ✓：同色不同标记是两块 ✗
     // 而且**每块地都要有标记编号** ✗（没涂过的地用它的原版国名 ✓ = 原版那块跟涂出来那块是一家 ✓）
-    const _nEraH = (state.meta.eraDates && state.meta.eraDates.length) || 0;
-    const _ctH = _nEraH > 0 ? Math.min(state.tier, _nEraH - 1) : state.tier;
+    const _ctH = countryTier();        // 同上（跟那个键保持一致 ✓）
     const _keyH = _ctH + '|' + (state.painted ? state.painted.size : 0)
       + '|' + ((state.labelNames && state.labelNames.length) || 0);
     if (state._lblPassKey !== _keyH) syncAllPaintLabels();
@@ -4046,7 +4071,7 @@ function rebuildPaintBlocks(all = false, unpainted = false) {
   const painted = [];
   // all=true：**全图每省都参与**（身份用现成的显示逻辑算 ✓），不再只挑涂过的
   const nEra = (state.meta.eraDates && state.meta.eraDates.length) || 0;
-  const cTier = nEra > 0 ? Math.min(state.tier, nEra - 1) : state.tier;
+  const cTier = countryTier();       // 无主地的身份 / 国名落点都按「最近的**有主**剧本层」✓
   const ident = new Map();
   // **首都身份表**（all 模式用）：建在下面那一遍里顺手做，不再单独扫全图 ✗
   const capOfIdent = new Map();
@@ -4502,7 +4527,7 @@ function retintCountryLabels() {
   const meta = state.meta;
   const fadeCountry = !(meta.tiers && meta.tiers[0] === 'e');
   const nEra = (meta.eraDates && meta.eraDates.length) || 0;
-  const tier = nEra > 0 ? Math.min(state.tier, nEra - 1) : state.tier;
+  const tier = countryTier();        // 同上 ✓
   const out = [];
   for (const b of (state.paintBlocks || [])) {
     if (!b.name || !(b.area > 0)) continue;
