@@ -1490,9 +1490,10 @@ function playerGroupPidsAt(pid) {
   const nT = state.titles.names;
   const identOf = (q) => {
     const q4 = q * 4;
-    const t0 = tm[et * n + q];
-    if (t0 == null || t0 === 65535) return null;
     const painted = pd[q4 + 3] > 0;
+    const t0 = tm[et * n + q];
+    // 没涂过的无主地没有身份；涂过的照旧有（身份在手绘层上 ✓）—— 见 paintIdentOf ✓
+    if (t0 == null || t0 === 65535) { if (!painted) return null; }
     const lq = state.provLabel ? (state.provLabel[q] | 0) : -1;
     const name = painted ? (lq >= 0 ? String(state.labelNames[lq] || '') : '')
                          : String(nT[t0] || '');
@@ -1533,10 +1534,13 @@ function paintIdentOf(q) {
   const n = state.meta.numProvinces;
   if (!pd || !q) return null;
   const et = editTier();
-  const t0 = state.titlemap[et * n + q];
-  if (t0 == null || t0 === 65535) return null;
   const q4 = q * 4;
   const painted = pd[q4 + 3] > 0;
+  const t0 = state.titlemap[et * n + q];
+  // **没涂过的无主地：没有身份** ✓（不参与认族）
+  // **涂过的照旧有** ✓ —— 名字和颜色都在手绘层上，跟这一层有没有主无关 ✓
+  // （空白剧本那一层全是无主地，涂出来的色块就靠这一条才能"同色同标记算一族" ✓）
+  if (t0 == null || t0 === 65535) { if (!painted) return null; }
   const lq = state.provLabel ? (state.provLabel[q] | 0) : -1;
   const name = painted ? (lq >= 0 ? String(state.labelNames[lq] || '') : '')
                        : String(state.titles.names[t0] || '');
@@ -1583,7 +1587,10 @@ function liveNameOf(pid, tid) {
 }
 
 function paintAt(pid, tid) {
-    const from = (state.paintColor.get(tid) || lutColorOf(tid)).slice();
+    // 没头衔 / 越界：不涂（界面上走不到这儿 —— actAt 会把无主地换到最细那层 ✓，
+    // 但外部直接调它（脚本 / 测试）时别崩 ✗）
+    if (tid == null || tid === NO_TITLE || tid < 0 || tid >= (state.titles.keys || []).length) return;
+    const from = (state.paintColor.get(tid) || lutColorOf(tid) || [0, 0, 0]).slice();
     const to = state.brush.slice();
     // 颜色没变也别急着返回 —'涂过就得记进手绘层'
     // 否则"吸自己的色再涂回原处"这种操作，关掉头衔色之后会什么都不剩'
@@ -2392,6 +2399,13 @@ function actAt(clientX, clientY) {
       if (_own !== NO_TITLE && _wl.indexOf(_own) >= 0) tid = _own;
     }
   }
+  // **粗层点到无主地**（空白剧本那一层全是无主地 ✓，1444 那种没归属的地也一样）：
+  // 这一层没有归属可言，可**地还在** ✓ —— 笔跟光标都按"光标底下这一块"最细那层走 ✓
+  //（跟上面荒地那条同一个道理：粗层没有可分的东西，就往细处落 ✓）
+  if (state.tool !== 'pick' && (tid == null || tid === NO_TITLE)) {
+    const _own2 = titleAt(pid, state.meta.tierNames.length - 1);
+    if (_own2 != null && _own2 !== NO_TITLE) tid = _own2;
+  }
   if (isLocked(tid)) return;   // '''山是背景，不给改
 
   if (state.tool === 'rename') { openRename(pid); return; }
@@ -2430,8 +2444,11 @@ function actAt(clientX, clientY) {
     } else {
       const n = state.meta.numProvinces;
       const tm = state.titlemap;
-      const editT = editTier();
       const nT = state.meta.tierNames.length;
+      // 范围按编辑层那一块取 ✓；点到**无主地**时那一层没有归属可言 →
+      // 按"光标底下这一块"最细那层圈范围 ✓（跟 actAt 里笔的换法保持一致 ✓）
+      const _t0E = titleAt(pid, editTier());
+      const editT = (_t0E == null || _t0E === NO_TITLE) ? (nT - 1) : editTier();
       const hits = [];
       for (let p = 1; p < n; p++) {
         if (tm[editT * n + p] !== tid) continue;
@@ -3915,14 +3932,17 @@ function hoverGroupRgb(pid) {
   const _nEra = (state.meta && state.meta.eraDates && state.meta.eraDates.length) || 0;
   if (!(_nEra > 0 && state.grain == null && editTier() < _nEra)) return null;
   if (!pid) return null;
+  const pd = renderer && renderer.paintData;
+  const p4 = pid * 4;
+  // **涂过的先答** ✓：这一族的身份整个在手绘层上（颜色 + 标记），
+  // 跟上位那一层有没有主无关 —— 空白剧本里（一层全无主）涂出来的色块照样整族亮 ✓
+  if (pd && pd[p4 + 3] > 0) return [pd[p4], pd[p4 + 1], pd[p4 + 2]];
   // 海 / 湖 / 不可通行 / 荒地 / 无主地：**不做整族高亮** ✓
   // （它们共用同一个伪节点，整族高亮会把一整片海都点亮 ✗）
   const _real = state.meta.numRealTitles != null ? state.meta.numRealTitles : 1e9;
   const _t0 = titleAt(pid, editTier());
   if (_t0 == null || _t0 === NO_TITLE || _t0 >= _real) return null;
   if ((state.meta.wasteland || []).indexOf(_t0) >= 0) return null;
-  const pd = renderer && renderer.paintData;
-  const p4 = pid * 4;
   // **按显示色**：涂过用手绘色，没涂用原版色 ——
   // 取大清的颜色涂俄罗斯之后，悬停俄罗斯时大清也该一起亮 ✓
   const tid = titleAt(pid, editTier());
@@ -3953,12 +3973,18 @@ function applyHoverHighlight(pid, hl) {
     renderer.setHover(null);
     return;
   }
-  renderer.hoverPid = (_isBg && pid) ? pid : 0;
-  if (_isBg) {
+  // **涂过的无主地**（空白剧本那种一层全无主的）也按"一族"亮 ✓ ——
+  // 别的背景（海/湖/荒地）照旧只亮光标底下这一块 ✓
+  const _noOwnHere = (_t0 == null || _t0 === NO_TITLE);
+  const _paintNoOwn = _noOwnHere
+    && !!(renderer.paintData && pid && renderer.paintData[pid * 4 + 3] > 0);
+  if (_isBg && !_paintNoOwn) {
+    renderer.hoverPid = pid ? pid : 0;
     renderer.hoverPaintOn = 0;
     renderer.setHover(null);
     return;
   }
+  renderer.hoverPid = 0;
   const grp = hoverGroupRgb(pid);
   renderer.hoverPaintOn = grp ? 1 : 0;
   if (grp) {
@@ -4043,12 +4069,15 @@ function rebuildPaintBlocks(all = false, unpainted = false) {
     const caps = state.meta.capitals || null;
     for (let pid = 1; pid < n; pid++) {
       const tid = titleAt(pid, cTier);
-      // **只收真头衔** —— 海、湖、河、山那些是伪头衔（第勒尼安海之类 ✗），不该当势力名画 ✓
-      if (tid === NO_TITLE || tid == null || tid >= nReal) continue;
-      // **数据里标了 hideLabel 的（荒地那些）不显示名字** ✓（平常那套也是这么筛的 ✓）
-      if (state.titles.hideLabel && state.titles.hideLabel[tid]) continue;
       const p4 = pid * 4;
       const _paintedPid = paint[p4 + 3] > 0;
+      // **只收真头衔** —— 海、湖、河、山那些是伪头衔（第勒尼安海之类 ✗），不该当势力名画 ✓
+      // **无主地也是**（空白剧本那一层全是无主地 ✓）：它本身没有归属/名字 ✗
+      //   —— 但**玩家涂过的无主地**例外 ✓：那块的色块名/图例得照画 ✓（见下面 _paintedPid 那一段 ✓）
+      const _noOwn = (tid === NO_TITLE || tid == null || tid >= nReal);
+      if (_noOwn && !_paintedPid) continue;
+      // **数据里标了 hideLabel 的（荒地那些）不显示名字** ✓（平常那套也是这么筛的 ✓）
+      if (!_noOwn && state.titles.hideLabel && state.titles.hideLabel[tid]) continue;
       if (!incUnpainted && !_paintedPid) continue;
       let key = identOfTid.get(tid);
       if (key === undefined) {

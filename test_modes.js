@@ -722,6 +722,31 @@ const factory = new Function(
   if (bootStep && !/就绪|100/.test(bootStep)) console.log('    启动失败：', bootStep);
 
   const st = ex.state;
+  // ---- 剧本层的探针 ----------------------------------------------------------
+  // 第 0 层现在是**空白剧本**（除了海/湖/荒地全是无主 —— 见 patch_blank_era.py ✓），
+  // 所以测试里"剧本层"不能再写死第 0 层：现找一个**真有主**的剧本层 ✓
+  // （CK3 没有剧本层：N_ERA=0、ERA0 取 0，跟着老规矩走 ✓）
+  const N_ERA = (st.meta.eraDates || []).length;
+  /** 空白剧本那一层（没有就是 -1 ✓） */
+  const BLANK_T = (st.meta.tiers || []).indexOf('blank');
+  const WL_SET = new Set(st.meta.wasteland || []);
+  /** 这一格是不是**背景地形**（海/湖/河/荒地/不可通行 ✓）—— 空白层照抄的就是它们 ✓ */
+  const isBgTid = (t) => (t == null || t === st.meta.noTitle) ? false
+    : (WL_SET.has(t) || String((st.titles.keys || [])[t] || '').charAt(0) === '#');
+  const ERA0 = (() => {
+    for (let i = 0; i < N_ERA; i++) {
+      if (i === BLANK_T) continue;               // 空白剧本不算"有主的剧本层" ✓
+      for (let p = 1; p < st.meta.numProvinces; p++) {
+        const t = ex.titleAt(p, i);
+        if (t == null || t === st.meta.noTitle || t >= st.meta.numRealTitles) continue;
+        if (isBgTid(t)) continue;                // 荒地节点（EU5 的小岛也算）不是"国家" ✓
+        return i;
+      }
+    }
+    return 0;
+  })();
+  /** 按名字现查某一层（'1444' / '省份' / '空白' ✓）—— 别再用写死的下标 ✓ */
+  const tierOf = (nm) => (st.meta.tierNames || []).indexOf(nm);
   // **用自己的色 + 自己的名涂自己那块 → 两边必须同色同标记** ✓
   //   （数据层对不上，填色那趟就会平白划一条线 ✗ 用户报过 ✓ 这条锁死它 ✓）
   {
@@ -914,19 +939,19 @@ const factory = new Function(
     const svTier = st.tier, svGrain = st.grain, svBP = st.showBorderPaint, svBrush = st.brushLabel;
     const three3 = [];
     for (let tid = 0; tid < st.titles.keys.length && three3.length < 3; tid++) {
-      if (st.titles.tiers[tid] !== 0) continue;
+      if (st.titles.tiers[tid] !== ERA0) continue;
       if ((st.meta.wasteland || []).indexOf(tid) >= 0) continue;
       if (!st.titles.provCount || !st.titles.provCount[tid]) continue;
       three3.push(tid);
     }
     if (three3.length === 3) {
-      st.tier = 0; st.grain = null; st.showBorderPaint = true; st.brushLabel = '负例';
+      st.tier = ERA0; st.grain = null; st.showBorderPaint = true; st.brushLabel = '负例';
       for (const tid of three3) ex.paintTitle(tid, [77, 88, 99]);
       // 找一个属于 three3[0] 的地块
       let q3 = 0;
       const tm3 = st.titlemap, nP3 = st.meta.numProvinces;
       for (let q = 1; q < nP3 && !q3; q++) {
-        if (tm3[0 * nP3 + q] === three3[0] && st.provPos[q * 3 + 2] > 0) q3 = q;
+        if (tm3[ERA0 * nP3 + q] === three3[0] && st.provPos[q * 3 + 2] > 0) q3 = q;
       }
       if (q3) {
         st.grain = st.meta.tiers.length - 1;      // **开粒度** ✓
@@ -953,25 +978,25 @@ const factory = new Function(
   if ((st.meta.eraDates || []).length) {
     const nEra = st.meta.eraDates.length;
     const svTier = st.tier, svGrain = st.grain, svBP = st.showBorderPaint, svBrush = st.brushLabel;
-    st.tier = 0; st.grain = null; st.showBorderPaint = true;
+    st.tier = ERA0; st.grain = null; st.showBorderPaint = true;
     let hitPid = 0;
     const _nReal = st.meta.numRealTitles != null ? st.meta.numRealTitles : 1e9;
     for (let q = 1; q < st.meta.numProvinces && !hitPid; q++) {
-      const t0 = ex.titleAt(q, 0);
+      const t0 = ex.titleAt(q, ERA0);
       if (t0 === 65535 || t0 >= _nReal || ex.isLocked(t0)) continue;      // 别选水域/锁定的 ✗
       if ((st.meta.wasteland || []).indexOf(t0) >= 0) continue;
       if (st.provPos[q * 3 + 2] > 0 && ex.renderer.paintData[q * 4 + 3] === 0) hitPid = q;
     }
     if (hitPid) {
       st.brushLabel = '高亮测';
-      ex.paintTitle(ex.titleAt(hitPid, 0), [90, 40, 200]);
+      ex.paintTitle(ex.titleAt(hitPid, ERA0), [90, 40, 200]);
       const got = ex.hoverGroupRgb(hitPid);
       ok('条件满足 → 悬停整族高亮拿到那一族的涂色',
          !!got && got[0] === 90 && got[1] === 40 && got[2] === 200, JSON.stringify(got));
       st.showBorderPaint = false;
       ok('「填色·边界」关掉 → 不做整族高亮（退回按头衔）', ex.hoverGroupRgb(hitPid) === null,
          String(ex.hoverGroupRgb(hitPid)));
-      ex.restoreTitle(ex.titleAt(hitPid, 0));
+      ex.restoreTitle(ex.titleAt(hitPid, ERA0));
     }
     st.tier = svTier; st.grain = svGrain; st.showBorderPaint = svBP; st.brushLabel = svBrush;
     ex.syncLayerSwitches();
@@ -982,12 +1007,12 @@ const factory = new Function(
     const nEra = st.meta.eraDates.length;
     const svTier = st.tier, svGrain = st.grain, svLabel = st.brushLabel;
     const svBorderPaint = st.showBorderPaint;
-    st.tier = 0; st.grain = null;          // 只有剧本粒度 ✓
+    st.tier = ERA0; st.grain = null;          // 只有剧本粒度 ✓
     st.showBorderPaint = true;             // 「填色·边界」开着 ✓
     // 找三个剧本层的国家
     const three = [];
     for (let tid = 0; tid < st.titles.keys.length && three.length < 3; tid++) {
-      if (st.titles.tiers[tid] !== 0) continue;
+      if (st.titles.tiers[tid] !== ERA0) continue;
       if ((st.meta.wasteland || []).indexOf(tid) >= 0) continue;
       if (!st.titles.provCount || !st.titles.provCount[tid]) continue;
       three.push(tid);
@@ -1004,20 +1029,20 @@ const factory = new Function(
       let clickPid = 0;
       const tm = st.titlemap, nP = st.meta.numProvinces;
       for (let q = 1; q < nP && !clickPid; q++) {
-        if (tm[0 * nP + q] === three[0] && st.provPos[q * 3 + 2] > 0) clickPid = q;
+        if (tm[ERA0 * nP + q] === three[0] && st.provPos[q * 3 + 2] > 0) clickPid = q;
       }
       if (clickPid) {
         st.brush = [30, 60, 200];
-        ex.paintAt(clickPid, ex.titleAt(clickPid, 0));
+        ex.paintAt(clickPid, ex.titleAt(clickPid, ERA0));
         // 规则是"涂同色同标签的所有**色块**"→ 按**地块**数，而不是按国家账本数 ✓
         const paintedPids = new Set();
         for (let q = 1; q < nP; q++) {
-          if (three.indexOf(tm[0 * nP + q]) >= 0 && ex.renderer.paintData[q * 4 + 3] > 0
+          if (three.indexOf(tm[ERA0 * nP + q]) >= 0 && ex.renderer.paintData[q * 4 + 3] > 0
               && ex.renderer.paintData[q * 4] === 30) paintedPids.add(q);
         }
         const perCountry = three.map((tid) => {
           let n = 0;
-          for (let q = 1; q < nP; q++) if (tm[0 * nP + q] === tid && paintedPids.has(q)) n++;
+          for (let q = 1; q < nP; q++) if (tm[ERA0 * nP + q] === tid && paintedPids.has(q)) n++;
           return n;
         });
         ok('点其中一块涂新色 → 同色同标签的色块（三个国家的地块）一起变',
@@ -1037,14 +1062,14 @@ const factory = new Function(
   // **一块都不许碰** ✗（以前这里直接按头衔把整个国家铺一遍，占领区一起被盖掉了 ✓）
   if ((st.meta.eraDates || []).length && st.meta.eraDates.length < st.meta.tiers.length) {
     const svT0 = st.tier, svG0 = st.grain, svBP0 = st.showBorderPaint, svB0 = st.brushLabel;
-    st.tier = 0; st.grain = null; st.showBorderPaint = true;
+    st.tier = ERA0; st.grain = null; st.showBorderPaint = true;
     const n0 = st.meta.numProvinces, tm0 = st.titlemap;
     const fine0 = st.meta.tiers.length - 1;
     const _nReal0 = st.meta.numRealTitles != null ? st.meta.numRealTitles : 1e9;
     // 挑一个地最多的剧本层国家当"法国"
     const cnt0 = new Map();
     for (let q = 1; q < n0; q++) {
-      const t0 = tm0[q];                 // 第 0 层 = 剧本层
+      const t0 = tm0[ERA0 * n0 + q];     // 有主的那个剧本层 ✓
       if (t0 == null || t0 === 65535 || t0 >= _nReal0) continue;
       if (ex.isLocked(t0)) continue;
       if (st.provPos[q * 3 + 2] <= 0) continue;
@@ -1057,7 +1082,7 @@ const factory = new Function(
     if (host0 >= 0 && best0 >= 8) {
       const land0 = [];
       for (let q = 1; q < n0; q++) {
-        if (tm0[q] === host0 && st.provPos[q * 3 + 2] > 0) land0.push(q);
+        if (tm0[ERA0 * n0 + q] === host0 && st.provPos[q * 3 + 2] > 0) land0.push(q);
       }
       // ① 开粒度，用"占领色"占掉一块（一块一块点，跟真人一样）
       st.grain = fine0;
@@ -1079,14 +1104,14 @@ const factory = new Function(
       if (occ0.length && free0.length) {
         st.brush = ex.stableColor(free0[0], host0).slice();
         st.brushLabel = st.titles.names[host0];
-        ex.paintAt(free0[0], ex.titleAt(free0[0], 0));
+        ex.paintAt(free0[0], ex.titleAt(free0[0], ERA0));
         const kept0 = occ0.filter(keptColor).length;
         ok('点没涂过的那半（用国家自己的色）→ 占领区一块都没被盖掉 ✗',
            kept0 === occ0.length, `保住 ${kept0} / ${occ0.length} 块`);
         // ③ 再换个新颜色点同一块 → 同色同标记的色块（这个国家没被占的那些地）一起变，
         //    占领区照旧不动 ✓
         st.brush = [200, 30, 90]; st.brushLabel = '新色';
-        ex.paintAt(free0[0], ex.titleAt(free0[0], 0));
+        ex.paintAt(free0[0], ex.titleAt(free0[0], ERA0));
         const changed0 = free0.filter((q) => {
           const p4 = q * 4;
           return ex.renderer.paintData[p4] === 200 && ex.renderer.paintData[p4 + 1] === 30;
@@ -1146,6 +1171,121 @@ const factory = new Function(
     }
     st.tier = svT0; st.grain = svG0; st.showBorderPaint = svBP0; st.brushLabel = svB0;
     ex.syncLayerSwitches();
+  }
+
+  // ==== 空白剧本：一层**全无主**（不上色、没标记），别的规矩一条不少 ====
+  if (WHICH === 'CK3') {
+    ok('CK3 不加空白剧本（它本来就没有剧本层 ✓）', N_ERA === 0 && BLANK_T < 0,
+       `eraDates=${N_ERA} blank=${BLANK_T}`);
+  } else {
+    ok('非 CK3 都有空白剧本这一层', BLANK_T >= 0 && BLANK_T < N_ERA,
+       `第 ${BLANK_T} 层 / 共 ${N_ERA} 个剧本层 · 名字「${(st.meta.tierNames || [])[BLANK_T]}」`);
+    if (BLANK_T >= 0) {
+      // 空白层 = **最细那层**，只是"真头衔一律换成无主"；
+      // 海 / 湖 / 荒地那些**背景地形**（含 EU5 那种序号在真头衔里的小岛 ✓）逐格照抄 ✓
+      let bOwned = 0, bNoneLand = 0, bBg = 0;
+      for (let p = 1; p < st.meta.numProvinces; p++) {
+        const t = ex.titleAt(p, BLANK_T);
+        const isLand = st.provPos[p * 3 + 2] > 0;
+        if (t == null || t === st.meta.noTitle) { if (isLand) bNoneLand++; continue; }
+        if (isBgTid(t)) bBg++;
+        else bOwned++;                      // 既不是背景、又不是无主 → 空白层不该有 ✗
+      }
+      ok('空白剧本：除了海/湖/荒地，别的格子全是无主（不上色、没标记 ✓）',
+         bOwned === 0 && bNoneLand > 500,
+         `还有归属的格子 ${bOwned} 个 · 无主陆地 ${bNoneLand} 块 · 背景地形 ${bBg} 格`);
+      {
+        const fineT = st.meta.tierNames.length - 1;
+        let offB = 0, nBgB = 0, notCleared = 0;
+        for (let p = 1; p < st.meta.numProvinces; p++) {
+          const tb = ex.titleAt(p, BLANK_T);
+          const tf = ex.titleAt(p, fineT);
+          if (isBgTid(tb)) { nBgB++; if (tb !== tf) offB++; }
+          else if (tb != null && tb !== st.meta.noTitle) notCleared++;   // 别的真头衔没清掉 ✗
+        }
+        ok('空白剧本：海 / 湖 / 荒地那些背景地形跟最细那层逐格一致（不然整片海会变成大陆灰 ✗）',
+           offB === 0 && notCleared === 0 && nBgB > 0,
+           `背景地形 ${nBgB} 格 · 对不上的 ${offB} 格 · 没清干净的真头衔 ${notCleared} 个`);
+      }
+
+      const svB = { tier: st.tier, grain: st.grain, tool: st.tool, label: st.brushLabel,
+                    brush: st.brush.slice(), lp: st.showLabelsPaint,
+                    all: st._blocksAll, bt: st._blocksTier };
+      // 按按钮切过去：跟别的剧本一个规矩（细层按年份 = 配成"那年配色 + 细层粒度" ✓）
+      {
+        const _svT = st.tier;
+        ex.setGrain(null);
+        ex.setTier(tierOf('省份') >= 0 ? tierOf('省份') : st.meta.tierNames.length - 1);
+        ex.pressTier(BLANK_T);
+        ok('从细层按「空白」= 切到那一层（跟别的剧本一个规矩 ✓）',
+           st.tier === BLANK_T, `tier=${st.tier} grain=${st.grain}`);
+        ex.setGrain(null);
+        st.tier = _svT;
+      }
+      // ① 进去看一眼：一个势力名都不该有（没标记 ✓）
+      st.tier = BLANK_T; st.grain = null; st.showLabelsPaint = true;
+      st._blocksAll = null; st._blocksTier = null; st._layerSig = null;
+      ex.syncLayerSwitches();
+      ex.rebuildPaintBlocks(true, false);
+      ok('空白剧本：一个势力名都没有 ✓',
+         (st.paintBlocks || []).length === 0,
+         `${(st.paintBlocks || []).length} 个色块`);
+      // ② 找到一块**无主**的陆地，走完整的点击流程落笔
+      const fineB = st.meta.tierNames.length - 1;
+      let pidB = 0;
+      for (let p = 1; p < st.meta.numProvinces && !pidB; p++) {
+        if (!(st.provPos[p * 3 + 2] > 0)) continue;
+        const tb = ex.titleAt(p, BLANK_T);
+        if (tb != null && tb !== st.meta.noTitle) continue;      // 只要无主的 ✓
+        const tf = ex.titleAt(p, fineB);
+        if (tf == null || tf === st.meta.noTitle || ex.isLocked(tf)) continue;
+        pidB = p;
+      }
+      ok('空白剧本里找得到一块无主陆地（下面要用）', pidB > 0, `#${pidB}`);
+      if (pidB) {
+        const WB = st.meta.mapWidth, HB = st.meta.mapHeight;
+        let pxB = null;
+        for (let y = 0; y < HB && !pxB; y += 2) {
+          for (let x = 0; x < WB; x += 2) {
+            if (st.provinceIds[y * WB + x] === pidB) { pxB = [x, y]; break; }
+          }
+        }
+        const stgB = get('stage');
+        const vwB = stgB.clientWidth / st.cam.scale, vhB = stgB.clientHeight / st.cam.scale;
+        const vxB = st.cam.cx - vwB / 2, vyB = st.cam.cy - vhB / 2;
+        const toClientB = (mx, my) => [(mx + 0.5 - vxB) / vwB * stgB.clientWidth,
+                                       (my + 0.5 - vyB) / vhB * stgB.clientHeight];
+        if (pxB) {
+          ex.setTool('paint');
+          st.brush = [30, 150, 90]; st.brushLabel = '我的国';
+          ex.actAt(...toClientB(pxB[0], pxB[1]));
+          const p4B = pidB * 4;
+          ok('空白剧本里点一下就能落笔（无主地照样涂得上 ✓）',
+             ex.renderer.paintData[p4B + 3] > 0 && ex.renderer.paintData[p4B] === 30
+             && ex.renderer.paintData[p4B + 1] === 150,
+             [...ex.renderer.paintData.slice(p4B, p4B + 4)].join(','));
+          // ③ 涂完就有色块名（分组那套照旧认无主地上涂出来的色块 ✓）
+          st._blocksAll = null; st._blocksTier = null;
+          ex.rebuildPaintBlocks(true, false);
+          const blkB = (st.paintBlocks || []).find((b) => b.name === '我的国');
+          ok('空白剧本里涂出来的色块有名字 ✓', !!blkB,
+             blkB ? `落点(${blkB.x.toFixed(0)},${blkB.y.toFixed(0)})` : '没找到这块');
+          // ④ 还原工具也能擦掉（别修成"涂得上擦不掉" ✗）
+          ex.setTool('erase');
+          ex.actAt(...toClientB(pxB[0], pxB[1]));
+          ok('空白剧本里点「还原」也能擦掉 ✓', ex.renderer.paintData[p4B + 3] === 0,
+             [...ex.renderer.paintData.slice(p4B, p4B + 4)].join(','));
+        }
+        // 收尾：万一还有残留，按最细那层清掉
+        const tfB = ex.titleAt(pidB, fineB);
+        if (tfB != null && tfB !== st.meta.noTitle) ex.restoreTitle(tfB);
+      }
+      st.tier = svB.tier; st.grain = svB.grain; st.brushLabel = svB.label;
+      st.brush = svB.brush; st.showLabelsPaint = svB.lp;
+      st._blocksAll = svB.all; st._blocksTier = svB.bt; st._layerSig = null;
+      ex.setTool(svB.tool);
+      ex.syncLayerSwitches();
+    }
   }
 
   // 自动荒地：开了之后，渲染器要显示**荒地自己的颜色**（不然自动上的色看不见）✓
@@ -1342,7 +1482,7 @@ const factory = new Function(
     // ① 先找一个"在剧本层统治 ≥ 4 块地"的头衔（那就是 B）
     const cnt = {};
     for (let p = 1; p < st.meta.numProvinces; p++) {
-      const t0 = ex.titleAt(p, 0);
+      const t0 = ex.titleAt(p, ERA0);
       if (t0 != null) cnt[t0] = (cnt[t0] || 0) + 1;
     }
     let host = -1;
@@ -1350,7 +1490,7 @@ const factory = new Function(
     if (host >= 0) {
       const pids = [];
       for (let p = 1; p < st.meta.numProvinces && pids.length < 12; p++) {
-        if (ex.titleAt(p, 0) === host) pids.push(p);
+        if (ex.titleAt(p, ERA0) === host) pids.push(p);
       }
       const one = pids[0];
       // 快照（收尾时原样恢复）
@@ -1364,8 +1504,8 @@ const factory = new Function(
       ex.paintAt(one, ex.titleAt(one, fine2));
       const othersBefore = pids.slice(1).map((p) => (ex.renderer.paintData[p * 4 + 3] > 0));
       // ③ 切回剧本层、无粒度、填色·边界开，再点它一次
-      st.tier = 0; st.grain = null; st.showBorderPaint = true;
-      ex.paintAt(one, ex.titleAt(one, 0));
+      st.tier = ERA0; st.grain = null; st.showBorderPaint = true;
+      ex.paintAt(one, ex.titleAt(one, ERA0));
       const othersAfter = pids.slice(1).map((p) => (ex.renderer.paintData[p * 4 + 3] > 0));
       ok('剧本层再点那一小块：B 的其它地块不许被涂（原来整个 B 都会被涂 ✗）',
          othersBefore.every((v, i) => v === othersAfter[i]),
@@ -1395,22 +1535,24 @@ const factory = new Function(
   const T = st.titles;
   // 最后一层（CK3/EU4/HOI4 是第 4 层=省份，V3 是第 3 层）；别写死 4
   const LAST_TIER = st.meta.tiers.length - 1;
+  // 第 0 层现在是**空白剧本**（全无主）—— 它的名字/徽章都是「空白」，
+  // 其余各层原样往后挪一位 ✓（patch_blank_era.py 干的就是这件事 ✓）
   const want = isEU4
-    ? { id: 'eu4', key: 'eu4-map-editor/v1', tier: 5, entity: '省份',
-        badges: ['1444', '1618', '1789', '区域', '地区', '省'],
-        names: ['1444', '1618', '1789', '区域', '地区', '省份'], brand: 'EU' }
+    ? { id: 'eu4', key: 'eu4-map-editor/v1', tier: 6, entity: '省份',
+        badges: ['空白', '1444', '1618', '1789', '区域', '地区', '省'],
+        names: ['空白', '1444', '1618', '1789', '区域', '地区', '省份'], brand: 'EU' }
     : isHoi4
-    ? { id: 'hoi4', key: 'hoi4-map-editor/v1', tier: 3, entity: '省份',
-        badges: ['1936', '1939', '战略', '地区', '省'],
-        names: ['1936', '1939', '战略', '地区', '省份'], brand: 'HOI' }
+    ? { id: 'hoi4', key: 'hoi4-map-editor/v1', tier: 4, entity: '省份',
+        badges: ['空白', '1936', '1939', '战略', '地区', '省'],
+        names: ['空白', '1936', '1939', '战略', '地区', '省份'], brand: 'HOI' }
     : isVic3
-    ? { id: 'vic3', key: 'vic3-map-editor/v1', tier: 2, entity: '省份',
-        badges: ['1836', '战略', '地区', '省'],
-        names: ['1836', '战略', '地区', '省份'], brand: 'VIC' }
+    ? { id: 'vic3', key: 'vic3-map-editor/v1', tier: 3, entity: '省份',
+        badges: ['空白', '1836', '战略', '地区', '省'],
+        names: ['空白', '1836', '战略', '地区', '省份'], brand: 'VIC' }
     : isEu5
-    ? { id: 'eu5', key: 'eu5-map-editor/v1', tier: 3, entity: '地点',
-        badges: ['国家', '区域', '地区', '省', '地点'],
-        names: ['1337', '区域', '地区', '省份', '地点'], brand: 'EU' }
+    ? { id: 'eu5', key: 'eu5-map-editor/v1', tier: 4, entity: '地点',
+        badges: ['空白', '国家', '区域', '地区', '省', '地点'],
+        names: ['空白', '1337', '区域', '地区', '省份', '地点'], brand: 'EU' }
     : { id: 'ck3', key: 'ck3-map-editor/v1', tier: 3, entity: '头衔',
         badges: ['e_', 'k_', 'd_', 'c_', 'b_'],
         names: ['帝国', '王国', '公爵领', '伯爵领', '男爵领'], brand: 'CK' };
@@ -1419,17 +1561,25 @@ const factory = new Function(
   if (ex.setCapitalAt && (st.meta.eraDates || []).length) {
     const savedCaps = (st.capitalPids || []).slice();
     const savedTier = st.tier;
-    // 找一个剧本层里有主的省份
+    // 找一个**有主的**剧本层里有主的省份（空白剧本没有归属可定 ✓）
     let pid = 0;
     for (let q = 1; q < st.meta.numProvinces; q++) {
-      const tq = ex.titleAt(q, 0);
+      const tq = ex.titleAt(q, ERA0);
       if (tq != null && tq !== st.meta.noTitle && tq < st.meta.numRealTitles) { pid = q; break; }
     }
-    st.tier = 0;
+    st.tier = ERA0;
     st.capitalPids = [];
     ex.setCapitalAt(pid);
     ok('定都：剧本视图里点一下 → 记下这块地 ✓',
        st.capitalPids.length === 1 && st.capitalPids[0] === pid, JSON.stringify(st.capitalPids));
+    ok('定都：空白剧本那一层点一下 = 什么都不会发生（那一层没有归属 ✓）',
+       (() => {
+         if (BLANK_T < 0 || !pid) return true;
+         const keep = st.capitalPids.length;
+         st.tier = BLANK_T;
+         ex.setCapitalAt(pid);
+         return st.capitalPids.length === keep;
+       })(), `capitalPids=${st.capitalPids.length}`);
     // 细层：静默不生效 ✓
     st.tier = st.meta.tierNames.length - 1;
     const n1 = st.capitalPids.length;
@@ -1445,13 +1595,13 @@ const factory = new Function(
     const tag = ['FRA', 'GBR', 'ENG', 'TUR', 'SOV', 'RUS'].find((x) => caps[x]);
     if (tag) {
       const savedTier = st.tier;
-      st.tier = 0;                       // 国家那层
+      st.tier = ERA0;                    // 国家那层（有主的那个剧本层 ✓）
       st._blocksAll = true; st._blocksTier = null; st._layerSig = null;
       ex.syncLayerSwitches();
       ex.rebuildPaintBlocks(true);
       const cp = caps[tag];
       const pos0 = st.provPos;
-      const nm0 = ex.displayedLabel(cp, ex.titleAt(cp, 0));
+      const nm0 = ex.displayedLabel(cp, ex.titleAt(cp, ERA0));
       const blk0 = (ex.paintedPoints(true) || []).find((x) => x.name === nm0);
       const dx = blk0 ? Math.abs(blk0.x - pos0[cp * 3]) : 1e9;
       const dy = blk0 ? Math.abs(blk0.y - pos0[cp * 3 + 1]) : 1e9;
@@ -1464,7 +1614,7 @@ const factory = new Function(
           const off2 = new Uint32Array(st.adjacency.buffer, st.adjacency.byteOffset, n3 + 1);
           const nb2 = new Uint16Array(st.adjacency.buffer, st.adjacency.byteOffset + (n3 + 1) * 4);
           const pos2 = st.provPos;
-          const tid0 = ex.titleAt(cp2, 0);
+          const tid0 = ex.titleAt(cp2, ERA0);
           const keyF = ex.displayedLabel(cp2, tid0) + '|'
                      + ex.displayedColor(cp2, tid0).join(',');
           // 巴黎 + 它的邻省（同属这一族的）全部涂成别的颜色
@@ -1495,7 +1645,7 @@ const factory = new Function(
 
       // 用「定都」工具换个首都 → 重分组的名字该跟着新首都走（工具优先于数据默认）
       {
-        const tidOf = (q2) => ex.titleAt(q2, 0);
+        const tidOf = (q2) => ex.titleAt(q2, ERA0);
         const targetKey = String(st.titles.keys[tidOf(cp)]);
         const sameTag = [];
         for (let q2 = 1; q2 < st.meta.numProvinces && sameTag.length < 60; q2++) {
@@ -1534,7 +1684,7 @@ const factory = new Function(
   if ((st.meta.eraDates || []).length) {
     const svT = st.tier, svP = st.showLabelsPaint;
     st.showLabelsPaint = true;
-    st.tier = 0;                          // 剧本层
+    st.tier = ERA0;                       // 剧本层（有主的那个 ✓）
     st._blocksAll = null; st._blocksTier = null;
     st._layerSig = null; ex.syncLayerSwitches();
     ok('剧本层：玩家名字 = 全图重分组（实时 ✓）', st._blocksAll === true, String(st._blocksAll));
@@ -1767,7 +1917,7 @@ const factory = new Function(
        !ex.renderer.borderPaint, String(ex.renderer.borderPaint));
     st.showBorderPaint = true;
     const _t0 = st.tier;
-    st.tier = 0;                                 // 剧本层 ✓
+    st.tier = ERA0;                              // 剧本层（有主的那个 ✓）
     st._layerSig = null; ex.syncLayerSwitches();
     ok('打开「填色·边界」→ 剧本层画 ✓',
        !!ex.renderer.borderPaint, String(ex.renderer.borderPaint));
@@ -2131,13 +2281,14 @@ const factory = new Function(
 
   if (isEU4) {
     console.log('\n=== 2c. 三个年份视图取代了大洲/大区/区域 ===');
-    const three = (pid) => [0, 1, 2].map((i) => st.titles.names[ex.titleAt(pid, i)]).join('/');
-    ok('顶部三层是年份，后面接 区域/地区/省份',
+    // 第 0 层是空白剧本 ✓，三个年份从第 1 层起 ✓
+    const three = (pid) => [1, 2, 3].map((i) => st.titles.names[ex.titleAt(pid, i)]).join('/');
+    ok('顶部四层是空白 + 三个年份，后面接 区域/地区/省份',
        JSON.stringify(st.meta.tierNames)
-       === JSON.stringify(['1444', '1618', '1789', '区域', '地区', '省份']),
+       === JSON.stringify(['空白', '1444', '1618', '1789', '区域', '地区', '省份']),
        JSON.stringify(st.meta.tierNames));
-    ok('年份带上了具体日期', JSON.stringify(st.meta.eraDates) ===
-       JSON.stringify(['1444.11.11', '1618.1.1', '1789.7.14']), JSON.stringify(st.meta.eraDates));
+    ok('年份带上了具体日期（空白那层没有年份 ✓）', JSON.stringify(st.meta.eraDates) ===
+       JSON.stringify(['', '1444.11.11', '1618.1.1', '1789.7.14']), JSON.stringify(st.meta.eraDates));
     ok('洲/大区不再单独成层，但地区的上一级（区域）回来了',
        !/大洲|大区/.test(st.meta.tierNames.join('')) && /区域/.test(st.meta.tierNames.join('')),
        st.meta.tierNames.join('/'));
@@ -2146,10 +2297,10 @@ const factory = new Function(
     ok('耶姆特兰 挪威 → 丹麦 → 瑞典', three(10) === '挪威/丹麦/瑞典', three(10));
     ok('伦敦在 1789 属于大不列颠', three(236).endsWith('大不列颠'), three(236));
     ok('同一个国家在不同年份是各自独立的节点（否则涂一处会连带另一处）',
-       ex.titleAt(1, 0) !== ex.titleAt(1, 1),
-       `1444 的瑞典 #${ex.titleAt(1, 0)} vs 1618 的瑞典 #${ex.titleAt(1, 1)}`);
-    ok('1444 层有 665 个国家', st.titles.tiers.filter((x) => x === 0).length === 665,
-       String(st.titles.tiers.filter((x) => x === 0).length));
+       ex.titleAt(1, 1) !== ex.titleAt(1, 2),
+       `1444 的瑞典 #${ex.titleAt(1, 1)} vs 1618 的瑞典 #${ex.titleAt(1, 2)}`);
+    ok('1444 层有 665 个国家', st.titles.tiers.filter((x) => x === 1).length === 665,
+       String(st.titles.tiers.filter((x) => x === 1).length));
 
     console.log('\n=== 2d. 标注位置一律几何中心 ===');
     {
@@ -3121,7 +3272,7 @@ const factory = new Function(
       ex.syncLayerSwitches(); ex.syncParentBorder();
     };
 
-    st.tier = 0;              // 看剧本的配色
+    st.tier = ERA0;           // 看剧本的配色
     st.grain = provG;         // 按省份粒度改
     st.showRegionName = false; st.showRegionBorder = false;
     push();
@@ -3153,7 +3304,7 @@ const factory = new Function(
     };
 
     st.grain = null;
-    st.tier = 0;                       // 剧本层 → 势力那组
+    st.tier = ERA0;                    // 剧本层 → 势力那组
     st.showPowerColor = true; st.showRegionColor = false; push();
     ok('势力·颜色 开 → 原版色显示', ex.renderer.showTitles === true, String(ex.renderer.showTitles));
     st.showPowerColor = false; push();
@@ -3213,7 +3364,7 @@ const factory = new Function(
     const fineB = st.meta.tierNames.length - 1;
     const saved = [st.tier, st.grain, st.showPowerBorder, st.showRegionBorder,
                    st._layerSig, st._parentSig];
-    st.tier = 0;                 // 看剧本配色
+    st.tier = ERA0;              // 看剧本配色
     st.grain = fineB;            // 按更细的一层改（粒度）
     st.showRegionBorder = false; // 地区·边界 关
     st.showPowerBorder = true;   // 势力·边界 开
@@ -3311,7 +3462,7 @@ const factory = new Function(
       const savedT2 = st.tier;
       const savedPB = st.showParentBorderTitle;
       st.showParentBorderTitle = true;    // 开了父级才有链 → 子级吃「省份」档 ✓
-      st.tier = 0;                       // 剧本/年代那一层
+      st.tier = ERA0;                    // 剧本/年代那一层
       st.grain = fine;                   // 粒度落在低级单位上
       ex.syncParentBorder();
       ok('剧本 + 粒度：本层浓度随设置走（开父级=省份 50 / 没开=默认 75）',
@@ -3367,94 +3518,99 @@ const factory = new Function(
   {
     // 年份层有几个由数据决定（EU4 三个、HOI4 两个），下面一律用 n 说话
     const n = st.meta.eraDates.length;
+    // 第 0 层是**空白剧本** ✓ —— 年份按钮从 ERA0 起，细层跟着往后挪一位 ✓
+    const T_ERA = ERA0;            // 第一个**有主**的年份（EU4 1444 / HOI4 1936）
+    const T_Y2 = ERA0 + 1;         // 紧接着的第二个年份（EU4 1618 / HOI4 1939）
+    const T_A = N_ERA;             // 年份块之后第一级（EU4 区域 / HOI4 战略）
+    const T_B = N_ERA + 1;         // 再下一级（EU4 地区 / HOI4 地区）
     const tierBtn = (i) => containers.tier.children
       .find((b) => Number(b.dataset.tier) === i);
     const isOn = (i) => tierBtn(i).classList.contains('on');
     const isGrain = (i) => tierBtn(i).classList.contains('grain');
 
-    ex.setTier(0);                                   // 切到 1444
+    ex.setTier(T_ERA);                               // 切到第一个有主的年份
     const html = fs.readFileSync(path.join(ROOT, 'web', 'index.html'), 'utf8');
     ok('没有多出来的那一排按钮（视图那一排就够）',
        containers.tier.children.length === want.names.length && !html.includes('grain-group'),
        `${containers.tier.children.length} 个层级按钮，页面上还有 grain-group：${html.includes('grain-group')}`);
-    ok('默认按国家：编辑层 = 视图层', ex.editTier() === 0, String(ex.editTier()));
-    ok('只有一个亮着', isOn(0) && !isGrain(0) && !isOn(4) && !isGrain(4),
-       `1444 on=${isOn(0)} grain=${isGrain(0)} / 地区 on=${isOn(4)} grain=${isGrain(4)}`);
+    ok('默认按国家：编辑层 = 视图层', ex.editTier() === T_ERA, String(ex.editTier()));
+    ok('只有一个亮着', isOn(T_ERA) && !isGrain(T_ERA) && !isOn(T_B) && !isGrain(T_B),
+       `年份 on=${isOn(T_ERA)} grain=${isGrain(T_ERA)} / 下一级 on=${isOn(T_B)} grain=${isGrain(T_B)}`);
 
     // 按一下"地区" —— 一步就够，不该还要去别处勾
-    ex.pressTier(3);
-    ok('按一下地区就换到地区粒度', ex.editTier() === 3, String(ex.editTier()));
-    ok('渲染器跟上了', ex.renderer.editTier === 3, String(ex.renderer.editTier));
-    ok('视图没动，画面还是 1444 的配色',
-       ex.renderer.tier === 0 && st.tier === 0,
+    ex.pressTier(T_A);
+    ok('按一下下一级就换到那一级粒度', ex.editTier() === T_A, String(ex.editTier()));
+    ok('渲染器跟上了', ex.renderer.editTier === T_A, String(ex.renderer.editTier));
+    ok('视图没动，画面还是年份那一层的配色',
+       ex.renderer.tier === T_ERA && st.tier === T_ERA,
        `tier=${ex.renderer.tier} editTier=${ex.renderer.editTier}`);
     ok('两个按钮一起亮，主次分得开（视图金色、粒度弱一档）',
-       isOn(0) && isGrain(3) && !isOn(3),
-       `1444: on=${isOn(0)} / 地区: on=${isOn(3)} grain=${isGrain(3)}`);
+       isOn(T_ERA) && isGrain(T_A) && !isOn(T_A),
+       `年份 on=${isOn(T_ERA)} / 下一级 on=${isOn(T_A)} grain=${isGrain(T_A)}`);
 
     // 换成省份粒度
-    ex.pressTier(4);
-    ok('按省份 = 整档换成省份', ex.editTier() === 4 && isGrain(4) && !isGrain(3),
-       `edit=${ex.editTier()} 省 grain=${isGrain(4)} 地区 grain=${isGrain(3)}`);
+    ex.pressTier(T_B);
+    ok('按更细那一级 = 整档换成它', ex.editTier() === T_B && isGrain(T_B) && !isGrain(T_A),
+       `edit=${ex.editTier()} 细 grain=${isGrain(T_B)} 上一级 grain=${isGrain(T_A)}`);
 
     // 再按一下同一级 = 取消，回到按国家（每个按钮都是开/关）
-    ex.pressTier(4);
-    ok('再按一下省份 = 取消粒度，回到按国家', ex.editTier() === 0 && !isGrain(4),
-       `edit=${ex.editTier()} 省 grain=${isGrain(4)}`);
-    ok('取消之后仍旧只有视图一个亮着', isOn(0) && !isGrain(0) && !isOn(4),
-       `1444 on=${isOn(0)} / 省份 on=${isOn(4)} grain=${isGrain(4)}`);
+    ex.pressTier(T_B);
+    ok('再按一下它 = 取消粒度，回到按国家', ex.editTier() === T_ERA && !isGrain(T_B),
+       `edit=${ex.editTier()} 细 grain=${isGrain(T_B)}`);
+    ok('取消之后仍旧只有视图一个亮着', isOn(T_ERA) && !isGrain(T_ERA) && !isOn(T_B),
+       `年份 on=${isOn(T_ERA)} / 细 on=${isOn(T_B)} grain=${isGrain(T_B)}`);
 
-    ex.pressTier(3);
-    ex.pressTier(3);
-    ok('地区也是按一下开、再按一下关', ex.editTier() === 0 && !isGrain(3),
-       `edit=${ex.editTier()} 地区 grain=${isGrain(3)}`);
+    ex.pressTier(T_A);
+    ex.pressTier(T_A);
+    ok('那一级也是按一下开、再按一下关', ex.editTier() === T_ERA && !isGrain(T_A),
+       `edit=${ex.editTier()} 那一级 grain=${isGrain(T_A)}`);
 
-    ex.pressTier(4);
+    ex.pressTier(T_B);
     // 再按一下当前年份 = 取消
-    ex.pressTier(0);
-    ok('再按一下 1444 = 取消，年份配色退掉、落到省份视图',
-       st.tier === 4 && ex.editTier() === 4 && ex.renderer.tier === 4,
+    ex.pressTier(T_ERA);
+    ok('再按一下当前年份 = 取消，年份配色退掉、落到细层视图',
+       st.tier === T_B && ex.editTier() === T_B && ex.renderer.tier === T_B,
        `tier=${st.tier} edit=${ex.editTier()}`);
-    ok('取消之后只剩一个亮着', isOn(4) && !isGrain(4) && !isOn(0),
-       `省份 on=${isOn(4)} grain=${isGrain(4)}`);
+    ok('取消之后只剩一个亮着', isOn(T_B) && !isGrain(T_B) && !isOn(T_ERA),
+       `细 on=${isOn(T_B)} grain=${isGrain(T_B)}`);
 
     // 反方向：从省份模式按年份，配成一对（年份配色 + 省份粒度）
-    ex.pressTier(1);                                   // 省份视图上按 1618
-    ok('省份模式上按 1618 = 1618 配色 + 省份粒度',
-       st.tier === 1 && ex.editTier() === 4,
+    ex.pressTier(T_Y2);                                // 细层视图上按第二个年份
+    ok('细层视图上按年份 = 那年配色 + 细层粒度',
+       st.tier === T_Y2 && ex.editTier() === T_B,
        `tier=${st.tier} edit=${ex.editTier()}`);
-    ok('两个按钮都亮：1618 金色、省份弱蓝',
-       isOn(1) && isGrain(4) && !isOn(4),
+    ok('两个按钮都亮：年份金色、细层弱蓝',
+       isOn(T_Y2) && isGrain(T_B) && !isOn(T_B),
        `1618 on=${isOn(1)} / 省份 on=${isOn(4)} grain=${isGrain(4)}`);
-    ok('配色层跟着 1618 走', ex.renderer.tier === 1 && ex.renderer.editTier === 4,
+    ok('配色层跟着那一年走', ex.renderer.tier === T_Y2 && ex.renderer.editTier === T_B,
        `tier=${ex.renderer.tier} editTier=${ex.renderer.editTier}`);
-    ex.pressTier(1);
-    ok('再按一下 1618 = 拆开，退回省份视图',
-       st.tier === 4 && ex.editTier() === 4 && !isGrain(4),
+    ex.pressTier(T_Y2);
+    ok('再按一下那一年 = 拆开，退回细层视图',
+       st.tier === T_B && ex.editTier() === T_B && !isGrain(T_B),
        `tier=${st.tier} edit=${ex.editTier()} 省 grain=${isGrain(4)}`);
 
     // 配好之后换个年份，粒度跟着走（"另一个年份"= 最后一个年份层，别写死 2）
-    ex.pressTier(0);
+    ex.pressTier(T_ERA);
     ex.pressTier(n - 1);
-    ok('配对之后换个年份，粒度还是省份',
-       st.tier === n - 1 && ex.editTier() === 4 && isOn(n - 1) && isGrain(4),
+    ok('配对之后换个年份，粒度还是那一级',
+       st.tier === n - 1 && ex.editTier() === T_B && isOn(n - 1) && isGrain(T_B),
        `tier=${st.tier} edit=${ex.editTier()}`);
-    ex.pressTier(0);
-    ok('从另一个年份 + 省份 按第一个年份：换配色，粒度不动',
-       st.tier === 0 && ex.editTier() === 4 && isOn(0) && isGrain(4),
+    ex.pressTier(T_ERA);
+    ok('从另一个年份 + 细层 按第一个年份：换配色，粒度不动',
+       st.tier === T_ERA && ex.editTier() === T_B && isOn(T_ERA) && isGrain(T_B),
        `tier=${st.tier} edit=${ex.editTier()}`);
-    ex.pressTier(4);
+    ex.pressTier(T_B);
     ok('按一下粒度那一级 = 拆开，回到年份的整国粒度',
-       st.tier === 0 && ex.editTier() === 0 && !isGrain(4),
+       st.tier === T_ERA && ex.editTier() === T_ERA && !isGrain(T_B),
        `tier=${st.tier} edit=${ex.editTier()}`);
 
     // 回到年份视图，粒度是干净的
-    ex.pressTier(0);
-    ok('重新进年份视图，粒度回到按国家', ex.editTier() === 0 && !isGrain(4),
+    ex.pressTier(T_ERA);
+    ok('重新进年份视图，粒度回到按国家', ex.editTier() === T_ERA && !isGrain(T_B),
        `edit=${ex.editTier()} 省 grain=${isGrain(4)}`);
-    ex.pressTier(1);
-    ok('换个年份：粒度保持按国家、视图换到 1618',
-       st.tier === 1 && ex.editTier() === 1 && isOn(1));
+    ex.pressTier(T_Y2);
+    ok('换个年份：粒度保持按国家、视图跟着换',
+       st.tier === T_Y2 && ex.editTier() === T_Y2 && isOn(T_Y2));
 
     // 端到端：按省份粒度真的只涂到那一个省份
     // **粒度要落在这一作的「省份」层上** ✓ —— EU4 是 5、HOI4/V3 是 4：
@@ -3462,17 +3618,17 @@ const factory = new Function(
     // 就变成"隔壁地区"，是测试自己错了 ✗（产品行为一直是对的）
     const _provTier = st.meta.tierNames.indexOf('省份');
     const _provT = _provTier >= 0 ? _provTier : LAST_TIER;
-    ex.pressTier(0);
+    ex.pressTier(T_ERA);
     ex.pressTier(_provT);
     const W = st.meta.mapWidth, H = st.meta.mapHeight, NP = st.meta.numProvinces;
     const tm = st.titlemap;
     // 拿一块**在图上、且没锁**的地当锚：HOI4 的 1 号省是个湖，不能用
     const anchor = isHoi4 ? 3838 : 1;
-    const country = ex.titleAt(anchor, 0);
+    const country = ex.titleAt(anchor, T_ERA);
     let target = -1, mate = -1;
     for (let p = 1; p < NP; p++) {
       // 同一国家、且**省份节点**跟锚点不同的两块地（同一层比才有意义 ✓）
-      if (tm[p] !== country || tm[_provT * NP + p] === ex.titleAt(anchor, _provT)) continue;
+      if (tm[T_ERA * NP + p] !== country || tm[_provT * NP + p] === ex.titleAt(anchor, _provT)) continue;
       if (target < 0) target = p; else { mate = p; break; }
     }
     ok('找得到同国但不同省份的两块地', target > 0 && mate > 0, `#${target} / #${mate}`);
@@ -3506,7 +3662,7 @@ const factory = new Function(
       // 先把头衔色打开，屏幕上显示的和拾取到的就该是同一个色 ✓
       st.showTitles = true;
       ex.renderer.setShowTitles(true);
-      const cty = ex.titleAt(target, 0);
+      const cty = ex.titleAt(target, T_ERA);
       const provTid = ex.titleAt(target, LAST_TIER);
       ok('两个色本来就不一样，下面那条断言才有意义',
          JSON.stringify(st.titles.colors[cty]) !== JSON.stringify(st.titles.colors[provTid]),
@@ -3557,23 +3713,23 @@ const factory = new Function(
        + `${[...ex.renderer.paintData.slice(mi, mi + 4)].join(',')}`);
 
     // 离开年份视图 / 从细层级按年份
-    ex.setTier(3);
-    ok('离开年份视图，编辑层就跟视图一致', ex.editTier() === 3, String(ex.editTier()));
-    ex.setGrain(4);
-    ok('非年份视图里设粒度不生效', ex.editTier() === 3, String(ex.editTier()));
-    ex.pressTier(0);
-    ok('从地区视图按 1444 = 1444 配色 + 地区粒度（跟当前这一层配对，不是残留的粒度）',
-       st.tier === 0 && ex.editTier() === 3
-       && ex.renderer.tier === 0 && ex.renderer.editTier === 3,
+    ex.setTier(T_A);
+    ok('离开年份视图，编辑层就跟视图一致', ex.editTier() === T_A, String(ex.editTier()));
+    ex.setGrain(T_B);
+    ok('非年份视图里设粒度不生效', ex.editTier() === T_A, String(ex.editTier()));
+    ex.pressTier(T_ERA);
+    ok('从细层视图按年份 = 那年配色 + 细层粒度（跟当前这一层配对，不是残留的粒度）',
+       st.tier === T_ERA && ex.editTier() === T_A
+       && ex.renderer.tier === T_ERA && ex.renderer.editTier === T_A,
        `tier=${st.tier} edit=${ex.editTier()} 渲染 ${ex.renderer.tier}/${ex.renderer.editTier}`);
 
     // 悬停卡片那几行走 gotoLevel：点谁就是按谁编辑，不配对也不取消
     ex.setGrain(null);
-    ex.gotoLevel(3);
-    ok('年份视图里点"地区"是换粒度，不切视图',
-       st.tier === 0 && ex.editTier() === 3, `tier=${st.tier} edit=${ex.editTier()}`);
-    ex.gotoLevel(0);
-    ok('点回年份那一层 = 回到按国家', ex.editTier() === 0, String(ex.editTier()));
+    ex.gotoLevel(T_A);
+    ok('年份视图里点细层是换粒度，不切视图',
+       st.tier === T_ERA && ex.editTier() === T_A, `tier=${st.tier} edit=${ex.editTier()}`);
+    ex.gotoLevel(T_ERA);
+    ok('点回年份那一层 = 回到按国家', ex.editTier() === T_ERA, String(ex.editTier()));
 
     ex.setTier(st.meta.defaultTier);
     ex.setGrain(null);
@@ -3584,22 +3740,24 @@ const factory = new Function(
     // V3 只有一个开局（1836.1.1），年份层只有一层 —— 但"按一下更细的层 =
     // 换粒度"这套逻辑照样成立（细层级 = 战略 / 地区 / 省份）
     console.log('\n=== 2e. V3 单开局下也有粒度 ===');
-    ex.setTier(0);                                   // 先到 1836 那一层
-    ok('默认按国家：编辑层 = 视图层', ex.editTier() === 0, String(ex.editTier()));
-    ex.pressTier(2);
-    ok('按一下"地区"就换到州粒度', ex.editTier() === 2 && st.tier === 0,
+    const V_ERA = ERA0;                     // 1836 那一层（空白剧本之后 ✓）
+    const V_ST = tierOf('地区');             // V3 的「地区」= 州（STATE ✓）
+    ex.setTier(V_ERA);                                // 先到 1836 那一层
+    ok('默认按国家：编辑层 = 视图层', ex.editTier() === V_ERA, String(ex.editTier()));
+    ex.pressTier(V_ST);
+    ok('按一下"地区"就换到州粒度', ex.editTier() === V_ST && st.tier === V_ERA,
        `tier=${st.tier} edit=${ex.editTier()}`);
-    ok('配色层没动（还是 1836 的国家色）', ex.renderer.tier === 0 && ex.renderer.editTier === 2,
+    ok('配色层没动（还是 1836 的国家色）', ex.renderer.tier === V_ERA && ex.renderer.editTier === V_ST,
        `tier=${ex.renderer.tier} editTier=${ex.renderer.editTier}`);
-    ex.pressTier(2);
-    ok('再按一下取消，回到按国家', ex.editTier() === 0, String(ex.editTier()));
+    ex.pressTier(V_ST);
+    ok('再按一下取消，回到按国家', ex.editTier() === V_ERA, String(ex.editTier()));
     // 从"地区"视图按 1836 = 配成一对（年份出配色、细层级出边界和笔刷）
-    ex.setTier(2);
-    ex.pressTier(0);
-    ok('从地区视图按 1836 = 配成一对', st.tier === 0 && ex.editTier() === 2,
+    ex.setTier(V_ST);
+    ex.pressTier(V_ERA);
+    ok('从地区视图按 1836 = 配成一对', st.tier === V_ERA && ex.editTier() === V_ST,
        `tier=${st.tier} edit=${ex.editTier()}`);
-    ex.pressTier(0);
-    ok('再按一下 1836 = 拆开，退回地区视图', st.tier === 2 && ex.editTier() === 2,
+    ex.pressTier(V_ERA);
+    ok('再按一下 1836 = 拆开，退回地区视图', st.tier === V_ST && ex.editTier() === V_ST,
        `tier=${st.tier} edit=${ex.editTier()}`);
     ex.setTier(st.meta.defaultTier);
     ex.setGrain(null);
@@ -3912,7 +4070,7 @@ const factory = new Function(
       ok('原版国家级国名按声明清空了（这一步是文件要求的 ✓）', left0 === 0, '还剩 ' + left0);
 
       // 切到剧本层 —— 国名就是从这一层画的
-      st.tier = 0; st.grain = null; st.showLabelsPaint = true;
+      st.tier = ERA0; st.grain = null; st.showLabelsPaint = true;
       ex.syncLayerSwitches();
       ex.rebuildPaintBlocks(!!st._blocksAll);
       const names0 = (ex.paintedPoints(true) || []).map((q) => q.name).filter(Boolean);
@@ -3956,7 +4114,7 @@ const factory = new Function(
         const pids5 = [];
         for (let p = 1; p < st.meta.numProvinces && pids5.length < 600; p++) {
           if (!(st.provPos[p * 3 + 2] > 0)) continue;
-          if (ex.titleAt(p, 0) !== t5) continue;
+          if (ex.titleAt(p, ERA0) !== t5) continue;
           pids5.push(p);
         }
         if (pids5.length < 3 || pids5.indexOf(cp5) < 0) continue;
@@ -3981,7 +4139,7 @@ const factory = new Function(
           if (st.titles.tiers[i] < nEra5) svEra5.set(i, st.titles.names[i]);
         }
         ex.applyProject({ version: 1, clearEraNames: true, titles: titles5, labels: labels5 });
-        st.tier = 0; st.grain = null; st.showLabelsPaint = true;
+        st.tier = ERA0; st.grain = null; st.showLabelsPaint = true;
         st._blocksAll = null; st._blocksTier = null;
         ex.syncLayerSwitches();
         ex.rebuildPaintBlocks(!!st._blocksAll);
