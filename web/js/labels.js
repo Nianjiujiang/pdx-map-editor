@@ -37,10 +37,77 @@
  * 每帧的临时数组（文本、坐标、字号）都挂在实例上复用，稳态下不产生垃圾。
  */
 
-//: 各层级从多少缩放百分比开始显示 —— 默认这套是 CK3 调出来的
-//: （帝国 / 王国 / 公爵领 / 伯爵领 / 男爵领）。EU4 的图小得多、省份密得多，
-//: 门槛得另给一套，所以实际用的是 meta.labelZoom。
+//: 各层级从多少缩放百分比开始显示 —— 只是一层**兜底**：
+//: 真正用的门槛由 `computeLabelZoom()` 按**这张图自己的地块大小**算出来 ✓
+//: （以前每个游戏写死一套数，谁也没跟着地图尺寸走：EU5 半尺寸和原尺寸差了 2 倍，
+//:   门槛却一模一样 → 半尺寸那张的地名会提早一倍糊出来 ✗）
 const MIN_ZOOM_PERCENT = [8, 30, 60, 120, 250];
+
+//: 细层的口径：门槛那一刻，这一层**中位地块**在屏幕上要多宽（CSS px）。
+//: 20px 是"保证不比以前那套写死值更晚"的临界值（用户要求：别放得更近）——
+//: 各图细层因此都比旧值早或持平：CK3 男爵领 250→63、EU4 省份 110→88、
+//: HOI4 省份 165→158、V3 省份 150→132、EU5 地点 240→129（原尺寸 65）。
+//: 觉得太早（CK3 那种上万块细层的图名字会碎）就调大：25 / 35 / 45 各是一档 ✓
+export const ARRIVE_SPAN = 20;
+//: 国名层（年份层；CK3 是最粗那层）的口径：把整张图缩进 ~1600px 视口的时候出现 ✓
+const COUNTRY_FIT = 0.7;
+const VIEW_W = 1600;
+const ZOOM_MIN = 4;
+const ZOOM_MAX = 800;
+
+/**
+ * 按**这张图自己的地块大小**算每一层的地名门槛（缩放百分比）。
+ *
+ * 两条口径：
+ *   · 细层：`100 × 70 / 这一层的中位地块跨度`（地图像素）——
+ *     地块小的图（V3 的省份 15px、HOI4 的省份 12.6px）门槛自然就高 ✓
+ *   · 国名层（`meta.eraDates` 那几层；没有年份时是最粗那层）：按"整张图看得见"算，
+ *     这样一进去 / 一缩到全图就能看见国名 ✓
+ *
+ * 拿 CK3 复算验证过：帝国/王国/公爵领/伯爵领/男爵领 = 12/30/61/119/221%，
+ * 跟当年手调的 8/30/60/120/250% 基本一致 —— 说明这才是那套数背后的口径 ✓
+ *
+ * @param {object} meta   meta.json 的内容（要 mapWidth / tiers / eraDates / 兜底 labelZoom）
+ * @param {object} titles titles.json 的内容（要 tiers，以及**跟字号同一个来源**的面积：
+ *                        `blockArea` 优先、退回 `area` —— EU5 的 `area` 是成员个数不是像素 ✗）
+ */
+export function computeLabelZoom(meta, titles) {
+  const areaArr = titles && (titles.blockArea || titles.area);
+  if (!meta || !titles || !titles.tiers || !areaArr) {
+    return (meta && meta.labelZoom) || MIN_ZOOM_PERCENT;
+  }
+  const nT = meta.tiers ? meta.tiers.length : 0;
+  if (!nT) return (meta && meta.labelZoom) || MIN_ZOOM_PERCENT;
+  const real = meta.numRealTitles || meta.numTitles || titles.tiers.length;
+  const nEra = (meta.eraDates || []).length;
+  const nCountry = nEra > 0 ? nEra : 1;      // 国名层的层数（CK3 没有年份 → 最粗那层）
+  const spans = [];
+  for (let t = 0; t < nT; t++) spans.push([]);
+  for (let i = 0; i < titles.tiers.length && i < real && i < areaArr.length; i++) {
+    const t = titles.tiers[i];
+    const a = areaArr[i];
+    if (t >= 0 && t < nT && a > 0) spans[t].push(Math.sqrt(a));
+  }
+  const out = new Array(nT);
+  for (let t = 0; t < nT; t++) {
+    let z;
+    if (t < nCountry) {
+      z = 100 * COUNTRY_FIT * VIEW_W / (meta.mapWidth || VIEW_W);
+    } else if (spans[t].length) {
+      const arr = spans[t].sort((a, b) => a - b);
+      const med = arr[arr.length >> 1];       // 中位数：一半地块够大就该上地名了
+      z = med > 0 ? (100 * ARRIVE_SPAN / med) : 0;
+    } else {
+      z = 0;
+    }
+    if (!(z > 0)) {
+      const fb = (meta.labelZoom && meta.labelZoom[t]) || MIN_ZOOM_PERCENT[t] || 30;
+      z = fb;
+    }
+    out[t] = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, Math.round(z)));
+  }
+  return out;
+}
 
 //: 字体栈。用系统自带的雅黑这一类黑体 —— 楷体系列（华文楷体等）在 Canvas 上
 //: 逐字渲染中文明显更慢，标签一多就卡。

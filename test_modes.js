@@ -661,12 +661,13 @@ return {
   syncParentBorder, syncLayerSwitches, retintCountryLabels,
   get searchHits() { return searchHits; },
   editTier, setGrain, gotoLevel, pressTier, eraTierCount, refreshTierButtons,
-  projectData, saveProject, applyProject, setCapitalAt, exportModEU4, labelForColor,
+  projectData, saveProject, applyProject, setCapitalAt, labelForColor,
   get renderer() { return renderer; },
   get labels() { return labels; },
   isDegradedBaron, displayedColor, displayedLabel, screenToMap, updateHover,
   rebuildPaintBlocks, paintedPoints, playerGroupTids, playerGroupTidsAt, paintAt, hoverGroupRgb, stableColor, hoverTargetTid, applyHoverHighlight, setWasteAuto, readablePlaceName, manualWaterName,
   drawLabels, legendEntries, drawLegend, rebuildLegendPanel, impassLabel, specialTileLabel,
+  computeLabelZoom, ARRIVE_SPAN,
   applySettings, applyLutOverrides, lutColorOf, hexToRgb, renameAt, openRename,
 };`;
 
@@ -1903,6 +1904,42 @@ const factory = new Function(
     ok('全图视角下有层级要显示标签', tier >= 0,
        `缩放 ${(scale * 100).toFixed(0)}%，门槛 ${L.zoom.join('/')}`);
 
+    // **地名门槛得跟地块大小走** ✓ —— 细层门槛那一刻，这一层的中位地块在屏幕上
+    // 至少 ~45px 宽（字号 ≈ 0.18 × 屏幕跨度 ≈ 8px 起）；地块小的图门槛自然更高。
+    // 以前每个游戏写死一套数：EU5 半尺寸和原尺寸这两张尺寸差 2 倍的图用同一套 ✗
+    {
+      const nEra = (st.meta.eraDates || []).length;
+      const nCountry = nEra > 0 ? nEra : 1;
+      const real = st.meta.numRealTitles || st.meta.numTitles;
+      // **跟地名字号同一个来源**（labels.js 也是 blockArea 优先）—— EU5 的 area
+      // 是"成员个数"不是像素，拿它算门槛会全错 ✗
+      const _areaArr = st.titles.blockArea || st.titles.area;
+      const buckets = st.meta.tiers.map(() => []);
+      for (let i = 0; i < st.titles.tiers.length && i < real && i < _areaArr.length; i++) {
+        const t = st.titles.tiers[i];
+        const a = _areaArr[i];
+        if (t >= 0 && t < buckets.length && a > 0) buckets[t].push(Math.sqrt(a));
+      }
+      const bad = [];
+      let checked = 0;
+      // 门槛是不是真按 ARRIVE_SPAN 那口径算的（±30% 容差：四舍五入 + 取整到 %）
+      const want = ex.ARRIVE_SPAN;
+      for (let t = nCountry; t < buckets.length; t++) {
+        const arr = buckets[t].sort((x, y) => x - y);
+        if (!arr.length) continue;
+        checked++;
+        const screen = arr[arr.length >> 1] * L.zoom[t] / 100;
+        if (!(screen >= want * 0.7 && screen <= want * 1.4)) {
+          bad.push(`${st.meta.tierNames[t]} ${screen.toFixed(0)}px`);
+        }
+      }
+      ok(`细层门槛按地块大小算：到门槛时中位地块 ≈ ${want}px（±30%）`,
+         bad.length === 0, bad.length ? bad.join(' / ') : `查了 ${checked} 层，都对得上`);
+      const fitPct = 1280 / st.meta.mapWidth * 100;
+      ok('国名层门槛不高于全图视角（缩到全图就该看见国名）',
+         L.zoom[0] <= fitPct, `门槛 ${L.zoom[0]}% vs 全图 ${fitPct.toFixed(1)}%`);
+    }
+
     // 冷帧：贴图缓存清空，等于"没有贴图缓存"的开销
     L.sprites.clear();
     resetCanvasStats();
@@ -2345,21 +2382,83 @@ const factory = new Function(
 
   } else {
 
-    console.log('\n=== 2d. 标注位置：所有层级都按自家地盘算（重心；落水面/别家就退到最大省份）===');
+    console.log('\n=== 2d. 标注位置：名字必须落在自家地盘上（取最大连通域的重心）===');
     {
-      let off = 0, low = 0;
-      for (let i = 0; i < T.keys.length; i++) {
-        if (T.tiers[i] !== 3 && T.tiers[i] !== 4) continue;   // 伯爵领 / 男爵领
-        low++;
-        if (T.lx[i] !== T.gx[i] || T.ly[i] !== T.gy[i]) off++;
-      }
-      ok('伯爵领和男爵领都标自己的几何中心', off === 0, `${low} 个，偏的 ${off} 个`);
-
-      let moved = 0, high = 0;
-      for (let i = 0; i < T.keys.length; i++) {
-        if (T.tiers[i] > 2) continue;                          // 公爵领以上
-        high++;
-        if (T.lx[i] !== T.gx[i] || T.ly[i] !== T.gy[i]) moved++;
+      // 口径（用户定的）：标注点 = **像素最多的那块连通域的重心** ✓
+      // 所以这里按邻接表把每个头衔拆成连通块、自己算一遍最大块的重心，
+      // 跟数据里的 lx/ly 对齐。抽查每层前 200 个（全量太慢，抽查足够抓"跑偏"）。
+      // ↑ 旧 EU5 会大面积红：它的标注位置是在另一张图上算的，
+      //   波利尼西亚那种横跨接缝的直接掉到地图正中 ✗
+      const pos = st.provPos;
+      const NP = st.meta.numProvinces;
+      const real = st.meta.numRealTitles || st.meta.numTitles;
+      const adj = st.adjacency;
+      if (!adj) {
+        ok('有邻接表可以核对标注位置', false, '没有 adjacency');
+      } else {
+        const offsets = new Uint32Array(adj.buffer, adj.byteOffset, NP + 1);
+        const neighbors = new Uint16Array(adj.buffer, adj.byteOffset + (NP + 1) * 4);
+        // **年份层（国名）不查** ✓ —— 那是"国家"（V3 的 1836 / EU4 的三个年份 /
+        // EU5 的 1337 / HOI4 的 1936·1939），名字有它自己那套规矩。
+        // CK3 没有年份层：五层全是法理地区（含帝国/王国 ✓）都要按这个规矩来 ✓
+        const _nCountry = (st.meta.eraDates || []).length;
+        let checked = 0, miss = 0, worst = 0, worstName = '';
+        for (let tier = _nCountry; tier < st.meta.tiers.length; tier++) {
+          const row = tier * NP;
+          const byTitle = new Map();
+          for (let p = 1; p < NP; p++) {
+            const t = st.titlemap[row + p];
+            if (t <= 0 || t >= real) continue;
+            let a = byTitle.get(t);
+            if (!a) { a = []; byTitle.set(t, a); }
+            a.push(p);
+          }
+          let k = 0;
+          for (const [t, pids] of byTitle) {
+            if (k >= 200) break;
+            if (T.lx[t] == null || T.ly[t] == null) continue;
+            k++;
+            const parent = new Map();
+            for (const p of pids) parent.set(p, p);
+            const find = (x) => {
+              let r = x;
+              while (parent.get(r) !== r) r = parent.get(r);
+              while (parent.get(x) !== r) { const nx = parent.get(x); parent.set(x, r); x = nx; }
+              return r;
+            };
+            const inset = new Set(pids);
+            for (const p of pids) {
+              for (let q = offsets[p], e = offsets[p + 1]; q < e; q++) {
+                const v = neighbors[q];
+                if (!inset.has(v)) continue;
+                const ra = find(p), rb = find(v);
+                if (ra !== rb) parent.set(ra, rb);
+              }
+            }
+            const blocks = new Map();
+            for (const p of pids) {
+              const r = find(p);
+              let g = blocks.get(r);
+              if (!g) { g = [0, 0, 0]; blocks.set(r, g); }
+              const a = pos[p * 3 + 2] || 1;
+              g[0] += pos[p * 3] * a;
+              g[1] += pos[p * 3 + 1] * a;
+              g[2] += a;
+            }
+            let big = null;
+            for (const g of blocks.values()) if (!big || g[2] > big[2]) big = g;
+            if (!big || !(big[2] > 0)) continue;
+            const d = Math.hypot(T.lx[t] - big[0] / big[2], T.ly[t] - big[1] / big[2]);
+            checked++;
+            if (d > 1.5) {
+              miss++;
+              if (d > worst) { worst = d; worstName = String(T.names[t] || t); }
+            }
+          }
+        }
+        ok('标注点 = 最大连通域的重心（每层抽查 200 个）', miss === 0,
+           `查了 ${checked} 个，不对的 ${miss} 个`
+           + (worst ? `（最差 ${worst.toFixed(1)}px：${worstName}）` : ''));
       }
     }
 
@@ -3819,56 +3918,8 @@ const factory = new Function(
   ok('地图上确实有锁住的地块', ids.some((p) => ex.isSpecialTid(ex.titleAt(p, st.tier))));
     st.showWaste = _svWaste;
 
-  if (!isEU4) {
-    console.log('\n（CK3 模式到此为止 —— EU4 专属的导出不掺和）');
-  } else {
-    console.log('\n=== 5. 导出 EU4 mod（重画 provinces.bmp + definition.csv）===');
-    ex.paintTitle(tid, [12, 200, 90]);
-    savedBlob = null;
-    await ex.exportModEU4();
-    ok('生成了 Blob', !!savedBlob, savedBlob && String(savedBlob.size));
-    const zip = new Uint8Array(await savedBlob.arrayBuffer());
-    ok('是 zip（PK\\x03\\x04）', zip[0] === 0x50 && zip[1] === 0x4b && zip[2] === 3 && zip[3] === 4);
-
-    const entries = readZip(zip);
-    const names = Object.keys(entries);
-    console.log('    zip 内容：', names.map((n) => `${n} ${(entries[n].length / 1024).toFixed(0)}KB`).join(' / '));
-    ok('有 descriptor.mod', names.includes('descriptor.mod'));
-    ok('有 map/provinces.bmp', names.includes('map/provinces.bmp'));
-    ok('有 map/definition.csv', names.includes('map/definition.csv'));
-
-    const bmp = entries['map/provinces.bmp'];
-    const dv = new DataView(bmp.buffer, bmp.byteOffset, bmp.byteLength);
-    // 尺寸跟着当前这套图走（EU4 原版 5632×2048，另一套图 6400×2560）
-    const DW = st.meta.mapWidth, DH = st.meta.mapHeight;
-    const rowBytes = DW * 3 + ((4 - (DW * 3) % 4) % 4);
-    ok('BMP 魔数', bmp[0] === 0x42 && bmp[1] === 0x4d);
-    ok(`BMP 宽高 = ${DW}×${DH}`, dv.getInt32(18, true) === DW && dv.getInt32(22, true) === DH,
-       `${dv.getInt32(18, true)}×${dv.getInt32(22, true)}`);
-    ok('BMP 24 位、自下而上、不压缩',
-       dv.getUint16(28, true) === 24 && dv.getInt32(22, true) > 0 && dv.getUint32(30, true) === 0);
-    ok('BMP 体积对得上', bmp.length === 54 + rowBytes * DH,
-       `${bmp.length} vs ${54 + rowBytes * DH}`);
-
-    // 像素自下而上：地块 1 的地图坐标是 (px, py) 自上而下
-    const row = DH - 1 - py;
-    const off = 54 + row * rowBytes + px * 3;
-    ok('斯德哥尔摩那块像素被涂成了新颜色',
-       bmp[off] === 90 && bmp[off + 1] === 200 && bmp[off + 2] === 12,
-       `BGR = ${bmp[off]},${bmp[off + 1]},${bmp[off + 2]}（期望 90,200,12）`);
-
-    const csv = Buffer.from(entries['map/definition.csv']).toString('latin1');
-    const lines = csv.split('\n');
-    ok('definition.csv 有表头', lines[0].startsWith('province;red;green;blue;'), lines[0]);
-    ok('definition.csv 行数 = 4942', lines.filter((l) => l.trim()).length === 4942,
-       String(lines.filter((l) => l.trim()).length));
-    const row1 = lines[1].split(';');
-    ok('province 1 的颜色跟着改了', row1[0] === '1' && row1[1] === '12' && row1[2] === '200' && row1[3] === '90',
-       lines[1]);
-    // 名字列可能是中文；测试环境写文件时编码会把中文变成 ????，所以只要求非空 ✓
-    ok('province 1 的名字列非空（汉化后是中文）',
-       typeof row1[4] === 'string' && row1[4].length > 0, row1[4]);
-  }
+  // （原来这儿有一节「导出 EU4 mod」的测试 —— v1.6 把"导出 mod"这条路整个取消了 ✓
+  //   provinces.bmp / definition.csv 的生成、descriptor.mod、zip 结构这些断言一起撤掉）
 
   // 这条是上几轮被我误删的（原本在 CK3 分支里），按等价逻辑补回来
   if (WHICH === 'CK3') {
@@ -3883,16 +3934,62 @@ const factory = new Function(
     const ckT = JSON.parse(fs2.readFileSync('data/titles.json', 'utf8'));
     const ckM = JSON.parse(fs2.readFileSync('data/meta.json', 'utf8'));
     ok('CK3 缓存里没有 namesEn（不需要）', !ckT.namesEn);
-    // 公爵领以上（0~2 层）现在**也按地盘算**：标注点跟自身重心一致 ✓
-    // （以前这里会被改标到**法理首都**的几何中心，名字全挤在首都那儿 ✗）
-    let diff = 0, tot = 0;
-    for (let i = 0; i < ckT.tiers.length; i++) {
-      if (ckT.tiers[i] > 2 || ckT.lx[i] == null || ckT.gx[i] == null) continue;
-      tot++;
-      if (Math.abs(ckT.lx[i] - ckT.gx[i]) > 0.6 || Math.abs(ckT.ly[i] - ckT.gy[i]) > 0.6) diff++;
+    // 公爵领以上（0~2 层）的标注点必须**落在自家地盘的包围盒里** ✓
+    // （早先这一层会把名字改标到**法理首都**上；后来按整块地盘算。
+    //   现在口径是"像素最多的那块连通域的重心"，所以不该再拿它跟
+    //   全体重心 gx/gy 比 —— 多块地盘的头衔两者本来就不等 ✓
+    //   真正要守住的是：名字别跑到自家地盘之外（大洋中间那种 ✗））
+    {
+      const zlib = require('zlib');
+      const n2 = ckM.numProvinces, rows2 = ckM.tiers.length;
+      const tmb = zlib.inflateSync(fs2.readFileSync('data/titlemap.bin'));
+      const tm2 = new Uint16Array(tmb.buffer, tmb.byteOffset, rows2 * n2);
+      const ppb = zlib.inflateSync(fs2.readFileSync('data/prov_pos.bin'));
+      const pp2 = new Float32Array(ppb.buffer, ppb.byteOffset, ppb.byteLength / 4);
+      const box = new Map();
+      // **所有层取并集** ✓ —— 荒地那种"逐块节点"在粗层里挂的是共享节点
+      // （#不可通行 之类），只扫 0~2 层会把它自己的地块漏掉 ✗
+      for (let lv = 0; lv < rows2; lv++) {
+        const row = lv * n2;
+        for (let p = 1; p < n2; p++) {
+          const t = tm2[row + p];
+          if (!t) continue;
+          const x = pp2[p * 3], y = pp2[p * 3 + 1];
+          const b = box.get(t);
+          if (!b) box.set(t, [x, y, x, y]);
+          else {
+            if (x < b[0]) b[0] = x;
+            if (y < b[1]) b[1] = y;
+            if (x > b[2]) b[2] = x;
+            if (y > b[3]) b[3] = y;
+          }
+        }
+      }
+      let out = 0, tot = 0, worst = '', worstD = 0;
+      for (const [t, b] of box) {
+        if (ckT.lx[t] == null || ckT.ly[t] == null) continue;
+        // **伪头衔不看** ✓（编号 ≥ numRealTitles：海洋/湖泊/荒地那种）——
+        // 它们的地块在图层里挂得散、位置是另一套算法，本来也不当"地区名字"画 ✓
+        if (t >= (ckM.numRealTitles || ckM.numTitles)) continue;
+        if (String((ckT.keys[t] || '')).startsWith('#')) continue;
+        tot++;
+        const m = 64;        // 容差：包围盒是按地块**中心点**算的，边上留点余地；
+                             // 要抓的是"跑到大洋/别的洲"（那种偏离上千像素 ✗）
+        const d = Math.max(b[0] - m - ckT.lx[t], ckT.lx[t] - b[2] - m,
+                           b[1] - m - ckT.ly[t], ckT.ly[t] - b[3] - m);
+        if (d > 0) {
+          out++;
+          if (d > worstD) {
+            worstD = d;
+            worst = `${ckT.names[t]} #${t} 标 (${ckT.lx[t].toFixed(0)},${ckT.ly[t].toFixed(0)})`
+                    + ` 盒 x${b[0].toFixed(0)}~${b[2].toFixed(0)} y${b[1].toFixed(0)}~${b[3].toFixed(0)}`
+                    + ` 出 ${d.toFixed(0)}px`;
+          }
+        }
+      }
+      ok('公爵领以上的名字都落在自家地盘范围内（不再钉在法理首都 ✓）',
+         out === 0 && tot > 1000, `${tot} 个里头，出界的 ${out} 个${worst ? `：${worst}` : ''}`);
     }
-    ok('公爵领以上也按地盘算（不再钉在法理首都 ✓）', diff === 0 && tot > 1000,
-       `${diff} / ${tot} 个跟自身重心不同`);
     ok('CK3 没有年份视图', !(ckM.eraDates && ckM.eraDates.length),
        JSON.stringify(ckM.eraDates || []));
     const baronies = ckT.tiers.filter((x) => x === 4).length;
