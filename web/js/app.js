@@ -955,13 +955,17 @@ function syncLayerSwitches() {
      */
     const _anyBorderOn = !!(state.showPowerBorder || state.showRegionBorder || state.showBorderPaint);
     if (renderer.showWater !== _anyBorderOn) { renderer.showWater = _anyBorderOn; renderer.dirty = true; }
-    /* 粗细：**固定 1** ✓（用户定的 ✓）
-     *   以前这里取"链上最后一级"（= 势力 / 国家那一圈），链空时退回本层宽 ✗ ——
-     *   于是水域线跟着"开不开剧本 / 有没有粒度"在 1.5 和 1.0 之间跳 ✗
-     *   荒地边界同理（它连带跟着本层那条线走 ✓）→ 现在两条都钉死 1 ✓
+    /* 粗细：**固定 1 格 × 「基准线宽」** ✓（用户定的 ✓）
+     *   · **固定**：不跟链、也不跟本层那条线走 ✓
+     *     （以前取"链上最后一级（势力那一圈）"，链空时退回本层宽 ✗ →
+     *      开不开剧本 / 有没有粒度，水域线在 1.5 和 1.0 之间跳 ✗）
+     *   · **但要受基准线宽影响** ✓：整套粗细阶梯都按「基准线宽 / 1.6」缩放，
+     *     所以这里写 1 × 缩放，而不是钉死 1 个设备像素 ✓
+     *   · 荒地那条同一条规矩 ✓（固定宽 1 × 缩放、浓度实心 ✓）
      *   浓度那边不用管：着色器里写死实心（水域、荒地都是 ✓）*/
-    if (Math.abs(renderer.waterW - 1) > 0.001) { renderer.waterW = 1; renderer.dirty = true; }
-    if (Math.abs(renderer.wasteW - 1) > 0.001) { renderer.wasteW = 1; renderer.dirty = true; }
+    const _wScaleB = ((state.set && state.set.w) ? state.set.w : 1.6) / 1.6;
+    if (Math.abs(renderer.waterW - _wScaleB) > 0.001) { renderer.waterW = _wScaleB; renderer.dirty = true; }
+    if (Math.abs(renderer.wasteW - _wScaleB) > 0.001) { renderer.wasteW = _wScaleB; renderer.dirty = true; }
     /* 三个水域色：**必须跟 LUT 里真正生效的那个颜色一致** ✓
      *
      * ⚠ 两个坑我都踩过 ✗

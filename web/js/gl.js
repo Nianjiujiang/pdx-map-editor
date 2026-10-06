@@ -78,19 +78,20 @@ uniform int   uPaintOnly;       // 1 = **当前没停在年份视图**（CK3 那
  *   · 判据：一侧是水、一侧不是 ✓（水与水之间不画 ✓ 那是海面 ✗）
  */
 uniform int   uShowWater;       // 1 = 画水域边界
-uniform float uWaterW;          // 水域边界粗细（**固定 1** ✓ 用户定的 ✓ 不跟链走 ✗）
+uniform float uWaterW;          // 水域边界粗细（**固定 1 格 × 基准线宽** ✓ 用户定的 ✓ 不跟链走 ✗）
 uniform vec3  uSeaCol;          // 三个水域色：拿来认"这块地是不是水"
 uniform vec3  uLakeCol;
 uniform vec3  uRiverCol;
-/* ---- 荒地边界（**固定宽 1、浓度实心** ✓ 用户定的 ✓）------------------------
- *   · 判据跟水域那条一个路子：一侧是荒地、一侧不是 ✓（荒地跟荒地之间照旧画 ✓）
+/* ---- 荒地边界（**固定宽 1 格 × 基准线宽、浓度实心** ✓ 用户定的 ✓）-------------
+ *   · 判据：一侧是荒地、一侧不是 ✓（荒地跟荒地之间照旧画 ✓）
+ *   · **荒地 ↔ 国家那条边不归这一趟** ✓ —— 用户定的："以国家为准"：
+ *     它走「本层 / 多级边界」那几趟，按国家那一层的宽与浓画 ✓（见 rayDistTitle 的 _byReal ✓）
+ *     这一趟只管"两侧都没有真头衔"的荒地缝（荒地↔荒地、荒地↔无主地 ✓）
  *   · 以前它没有自己这一趟 —— 荒地边缘是**头衔那一趟**顺手画的 ✗
  *     于是宽度/浓度跟着"本层那条线"走：剧本层 + 没开粒度时是 1.5 + 实心，
  *     细层视图里是 1.0 + 50% ✗（用户报的"开不开剧本会变" ✓）
- *   · 所以现在两头都要动：**头衔那两趟把荒地边缘让出来** ✗（见 rayDistTitle 的 wasteOnly ✓）
- *     这一趟自己按固定档画 ✓
  */
-uniform float uWasteW;          // 荒地边界粗细（固定 1 ✓）
+uniform float uWasteW;          // 荒地边界粗细（固定 1 格 × 基准线宽 ✓）
 uniform float uBorderW;         // 分界线线宽，单位是**设备像素**
 uniform int   uExtraCount;      // 链上还有几级（0~4）
 uniform int   uExtraTier[4];    // 每一级看哪一层
@@ -298,15 +299,25 @@ float rayDistTitle(ivec2 ip, vec2 f, ivec2 dir, uint t, int R, int tier, bool wa
     bool _tw = (t != NONE && t >= uint(uRealTitles));
     bool _uw = (tt != NONE && tt >= uint(uRealTitles));
     // **这一格算不算"荒地边"**：两侧里有一侧是荒地（LUT alpha 那个标记 ✓）
-    bool _hasWaste = (_tw && wasteAlphaOf(t) > 0.5) || (_uw && wasteAlphaOf(tt) > 0.5);
-    /* **荒地边缘单独走一趟**（wasteOnly）✓ —— 用户定的：它固定宽 1、浓度实心 ✓
+    bool _selfWaste = _tw && wasteAlphaOf(t) > 0.5;
+    bool _otherWaste = _uw && wasteAlphaOf(tt) > 0.5;
+    bool _hasWaste = _selfWaste || _otherWaste;
+    /* **这条缝上站着"真头衔"吗**（国家 / 省份那种 ✓；海、荒地、无主地都不算 ✗）
+     *   用户定的：**荒地 ↔ 国家那条边以国家为准** ✓ —— 它归"本层 / 多级边界"那几趟，
+     *   按**国家那一层的宽与浓**画 ✓，不归荒地那条固定线 ✗ */
+    bool _byReal = (t != NONE && t < uint(uRealTitles))
+                || (tt != NONE && tt < uint(uRealTitles));
+    /* **荒地自己那条线**（wasteOnly ✓ 固定宽 1 格 × 基准线宽、浓度实心 ✓ 用户定的 ✓）
+     *   只管**两侧都没有真头衔**的荒地缝：
+     *     · 荒地 ↔ 荒地 ✓、荒地 ↔ 无主地 ✓ → 这一条画
+     *     · 荒地 ↔ 国家 → 让给国家那条线 ✓（_byReal ✓ "以国家为准" ✓）
+     *     · 荒地 ↔ 水   → 让给水域那条线 ✓（上面那行就 break 了 ✓）
+     *   所以两头一起判：正常那几趟把"纯荒地缝"让出来 ✗，只留带真头衔的那些 ✓
+     *   （只加新那趟不让旧的 = 同一条缝画两遍，粗的压细的 ✗）
      *   理由：以前荒地边缘是这一趟顺手画的 ✗ → 跟着"本层那条线"在
-     *   1.5+实心（剧本层）和 1.0+50%（细层）之间跳 ✗
-     *   所以：正常那几趟（本层 / 多级边界）**把荒地边让出来** ✗，
-     *   由 main() 里那条固定档的水管（dWaste）画 ✓
-     *   —— 两头必须一起改：只加新那趟不让旧的，同一条缝会画两遍（粗的压细的 ✗）
-     */
-    if (_hasWaste != wasteOnly) continue;
+     *   1.5+实心（剧本层）和 1.0+50%（细层）之间跳 ✗ */
+    bool _want = wasteOnly ? (_hasWaste && !_byReal) : (!_hasWaste || _byReal);
+    if (!_want) continue;
     if (_tw && _uw) {
       float wa = wasteAlphaOf(t);
       float wb = wasteAlphaOf(tt);
@@ -537,7 +548,8 @@ void main() {
       float b  = 1.0 - smoothstep(bw - ramp, bw + ramp, dTitle);
       col = mix(col, vec3(0.035, 0.045, 0.06), b * uBorderA);
     }
-    /* **荒地边界**：固定宽 1 ✓ 浓度**实心** ✓（不加浓度系数 ✓ 用户定的 ✓）
+    /* **荒地边界**：固定宽 1 格 × 基准线宽 ✓ 浓度**实心** ✓（不加浓度系数 ✓ 用户定的 ✓）
+     *   只管"两侧都没有真头衔"的荒地缝 ✓ —— 荒地 ↔ 国家那条归国家那趟（以国家为准 ✓）
      *   它以前是借头衔那一趟画的 ✗ → 跟着剧本/粒度在 1.5+实心 与 1.0+50% 之间跳 ✓ */
     if (dWaste < 1e8) {
       float bwwd = 0.5 * uWasteW * uMapPerPx;
@@ -551,7 +563,7 @@ void main() {
       col = mix(col, vec3(0.035, 0.045, 0.06), bp * uPaintBorderA);
     }
     /* **水域边界**：浓度**实心** ✓（不加浓度系数 ✓ 用户定的 ✓）
-     * 粗细固定 1（uWaterW ✓ 用户定的 ✓ 不再跟链/本层宽走 ✗）*/
+     * 粗细固定 1 格 × 基准线宽（uWaterW ✓ 用户定的 ✓ 不再跟链/本层宽走 ✗）*/
     if (dWater < 1e8) {
       float bww = 0.5 * uWaterW * uMapPerPx;
       float bwv = 1.0 - smoothstep(bww - ramp, bww + ramp, dWater);
@@ -716,8 +728,10 @@ export class MapRenderer {
     this.paintOnly = false;
     /* 水域边界（海 / 湖 / 河 ✓ 用户定的四条）：
      *   · showWater：一直画 ✓ 只有"当前模式里能关的边界全关了"才藏（app 每帧给）
-     *   · waterW：**固定 1** ✓（用户定的 ✓ 以前取"链上最粗那条"，会跟着剧本/粒度变 ✗）
-     *   · wasteW：荒地边界也是**固定 1** ✓（浓度在着色器里写死实心 ✓）
+     *   · waterW / wasteW：**固定 1 格 × 「基准线宽」** ✓（用户定的 ✓）
+     *     以前 waterW 取"链上最粗那条"，会跟着剧本/粒度变 ✗；
+     *     现在固定，但**仍随基准线宽等比缩放** ✓（app 每帧给 = 缩放值 ✓）
+     *   · 浓度：着色器里写死实心 ✓
      *   · 三个水域色：用来认"这块地是不是水" ✓ 设置里改了颜色这里跟着变 ✓ */
     this.showWater = true;
     this.waterW = 1.0;
