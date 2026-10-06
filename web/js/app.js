@@ -778,8 +778,18 @@ function pidsOf(tid) {
 
 /** 拍一张快照：这些 pid 现在是什么状态 */
 function snapshotPids(tid) {
+  return snapshotPidsList(pidsOf(tid));
+}
+
+/**
+ * 同上，但直接给一串 pid ✓
+ *
+ * 「填色·边界」下按**色块**擦除时走这条：那一笔不是按头衔清的
+ * （同一个头衔里别的颜色的地不归它管 ✗），所以快照也得按地块拍 ✓
+ */
+function snapshotPidsList(pids) {
   const snap = [];
-  for (const pid of pidsOf(tid)) {
+  for (const pid of pids) {
     const cur = state.provTitle ? state.provTitle[pid] : -1;
     snap.push({
       pid,
@@ -1497,6 +1507,26 @@ function playerGroupPidsAt(pid) {
   return out;
 }
 
+/**
+ * 同一层头衔**内部**、跟 pid 同一块色的那些地块 ✓（点在**没涂过**的地上时用）
+ *
+ * 跟 playerGroupPidsAt 的差别只有**范围**：
+ *   · 那个是全图扫"同色同标签"（玩家一笔涂出来的那几个国家算一族 ✓）
+ *   · 这个是"本层头衔那几块地里，颜色与标记都一样的那部分"
+ *
+ * 为什么要分开：剧本视图 + 「填色·边界」下点一块**原版色**的地，能动的只有
+ * "跟它看起来一样的那一块色" ✗ 不能沿用手绘层那套全图扫 ——
+ * 荒地、海那种"全图共用一个伪头衔"的会被一并卷进来 ✗
+ * （悬停那套 hoverGroupRgb 就是为这个把伪头衔/荒地挡在外面的 ✓ 这里同理 ✓）
+ */
+function sameBlockPids(tid, pid) {
+  const want = paintIdentOf(pid);
+  if (!want) return [];
+  const out = [];
+  for (const q of pidsOf(tid)) if (paintIdentOf(q) === want) out.push(q);
+  return out;
+}
+
 /** 某个地块的"身份"（标签名 + 颜色）—— 涂色分支要用它判断"整块是否同族" ✓ */
 function paintIdentOf(q) {
   const pd = renderer && renderer.paintData;
@@ -1569,16 +1599,25 @@ function paintAt(pid, tid) {
       return;   // 静静地不涂就行，别弹东西打扰
     }
     // **开着「填色·边界」→ 以玩家为准**：
-    // 点中的这块，连同全图同色同标签的那些地方一起涂 ——
-    // 玩家一次用新颜色涂的那几块，就算一个国家 ✓
+    // 一笔涂的是**色块**（同色同标记的一片地），不是"整个头衔" ——
+    //   · 点中的地**涂过** → 全图同色同标签的那些一起涂 ✓
+    //     （玩家一次用新颜色涂的那几块，就算一个国家 ✓）
+    //   · 点中的地**没涂过** → 只在本层头衔里找跟它同色同标记的 ✓
     {
       const _pd = renderer && renderer.paintData;
       const _nEra1 = (state.meta.eraDates && state.meta.eraDates.length) || 0;
       const _eraOnly = _nEra1 > 0 && state.grain == null && editTier() < _nEra1;
-      if (_eraOnly && state.showBorderPaint && _pd && _pd[pid * 4 + 3] > 0) {
+      if (_eraOnly && state.showBorderPaint && _pd) {
         // 规则：一次性涂「鼠标所指地块的**同色同标签的所有色块**」✓
         // 色块 = 地块；每块涂它自己最细那一层，保证只覆盖这一块 ✓
-        const _pids = playerGroupPidsAt(pid);
+        //
+        // ⚠ 点**没涂过**的地时，绝不能再退回 `paintTitle(tid)` 按头衔整国铺一遍 ✗ ——
+        //   同一个头衔里玩家涂过别的颜色的那些地（1936 剧本里被德国占掉的半壁法国
+        //   就是这种）属于**别的色块**，一块都不许碰 ✓
+        //   （那个退路只在**涂过**的地上留着：认不出族时至少把点中这块涂掉 ✓；
+        //     没涂过的地认不出身份就直接按下面的老路走，不在这里多涂 ✗）
+        const _onPainted = _pd[pid * 4 + 3] > 0;
+        const _pids = _onPainted ? playerGroupPidsAt(pid) : sameBlockPids(tid, pid);
         if (_pids.length) {
           const _fine = TIER_COUNT - 1;
           // 一次点击 = **一步**历史（跟擦除那边一个规矩）：先把整族要动的
@@ -1595,11 +1634,13 @@ function paintAt(pid, tid) {
           pushPatches(_snaps);
           return;
         }
-        // 认不出族（没有同色同标签的）→ 退回只涂点中这块 ✓
-        const _fineT = titleAt(pid, TIER_COUNT - 1);
-        if (_fineT != null && _fineT !== NO_TITLE) {
-          paintTitle(_fineT, to);
-          return;
+        // 认不出族（没有同色同标签的）→ **涂过**的地退回只涂点中这块 ✓
+        if (_onPainted) {
+          const _fineT = titleAt(pid, TIER_COUNT - 1);
+          if (_fineT != null && _fineT !== NO_TITLE) {
+            paintTitle(_fineT, to);
+            return;
+          }
         }
       }
     }
@@ -1640,6 +1681,29 @@ function restoreTitle(tid, noHistory) {
   state.painted.delete(tid);
   if (!noHistory) pushPatches(_snap);
   state.changed.delete(tid);
+  updateStatus();
+  blocksDirty = true;
+  scheduleSave();
+
+  markPaint();
+}
+
+/**
+ * 只清**这几个地块**的笔迹（不进历史 —— 调用方自己拍快照、自己合成一条 patch ✓）
+ *
+ * 跟 restoreTitle 的区别只在范围：那个按**头衔**清（这个头衔的地块全算），
+ * 这个按**地块**清。「填色·边界」下擦一个色块必须用这个 ——
+ * 同一个头衔里被涂成别的颜色的地（1936 剧本里德国占的那半壁法国）不归这一笔管 ✗
+ */
+function clearPidsPaint(pids) {
+  // 头衔重刷会影响显示颜色 → 荒地那套**全量重算** ✓
+  state._wasteDirty = null;
+  for (const pid of pids) {
+    renderer.setPaint(pid, 0, 0, 0, 0);
+    renderer.setPaintLabel(pid, 0);
+    if (state.provTitle) state.provTitle[pid] = -1;
+    if (state.provLabel) state.provLabel[pid] = -1;
+  }
   updateStatus();
   blocksDirty = true;
   scheduleSave();
@@ -2340,27 +2404,49 @@ function actAt(clientX, clientY) {
   } else if (state.tool === 'paint') {
     paintAt(pid, tid);
   } else if (state.tool === 'erase') {
-    // **按"点到的整块地区"清**：在河南（公爵领）上点一下，把这块地**包含的**
-    // 所有涂色一起清掉 —— 里面涂过的伯爵领不用一个个点。
-    // 涂色是按像素落下去的，所以范围就按编辑层那一块所占的像素来取。
-    const n = state.meta.numProvinces;
-    const tm = state.titlemap;
-    const editT = editTier();
-    const nT = state.meta.tierNames.length;
-    const hits = [];
-    for (let p = 1; p < n; p++) {
-      if (tm[editT * n + p] !== tid) continue;
-      for (let ti = 0; ti < nT; ti++) {
-        const one = tm[ti * n + p];
-        if (one !== NO_TITLE && state.painted.has(one) && hits.indexOf(one) < 0) hits.push(one);
+    // 两种口径：
+    //   · **剧本视图 + 没开粒度 + 「填色·边界」开着** → **按色块清**（跟涂色同一个口径 ✓）：
+    //     只清"跟点中的这块同色同标记"的笔迹。同一个头衔里被涂成别的颜色的地方
+    //     （1936 剧本里德国占领的那半壁法国就是这种）一块都不许碰 ✗
+    //   · 其余情况照旧 **按"点到的整块地区"清**：在河南（公爵领）上点一下，把这块地
+    //     **包含的**所有涂色一起清掉 —— 里面涂过的伯爵领不用一个个点。
+    //     涂色是按像素落下去的，所以范围就按编辑层那一块所占的像素来取。
+    const _nEraE = (state.meta.eraDates && state.meta.eraDates.length) || 0;
+    const _eraErase = _nEraE > 0 && state.grain == null && editTier() < _nEraE;
+    const _pdE = renderer && renderer.paintData;
+    if (_eraErase && state.showBorderPaint && _pdE) {
+      // 点中的地**涂过** → 全图同色同标签的都算（跟涂色那边认族同一套 ✓）；
+      // 没涂过 → 只在本层头衔里找同色同标记的（那多半一块都没涂 = 本来就没什么可清 ✓）
+      const _blk = _pdE[pid * 4 + 3] > 0 ? playerGroupPidsAt(pid) : sameBlockPids(tid, pid);
+      const _live = _blk.filter((q) => _pdE[q * 4 + 3] > 0);   // 只清真有笔迹的地块 ✓
+      if (_live.length) {
+        // 一次点击 = **一步**历史 ✓：快照 → 按**地块**清 → 合成一条 patch ✓
+        const _snaps = snapshotPidsList(_live);
+        clearPidsPaint(_live);
+        // 清完可能有的头衔只剩半个、甚至一块地都不剩 → 账本按手绘层重算 ✓
+        recomputePainted();
+        pushPatches(_snaps);
       }
+    } else {
+      const n = state.meta.numProvinces;
+      const tm = state.titlemap;
+      const editT = editTier();
+      const nT = state.meta.tierNames.length;
+      const hits = [];
+      for (let p = 1; p < n; p++) {
+        if (tm[editT * n + p] !== tid) continue;
+        for (let ti = 0; ti < nT; ti++) {
+          const one = tm[ti * n + p];
+          if (one !== NO_TITLE && state.painted.has(one) && hits.indexOf(one) < 0) hits.push(one);
+        }
+      }
+      if (!hits.length) return;
+      // 一次点击 = **一步**历史：先把要清的都拍快照，再一起清，最后合成一条 patch
+      const _snaps = [];
+      for (const one of hits) _snaps.push(...snapshotPids(one));
+      for (const one of hits) restoreTitle(one, true);
+      pushPatches(_snaps);
     }
-    if (!hits.length) return;
-    // 一次点击 = **一步**历史：先把要清的都拍快照，再一起清，最后合成一条 patch
-    const _snaps = [];
-    for (const one of hits) _snaps.push(...snapshotPids(one));
-    for (const one of hits) restoreTitle(one, true);
-    pushPatches(_snaps);
   }
   renderHoverCard(state.hover.pid);
   positionHoverCard(clientX, clientY);
