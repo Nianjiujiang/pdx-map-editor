@@ -790,12 +790,15 @@ const factory = new Function(
   const tierOf = (nm) => (st.meta.tierNames || []).indexOf(nm);
   {
     // 数据层的事实：这局荒地里有多少**序号在真头衔范围内**
-    //   EU5 全是这种（所以 shader 里那条判据绝不许挂"必须是伪头衔"的前置 ✗）
+    //   EU5 原来全是这种（17818/1819 ✗）→ 现在被 patch_waste_pseudo.py 挪成伪头衔了 ✓
+    //   所以这条同时是**不变量断言**：荒地必须全在伪头衔区 ✓
     const _wl = st.meta.wasteland || [];
     const _nr = Number(st.meta.numRealTitles) || 0;
     const _below = _wl.filter((x) => x < _nr).length;
     console.log(`    （这局荒地 ${_wl.length} 个，序号在**真头衔范围内**的 ${_below} 个`
-      + ' —— EU5 全是这种 ✓ 别的模式一般是 0 ✓）');
+      + ' —— 必须全是 0 ✓ EU5 以前是 1818 ✗）');
+    ok('荒地全是伪头衔（序号 >= numRealTitles ✓ 各模式一个形状 ✓）',
+       _below === 0, `${_wl.length} 个荒地里 ${_below} 个还在真头衔范围 ✗`);
   }
   /** 跟 app 的 countryTier() 一套：细层视图下"最近的那个剧本层"要跳过空白剧本 ✓ */
   const countryT = () => {
@@ -3030,10 +3033,14 @@ const factory = new Function(
       const isColoured = (t2) => JSON.stringify(lutOf(t2)) !== JSON.stringify(restOf(t2));
       const colouredN = () => st.meta.wasteland.filter((t2) => isColoured(t2)).length;
 
-      // 共享的那个灰伪头衔：meta.wasteland 里唯一"序号 >= 真实节点数"的那个
+      // 共享的那个灰伪头衔：找**键以 '#' 开头**的那个荒地节点 ✓
+      //   ⚠ 不能拿"meta.wasteland 里第一个 >= numRealTitles 的"当它 ✗ ——
+      //     EU5 的荒地现在**全是**伪头衔了（patch_waste_pseudo.py 把它们挪到尾 ✓），
+      //     那样 grp 抓到的是一个**陆地荒地**节点，跟下面那个 wtid 撞车 ✗
+      //     （测试当场报过「pid=43 tid=33548 / 灰节点=33548」✓ 逮住了 ✓）
       let grp = -1;
       for (const _t of st.meta.wasteland) {
-        if (_t >= st.meta.numRealTitles) { grp = _t; break; }
+        if (String((st.titles.keys || [])[_t] || '').charAt(0) === '#') { grp = _t; break; }
       }
       let wpid = -1;
       for (let pid = 1; pid < st.meta.numProvinces; pid++) {

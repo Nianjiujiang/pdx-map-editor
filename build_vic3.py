@@ -593,6 +593,13 @@ def main() -> int:
     # 荒地的事后加工（幂等）：每层都指向它自己 / 周长表 / 按层归属 / 名字 / 隐藏地名
     from patch_wasteland import patch as _patch_waste
     _patch_waste(DATA)
+    # **荒地挪成伪头衔**（幂等）：EU5 的荒地序号混在真头衔里 ✗ ——
+    #   app 里"伪头衔（>= numRealTitles）= 背景地形"那条假设在 EU5 上不成立，
+    #   于是荒地轮廓被画成"本层那条线"的 50% ✗（用户报过 ✓）
+    #   放在荒地加工**之后**（它已经把那几张表烘好了 ✓）、
+    #   空白剧本**之前**（空白那一行照抄的是最终编号 ✓）
+    from patch_waste_pseudo import patch as _patch_waste_pseudo
+    _patch_waste_pseudo(DATA)
     # 再补一层**空白剧本**（幂等）：放在荒地之后 —— 它照抄的是"最终这版"的背景地形 ✓
     from patch_blank_era import patch as _patch_blank
     _patch_blank(DATA)
