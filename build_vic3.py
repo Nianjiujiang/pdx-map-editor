@@ -289,13 +289,15 @@ def main() -> int:
                 base = 210.0
             else:
                 d = mx - min(r, g, b)
+                # 变量名别叫 h ✗ —— main() 里 h 是地图高度，这里一覆盖，
+                # 后面 np.mgrid[0:h, 0:w] 拿到的就是角度值，质心那步直接崩
                 if mx == r:
-                    h = ((g - b) / d) % 6
+                    hue = ((g - b) / d) % 6
                 elif mx == g:
-                    h = (b - r) / d + 2
+                    hue = (b - r) / d + 2
                 else:
-                    h = (r - g) / d + 4
-                base = (60.0 * h) % 360.0
+                    hue = (r - g) / d + 4
+                base = (60.0 * hue) % 360.0
         placed: list = []
         for i, key in enumerate(kids):
             col = pick_color((base + i * 17.0) % 360.0, 62.0, placed)
@@ -341,7 +343,7 @@ def main() -> int:
     # 8. 海 / 湖 / 不可通行
     blank = (np.all(titlemap == NO_TITLE, axis=0) & present) | (impassable & present)
     log(f"完全没有归属的地块：{int(blank.sum())} 个")
-    special, assign, stats, fine_assign, waste_pids, _low_assign, _waste_tids = build_special_titles(
+    special, assign, stats, fine_assign, waste_pids, _waste_tids = build_special_titles(
         {"sea_starts": set(np.nonzero(is_sea)[0].tolist()),
          "lakes": set(np.nonzero(is_lake)[0].tolist())},
         n_prov, blank, n_real, categories=SPECIAL_CATEGORIES,

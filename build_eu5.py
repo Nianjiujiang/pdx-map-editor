@@ -711,7 +711,10 @@ def main() -> int:
                               "c": list(named[cmap[tag]] if cmap.get(tag) in named else ccol[tag])}
                         for tag in sorted(set(cmap) | set(ccol))
                         if cmap.get(tag) in named or tag in ccol},
-        "defaultTier": len(TIER_ORDER) - 1, "labelZoom": [12, 30, 60, 120, 240],   # 1337 那层门槛要低于全图视角（8192 宽的图约 16%）
+        # 默认停在**省份**层 —— EU5 最细那层是「地点」，跟 EU4 / V3 的"省份"不是
+        # 一个东西；写 `len(TIER_ORDER) - 1` 会默认落到「地点」，跟已发布的行为、
+        # 以及 EU5 那条测试的期望都不一致 ✗
+        "defaultTier": TIER_ORDER.index("prov"), "labelZoom": [12, 30, 60, 120, 240],   # 1337 那层门槛要低于全图视角（8192 宽的图约 16%）
         "eraDates": ["1337.4.1"], "noTitle": NO_TITLE, "specialPrefix": "#",
         "colorLutWidth": 256, "lockedKinds": [],
         # 荒地（不可通行）：哪些节点算荒地（前端据此决定"荒漠涂色"关着时显示灰），

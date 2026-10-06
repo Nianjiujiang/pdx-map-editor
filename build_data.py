@@ -195,50 +195,6 @@ def parse_default_map(path: Path) -> dict[str, set[int]]:
     return out
 
 
-#: 海域分片的中文名（default.map 里的英文标题 → 中文）
-SEA_GROUP_ZH = {
-    "European Seas": "欧洲海域",
-    "North European Seas": "北欧海域",
-    "Mediterranean Seas": "地中海海域",
-    "Black, Azov, Caspian & Aral Seas": "黑海·亚速海·里海·咸海",
-    "Middle Eastern Seas": "中东海域",
-    "Indian Seas": "印度洋海域",
-    "African Seas": "非洲海域",
-    "East Asia Seas": "东亚海域",
-    "LAKES": "湖泊群",
-}
-
-#: 海域从"郡"这层开始细分成逐块（层序 e→k→d→c→b，0/1/2 = 公国领及以上）
-SEA_SPLIT = 3
-
-
-def read_sea_groups(map_path: Path) -> list[tuple[str, list[int]]]:
-    """读 default.map 里按注释分片的 sea_zones（每片海域 = 一个标题 + 省份号）"""
-    try:
-        lines = map_path.read_text(encoding="utf-8", errors="ignore").splitlines()
-    except OSError:
-        return []
-    groups: list[tuple[str, list[int]]] = []
-    cur: tuple[str, list[int]] | None = None
-    for raw in lines:
-        s = raw.strip()
-        if s.startswith("#") and re.search(r"[A-Za-z]", s):
-            title = s.lstrip("# ").strip()
-            cur = None
-            if len(title) > 2 and not title.startswith("max_provinces"):
-                cur = (title, [])
-                groups.append(cur)
-            continue
-        m = re.match(r"sea_zones\s*=\s*(RANGE\s*)?\{([^}]*)\}", s)
-        if m and cur is not None:
-            nums = [int(x) for x in re.findall(r"\d+", m.group(2))]
-            if len(nums) == 2 and m.group(1):
-                cur[1].extend(range(nums[0], nums[1] + 1))
-            else:
-                cur[1].extend(nums)
-    return [(title, pids) for title, pids in groups if pids]
-
-
 #: 这些类别**每块地单独一个节点**（可以一块块涂色），其余地形仍旧一类一个伪头衔。
 #: 都是"不可通行的陆地 / 无归属荒地"—— 玩家会想按周边国家给它们上色。
 SETTABLE_CATEGORIES = ("#impassable", "#wasteland")
@@ -249,7 +205,6 @@ def build_special_titles(
     n_prov: int,
     blank: np.ndarray,
     base_index: int,
-    sea_groups: list[tuple[str, list[int]]] | None = None,
     special_names: dict[str, str] | None = None,
 ) -> tuple[list[Title], np.ndarray, list[str], np.ndarray, list[int], np.ndarray, list[int]]:
     """给制不出头衔的地块分类；海/湖/河一类一个伪头衔，**荒地每块一个**。
@@ -257,12 +212,11 @@ def build_special_titles(
     :param blank: 长度 n_prov 的 bool 表，True 表示这个省份在**所有**层级
                   都没有头衔（也就是海、湖、河、山这些）。
     :returns: (伪头衔列表, 全层共用的归属数组, 分类统计文字,
-               只落在最细那层的归属数组, 逐块荒地的地块号, 海块的逐块归属,
+               只落在最细那层的归属数组, 逐块荒地的地块号,
                逐块荒地的**真实节点号**（与地块号一一对应）)
     """
     assign = np.full(n_prov, -1, dtype=np.int64)
     fine_assign = np.full(n_prov, -1, dtype=np.int64)   # 只有"逐块荒地"会用到
-    low_assign = np.full(n_prov, -1, dtype=np.int64)    # 海域：郡/男爵领层的逐块节点
     titles: list[Title] = []
     stats: list[str] = []
     waste_pids: list[int] = []
@@ -281,51 +235,14 @@ def build_special_titles(
             candidates = rest
         if candidates.size == 0:
             continue
-        if key == "#sea" and sea_groups:
-            # ① 海：按 default.map 的分片建"整片海域"组节点（公国领及以上用它 ✓）
-            cand = set(candidates.tolist())
-            taken: set[int] = set()
-            for title_en, pids in sea_groups:
-                gidx = base_index + len(titles)
-                gt = Title(f"#sea_grp_{len(titles)}", tier="@")
-                gt.color = rgb
-                titles.append(gt)
-                if special_names is not None:
-                    special_names[gt.key] = SEA_GROUP_ZH.get(title_en, title_en)
-                n_in = 0
-                for pid in pids:
-                    if pid in cand and pid not in taken:
-                        taken.add(pid)
-                        assign[pid] = gidx
-                        n_in += 1
-                stats.append(f"{SEA_GROUP_ZH.get(title_en, title_en)} {n_in}")
-            rest = sorted(cand - taken)
-            if rest:
-                gidx = base_index + len(titles)
-                gt = Title(f"#sea_grp_other_{len(titles)}", tier="@")
-                gt.color = rgb
-                titles.append(gt)
-                if special_names is not None:
-                    special_names[gt.key] = "其它海域"
-                for pid in rest:
-                    assign[pid] = gidx
-                stats.append(f"其它海域 {len(rest)}")
-            # ② 海：**逐块节点**（郡/男爵领层用）
-            for pid in sorted(cand):
-                low_assign[pid] = base_index + len(titles)
-                wt = Title(f"wz_{pid}", tier=TIER_ORDER[-1])
-                wt.color = rgb
-                titles.append(wt)
-            stats.append(f"→ 逐块 {len(cand)} 个")
-        else:
-            # 共享的粗层伪头衔（照旧：海/湖/河/荒地的**粗层**都是它）
-            assign[candidates] = base_index + len(titles)
-            t = Title(key, tier="@")
-            t.color = rgb
-            titles.append(t)
-            if special_names is not None:
-                special_names[t.key] = label
-            stats.append(f"{label} {candidates.size}")
+        # 共享的粗层伪头衔（照旧：海/湖/河/荒地的**粗层**都是它）
+        assign[candidates] = base_index + len(titles)
+        t = Title(key, tier="@")
+        t.color = rgb
+        titles.append(t)
+        if special_names is not None:
+            special_names[t.key] = label
+        stats.append(f"{label} {candidates.size}")
         # ② 荒地额外：**每块地一个节点**，只占最细那一层
         if key in SETTABLE_CATEGORIES:
             for pid in candidates.tolist():
@@ -338,7 +255,7 @@ def build_special_titles(
                 waste_tids.append(_tid)
             stats.append(f"→ 逐块 {len(candidates)} 个")
 
-    return titles, assign, stats, fine_assign, waste_pids, low_assign, waste_tids
+    return titles, assign, stats, fine_assign, waste_pids, waste_tids
 
 
 # ------------------------------------------------------------------ 头衔
@@ -555,10 +472,9 @@ def main() -> int:
     blank = np.all(titlemap == NO_TITLE, axis=0) & present
     log(f"完全没有头衔的地块：{int(blank.sum())} 个")
 
-    _sea_groups = []   # 海域分组已废弃（按要求删掉）
     _special_names: dict[str, str] = {}
-    special, assign, stats, fine_assign, waste_pids, low_assign, waste_tids = build_special_titles(
-        terrain, n_prov, blank, len(ordered), _sea_groups, _special_names)
+    special, assign, stats, fine_assign, waste_pids, waste_tids = build_special_titles(
+        terrain, n_prov, blank, len(ordered), _special_names)
     log("地形类别：" + "，".join(stats) if stats else "地形类别：无")
 
     sel = assign >= 0
@@ -566,12 +482,6 @@ def main() -> int:
         vals = assign[sel].astype(np.uint16)
         for r in range(len(TIER_ORDER)):
             titlemap[r, sel] = vals
-    # 海域：郡 / 男爵领两层换成**逐块节点**（公国领及以上仍旧整片海域 ✓）
-    sel_low = low_assign >= 0
-    if sel_low.any():
-        low_vals = low_assign[sel_low].astype(np.uint16)
-        for r in range(SEA_SPLIT, len(TIER_ORDER)):
-            titlemap[r, sel_low] = low_vals
 
     # 逐块荒地**只盖最细那层** —— 粗层照旧是那块共享的灰（跟 EU5 一个口径）
     sel2 = fine_assign >= 0
@@ -585,7 +495,7 @@ def main() -> int:
     WATER_KEYS = ("#river", "#lake", "#sea", "#impassable_sea")
 
     def _is_water_key(k: str) -> bool:
-        return k in WATER_KEYS or k.startswith("#sea_grp_") or k.startswith("wz_")
+        return k in WATER_KEYS
     water_tids = {len(ordered) + k for k, sp in enumerate(special) if _is_water_key(sp.key)}
     # 逐块荒地的**真实节点号**直接来自 build_special_titles（建节点时记的）。
     # 以前在这里拿"special 尾部恰好连续 len(waste_pids) 个"反推 waste_base，
@@ -758,17 +668,14 @@ def main() -> int:
     # 头衔表：用并行的数组，比对象数组省一半体积
     # 伪头衔在本地化表里当然查不到，用 SPECIAL_CATEGORIES 里写好的中文名
     special_names = {key: label for key, label, _rgb, _src in SPECIAL_CATEGORIES}
-    # 海域组节点的中文名（分组时写进 _special_names）+ 逐块海块用该省自己的名字 ✓
+    # 伪头衔的中文名（SPECIAL_CATEGORIES 里写好的那份 + 函数里 name_sink 带出来的）
     special_names.update(_special_names)
     payload = {
         "keys": [t.key for t in ordered_all],
         "tiers": [TIER_ORDER.index(t.tier) if t.tier in TIER_ORDER else len(TIER_ORDER)
                   for t in ordered_all],
         "parents": [index_of.get(t.parent, -1) if t.parent else -1 for t in ordered_all],
-        "names": [names.get(t.key) or special_names.get(t.key)
-                  or (prov_names[int(t.key[3:])] if t.key.startswith("wz_")
-                      and t.key[3:].isdigit() and int(t.key[3:]) < len(prov_names) else None)
-                  or t.key for t in ordered_all],
+        "names": [names.get(t.key) or special_names.get(t.key) or t.key for t in ordered_all],
         "colors": [[int(c[0]), int(c[1]), int(c[2])] for c in colors],
         "provCount": prov_count,
         "area": area.tolist(),

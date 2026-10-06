@@ -297,52 +297,21 @@ def pick_color(seed: float, amp: float, placed: list, min_dist: float = MIN_COLO
 SETTABLE_CATEGORIES = ("#wasteland",)
 
 
-def read_sea_areas(map_dir: Path, sea_pids: set[int]) -> list[tuple[str, list[int]]]:
-    """area.txt → [(区名, 省份号)]（只留含海省的区）
-
-    EU4 的海归在 ``baltic_area`` 这种"区"里；region 层里没有海 ✗，所以两级都用区 ✓
-    ``map_dir`` 传的是**这套地图**的目录 —— 高清那张要走它自己的 area.txt ✓
-    """
-    p_area = map_dir / "area.txt"
-    if not p_area.is_file():
-        p_area = map_dir / "map" / "area.txt"      # 传进来的是游戏根目录时兜一下
-    if not p_area.is_file():
-        return []
-    out: list[tuple[str, list[int]]] = []
-    # 用 E.parse_areas 切（大括号配对）：area.txt 里 50 个区带 color = { r g b }，
-    # 正则 [^}]* 会在 color 的收尾大括号处腰斩，把颜色分量当省份号、真省份全丢
-    areas, _cols = E.parse_areas(p_area)
-    for name, pids in areas.items():
-        if not pids or not (set(pids) & sea_pids):
-            continue
-        out.append((name, pids))    # 传原始键（baltic_area），起名时走汉化查中文 ✓
-    return out
-
-
 def build_special_titles(lists: dict[str, set[int]], n_prov: int, blank: np.ndarray,
                          base_index: int, categories=None, fine_tier: str = "pr",
-                         groups: list[tuple[str, list[int]]] | None = None,
-                         group_split: int | None = None,
-                         group_key: str | None = None,
                          name_sink: dict[str, str] | None = None):
     """给海/湖/荒地各造一个伪头衔；**荒地额外每块一个**。
 
     返回 (头衔列表, 全层共用的归属, 统计文字, 只占最细层的归属, 逐块荒地的地块号,
-          分组类别的逐块归属, 逐块荒地的**真实节点号**)。
+          逐块荒地的**真实节点号**)。
 
     :param categories: 默认用 EU4 那套；HOI4 只有海和湖，自己传一份。
     :param fine_tier: 逐块荒地落在哪一层（EU4 是 "pr" 省份层）。
         **得传进来**：TIER_ORDER 是 main() 里的局部变量，模块层的函数看不见它。
-    :param groups: 分组（HOI4 的战略区 / EU4 的海区）：[(名字, 省份集合)]。
-        传了它，这个类别就变成"粗层整片 + 细层逐块" ✓
-    :param group_split: 从第几层开始算细层（层序里的小标号）。None = 不分组。
-    :param group_key: 分组只作用于这个类别（一般就是 "#sea"）。
-        不传就以 groups 的第一个类别为准 —— 免得把湖泊也按战略区拆了 ✗
-    :param name_sink: 组节点的中文名写进这个字典（调用方拼 titles.json 时用）。
+    :param name_sink: 伪头衔的中文名写进这个字典（调用方拼 titles.json 时用）。
     """
     assign = np.full(n_prov, -1, dtype=np.int64)
     fine_assign = np.full(n_prov, -1, dtype=np.int64)   # 只有"逐块荒地"会用到
-    low_assign = np.full(n_prov, -1, dtype=np.int64)    # 分组类别的细层逐块
     titles: list[Title] = []
     stats: list[str] = []
     waste_pids: list[int] = []
@@ -356,52 +325,6 @@ def build_special_titles(lists: dict[str, set[int]], n_prov: int, blank: np.ndar
                                  dtype=np.int64)
             cand = wanted[blank[wanted] & (assign[wanted] < 0)] if wanted.size else wanted
         if cand.size == 0:
-            continue
-        # ① 分组类别（有 groups 且指定了切分点）：粗层整片、细层逐块
-        if (groups and group_split is not None
-                and (group_key is None or key == group_key)):
-            candset = set(int(x) for x in cand.tolist())
-            taken: set[int] = set()
-            pid_group: dict[int, str] = {}
-            for gname, gpids in groups:
-                gidx = base_index + len(titles)
-                gt = Title(f"#grp_{len(titles)}", tier="@")
-                gt.color = rgb
-                titles.append(gt)
-                if name_sink is not None:
-                    name_sink[gt.key] = gname
-                n_in = 0
-                for pid in gpids:
-                    if pid in candset and pid not in taken:
-                        taken.add(pid)
-                        assign[pid] = gidx
-                        pid_group[pid] = gname
-                        n_in += 1
-                if n_in:
-                    stats.append(f"{gname} {n_in}")
-            rest = sorted(candset - taken)
-            if rest:
-                gidx = base_index + len(titles)
-                gt = Title(f"#grp_other_{len(titles)}", tier="@")
-                gt.color = rgb
-                titles.append(gt)
-                if name_sink is not None:
-                    name_sink[gt.key] = f"其它{label}"
-                for pid in rest:
-                    assign[pid] = gidx
-                stats.append(f"其它{label} {len(rest)}")
-            for pid in sorted(candset):
-                low_assign[pid] = base_index + len(titles)
-                wt = Title(f"wz_{pid}", tier=fine_tier)
-                wt.color = rgb
-                try:
-                    wt.pid = pid        # 带上地块号 → 起名时会走 PROV<id> 查汉化 ✓
-                except AttributeError:
-                    pass
-                titles.append(wt)
-                if name_sink is not None:
-                    name_sink[wt.key] = pid_group.get(pid, label)
-            stats.append(f"→ 逐块 {len(candset)} 个")
             continue
         # ① 共享的粗层伪头衔
         assign[cand] = base_index + len(titles)
@@ -423,7 +346,7 @@ def build_special_titles(lists: dict[str, set[int]], n_prov: int, blank: np.ndar
                 waste_tids.append(_tid)
             stats.append(f"→ 逐块 {len(cand)} 个")
 
-    return titles, assign, stats, fine_assign, waste_pids, low_assign, waste_tids
+    return titles, assign, stats, fine_assign, waste_pids, waste_tids
 
 
 def largest_block_centre(pids, offsets, neigh, counts, pcx, pcy):
@@ -854,14 +777,10 @@ def main() -> int:
     # 9. 海/湖/荒地
     blank = np.all(titlemap == NO_TITLE, axis=0) & present
     log(f"完全没有归属的地块：{int(blank.sum())} 个")
-    _sea_pids = set(terrain.get("sea_starts", ()))
-    _sea_areas = read_sea_areas(overlay or (root / "map"), _sea_pids)
     _special_names: dict[str, str] = {}
-    log(f"  海区 {len(_sea_areas)} 个（区域/地区两层整片区，省份层逐块）")
-    special, assign, stats, fine_assign, waste_pids, _low_assign, waste_tids = build_special_titles(
+    special, assign, stats, fine_assign, waste_pids, waste_tids = build_special_titles(
         terrain, n_prov, blank, n_real, fine_tier=TIER_ORDER[-1],
-        groups=_sea_areas, group_split=TIER_ORDER.index("pr"),
-        group_key="#sea", name_sink=_special_names,
+        name_sink=_special_names,
         )
     # 逐块荒地的名字：从同名省份借（Title 有 __slots__，加不了新属性）
     log("地形类别：" + ("，".join(stats) if stats else "无"))
@@ -870,12 +789,6 @@ def main() -> int:
         vals = assign[sel].astype(np.uint16)
         for r in range(len(TIER_ORDER)):
             titlemap[r, sel] = vals
-    # 海域：省份层换成**逐块节点**（区域/地区两层仍旧整片区 ✓）
-    sel_low = _low_assign >= 0
-    if sel_low.any():
-        low_vals = _low_assign[sel_low].astype(np.uint16)
-        for r in range(TIER_ORDER.index("pr"), len(TIER_ORDER)):
-            titlemap[r, sel_low] = low_vals
     # 逐块荒地**只盖最细那层**（粗层照旧是那块共享的灰）
     sel2 = fine_assign >= 0
     if sel2.any():
@@ -1000,7 +913,7 @@ def main() -> int:
     log(f"名字：汉化 {len(zh)} 条（{zh_from}） / 游戏英文 {len(en)} 条")
 
     special_names = {k: label for k, label, _c, _s in SPECIAL_CATEGORIES}
-    special_names.update(_special_names)   # 海区名 + 逐块海块名 ✓
+    special_names.update(_special_names)   # 伪头衔的中文名（name_sink 带出来的）✓
     # 组名给的是原始键（baltic_area 这类）→ 用汉化/英文查一遍，再退到 humanize ✓
     for _k, _v in list(special_names.items()):
         if _v.endswith("_area") or "_" in _v:
@@ -1015,7 +928,7 @@ def main() -> int:
     resolved: list[str] = []
     names_en: list[str] = []          # 留给搜索：中文名显示，英文名也搜得到
     for t in ordered_all:
-        if t.key in special_names and not t.key.startswith("wz_"):
+        if t.key in special_names:
             resolved.append(special_names[t.key])
             names_en.append("")
             continue
@@ -1029,9 +942,6 @@ def main() -> int:
             #（这些节点是 CK3 的 Title，没有 pid 属性可挂，得从 key 里拿）
         else:
             ek = t.key
-        # 逐块海块：名字用**它自己**那个地块号（必须放在整条链之后 ✓）
-        if t.key.startswith("wz_") and t.key[3:].isdigit():
-            ek = f"PROV{t.key[3:]}"
         e = en.get(ek) or (defs.get(getattr(t, "pid", 0), (0, 0, 0, ""))[3]
                                if t.tier == "pr" and getattr(t, "pid", 0) else "")
         z = zh.get(ek)

@@ -244,6 +244,7 @@ def patch(data_dir: Path | str, quiet: bool = False) -> dict:
         return {"dir": str(D), "skipped": "no-meta"}
     M = json.loads(meta_p.read_text(encoding="utf-8"))
     T = json.loads(tit_p.read_text(encoding="utf-8"))
+    renamed = False      # 定点改名动过内存没有（下面那条 early return 要用）
     # **定点改名**（按"数据目录 + tag"）—— 国家节点与 tag 表一起改 ✓
     # 放最前面：V3 没有荒地，后面会 early return，放后面就白写 ✗
     # 只认 `<年份>_<tag>` 这种 key，别碰 STATE_CHUGOKU（日本的中国地方也叫中国 ✗）
@@ -257,11 +258,17 @@ def patch(data_dir: Path | str, quiet: bool = False) -> dict:
             _ct = _holder.get("countryTags")
             if isinstance(_ct, dict) and _tag in _ct and isinstance(_ct[_tag], dict):
                 _ct[_tag]["n"] = _nm
+        renamed = True
         say(f"    定点改名：{_tag} → {_nm}")
     n, rows = M["numProvinces"], len(M["tiers"])
     wl = set(M.get("wasteland") or [])
     if not wl:
         say(f"  {D}: 没有荒地，跳过")
+        # 改名只落在内存里，这里 return 之前必须自己写盘 ——
+        # 落盘在函数末尾，这条 early return 会把它整个吞掉（V3 / EU5 正是这条路 ✗）
+        if renamed:
+            tit_p.write_text(json.dumps(T, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+            meta_p.write_text(json.dumps(M, ensure_ascii=False, indent=2), encoding="utf-8")
         return {"dir": str(D), "skipped": "no-wasteland"}
     mode = _detect(M, T)
     tm = np.frombuffer(zlib.decompress(tm_p.read_bytes()), dtype="<u2").reshape(rows, n).copy()
@@ -453,7 +460,15 @@ def patch(data_dir: Path | str, quiet: bool = False) -> dict:
             m2 = re.match(r"t_(\d+)_(\d+)\.bin$", name)
             if not m2:
                 continue
-            c, r = int(m2.group(1)), int(m2.group(2))
+            # **第一个数字是行、第二个是列** ✓（清单里 t_0_1 对应 r=0 c=1）——
+            # 原来写成 `c, r = group(1), group(2)`，行列表反，切出来的瓦片整块错位 ✗
+            # （对角线那两块碰巧一样，所以只看着"有点不对"，得逐块对才看得出来）
+            r, c = int(m2.group(1)), int(m2.group(2))
+            # 防呆：清单里自己就写着 r / c，跟文件名对不上就别猜了（宁可报错）
+            if isinstance(ent, dict) and "r" in ent and "c" in ent:
+                if (r, c) != (int(ent["r"]), int(ent["c"])):
+                    raise SystemExit(f"!! 瓦片 {name} 的行列与清单不符："
+                                     f"文件名 ({r},{c}) vs 清单 ({ent['r']},{ent['c']})")
             blk = ids[r * th:(r + 1) * th, c * tw:(c + 1) * tw]
             (D / "tiles" / name).write_bytes(
                 zlib.compress(blk.astype("<u2").tobytes(), 6))

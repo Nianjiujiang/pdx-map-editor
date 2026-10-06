@@ -239,7 +239,7 @@ def main() -> int:
         T = json.loads(tree.read_text(encoding="utf-8"))
 
         def _pseudo(k: str) -> bool:
-            return k.startswith(("#", "wl_", "wz_"))
+            return k.startswith(("#", "wl_"))
 
         # 别拿 tier 下标卡"真节点"——年份模式的省份层是 5，<5 会把几千个省份
         # 全漏掉，虚报"全部有中文"。按 key 前缀认伪头衔更稳。
