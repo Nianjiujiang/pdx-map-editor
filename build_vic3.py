@@ -593,6 +593,9 @@ def main() -> int:
     # 荒地的事后加工（幂等）：每层都指向它自己 / 周长表 / 按层归属 / 名字 / 隐藏地名
     from patch_wasteland import patch as _patch_waste
     _patch_waste(DATA)
+    # 再补一层**空白剧本**（幂等）：放在荒地之后 —— 它照抄的是"最终这版"的背景地形 ✓
+    from patch_blank_era import patch as _patch_blank
+    _patch_blank(DATA)
     return 0
 
 
