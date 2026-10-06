@@ -82,16 +82,15 @@ uniform float uWaterW;          // 水域边界粗细（**固定 1 格 × 基准
 uniform vec3  uSeaCol;          // 三个水域色：拿来认"这块地是不是水"
 uniform vec3  uLakeCol;
 uniform vec3  uRiverCol;
-/* ---- 荒地边界（**固定宽 1 格 × 基准线宽、浓度实心** ✓ 用户定的 ✓）-------------
- *   · 判据：一侧是荒地、一侧不是 ✓（荒地跟荒地之间照旧画 ✓）
- *   · **荒地 ↔ 国家那条边不归这一趟** ✓ —— 用户定的："以国家为准"：
- *     它走「本层 / 多级边界」那几趟，按国家那一层的宽与浓画 ✓（见 rayDistTitle 的 _byReal ✓）
- *     这一趟只管"两侧都没有真头衔"的荒地缝（荒地↔荒地、荒地↔无主地 ✓）
- *   · 以前它没有自己这一趟 —— 荒地边缘是**头衔那一趟**顺手画的 ✗
- *     于是宽度/浓度跟着"本层那条线"走：剧本层 + 没开粒度时是 1.5 + 实心，
+/* ---- 荒地边界（宽浓**跟"填色边界"同一套** ✓ 用户定的 ✓）---------------------
+ *   · 所以它**没有自己的 uniform** —— 直接用 uPaintBorderW / uPaintBorderA ✓
+ *     （那两个来自设置页的「势力线宽」和「势力边界浓度」✓ 默认 = 1.5 格 × 缩放、实心 ✓）
+ *   · 范围：只管"两侧都没有真头衔"的荒地缝（荒地↔荒地、荒地↔无主地 ✓）
+ *     **荒地 ↔ 国家那条以国家为准** ✓（归本层 / 多级边界那几趟 ✓ 见 rayDistTitle 的 _byReal ✓）
+ *   · 以前它没有自己这一趟 —— 荒地边缘是头衔那趟顺手画的 ✗
+ *     于是宽浓跟着"本层那条线"走：剧本层 + 没开粒度时是 1.5 + 实心，
  *     细层视图里是 1.0 + 50% ✗（用户报的"开不开剧本会变" ✓）
  */
-uniform float uWasteW;          // 荒地边界粗细（固定 1 格 × 基准线宽 ✓）
 uniform float uBorderW;         // 分界线线宽，单位是**设备像素**
 uniform int   uExtraCount;      // 链上还有几级（0~4）
 uniform int   uExtraTier[4];    // 每一级看哪一层
@@ -507,8 +506,9 @@ void main() {
   // 该跳过的是**根本没有省份的地图底**（provAt = 0）✓ 无主地照样要算。
   if (pidAt(ip) != 0u) {
     // 只要这个半径以内看得见线；半径之外算出来也是 0，不用白找
+    // （荒地那条用的是**填色边界**的宽浓 ✓ 所以这里不用再单列一个 ✓）
     int R = int(clamp(ceil(0.5 * uMapPerPx
-                           * (max(max(uBorderW, uPaintBorderW), max(uWaterW, uWasteW)) + 1.0)),
+                           * (max(max(uBorderW, uPaintBorderW), uWaterW) + 1.0)),
                            1.0, float(MAXR)));
     float dTitle = 1e9;
     float dPaint = 1e9;
@@ -520,7 +520,8 @@ void main() {
       dWater = min(dWater, rayDistWater(ip, f, ivec2(-1, 0), R));
       dWater = min(dWater, rayDistWater(ip, f, ivec2( 0, 1), R));
       dWater = min(dWater, rayDistWater(ip, f, ivec2( 0,-1), R));
-      // **荒地边界**跟它一个待遇 ✓（固定宽 1、实心 ✓ 不归本层/多级那几趟 ✓ 见 rayDistTitle）
+      // **荒地边界**跟它一个待遇（都"一直画" ✓）—— 但宽浓吃的是**填色边界**那一套 ✓
+      //   （见下面 dWaste 那一段 ✓ 不归本层/多级那几趟 ✓ 见 rayDistTitle）
       uint t9 = tidAt(ip);
       dWaste = min(dWaste, rayDistTitle(ip, f, ivec2( 1, 0), t9, R, -1, true));
       dWaste = min(dWaste, rayDistTitle(ip, f, ivec2(-1, 0), t9, R, -1, true));
@@ -548,13 +549,16 @@ void main() {
       float b  = 1.0 - smoothstep(bw - ramp, bw + ramp, dTitle);
       col = mix(col, vec3(0.035, 0.045, 0.06), b * uBorderA);
     }
-    /* **荒地边界**：固定宽 1 格 × 基准线宽 ✓ 浓度**实心** ✓（不加浓度系数 ✓ 用户定的 ✓）
-     *   只管"两侧都没有真头衔"的荒地缝 ✓ —— 荒地 ↔ 国家那条归国家那趟（以国家为准 ✓）
+    /* **荒地边界**：宽与浓**跟"填色边界"同一套** ✓（用户定的 ✓）——
+     *   也就是受设置页那两个滑条调：「**势力线宽**」（pw → uPaintBorderW ✓）与
+     *   「**势力边界浓度**」（ca → uPaintBorderA ✓，默认 100 = 实心 ✓）
+     *   于是它跟填色线永远一样粗一样浓，不再是自己的固定档 ✓
+     *   范围只管"两侧都没有真头衔"的荒地缝 ✓ —— 荒地 ↔ 国家那条归国家那趟 ✓
      *   它以前是借头衔那一趟画的 ✗ → 跟着剧本/粒度在 1.5+实心 与 1.0+50% 之间跳 ✓ */
     if (dWaste < 1e8) {
-      float bwwd = 0.5 * uWasteW * uMapPerPx;
+      float bwwd = 0.5 * uPaintBorderW * uMapPerPx;
       float bwd  = 1.0 - smoothstep(bwwd - ramp, bwwd + ramp, dWaste);
-      col = mix(col, vec3(0.035, 0.045, 0.06), bwd);
+      col = mix(col, vec3(0.035, 0.045, 0.06), bwd * uPaintBorderA);
     }
     // **填色边界**：永远用自己那套（链上最粗那条的粗细 + 实心），跟本层互不干扰 ✓
     if (dPaint < 1e8) {
@@ -700,7 +704,7 @@ export class MapRenderer {
                      'uMapSize', 'uTitleMapW', 'uNumProvinces', 'uPaintW', 'uTier', 'uEditTier',
                      'uShowTitles', 'uShowPaint', 'uMix',
                      'uShowWaste', 'uWasteGrey', 'uBorderTitle', 'uBorderPaint', 'uPaintOnly', 'uBorderW', 'uBorderA', 'uPaintBorderW', 'uPaintBorderA', 'uMapPerPx',
-                     'uShowWater', 'uWaterW', 'uWasteW', 'uSeaCol', 'uLakeCol', 'uRiverCol',
+                     'uShowWater', 'uWaterW', 'uSeaCol', 'uLakeCol', 'uRiverCol',
                      'uExtraCount', 'uExtraTier', 'uExtraW', 'uExtraShow', 'uExtraA',
                      'uLutW', 'uRealTitles', 'uHoverTid', 'uHoverPaintOn', 'uHoverPaint', 'uHoverPid', 'uHoverLabel',
                      'uBackdrop']) {
@@ -728,14 +732,15 @@ export class MapRenderer {
     this.paintOnly = false;
     /* 水域边界（海 / 湖 / 河 ✓ 用户定的四条）：
      *   · showWater：一直画 ✓ 只有"当前模式里能关的边界全关了"才藏（app 每帧给）
-     *   · waterW / wasteW：**固定 1 格 × 「基准线宽」** ✓（用户定的 ✓）
-     *     以前 waterW 取"链上最粗那条"，会跟着剧本/粒度变 ✗；
+     *   · waterW：**固定 1 格 × 「基准线宽」** ✓（用户定的 ✓）
+     *     以前它取"链上最粗那条"，会跟着剧本/粒度变 ✗；
      *     现在固定，但**仍随基准线宽等比缩放** ✓（app 每帧给 = 缩放值 ✓）
      *   · 浓度：着色器里写死实心 ✓
+     *   · **荒地那条没有自己的字段** ✓ —— 它直接吃"填色边界"那套
+     *     （uPaintBorderW / uPaintBorderA ✓ 用户定的 ✓）
      *   · 三个水域色：用来认"这块地是不是水" ✓ 设置里改了颜色这里跟着变 ✓ */
     this.showWater = true;
     this.waterW = 1.0;
-    this.wasteW = 1.0;
     this.seaCol = [0, 0, 0];
     this.lakeCol = [0, 0, 0];
     this.riverCol = [0, 0, 0];   // 玩家涂色范围描边
@@ -1152,7 +1157,6 @@ export class MapRenderer {
     // 水域边界：开关 + 粗细 + 三个水域色（实心 ✓ 所以没有浓度 uniform）
     gl.uniform1i(u.uShowWater, this.showWater ? 1 : 0);
     gl.uniform1f(u.uWaterW, this.waterW);
-    gl.uniform1f(u.uWasteW, this.wasteW);
     gl.uniform3f(u.uSeaCol, this.seaCol[0], this.seaCol[1], this.seaCol[2]);
     gl.uniform3f(u.uLakeCol, this.lakeCol[0], this.lakeCol[1], this.lakeCol[2]);
     gl.uniform3f(u.uRiverCol, this.riverCol[0], this.riverCol[1], this.riverCol[2]);
