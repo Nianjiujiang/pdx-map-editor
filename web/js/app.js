@@ -961,11 +961,11 @@ function syncLayerSwitches() {
      *      开不开剧本 / 有没有粒度，水域线在 1.5 和 1.0 之间跳 ✗）
      *   · **但要受基准线宽影响** ✓：整套粗细阶梯都按「基准线宽 / 1.6」缩放，
      *     所以这里写 1 × 缩放，而不是钉死 1 个设备像素 ✓
-     *   · 荒地那条同一条规矩 ✓（固定宽 1 × 缩放、浓度实心 ✓）
-     *   浓度那边不用管：着色器里写死实心（水域、荒地都是 ✓）*/
+     *   · **荒地那条不归这儿管** ✓ —— 它宽浓都吃"填色边界"那一套
+     *     （uPaintBorderW / uPaintBorderA = 「势力线宽」+「势力边界浓度」✓ 用户定的 ✓）
+     *   浓度那边不用管：着色器里写死实心（就水域那条 ✓）*/
     const _wScaleB = ((state.set && state.set.w) ? state.set.w : 1.6) / 1.6;
     if (Math.abs(renderer.waterW - _wScaleB) > 0.001) { renderer.waterW = _wScaleB; renderer.dirty = true; }
-    if (Math.abs(renderer.wasteW - _wScaleB) > 0.001) { renderer.wasteW = _wScaleB; renderer.dirty = true; }
     /* 三个水域色：**必须跟 LUT 里真正生效的那个颜色一致** ✓
      *
      * ⚠ 两个坑我都踩过 ✗
