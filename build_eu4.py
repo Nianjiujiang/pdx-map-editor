@@ -308,10 +308,11 @@ def read_sea_areas(map_dir: Path, sea_pids: set[int]) -> list[tuple[str, list[in
         p_area = map_dir / "map" / "area.txt"      # 传进来的是游戏根目录时兜一下
     if not p_area.is_file():
         return []
-    txt = p_area.read_text(encoding="utf-8", errors="ignore")
     out: list[tuple[str, list[int]]] = []
-    for name, body in re.findall(r"^(\w+)\s*=\s*\{([^}]*)\}", txt, re.M | re.S):
-        pids = [int(x) for x in re.findall(r"\d+", body)]
+    # 用 E.parse_areas 切（大括号配对）：area.txt 里 50 个区带 color = { r g b }，
+    # 正则 [^}]* 会在 color 的收尾大括号处腰斩，把颜色分量当省份号、真省份全丢
+    areas, _cols = E.parse_areas(p_area)
+    for name, pids in areas.items():
         if not pids or not (set(pids) & sea_pids):
             continue
         out.append((name, pids))    # 传原始键（baltic_area），起名时走汉化查中文 ✓
@@ -327,7 +328,7 @@ def build_special_titles(lists: dict[str, set[int]], n_prov: int, blank: np.ndar
     """给海/湖/荒地各造一个伪头衔；**荒地额外每块一个**。
 
     返回 (头衔列表, 全层共用的归属, 统计文字, 只占最细层的归属, 逐块荒地的地块号,
-          分组类别的逐块归属)。
+          分组类别的逐块归属, 逐块荒地的**真实节点号**)。
 
     :param categories: 默认用 EU4 那套；HOI4 只有海和湖，自己传一份。
     :param fine_tier: 逐块荒地落在哪一层（EU4 是 "pr" 省份层）。
@@ -345,6 +346,7 @@ def build_special_titles(lists: dict[str, set[int]], n_prov: int, blank: np.ndar
     titles: list[Title] = []
     stats: list[str] = []
     waste_pids: list[int] = []
+    waste_tids: list[int] = []   # 跟 waste_pids 一一对应：建一个节点记一个序号
 
     for key, label, rgb, source in (categories or SPECIAL_CATEGORIES):
         if source is None:
@@ -412,14 +414,16 @@ def build_special_titles(lists: dict[str, set[int]], n_prov: int, blank: np.ndar
         # ② 荒地：每块地一个节点，只占最细那层
         if key in SETTABLE_CATEGORIES:
             for pid in cand.tolist():
-                fine_assign[pid] = base_index + len(titles)
+                _tid = base_index + len(titles)   # 序号在建节点时记下，别事后反推
+                fine_assign[pid] = _tid
                 wt = Title(f"wl_{pid}", tier=fine_tier)
                 wt.color = rgb
                 titles.append(wt)
                 waste_pids.append(int(pid))
+                waste_tids.append(_tid)
             stats.append(f"→ 逐块 {len(cand)} 个")
 
-    return titles, assign, stats, fine_assign, waste_pids, low_assign
+    return titles, assign, stats, fine_assign, waste_pids, low_assign, waste_tids
 
 
 def largest_block_centre(pids, offsets, neigh, counts, pcx, pcy):
@@ -724,15 +728,20 @@ def main() -> int:
                 t.color = tag_colors.get(tag) or (128, 128, 128)
                 n_era += 1
         log(f"三个年份共 {n_era} 个国家节点（配色取 common/countries 的国旗色）")
-        # 地区配色还是按"区域"分家族，只是区域本身不再单独成一层
+        # 地区配色还是按"区域"分家族，只是区域本身不再单独成层
+        # ① 区域名先按黄金角撒开 —— 它就是**地区层**的家族基色（786 行查的就是它）
         for i, rn in enumerate(sorted(used_rg)):
             hue_of[rn] = (i * 137.508) % 360.0
+        # ② 大区名单独撒一份：区域家族按大区分组，查的是**大区名**，
+        #    上面那把种子里没有大区键，不撒的话全族都从 200 起步挤一个色相带
+        sup_hue = {sn: (i * 137.508) % 360.0
+                   for i, sn in enumerate(sorted({region_super.get(rn, "") for rn in used_rg}))}
         # **区域节点照样要建**（它是地区的上一级）：不建的话点进那一层一片空白 ✗
         groups = {}
         for rn in sorted(used_rg):
             groups.setdefault(region_super.get(rn, ""), []).append(rn)
         for parent, kids in sorted(groups.items()):
-            base = hue_of.get(parent, 200)
+            base = sup_hue.get(parent, 200)
             placed: list = []
             for i, rn in enumerate(kids):
                 col = pick_color(base, 46.0, placed)
@@ -740,8 +749,12 @@ def main() -> int:
                 t = add(Node(rn, "rg"))
                 t.parent = parent or None
                 t.color = col
-                hue_of[rn] = child_hue(base, i, 46.0)
+                # 别把 ① 撒好的区域种子覆盖掉 —— 那是地区层的家族基色，
+                # 覆盖成 child_hue(200 基) 会把整片拉回一个色相带
     else:
+        # --no-history：没有年份层就没有国家节点，countryTags 只能空着
+        #（不赋值的话拼 meta 时 NameError，整个构建在最后一步报废）
+        tag_colors = {}
         for cn in sorted(used_ct):
             t = add(Node(cn, "ct"))
             t.color = continent_color(cn)
@@ -845,8 +858,10 @@ def main() -> int:
     _sea_areas = read_sea_areas(overlay or (root / "map"), _sea_pids)
     _special_names: dict[str, str] = {}
     log(f"  海区 {len(_sea_areas)} 个（区域/地区两层整片区，省份层逐块）")
-    special, assign, stats, fine_assign, waste_pids, _low_assign = build_special_titles(
+    special, assign, stats, fine_assign, waste_pids, _low_assign, waste_tids = build_special_titles(
         terrain, n_prov, blank, n_real, fine_tier=TIER_ORDER[-1],
+        groups=_sea_areas, group_split=TIER_ORDER.index("pr"),
+        group_key="#sea", name_sink=_special_names,
         )
     # 逐块荒地的名字：从同名省份借（Title 有 __slots__，加不了新属性）
     log("地形类别：" + ("，".join(stats) if stats else "无"))
@@ -868,9 +883,9 @@ def main() -> int:
     left = int(np.count_nonzero((titlemap[0] == NO_TITLE) & present))
     log(f"有像素但仍是空白的格子：{left}")
 
-    # 荒地节点序号 + 那两个共享伪头衔（前端"荒漠·涂色"关着时它们要显示灰）
-    waste_base = n_real + len(special) - len(waste_pids)
-    waste_tids = [waste_base + i for i in range(len(waste_pids))]
+    # 荒地节点序号（建节点时记下的真实序号）+ 那两个共享伪头衔
+    #（前端"荒漠·涂色"关着时它们要显示灰）
+    waste_tid_of = dict(zip(waste_pids, waste_tids))
     water_tids = set()
     for k, sp in enumerate(special):
         if sp.key in ("#sea", "#lake"):
@@ -941,6 +956,13 @@ def main() -> int:
     for i, m in enumerate(members):
         if m:
             area[i] = int(counts[np.fromiter(m, dtype=np.int64)].sum())
+    # 逐块荒地节点只写在最细一层，上面的循环把 r>0 的伪头衔全跳过了 ——
+    # 它们的 provCount/area 恒 0（CK3 那边修过的同一个坑，EU4 漏了）。
+    # 按"一个节点一块地"补上，标签层按面积排序才有它的份。
+    for pid in waste_pids:
+        idx = waste_tid_of[pid]
+        prov_count[idx] = 1
+        area[idx] = int(counts[pid])
 
     # 11. 标注位置：取**像素最多的那一块地**的几何中心（见 largest_block_centre）
     #
@@ -999,9 +1021,12 @@ def main() -> int:
             continue
         # 本地化的 key：省份是 PROV<id>，年份节点是里面的国家 tag，别处就是 key 自己
         if t.tier == "pr":
-            ek = f"PROV{getattr(t, "pid", 0)}"
+            ek = f"PROV{getattr(t, 'pid', 0)}"
         elif use_eras and t.tier in ERA_LABELS:
             ek = t.key.split("_", 1)[1]           # 1444_SWE → SWE
+        elif t.key.startswith("wl_") and t.key[3:].isdigit():
+            ek = f"PROV{t.key[3:]}"               # 逐块荒地：省份号就在 key 里
+            #（这些节点是 CK3 的 Title，没有 pid 属性可挂，得从 key 里拿）
         else:
             ek = t.key
         # 逐块海块：名字用**它自己**那个地块号（必须放在整条链之后 ✓）
@@ -1103,7 +1128,8 @@ def main() -> int:
         "tierNames": [TIER_NAME[t] for t in TIER_ORDER],
         "tierKeys": [TIER_KEY[t] for t in TIER_ORDER],
         "entity": "省份",
-        "defaultTier": ERA_TIERS + 2,
+        # 年份模式 6 层，省份 = ERA_TIERS+2；非年份模式只有 5 层，取最后一层
+        "defaultTier": (ERA_TIERS + 2) if use_eras else (len(TIER_ORDER) - 1),
         # 年份那三层节点少（几百个国家）、彼此还挤在一起，门槛比大洲那套高一点
         # **全部 tag** 的名字 + 颜色（含当前年代没地盘的）—— 搜索/取色要用 ✓
         # 名字先放 tag —— 中文名由 patch_wasteland 从 titles.json 里统一补 ✓
@@ -1149,6 +1175,7 @@ def main() -> int:
         "gx": [None if np.isnan(v) else round(float(v), 1) for v in gx],
         "gy": [None if np.isnan(v) else round(float(v), 1) for v in gy],
         "provinceNames": prov_names,
+        "provinceNamesEn": prov_names,   # 汉化前的原版名：definition.csv 是 cp1252，导出 mod 时中文写不进就用它
         "provinceColors": prov_colors,
     }
     (DATA / "titles.json").write_text(

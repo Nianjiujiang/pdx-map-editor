@@ -4,8 +4,10 @@ cd /d "%~dp0"
 title PDX Map Editor
 
 set PYCMD=
-where python >nul 2>nul && set PYCMD=python
-if "%PYCMD%"=="" (where py >nul 2>nul && set PYCMD=py)
+rem where 找得到的可能只是 Microsoft Store 的占位 stub（装了"假装有 python"），
+rem 所以找到候选还得**真跑一句**验证，不然会出现"启动了但什么都没发生"。
+where python >nul 2>nul && (python -c "print(1)" >nul 2>nul && set PYCMD=python)
+if "%PYCMD%"=="" (where py >nul 2>nul && (py -c "print(1)" >nul 2>nul && set PYCMD=py))
 
 if "%PYCMD%"=="" (
   echo.

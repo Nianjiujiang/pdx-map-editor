@@ -237,6 +237,7 @@ export class LabelLayer {
     this._y = [];
     this._size = [];
     this._hot = [];
+    this._color = [];   // 标签自带颜色（「国名取色」给的；空串 = 用默认米白）
     this._buckets = new Map();
     this._bucketKeys = [];
 
@@ -368,6 +369,7 @@ export class LabelLayer {
     const Y = this._y;
     const HOT = this._hot;
     const F = this._fade || [];
+    const C = this._color || [];   // 每个标签自己的颜色（没有就落 LABEL_FG）
     const cssW = this.cssW;
     const cssH = this.cssH;
     const dpr = this.dpr;
@@ -399,10 +401,10 @@ export class LabelLayer {
         if (sx + hw < 0 || sx - hw > cssW) continue;
         if (sy + half < 0 || sy - half > cssH) continue;
 
-        // **标签可以自带颜色**（「国名取色」按钮给的）——
+        // **标签可以自带颜色**（「国名取色」按钮给的，drawPoints 存进 _color）——
         // 悬浮时仍旧用米黄，免得看不出鼠标在哪 ✓
         const color = HOT[k] ? LABEL_FG_HOVER
-          : ((list[k] && list[k].color) || LABEL_FG);
+          : (C[k] || LABEL_FG);
         const sp = sprites.get(text, size, color, dpr, tw);
         if (sp !== null) {
           ctx.drawImage(sp.c, sx - sp.w / 2, sy - sp.h / 2, sp.w, sp.h);
@@ -452,6 +454,7 @@ export class LabelLayer {
     const S = this._size;
     const HOT = this._hot;
     const F = this._fade || (this._fade = []);
+    const C = this._color || (this._color = []);
     let n = 0;
     for (const i of list) {
       // 这里**只防病态数据**，不用 MAX_LABELS 截 —— 先截就是把视口外的大块地
@@ -468,6 +471,7 @@ export class LabelLayer {
       if (size <= 0) continue;      // 太小了：不画，别硬撑成最小字号挤一片
       S[n] = size;
       HOT[n] = i === hover;
+      C[n] = '';                    // 这条路上没有自定义颜色，清掉上帧残留
       n++;
     }
     this._paint(ctx, n, view);
@@ -523,6 +527,8 @@ export class LabelLayer {
     let n = 0;
     // 逐点的透明度（国名 0.6，其余 1）——必须在本函数里声明
     const F = this._fade || (this._fade = []);
+    // 每个点自带的颜色（「国名取色」给的）——没有就落默认色
+    const C = this._color || (this._color = []);
     // 跟 draw() 一样先按视口粗筛：不然上万个候选里视口内的那几个
     // 可能刚好排在 MAX_CANDIDATES 之外，整层就是空的（VIC3 4 万地块的坑）
     const padMap = Math.max(64, 900 / this.scale);
@@ -559,6 +565,7 @@ export class LabelLayer {
       // 国名（含玩家涂出来的国名）统一半透明 —— 它们压在细层名字上面，
       // 太实会把底下的省名糊掉。
       F[n] = p.fade ? 0.6 : 1;
+      C[n] = p.color || '';   // 「国名取色」：带着自己那族的颜色画
       n++;
     }
     this._paint(ctx, n, view);

@@ -75,6 +75,9 @@ export class TileMap {
       return out;
     })();
     this.pending.set(key, p);
+    // 失败的那块要把 pending 清掉，下一帧 get() 才会真正重试 ——
+    // 不然永远命中同一个 rejected promise，这块区域就一直渲成 0 号省份。
+    p.catch(() => { this.pending.delete(key); });
     return p;
   }
 

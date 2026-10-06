@@ -101,7 +101,7 @@ def split_blobs(D: Path, M: dict, T: dict, ids: "np.ndarray", tm: "np.ndarray",
     if not pids:
         return 0
     nxt = n
-    new_nodes: list[tuple[int, int]] = []          # (新省份号, 源节点)
+    new_nodes: list[tuple[int, int, int]] = []     # (新省份号, 源省份号, 源节点)
     MAX_NEW = 400
     for pid in pids:
         if nxt >= 60000 or len(new_nodes) >= MAX_NEW:
@@ -166,7 +166,7 @@ def split_blobs(D: Path, M: dict, T: dict, ids: "np.ndarray", tm: "np.ndarray",
                 cm[cy, cx] = True
             pm = np.repeat(np.repeat(cm, cell, 0), cell, 1)[:sub.shape[0], :sub.shape[1]] & sub
             ids[y0:y1, x0:x1][pm] = nxt
-            new_nodes.append((nxt, own[pid]))
+            new_nodes.append((nxt, pid, own[pid]))   # 省份数组要按**源省份号**继承，节点号留给节点数组
             kept_boxes.append((bx0, by0, bx1, by1))
             nxt += 1
         say(f"    pid {pid}: {len(areas)} 片，拆出 {len(new_nodes)} 处（总 {total} 像素）")
@@ -178,7 +178,7 @@ def split_blobs(D: Path, M: dict, T: dict, ids: "np.ndarray", tm: "np.ndarray",
     base = len(T["keys"])
     new_tm = np.zeros((tm.shape[0], nxt), dtype=tm.dtype)
     new_tm[:, :n] = tm
-    for i2, (pid, src) in enumerate(new_nodes):
+    for i2, (pid, _src_pid, src) in enumerate(new_nodes):
         node = base + i2
         new_tm[:, pid] = node
         ys, xs = np.nonzero(ids == pid)
@@ -206,16 +206,18 @@ def split_blobs(D: Path, M: dict, T: dict, ids: "np.ndarray", tm: "np.ndarray",
     for key_name, lst in list(T.items()):
         if not isinstance(lst, list) or len(lst) != n:
             continue
-        for pid, src in new_nodes:
-            val = lst[src] if 0 <= src < len(lst) else ""
+        for _new_pid, src_pid, _src in new_nodes:
+            # 按省份索引的数组得用**源省份号**取值 —— 源节点号是另一个命名空间，
+            # 拿它当省份下标会继承到"编号恰好等于那个节点号的另一个省份"的
+            # 颜色/名字，还随 titles.json 一起落盘（拆分一真发生就是数据污染）
+            val = lst[src_pid] if 0 <= src_pid < len(lst) else ""
             lst.append(list(val) if isinstance(val, list) else val)
     M["numProvinces"] = nxt
     M["numTitles"] = len(T["keys"])
     M["wasteland"] = sorted(wl)
     M["_split"] = int(M.get("_split", 0)) + len(new_nodes)
-    # 注意：new_nodes 存的是 (新省份号, **源节点**) ——
-    # 这里要登记成**新节点**（base + i），否则后面"每层指向自己"会把新省份指回老节点 ✗
-    own.update({pid: base + i for i, (pid, _src) in enumerate(new_nodes)})
+    # 注意：这里要登记成**新节点**（base + i），否则后面"每层指向自己"会把新省份指回老节点 ✗
+    own.update({pid: base + i for i, (pid, _sp, _src) in enumerate(new_nodes)})
     say(f"    一共拆开 {len(new_nodes)} 处（原来一个省份号画在好几处）")
     return len(new_nodes), new_tm, ids
 

@@ -28,7 +28,10 @@ from pathlib import Path
 
 import numpy as np
 
-sys.stdout.reconfigure(encoding="utf-8")
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+except Exception:      # pythonw / 部分捕获环境没有 reconfigure，别让 import 就崩
+    pass
 ROOT = Path(__file__).resolve().parent
 
 

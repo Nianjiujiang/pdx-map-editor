@@ -2,6 +2,15 @@
  * CK3 地图编辑'—'主逻辑'
  */
 
+// 开发版是真 ES module（index.html 只加载本文件）——别的模块都得显式 import。
+// 单文件版由 build_standalone.py 剥掉这些行、按序拍平，两边的加载方式都兼容。
+import { DATA, api, decompress, embeddedMapKeys, isEmbedded, setDataDir, setEmbeddedMap } from './data.js';
+import { MapRenderer } from './gl.js';
+import { LabelLayer } from './labels.js';
+import { TileMap } from './tilemap.js';
+import { makeZip, makeZipAsync } from './zip.js';
+import { encodeBMP24 } from './bmp.js';
+
 const $ = (id) => document.getElementById(id);
 
 /**
@@ -400,7 +409,10 @@ async function allProvinceIds() {
   const out = new Uint16Array(m.mapW * m.mapH);
   for (let r = 0; r < m.rows; r++) {
     for (let c = 0; c < m.cols; c++) {
-      const t = await state.tileMap.get(r, c);
+      let t = null;
+      try {
+        t = await state.tileMap.get(r, c);
+      } catch (e) { continue; }   // 单块拉取失败：跳过（重试归 tileMap 自己管），别让整次导出崩掉
       if (!t) continue;
       const x0 = c * m.tileW, y0 = r * m.tileH;
       const w = Math.min(m.tileW, m.mapW - x0), h = Math.min(m.tileH, m.mapH - y0);
@@ -621,7 +633,10 @@ function applyLutOverrides() {
     '#wasteland': s.impass };
   for (let i = 0; i < K.length; i++) {
     const c = want[String(K[i])];
-    if (c) renderer.setLutColor(i, c[0], c[1], c[2]);
+    // 自定义色是 null（「恢复默认」）也要把 LUT 写回**烘数据时的原色** ——
+    // 直接跳过的话，之前盖上去的自定义海/湖/河颜色会一直残留在显存里
+    const o = c || state.titles.colors[i];
+    if (o) renderer.setLutColor(i, o[0], o[1], o[2]);
   }
 }
 
@@ -1568,10 +1583,18 @@ function paintAt(pid, tid) {
         const _pids = playerGroupPidsAt(pid);
         if (_pids.length) {
           const _fine = TIER_COUNT - 1;
+          // 一次点击 = **一步**历史（跟擦除那边一个规矩）：先把整族要动的
+          // 地块拍快照，再逐个涂（各自不记账），最后合成一条 patch ——
+          // 不然撤销要按 N 次 Ctrl+Z，中途还露半涂状态。
+          const _targets = [];
           for (const _q of _pids) {
             const _t = titleAt(_q, _fine);
-            if (_t != null && _t !== NO_TITLE) paintTitle(_t, to);
+            if (_t != null && _t !== NO_TITLE && _targets.indexOf(_t) < 0) _targets.push(_t);
           }
+          const _snaps = [];
+          for (const _t of _targets) _snaps.push(...snapshotPids(_t));
+          for (const _t of _targets) paintTitle(_t, to, true);
+          pushPatches(_snaps);
           return;
         }
         // 认不出族（没有同色同标签的）→ 退回只涂点中这块 ✓
@@ -1585,7 +1608,7 @@ function paintAt(pid, tid) {
     paintTitle(tid, to);
 }
 
-function paintTitle(tid, rgb) {
+function paintTitle(tid, rgb, noHistory) {
   // 头衔重刷会影响显示颜色 → 荒地那套**全量重算** ✓
   state._wasteDirty = null;
   const c = [rgb[0] | 0, rgb[1] | 0, rgb[2] | 0];
@@ -1600,7 +1623,7 @@ function paintTitle(tid, rgb) {
   state.paintColor.set(tid, c);
   syncPaint(tid, c, false);
   state.painted.add(tid);
-  pushPatches(_snap);
+  if (!noHistory) pushPatches(_snap);   // noHistory：调用方（整族涂）自己合成一条
   state.changed.add(tid);
   updateStatus();
   blocksDirty = true;
@@ -2355,6 +2378,7 @@ function undo() {
   if (!op) return;
   for (const p of op.patches) applySide(p.from);
   recomputePainted();
+  updateStatus();       // "改动 N"跟着历史走，不然撤销后还停在旧数
   state.history.redo.push(op);
   updateHistoryUI();
   scheduleSave();
@@ -2367,6 +2391,7 @@ function redo() {
   if (!op) return;
   for (const p of op.patches) applySide(p.to);
   recomputePainted();
+  updateStatus();       // 同 undo
   state.history.undo.push(op);
   updateHistoryUI();
   scheduleSave();
@@ -2596,7 +2621,9 @@ function applyGameText() {
   if (typeof renderer !== 'undefined' && renderer) {
     renderer.setShowTitles(state.showTitles);
     renderer.setShowPaint(state.showPaint);
-    renderer.setShowWaste(false);   // 荒地**恒为荒地色** ✓（「允许」只管能不能涂 ✓）
+    // 同一处 bug 的另一个入口：程序化恢复状态（换图/导入）也会走到这里，
+    // 无条件推 false 会把荒地涂色藏掉 —— 口径与下面的 change 处理器一致
+    renderer.setShowWaste(state.showWaste || state.wasteAuto);
     // 边界的状态存在**复选框**上（state 里没有 showBorderTitle 字段 ✗
     // —— 传 undefined 会被 !! 变成 false，把边界关掉）
     const _bt = $('show-border-title');
@@ -2950,6 +2977,21 @@ async function exportFullPNG() {
         glCanvas.width = tw;
         glCanvas.height = th;
         renderer.setView(tx, ty, tw, th);
+        // 分块图（EU5 原尺寸）：这一块的省份 id 瓦片多半还没进显存 ——
+        // 平时靠 frame() 按视野异步补，导出必须先逐块拉齐再渲染，
+        // 否则没看过的区域全渲成 0 号省份的底色。
+        if (state.tileMap && renderer.provArrTex && renderer.tileInfo) {
+          const jobs = [];
+          for (const [r, c] of state.tileMap.tilesInView({ x: tx, y: ty, w: tw, h: th })) {
+            const layer = r * state.tiles.cols + c;
+            const cached = state.tileMap.cache.get(`${r}_${c}`);
+            if (cached) { renderer.uploadTile(layer, cached); continue; }
+            jobs.push(state.tileMap.get(r, c).then((tile) => {
+              if (tile) renderer.uploadTile(layer, tile);
+            }).catch(() => {}));
+          }
+          await Promise.all(jobs);
+        }
         renderer.dirty = true;
         renderer.render();
         ctx.drawImage(glCanvas, 0, 0, tw, th, tx, ty, tw, th);
@@ -3016,14 +3058,35 @@ async function exportMod() {
     (skipped ? `（另${skipped} 个海/山地块跳过）` : '') + '，解压丢到 mod 文件夹即可');
 }
 
-/** Paradox 的文件是 cp1252。常用西文都0xA0-0xFF 这一带，低字节原样写就对 */
+/** Paradox 的文件是 cp1252。0xA0-0xFF 低字节原样写；0x80-0x9F 那一带在
+ *  Unicode 里是别的码位（’ " … 这些常用标点），要查表映射回 cp1252；
+ *  实在表示不了的（中文这些）降级成 '?'。 */
+const CP1252_HI = {
+  0x20AC: 0x80, 0x201A: 0x82, 0x0192: 0x83, 0x201E: 0x84, 0x2026: 0x85,
+  0x2020: 0x86, 0x2021: 0x87, 0x02C6: 0x88, 0x2030: 0x89, 0x0160: 0x8A,
+  0x2039: 0x8B, 0x0152: 0x8C, 0x017D: 0x8E, 0x2018: 0x91, 0x2019: 0x92,
+  0x201C: 0x93, 0x201D: 0x94, 0x2022: 0x95, 0x2013: 0x96, 0x2014: 0x97,
+  0x02DC: 0x98, 0x2122: 0x99, 0x0161: 0x9A, 0x203A: 0x9B, 0x0153: 0x9C,
+  0x017E: 0x9E, 0x0178: 0x9F,
+};
+
 function toCp1252(str) {
   const out = new Uint8Array(str.length);
   for (let i = 0; i < str.length; i++) {
     const c = str.charCodeAt(i);
-    out[i] = c <= 0xFF ? c : 0x3F;      // 超出范围的字降级''?'
+    out[i] = (c < 0x80 || (c >= 0xA0 && c <= 0xFF)) ? c
+      : (CP1252_HI[c] != null ? CP1252_HI[c] : 0x3F);
   }
   return out;
+}
+
+/** 这串字是不是每个都能写进 cp1252（决定 definition.csv 用不用降级到英文名） */
+function isCp1252Safe(s) {
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (!((c < 0x80) || (c >= 0xA0 && c <= 0xFF) || CP1252_HI[c] != null)) return false;
+  }
+  return true;
 }
 
 /**
@@ -3088,7 +3151,12 @@ async function exportModEU4() {
       if (seen.has(key)) dup++;
       seen.add(key);
     }
-    lines.push(`${pid};${col[i]};${col[i + 1]};${col[i + 2]};${t.provinceNames[pid] || ''};x`);
+    // definition.csv 是 cp1252：名字里只要有一个写不进的字（中文整个名字、
+    // 或混着的）就整串降级到缓存里留的原版名（旧缓存没有这张表就留空）
+    const _nm = [t.provinceNames && t.provinceNames[pid],
+                 t.provinceNamesEn && t.provinceNamesEn[pid], '']
+      .find((s) => s && isCp1252Safe(String(s))) || '';
+    lines.push(`${pid};${col[i]};${col[i + 1]};${col[i + 2]};${_nm};x`);
   }
 
   const vm = /(\d+)\.(\d+)/.exec(meta.gameVersion || '');
@@ -3413,7 +3481,11 @@ function bindEvents() {
   const WHEEL_K = 0.0016;
   stage.addEventListener('wheel', (e) => {
     e.preventDefault();
-    zoomBy(Math.exp(-e.deltaY * WHEEL_K), e.clientX, e.clientY);
+    // Firefox 的滚轮默认是"行"模式（一格 ±3），不换算的话一格只缩 ~0.5%；
+    // "页"模式同样换算回像素量级，几个浏览器手感才一致。
+    const dy = e.deltaMode === 1 ? e.deltaY * 33
+      : e.deltaMode === 2 ? e.deltaY * 800 : e.deltaY;
+    zoomBy(Math.exp(-dy * WHEEL_K), e.clientX, e.clientY);
   }, { passive: false });
 
   stage.addEventListener('mousedown', (e) => {
@@ -3422,7 +3494,10 @@ function bindEvents() {
       $('map').style.cursor = 'grabbing';
       e.preventDefault();
     } else if (e.button === 0 && state.tool !== 'view') {
-      painting = true;
+      // 只有涂色/擦除支持按住拖动连发 —— 定都/改名这些单击工具不置 painting，
+      // 要不然从 A 拖到 B 会沿路连发（定都一路设过去、改名弹窗被反复重开，
+      // 正打到一半的名字也被清掉）。
+      painting = (state.tool === 'paint' || state.tool === 'erase');
       actAt(e.clientX, e.clientY);
       e.preventDefault();
     }
@@ -3560,7 +3635,11 @@ function bindEvents() {
   });
   $('show-waste').addEventListener('change', (e) => {
     state.showWaste = e.target.checked;
-    renderer.setShowWaste(false);   // 荒地**恒为荒地色** ✓（「允许」只管能不能涂 ✓）
+    // 勾着「允许」（或「自动」还开着）就该显示荒地的涂色 —— 着色器里
+    // uShowWaste==0 会把手绘色也一起盖成灰，推 false 的老写法让用户涂了
+    // 也看不见（跟 setWasteAuto 里那条推 true 的路自相矛盾，README 也承诺
+    // 允许之后"像普通地块一样涂"）。自动开着时取消勾选不藏自动色。
+    renderer.setShowWaste(state.showWaste || state.wasteAuto);
     labelDirty = true;
   });
   // 「清除自动填色」：把自动涂的颜色还原（开关开着也没关系，下次触发会重算）
@@ -3779,6 +3858,14 @@ function bindEvents() {
   const _wrap = (fn) => (ev) => { _closeMenu(); return fn(ev); };
   $('btn-png').onclick = _wrap(exportViewPNG);
   $('btn-png-full').onclick = _wrap(exportFullPNG);
+  // 「导出 mod」：只有 CK3 / EU4 有这条路（GAME.exportKind），别的游戏收起来不显示
+  const _btnMod = $('btn-mod');
+  if (_btnMod && GAME.exportKind !== 'none') {
+    _btnMod.hidden = false;
+    _btnMod.textContent = GAME.exportKind === 'eu4' ? '导出 EU4 mod' : '导出 CK3 mod';
+    if (GAME.exportTip) _btnMod.title = GAME.exportTip;
+    _btnMod.onclick = _wrap(GAME.exportKind === 'eu4' ? exportModEU4 : exportMod);
+  }
   $('btn-project').onclick = _wrap(exportProject);
   // 「导入涂色」：跟拖文件进来是同一个入口（importJSON），只是一个选文件、一个拖
   $('btn-import').onclick = _wrap(() => {
@@ -3808,7 +3895,11 @@ function bindEvents() {
   $('search').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
       e.preventDefault();
-      if (searchHits.length) jumpToResult(searchHits[0]);
+      // README 承诺"跳到第一条**能定位**的结果" —— 排最前的可能是个没地盘的头衔，
+      // 直接 jumpToResult 会对着它 toast 完就结束；先找第一条真有坐标的。
+      const _t = state.titles || {};
+      const hit = searchHits.find((x) => x != null && _t.lx && _t.lx[x] != null);
+      jumpToResult(hit != null ? hit : searchHits[0]);   // 全都定不了位：仍走第一条，让它弹"没有地盘"
       return;
     }
     if (e.key === 'Escape') {
@@ -3823,7 +3914,10 @@ function bindEvents() {
   stage.addEventListener('drop', (e) => {
     e.preventDefault();
     const f = e.dataTransfer.files[0];
-    if (f && f.name.endsWith('.json')) importJSON(f);
+    if (!f) return;
+    // Windows 常见的「方案.JSON」也别漏掉 —— 大小写敏感的 endsWith 会静默忽略它
+    if (f.type === 'application/json' || /\.json$/i.test(f.name)) importJSON(f);
+    else toast('只认 JSON 涂色文件（*.json）', true);
   });
 }
 
@@ -4342,6 +4436,12 @@ function rebuildPaintBlocks(all = false, unpainted = false) {
     if (bestG) bestG.isHomeland = true;
   }
 
+  // 旧键清一清：改色/换标记重涂后族身份串就换了新的，旧键连着几千个 pid 的
+  // 数组原样挂着（只增不减），长会话里越攒越多 —— 这轮没再出现的直接扔。
+  for (const k3 of Object.keys(homelandOf)) {
+    if (!(k3 in capOf)) delete homelandOf[k3];
+  }
+
   // 每族只留一片露名字：优先"含首都那片"，其次"挨着首都那片"，最后才"面积最大那片"
   // 数据首都：**国名 → 首都省** 独立建表（从 meta.capitals + 各年份层的国名）
   // 族的标签名 == 某国名字 → 那个国的首都就算这一族的 ✓
@@ -4425,6 +4525,7 @@ function rebuildPaintBlocks(all = false, unpainted = false) {
     out.push({ name, x: g.x / g.w, y: g.y / g.w, area: g.w, rgb: g.rgb,
                w: Math.max(0, (g.maxx || 0) - (g.minx || 0)),   // 横向跨度 ✓（限字号用 ✓）
                tid: nameTidOf(_p0n),   // 这一坨代表哪个头衔 ✓（图例里改名要写回它 ✓）
+               pids: g.pids,   // 图例算"这一族涂出来的面积"要用（legendEntries）
                _key: g.key, _hasCap: !!g.hasCap, _capPid: g.capPid || 0 });
   }
   out.sort((a, b) => b.area - a.area);   // 大的先摆'
@@ -4956,7 +5057,7 @@ async function boot() {
     if (isEmbedded()) setEmbeddedMap(chosen.emb);
     else setDataDir(chosen.dir);
 
-    setBoot(`读取'{chosen.label}」的元数据…`, 6);
+    setBoot(`读取「${chosen.label}」的元数据…`, 6);
     const meta = await api.meta();
     if (!meta || !meta.numTitles) throw new Error('data/ 里还没生成好缓存，先跑 python build_data.py');
     state.meta = meta;
@@ -5043,6 +5144,7 @@ async function boot() {
     setBoot('上传到显卡', 88);
     await nextTick();
     renderer = new MapRenderer($('map'), meta);
+    renderer.onContextLost = () => toast('显卡把 WebGL 上下文弄丢了，地图画不下去了 —— 请刷新页面重试。', true);
     await renderer.setData({
       provinceIds: state.provinceIds,
       titlemap: state.titlemap,
