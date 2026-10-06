@@ -232,16 +232,19 @@ function ok(name, cond, extra = '') {
     const g3 = require('fs').readFileSync('web/js/gl.js', 'utf8');
     const nWaste = (g3.match(/, true\)\);/g) || []).length;
     const nNorm = (g3.match(/, false\)\);/g) || []).length;
-    ok('水域 / 荒地边界：各自固定宽 1，浓度实心 ✓',
+    ok('水域 / 荒地边界：各自固定宽 1 格 × 基准线宽，浓度实心 ✓',
        g3.includes('uniform float uWaterW;') && g3.includes('uniform float uWasteW;')
-       && g3.includes('if (_hasWaste != wasteOnly) continue;')
        && g3.includes('float bwd  = 1.0 - smoothstep(bwwd - ramp, bwwd + ramp, dWaste);')
-       && g3.includes('gl.uniform1f(u.uWasteW, this.wasteW);'),
+       && g3.includes('gl.uniform1f(u.uWasteW, this.wasteW);')
+       && /const _wScaleB = .*set\.w.*1\.6.*\/ 1\.6/.test(require('fs').readFileSync('web/js/app.js', 'utf8')),
        `uWasteW 声明=${g3.includes('uniform float uWasteW;')}`
        + ` 上传=${g3.includes('gl.uniform1f(u.uWasteW, this.wasteW);')}`);
-    ok('荒地边只由"荒地那一趟"画（头衔那几趟都把它让出来 ✓）',
-       nWaste === 4 && nNorm === 8,
-       `wasteOnly=true 的调用 ${nWaste} 个 / false 的 ${nNorm} 个`);
+    ok('荒地缝的归属：带真头衔的（荒地↔国家）归国家那趟、纯荒地缝才归荒地那趟 ✓',
+       g3.includes('bool _byReal = (t != NONE && t < uint(uRealTitles))')
+       && g3.includes('|| (tt != NONE && tt < uint(uRealTitles));')
+       && g3.includes('bool _want = wasteOnly ? (_hasWaste && !_byReal) : (!_hasWaste || _byReal);')
+       && nWaste === 4 && nNorm === 8,
+       `_byReal=${g3.includes('_byReal')} wasteOnly=true 的调用 ${nWaste} 个 / false 的 ${nNorm} 个`);
   }
 
   // 主菜单与 F5 的分工：接完必须把存档**写回 localStorage**
@@ -3562,20 +3565,34 @@ const factory = new Function(
            ex.renderer.extraWs[0] < ex.renderer.extraWs[ex.renderer.extraCount - 1],
            `${ex.renderer.extraWs[0].toFixed(2)} < `
            + `${ex.renderer.extraWs[ex.renderer.extraCount - 1].toFixed(2)}`);
-        // **水域 / 荒地两条线钉死 1** ✓（用户定的 ✓）——
-        // 以前水域取"链上最粗那条"、荒地借本层那条线 ✗ → 开不开剧本会变 ✗
-        ex.syncLayerSwitches();
-        ok('水域 / 荒地边界：粗细恒为 1（不跟链、不跟本层那条线 ✓）',
-           Math.abs(ex.renderer.waterW - 1) < 0.001 && Math.abs(ex.renderer.wasteW - 1) < 0.001,
-           `waterW=${ex.renderer.waterW} wasteW=${ex.renderer.wasteW}`
-           + ` 链上最粗=${ex.renderer.extraWs[ex.renderer.extraCount - 1].toFixed(2)}`
-           + ` 本层=${ex.renderer.borderWidth.toFixed(2)}`);
+        // **水域 / 荒地两条线：固定 1 格 × 基准线宽** ✓（用户定的 ✓）
+        //   · 固定：不跟链、也不跟本层那条线走（以前水域取"链上最粗那条" ✗ → 开不开剧本会变 ✗）
+        //   · 但**要受基准线宽影响** ✓（整套粗细阶梯都按「基准线宽 / 1.6」缩放 ✓）
+        {
+          const _svW = st.set ? st.set.w : undefined;
+          if (st.set) st.set.w = null;                 // 出厂：基准线宽 1.6 → 缩放 1 ✓
+          ex.syncLayerSwitches();
+          const _w1 = ex.renderer.waterW, _k1 = ex.renderer.wasteW;
+          if (st.set) st.set.w = 3.2;                  // 拉到两倍 → 缩放 2 ✓
+          ex.syncLayerSwitches();
+          const _w2 = ex.renderer.waterW, _k2 = ex.renderer.wasteW;
+          if (st.set) { if (_svW === undefined) delete st.set.w; else st.set.w = _svW; }
+          ex.syncLayerSwitches();
+          ok('水域 / 荒地边界：粗细 = 1 格 × 基准线宽（不跟链、不跟本层那条线 ✓）',
+             Math.abs(_w1 - 1) < 0.001 && Math.abs(_k1 - 1) < 0.001,
+             `出厂 waterW=${_w1} wasteW=${_k1}`
+             + ` 链上最粗=${ex.renderer.extraWs[ex.renderer.extraCount - 1].toFixed(2)}`
+             + ` 本层=${ex.renderer.borderWidth.toFixed(2)}`);
+          ok('水域 / 荒地边界：跟着「基准线宽」等比缩放（1.6 → 1 格 / 3.2 → 2 格）✓',
+             Math.abs(_w2 - 2) < 0.001 && Math.abs(_k2 - 2) < 0.001,
+             `基准线宽 3.2 → waterW=${_w2} wasteW=${_k2}`);
+        }
         {
           // 换个状态再看一遍：剧本层 + 没粒度（本层那条线这时是 1.5 的势力线 ✓）也不许动
           const _svG2 = st.grain, _svT3 = st.tier;
           st.grain = null; st.tier = ERA0;
           ex.syncParentBorder(); ex.syncLayerSwitches();
-          ok('水域 / 荒地边界：换成"剧本层 + 没粒度"（本层 1.5）也还是 1 ✓',
+          ok('水域 / 荒地边界：换成"剧本层 + 没粒度"（本层 1.5）也还是 1 格 ✓',
              Math.abs(ex.renderer.waterW - 1) < 0.001 && Math.abs(ex.renderer.wasteW - 1) < 0.001,
              `waterW=${ex.renderer.waterW} wasteW=${ex.renderer.wasteW}`
              + ` 本层=${ex.renderer.borderWidth.toFixed(2)}`);
