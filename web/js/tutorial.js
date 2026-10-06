@@ -253,6 +253,8 @@
     running = false;
     clearTimeout(timer);
     if (disarmer) { try { disarmer(); } catch (e) { /* ✓ */ } disarmer = null; }
+    // 走完（或主动跳过）就记下来 —— 原来这个键只读不写，"第一次玩"的提示每次启动都弹
+    try { localStorage.setItem('pdx_tut_done', '1'); } catch (e) { /* 无痕模式存不了就算了 */ }
     if (!layer) return;
     if (card) card.classList.remove('on');
     if (ring) ring.classList.remove('on');

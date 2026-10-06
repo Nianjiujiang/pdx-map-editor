@@ -11,7 +11,7 @@
  */
 
 //: 数据目录。启动时由玩家选一张，默认第一张
-let DATA = '/data';
+export let DATA = '/data';
 
 export function setDataDir(dir) {
   DATA = dir;
@@ -75,7 +75,7 @@ function b64ToBytes(b64) {
   return out;
 }
 
-async function decompress(bytes, format) {
+export async function decompress(bytes, format) {
   if (typeof DecompressionStream === 'undefined') {
     throw new Error('这个浏览器不支持 DecompressionStream，请用较新的 Chrome / Edge / Firefox。');
   }
