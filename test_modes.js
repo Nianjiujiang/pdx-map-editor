@@ -1031,6 +1031,123 @@ const factory = new Function(
     ex.syncLayerSwitches();
   }
 
+  // 回归（用户报的）：剧本视图 + **没开粒度** + 「填色·边界」开着时，
+  // 点一块**没涂过**的地 —— 只许涂"跟它同一块色"的那几块。
+  // 同一个头衔里被玩家涂成别的颜色的地方（1936 剧本里被德国占掉的那半法国就是这种）
+  // **一块都不许碰** ✗（以前这里直接按头衔把整个国家铺一遍，占领区一起被盖掉了 ✓）
+  if ((st.meta.eraDates || []).length && st.meta.eraDates.length < st.meta.tiers.length) {
+    const svT0 = st.tier, svG0 = st.grain, svBP0 = st.showBorderPaint, svB0 = st.brushLabel;
+    st.tier = 0; st.grain = null; st.showBorderPaint = true;
+    const n0 = st.meta.numProvinces, tm0 = st.titlemap;
+    const fine0 = st.meta.tiers.length - 1;
+    const _nReal0 = st.meta.numRealTitles != null ? st.meta.numRealTitles : 1e9;
+    // 挑一个地最多的剧本层国家当"法国"
+    const cnt0 = new Map();
+    for (let q = 1; q < n0; q++) {
+      const t0 = tm0[q];                 // 第 0 层 = 剧本层
+      if (t0 == null || t0 === 65535 || t0 >= _nReal0) continue;
+      if (ex.isLocked(t0)) continue;
+      if (st.provPos[q * 3 + 2] <= 0) continue;
+      cnt0.set(t0, (cnt0.get(t0) || 0) + 1);
+    }
+    let host0 = -1, best0 = 0;
+    for (const [t0, c] of cnt0) if (c > best0) { best0 = c; host0 = t0; }
+    ok('找得到一个地够多的剧本层国家（复现用）', host0 >= 0 && best0 >= 8,
+       host0 >= 0 ? `#${host0} ${st.titles.names[host0]} 有 ${best0} 块地` : '没找到');
+    if (host0 >= 0 && best0 >= 8) {
+      const land0 = [];
+      for (let q = 1; q < n0; q++) {
+        if (tm0[q] === host0 && st.provPos[q * 3 + 2] > 0) land0.push(q);
+      }
+      // ① 开粒度，用"占领色"占掉一块（一块一块点，跟真人一样）
+      st.grain = fine0;
+      st.brush = [64, 64, 72]; st.brushLabel = '占领国';
+      for (const q of land0.slice(0, Math.min(Math.floor(land0.length / 2), 30))) {
+        ex.paintAt(q, ex.titleAt(q, fine0));
+      }
+      const occ0 = land0.filter((q) => ex.renderer.paintData[q * 4 + 3] > 0);
+      ok('先占掉一块（复现的前置）', occ0.length >= 1 && occ0.length < land0.length,
+         `占 ${occ0.length} / ${land0.length} 块`);
+      // ② 回到剧本视图（**不开粒度**），用这个国家自己的颜色点它剩下的那半
+      st.grain = null;
+      const keptColor = (q) => {
+        const p4 = q * 4;
+        const pd = ex.renderer.paintData;
+        return pd[p4 + 3] > 0 && pd[p4] === 64 && pd[p4 + 1] === 64 && pd[p4 + 2] === 72;
+      };
+      const free0 = land0.filter((q) => ex.renderer.paintData[q * 4 + 3] === 0);
+      if (occ0.length && free0.length) {
+        st.brush = ex.stableColor(free0[0], host0).slice();
+        st.brushLabel = st.titles.names[host0];
+        ex.paintAt(free0[0], ex.titleAt(free0[0], 0));
+        const kept0 = occ0.filter(keptColor).length;
+        ok('点没涂过的那半（用国家自己的色）→ 占领区一块都没被盖掉 ✗',
+           kept0 === occ0.length, `保住 ${kept0} / ${occ0.length} 块`);
+        // ③ 再换个新颜色点同一块 → 同色同标记的色块（这个国家没被占的那些地）一起变，
+        //    占领区照旧不动 ✓
+        st.brush = [200, 30, 90]; st.brushLabel = '新色';
+        ex.paintAt(free0[0], ex.titleAt(free0[0], 0));
+        const changed0 = free0.filter((q) => {
+          const p4 = q * 4;
+          return ex.renderer.paintData[p4] === 200 && ex.renderer.paintData[p4 + 1] === 30;
+        }).length;
+        const kept1 = occ0.filter(keptColor).length;
+        ok('换新色填这一块 → 整个色块一起变，占领区还是不动',
+           changed0 === free0.length && kept1 === occ0.length,
+           `变色 ${changed0} / ${free0.length} 块，占领区保住 ${kept1} / ${occ0.length} 块`);
+      }
+      // ④「还原」在同一个配置下也得**按色块**擦（用户报的第二条）：
+      //    在法国本土上点还原 → 只清"新色"这一块，占领区一块都不许掉 ✗
+      if (occ0.length && free0.length) {
+        const W0 = st.meta.mapWidth, H0 = st.meta.mapHeight;
+        const pixOf = new Map();
+        for (let y = 0; y < H0; y += 2) {
+          for (let x = 0; x < W0; x += 2) {
+            const q = st.provinceIds[y * W0 + x];
+            if (q && !pixOf.has(q)) pixOf.set(q, [x, y]);
+          }
+        }
+        const stg0 = get('stage');
+        const vw0 = stg0.clientWidth / st.cam.scale, vh0 = stg0.clientHeight / st.cam.scale;
+        const vx0 = st.cam.cx - vw0 / 2, vy0 = st.cam.cy - vh0 / 2;
+        const toClient0 = (mx, my) => [(mx + 0.5 - vx0) / vw0 * stg0.clientWidth,
+                                       (my + 0.5 - vy0) / vh0 * stg0.clientHeight];
+        const eraseAt = (q) => {
+          const px = pixOf.get(q);
+          if (!px) return false;
+          ex.setTool('erase');
+          ex.actAt(...toClient0(px[0], px[1]));
+          return true;
+        };
+        const lit = (q) => ex.renderer.paintData[q * 4 + 3] > 0;
+        if (eraseAt(free0[0])) {
+          const left0 = free0.filter(lit).length;
+          const kept2 = occ0.filter(keptColor).length;
+          ok('在没被占的那半点「还原」→ 那一块清干净，占领区一块没掉 ✗',
+             left0 === 0 && kept2 === occ0.length,
+             `那半还剩 ${left0} 块没清，占领区保住 ${kept2} / ${occ0.length} 块`);
+        }
+        // ⑤ 反过来点占领区 → 该清的还是清的掉（别修成"谁都擦不动" ✗）
+        if (eraseAt(occ0[0])) {
+          const left1 = occ0.filter(lit).length;
+          ok('反过来在占领区点「还原」→ 占领区清得掉 ✓', left1 === 0,
+             `占领区还剩 ${left1} / ${occ0.length} 块`);
+        }
+      }
+      // 收尾：这一族涂过的全还原
+      st.grain = null;
+      ex.setTool('paint');
+      for (let q = 1; q < n0; q++) {
+        for (let ti = 0; ti < st.meta.tiers.length; ti++) {
+          const t1 = ex.titleAt(q, ti);
+          if (t1 != null && t1 !== 65535 && st.painted.has(t1)) ex.restoreTitle(t1);
+        }
+      }
+    }
+    st.tier = svT0; st.grain = svG0; st.showBorderPaint = svBP0; st.brushLabel = svB0;
+    ex.syncLayerSwitches();
+  }
+
   // 自动荒地：开了之后，渲染器要显示**荒地自己的颜色**（不然自动上的色看不见）✓
   if ((st.meta.wasteland || []).length && get('waste-auto') && ex.wasteApply) {
     const svAuto = st.wasteAuto, svWaste = st.showWaste, svR = ex.renderer.showWaste;
