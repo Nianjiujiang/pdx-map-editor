@@ -119,10 +119,12 @@ if (location.protocol === 'file:') {
         <input type="checkbox" id="show-power-border">
         <span>边界</span>
       </label>
-      <!-- 原先是「填色」那组的「名称」✓ 按用户要求挪到「势力」这边 ✓
-           开关还是同一个 id ✓ 所以效果完全不变 ✓ -->
+      <!-- 「名称」有两个开关：这一组一个、填色那组一个（见下面）✓
+           两个写的是**同一个状态**、互相镜像 ✓
+           为什么要两个：CK3 没有国家/年代层，这一整组在 CK3 里是**隐藏的** ✗
+           只留这一个的话，CK3 玩家就点不到「填色的名字」了 ✓（用户报的正是这个） -->
       <label class="switch">
-        <input type="checkbox" id="show-labels-paint" checked>
+        <input type="checkbox" id="show-power-names" checked>
         <span>名称</span>
       </label>
     </div>
@@ -157,6 +159,12 @@ if (location.protocol === 'file:') {
       <label class="switch">
         <input type="checkbox" id="show-border-paint" checked>
         <span>边界</span>
+      </label>
+      <!-- 填色自己的「名称」开关 —— 任何一代游戏这一组都在 ✓
+           （CK3 没有国家/年代层，势力那一组是隐藏的，所以这里必须有 ✓） -->
+      <label class="switch">
+        <input type="checkbox" id="show-labels-paint" checked>
+        <span>名称</span>
       </label>
 
     </div>
@@ -311,7 +319,7 @@ if (location.protocol === 'file:') {
         <div class="set-col">
           <h3>边界</h3>
           <label class="set-row"><span>基准线宽</span><input type="range" id="set-w" min="0.5" max="4" step="0.1"></label>
-          <label class="set-row"><span>填色线宽</span><input type="range" id="set-pw" min="0.5" max="2" step="0.05"></label>
+          <label class="set-row"><span>势力线宽</span><input type="range" id="set-pw" min="0.5" max="2" step="0.05"></label>
           <label class="set-row"><span>默认边界浓度</span><input type="range" id="set-da" min="0" max="100" step="5"></label>
           <label class="set-row"><span>省份边界浓度</span><input type="range" id="set-pa" min="0" max="100" step="5"></label>
           <label class="set-row"><span>地区边界浓度</span><input type="range" id="set-ra" min="0" max="100" step="5"></label>
@@ -326,6 +334,8 @@ if (location.protocol === 'file:') {
             <select id="set-legend-pos">
               <option value="tl">左上</option>
               <option value="tr">右上</option>
+              <option value="bl">左下</option>
+              <option value="br">右下</option>
             </select>
           </label>
           <div class="legend-list" id="legend-list"></div>

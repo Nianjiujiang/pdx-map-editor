@@ -91,6 +91,16 @@ function bindMobile() {
         sheet.style.maxHeight = Math.max(160, r.top - a.top - 20) + 'px';
       }
       sheet.style.setProperty('--tail-x', Math.round(cx - left) + 'px');
+      /* 「更高」模式：把 height 顶到**刚算出来的可用上限**（就是上面那个 max-height ✓
+       *   贴着底部往上长 ✓ 不会顶出屏幕 ✓）；普通模式清掉 height ✓ 回到"按内容自己撑" ✓
+       * 这里**不做动画** ✗（用户要求去掉 ✓ 而且显式 px 也会让面板不再跟内容长高 ✗）*/
+      try {
+        if (sheet.classList.contains('mob-tall') && sheet.style.maxHeight) {
+          sheet.style.height = sheet.style.maxHeight;
+        } else {
+          sheet.style.height = '';
+        }
+      } catch (e) { /* ✓ */ }
     } catch (e) { /* 算不出来就按默认位置 ✓ */ }
   };
 
@@ -100,14 +110,35 @@ function bindMobile() {
     for (const k in group) group[k].el.hidden = !(g && group[k] === g);
     if (g) {
       titleEl.textContent = g.title;
+      /* 「更高」**按页各记各的** ✓ —— 打开哪一页就套哪一页的状态 ✓
+       * ⚠ 这一句**必须在 place() 之前** ✗：
+       *   ① 少了它，按钮加上的 mob-tall 就没人摘 ✗ → 之后打开工具/视图/文件也全变高 ✗
+       *      （整个 App 只有一个 #mob-sheet ✓ 四个入口共用 ✓ 用户报过两次 ✓）
+       *   ② place() 是**看着这个 class** 决定高度的 ✓ 顺序反了就会按上一页的状态算一次 ✗
+       */
+      try {
+        const _ts = (group.display && group.display.el && group.display.el._tallState) || {};
+        sheet.classList.toggle('mob-tall', !!_ts[key]);
+      } catch (e) { /* ✓ */ }
       if (btn) place(btn, key);
-      // 高度**不锁** ✓ 跟「颜色」那栏一样按内容自己撑 ✓（用户要求）
+      // 高度**不锁** ✓ 跟「颜色」那栏一样按内容自己撑 ✓（用户要求）—— 这一句是给别的面板的
+      //（设置那一栏例外：下面用 _lockSoon 量出最高页锁住 ✓ 切页不跳 ✓）
       sheet.classList.remove('tall');
-      if (key === 'display' && group.display && group.display._lockH) {
-        requestAnimationFrame(() => { try { group.display._lockH(); } catch (e) { /* ✓ */ } });
+      if (key === 'display' && group.display && group.display.el._lockSoon) {
+        requestAnimationFrame(() => { try { group.display.el._lockSoon(); } catch (e) { /* ✓ */ } });
       }
       // **横向滚动位置强制归零** ✓（不然内容稍宽就被推到一边、左边那截看不见 ✗）
       try { body.scrollLeft = 0; sheet.scrollLeft = 0; } catch (e) { /* ✓ */ }
+      /* 打开设置面板时，要是当前正停在「导出图例」那一页，把列表重刷一遍 ✓
+       * 用 legendFresh ✓ —— 它会**先按"现在这一刻的剧本/层级"把色块补算一遍**再列 ✓
+       * （只刷列表的话，列出来的可能还是上一个剧本的分组 ✗ 用户报过 ✓）*/
+      if (key === 'display') {
+        const _dEl = group.display && group.display.el ? group.display.el : null;
+        const _lgPane = _dEl ? _dEl.querySelector('.mob-pane[data-pane="legend"]') : null;
+        if (_lgPane && !_lgPane.hidden) {
+          try { legendFresh(); } catch (e) { /* ✓ */ }
+        }
+      }
       sheet.classList.add('on');
       backdrop.classList.add('on');
       opened = key;
@@ -216,28 +247,129 @@ function bindMobile() {
       for (const key in paneEls) paneEls[key].hidden = (key !== k);
       const bs = tabs.querySelectorAll('.mob-tab');
       for (let i = 0; i < bs.length; i++) bs[i].classList.toggle('on', bs[i].getAttribute('data-pane') === k);
+      /* **图例列表每次打开这一页都要重刷** ✓
+       * 手机版的设置面板不是那个桌面弹窗 ✗（#settings 在手机上是 display:none，
+       * 四栏是被**搬**进来的 ✓）→ 而"刷图例列表"原本是桌面弹窗打开时顺手做的 ✓
+       * 于是手机版没人替它刷 → 那个列表**永远停在启动那一刻**（= 空的 ✗）
+       * 用户报的"手机版设置里看不见图例"就是这个 ✓ */
+      if (k === 'legend') { try { legendFresh(); } catch (e) { /* ✓ */ } }
+      // 换了页，内容高度本来就变 → 不用管高度（普通模式是按内容自己撑的 ✓）
+      /* **每次切页再量一次** ✓ —— 万一这一页比之前量过的都高（比如列表这次更长 ✓）
+       * 就把锁的高度抬上去 ✓（只涨不缩 ✓ 所以不会再出现"切回去变矮"✗）*/
+      try { if (gDisp._lockH) setTimeout(() => { try { gDisp._lockH(); } catch (e) { /* ✓ */ } }, 0); }
+      catch (e) { /* ✓ */ }
     };
     for (const b of tabs.querySelectorAll('.mob-tab')) {
       b.addEventListener('click', () => showTab(b.getAttribute('data-pane')));
     }
     showTab('show');
 
-    // **切换标签不许改高度** ✓（用户嫌一跳一跳的 ✗）
-    // 做法：把五页都临时显出来（用 visibility:hidden 保住布局 ✓）
-    //       量出最高那页 ✓ 拿它当内容区的 min-height 锁住 ✓
+    // **切换标签不许改高度** ✓（用户嫌一跳一跳的 ✗ 前后提过两次 ✗）
+    // 做法：把每页都临时显出来（用 visibility:hidden 保住布局 ✓）量高度 ✓
+    //       取**见过的最大高度**当内容区的 min-height 锁住 ✓ → 只涨不缩 ✓
+    // 为什么要"只涨不缩"：光量一次不够 ✗ ——
+    //   图例列表要现填、字体换行要重排，页面是**过一下才长高**的 ✓
+    //   只量一次就会锁在"刚打开那会儿最矮的值"✗ → 之后切到高的页照样长出去 ✓
+    // 所以：记住历史最大值 ✓ + 开面板时量两次（立刻 + 150ms）✓ + 每次切页再量一次 ✓
+    gDisp._lockHMax = 0;
     gDisp._lockH = () => {
+      const wasMeasuring = sheet.classList.contains('measuring');
       try {
         const panes = tabs.parentNode.querySelectorAll('.mob-pane');
         if (!panes.length) return;
+        // 量之前先临时收回图例列表的上限 ✓
+        //（不然在「更高」模式下量一次，锁就被顶到 42vh 那么高 ✗ 普通模式也跟着变高 ✗）
+        sheet.classList.add('measuring');
         const act = [];
         for (const p2 of panes) { act.push(p2.hidden); p2.hidden = false; p2.style.visibility = 'hidden'; }
         let max = 0;
         for (const p2 of panes) max = Math.max(max, p2.offsetHeight || p2.scrollHeight || 0);
         for (let i = 0; i < panes.length; i++) { panes[i].style.visibility = ''; panes[i].hidden = act[i]; }
+        if (max <= 0) return;
+        gDisp._lockHMax = Math.max(gDisp._lockHMax || 0, max);   // **只涨不缩** ✓
         const wrap = gDisp.querySelector('.mob-panes');
-        if (wrap && max > 0) wrap.style.minHeight = Math.round(max) + 'px';
-      } catch (e) { /* ✓ */ }
+        if (wrap) wrap.style.minHeight = Math.round(gDisp._lockHMax) + 'px';
+      } catch (e) { /* ✓ */ } finally {
+        if (!wasMeasuring) { try { sheet.classList.remove('measuring'); } catch (e) { /* ✓ */ } }
+      }
     };
+    // 开面板时量两次：立刻一次（大部分页面这时就定了 ✓）、150ms 后再补一次
+    //（补的是"现填内容/重排之后"的高度 ✓ 比如图例列表刚列出来那一刻 ✓）
+    gDisp._lockSoon = () => {
+      try { gDisp._lockH(); } catch (e) { /* ✓ */ }
+      setTimeout(() => { try { gDisp._lockH(); } catch (e) { /* ✓ */ } }, 150);
+    };
+
+    /* **「更高」按钮：按页各记各的** ✓（设置页一个、颜色页一个 ✓）
+     * 为什么改成"按页各记各的"：整个 App 只有一个 #mob-sheet ✗ 四个入口共用 ✓
+     *   状态混在一起的话，在设置页点了变高 → 切到颜色页**也跟着变高** ✗（用户报过 ✓）
+     * 现在每页自己的开关记在自己的键里 ✓ 打开哪页就套哪页的状态 ✓ 天然不串 ✓
+     * 高度**不写死** ✓ JS 会顶到 place() 算出来的可用上限（顶到极限但不顶出屏幕 ✓）
+     */
+    const TALLS = {};                       // { display: true, color: false, ... }
+    const tallStorageKey = (k) => 'pdx_mob_tall_' + k;
+    const makeTallBtn = (host, key) => {
+      if (!host) return null;
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'mob-tallbtn';
+      b.setAttribute('aria-label', '把面板变高或变矮');
+      host.appendChild(b);
+      const paint = () => {
+        const on = !!TALLS[key];
+        b.classList.toggle('on', on);
+        // ▾ = 还能再高一点；▴ = 已经最高了，点了收回去 ✓（用户要求用上下箭头 ✓）
+        b.textContent = on ? '\u25b4' : '\u25be';
+      };
+      b.addEventListener('click', () => {
+        TALLS[key] = !TALLS[key];
+        try { localStorage.setItem(tallStorageKey(key), TALLS[key] ? '1' : '0'); } catch (e) { /* ✓ */ }
+        paint();
+        /* **当场把 class 套上去** ✗ —— 漏了这一步按钮就跟没反应一样 ✓
+         * （class 原本只在 setSheet 打开面板时套 ✓ 所以点了要等下次打开才生效 ✗）
+         * 只有"正开着这一页"才需要动它 ✓ 免得串到别的页 ✓ */
+        try { if (opened === key) sheet.classList.toggle('mob-tall', !!TALLS[key]); } catch (e) { /* ✓ */ }
+        // 当前正开着这一页才需要立刻重摆 ✓（place 里会把高度一起收拾好 ✓）
+        try { if (opened === key && openedBtn) place(openedBtn, key); } catch (e) { /* ✓ */ }
+        try { if (key === 'display' && gDisp._lockH) gDisp._lockH(); } catch (e) { /* ✓ */ }
+      });
+      try { TALLS[key] = localStorage.getItem(tallStorageKey(key)) === '1'; } catch (e) { TALLS[key] = false; }
+      paint();
+      return b;
+    };
+    gDisp._tallState = TALLS;               // 给 setSheet 用 ✓
+    makeTallBtn(tabs, 'display');           // 设置页：按钮放标签那一排的最右边 ✓
+
+    // 颜色页：按钮放进它自己的「当前颜色」标题行里 ✓（那一行本来就是一条 header ✓）
+    try {
+      const head = gColor.querySelector('.panel-head');
+      if (head) {
+        head.style.display = 'flex';
+        head.style.alignItems = 'center';
+        head.style.gap = '8px';
+        makeTallBtn(head, 'color');
+      } else {
+        makeTallBtn(gColor, 'color');
+      }
+    } catch (e) { /* ✓ */ }
+
+    /* **没有荒地的地图：把「荒地」整组藏掉** ✓
+     * 判断依据跟教程模块用的是同一个：app 把 #waste-label 的内联 display 设成 none ✓
+     *（这一组在手机上会被那条 group-label 规则顶出一个孤零零的标题 ✗ 见 CSS 里的说明 ✓）
+     */
+    try {
+      const wl2 = $('waste-label');
+      const wg2 = $('waste-group');
+      const hiddenByApp = !!(wl2 && wl2.style && wl2.style.display === 'none');
+      if (wg2 && hiddenByApp) wg2.classList.add('no-waste');
+    } catch (e) { /* ✓ */ }
+
+    // 颜色页变高时让"搜索结果"那块吃掉空间 ✓ 先给它挂个记号（CSS 靠这个记号找它 ✓）
+    try {
+      const rp = panelOf('results');
+      if (rp) rp.classList.add('mob-grow');
+    } catch (e) { /* ✓ */ }
+
     // 归属链（跟着鼠标看地块那块）手机上没有悬停 ✗ 不搬 ✓
     move(paneEls.show, $('display-panel'));
     // 署名放最下面 ✓
@@ -362,11 +494,23 @@ function bindMobile() {
   const onWidget = (t) => !!(t && t.closest
     && t.closest('.zoom-box, button, input, a, select, #boot, .modal, #mob-ui, .toast'));
 
+  /* **查看模式下，单指拖动 = 平移地图** ✓
+   * 桌面版是靠 mousemove 平移的 ✗ 手机上根本没那东西 ✓
+   * 所以「查看」工具在手机上原本单指什么都干不了 ✗（用户报的第三条）
+   * 这里自己接上：跟双指平移用**同一套算法**（cam.cx -= dx / scale ✓）
+   */
+  let viewPan = null;
+
   stage.addEventListener('touchstart', (e) => {
-    if (e.touches.length !== 1) { stopStroke(); return; }   // 两根手指是平移缩放 ✓
+    if (e.touches.length !== 1) { stopStroke(); viewPan = null; return; }  // 两根手指是平移缩放 ✓
     const t = e.touches[0];
     if (onWidget(e.target)) return;
-    if (!state.tool || state.tool === 'view') return;       // 查看工具：单指留给地图手势 ✓
+    if (!state.tool) return;
+    if (state.tool === 'view') {                             // 查看：单指平移 ✓
+      viewPan = { x: t.clientX, y: t.clientY };
+      e.preventDefault();
+      return;
+    }
     stroke = true; strokePainted = false; holdPicked = false;
     painting = false;                                        // 还没落笔 ✓
     strokeAt = { x: t.clientX, y: t.clientY };
@@ -374,8 +518,18 @@ function bindMobile() {
   }, { passive: false });
 
   stage.addEventListener('touchmove', (e) => {
-    if (!stroke || e.touches.length !== 1) return;
+    if (e.touches.length !== 1) return;
     const t = e.touches[0];
+    if (viewPan) {                                           // 查看：拖到哪跟到哪 ✓
+      const sc = (state.cam && state.cam.scale) || 1;
+      state.cam.cx -= (t.clientX - viewPan.x) / sc;
+      state.cam.cy -= (t.clientY - viewPan.y) / sc;
+      viewPan.x = t.clientX; viewPan.y = t.clientY;
+      invalidate();
+      e.preventDefault();
+      return;
+    }
+    if (!stroke) return;
     strokeAt = { x: t.clientX, y: t.clientY };
     if (state.tool !== 'pick') {                             // 吸管滑动不重复吸 ✓（跟桌面一致）
       actAt(t.clientX, t.clientY);
@@ -391,10 +545,11 @@ function bindMobile() {
       try { actAt(strokeAt.x, strokeAt.y); } catch (err) { /* ✓ */ }
     }
     strokeAt = null;
+    viewPan = null;
     stopStroke();
   };
   stage.addEventListener('touchend', endStroke);
-  stage.addEventListener('touchcancel', stopStroke);
+  stage.addEventListener('touchcancel', () => { viewPan = null; stopStroke(); });
 
   // 长按 = 右键 = 取色 ✓
   let lpTimer = null, lpTouched = null;
@@ -563,4 +718,30 @@ function bindMobile() {
    * 第一次进来本来就会弹一页图文介绍 ✓ 该说的都在里头 ✓
    * 两条一起上就是打扰 ✓ 手机上屏幕又小，浮条还挡地图 ✓
    */
+
+  /* ============================================================ 去掉地图上的高亮
+   * 手机上那圈白描边（悬停高亮）没意义 ✗ —— 手指一碰就留一圈 ✓
+   * 拖动、缩放的时候尤其碍眼 ✓（用户要的：手机版去掉高亮 ✓）
+   * 所以：**任何触摸/指针动作一发生就把高亮清掉** ✓
+   * 只在手机补丁里 ✓ 电脑版照旧有高亮 ✓
+   */
+  try {
+    const _clearHl = () => {
+      try {
+        if (typeof renderer !== 'undefined' && renderer && renderer.setHover) {
+          renderer.setHover(null);
+        }
+        if (typeof state !== 'undefined' && state && state.hover) {
+          state.hover.pid = 0;
+          state.hover.inside = false;
+        }
+      } catch (e) { /* 不影响用 ✓ */ }
+    };
+    for (const _ev of ['pointerdown', 'pointermove', 'pointerup', 'pointercancel',
+                       'touchstart', 'touchmove', 'touchend', 'wheel']) {
+      document.addEventListener(_ev, _clearHl, { capture: true, passive: true });
+    }
+    // 一开始也清一次 ✓（免得进页面就挂着一圈）
+    _clearHl();
+  } catch (e) { /* ✓ */ }
 }

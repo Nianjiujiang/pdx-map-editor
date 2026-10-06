@@ -206,7 +206,8 @@
 #mob-sheet .chain-row { min-height: 34px; }
 #mob-sheet input[type="text"], #mob-sheet input[type="number"] { font-size: 13.5px; padding: 6px 8px; }
 #mob-sheet .btn { min-height: 34px; padding: 0 12px; font-size: 13px; }
-#mob-sheet .set-row { min-height: 34px; font-size: 13px; }
+#mob-sheet .set-row { min-height: 34px; font-size: 14px; }
+/* ↑ 跟 .switch 那行一样大 ✓（用户：别把「字号倍率」几个字弄得跟别人不一样 ✓）*/
 #mob-sheet .set-col { margin: 0; }
 #mob-sheet .panel-head { padding: 4px 2px 6px; }
 #mob-sheet .panel-head h2 { font-size: 13px; }
@@ -216,6 +217,19 @@
 /* ── 地图：一级界面就它一个 ───────────────────────────────────────── */
 .toolbar { display: none !important; }        /* 顶栏全部搬进面板了 ✓ */
 .sidebar { display: none !important; }        /* 左栏内容也搬进去了 ✓ */
+
+/* ===========================================================================
+   「荒地」那一组：**没有荒地的地图整组藏掉** ✓
+   app 是逐个元素用内联 display:none 藏的 ✓（waste-label / waste-row / waste-auto-row / waste-clear ✓）
+   可上面那条 .group-label 规则带 !important ✗ 会把内联的 display:none 压过去 ✗
+   → 没有荒地的图上就只剩一个「荒地」标题杵着 ✗（用户报的正是这个 ✓）
+   JS 检测到 app 把它藏了，就给整组打上 .no-waste ✓ 整组消失 ✓ 一个标点都不剩 ✓
+   =========================================================================== */
+#mob-sheet .mob-pane .tool-group.no-waste { display: none !important; }
+
+/* 「更高」那个按钮**不做动画** ✓（用户要求去掉 ✓）
+   曾经给 #mob-sheet 加过 height 过渡 ✓ 但那要求高度一直是显式 px ✗
+   → 面板就不再跟着内容长高了 ✗ 得不偿失 ✓ 已撤掉 ✓ */
 .body, .stage { height: 100%; }
 .stage { width: 100%; }
 #stage { touch-action: none; }
@@ -530,3 +544,175 @@
   width: 38px !important; min-width: 38px !important; padding: 0 !important;
   font-size: 17px !important; line-height: 1 !important;
 }
+
+
+/* ===========================================================================
+   改名弹窗 = **居中的小卡片**，不要铺满全屏（用户：手机版改名不要覆盖全屏）
+   —— 上面那段 .modal 是给"设置弹窗"写的竖屏全屏版 ✗
+      改名只有一行输入，铺满整屏太唬人、还看不见地图 ✓
+   =========================================================================== */
+#rename {
+  display: flex !important;
+  align-items: center !important; justify-content: center !important;
+  padding: 16px !important;
+}
+/* **必须补这一句** ✗ —— 上面那个 display:flex 带 !important ✓
+   会把元素自带的 hidden 属性压过去 ✓ 于是改名窗**一进页面就杵在屏幕中间** ✗
+   （用户报的"一点进去一个大大的改名"就是这个 ✓）
+   [hidden] 是属性选择器、权重比单独的 #rename 高 ✓ 所以这句一定压得住 ✓
+   —— 教程那个介绍窗当初就记得写了 ✓ 改名窗漏了 ✗） */
+#rename[hidden] { display: none !important; }
+#rename .modal-box {
+  width: 100% !important; max-width: 380px !important;
+  height: auto !important; max-height: 70vh !important;
+  border-radius: 16px !important; border: 1px solid #2b3743 !important;
+  padding: 14px 16px 16px !important;
+  overflow-y: auto; scrollbar-width: none;
+}
+#rename .modal-box::-webkit-scrollbar { width: 0; height: 0; display: none; }
+#rename .modal-head { position: static !important; padding: 4px 0 10px !important; }
+#rename input, #rename .rename-input { font-size: 15px !important; min-height: 40px !important; }
+#rename button { min-height: 38px !important; padding: 0 14px !important; font-size: 14px !important; }
+
+
+/* ===========================================================================
+   图例条目在窄面板里也要排得下（现在一行是：勾选 + 色块 + 名字 + ↑↓）
+   —— 名字框让它缩 ✓ 箭头小一点但还是要指尖点得到 ✓
+   =========================================================================== */
+#mob-sheet .legend-row { flex-wrap: nowrap !important; gap: 6px !important; }
+#mob-sheet .legend-row .legend-name { min-width: 0 !important; font-size: 13px !important; padding: 4px 7px !important; }
+#mob-sheet .legend-row .legend-sw { width: 16px !important; height: 16px !important; }
+#mob-sheet .legend-row .legend-up,
+#mob-sheet .legend-row .legend-down {
+  width: 24px !important; height: 19px !important; font-size: 10px !important;
+}
+
+
+/* ===========================================================================
+   图例的**拖动把手**在手机上也要按得住
+   （一行现在是：勾选 + 色块 + 名字 + ↑↓ + 把手 ✓ 名字让位给它们 ✓）
+   =========================================================================== */
+#mob-sheet .legend-row .legend-drag {
+  width: 22px !important; font-size: 15px !important;
+  display: flex !important; align-items: center !important; justify-content: center !important;
+  min-height: 24px !important;
+  touch-action: none !important;   /* 按住把手拖动时不许滚页面 ✓ */
+}
+#mob-sheet .legend-row .legend-name { flex: 1 1 auto !important; }
+
+
+/* ===========================================================================
+   ① 图例列表**做小一点**（用户要求：设置界面里的这个 UI 小一点）
+      一行是：勾选 + 色块 + 名字 + ↑↓ + 把手 ✓ 全部收一档 ✓
+   =========================================================================== */
+#mob-sheet .legend-row {
+  gap: 6px !important; padding: 1px 0 !important;
+  /* **行高必须清掉** ✗ —— 早期那条 `.legend-row { min-height: 44px }`（触摸友好的老规矩 ✓）
+     一直在撑着每一行 ✓ 光收内边距根本压不下去 ✓（用户：项目之间的间距再小一点 ✓）
+     现在按内容自己的高度走（勾选框 15px + 上下 1px ≈ 17~20px 一行 ✓）*/
+  min-height: 0 !important;
+}
+#mob-sheet .legend-row .legend-on { width: 15px !important; height: 15px !important; }
+#mob-sheet .legend-row .legend-sw { width: 13px !important; height: 13px !important; border-radius: 3px !important; }
+#mob-sheet .legend-row .legend-name {
+  font-size: 12.5px !important; padding: 3px 6px !important; border-radius: 5px !important;
+}
+#mob-sheet .legend-row .legend-move { gap: 1px !important; }
+#mob-sheet .legend-row .legend-up,
+#mob-sheet .legend-row .legend-down {
+  width: 17px !important; height: 12px !important; font-size: 8px !important;
+}
+#mob-sheet .legend-row .legend-drag { width: 16px !important; font-size: 12px !important; min-height: 20px !important; }
+#mob-sheet .legend-list { max-height: 190px; }
+
+/* ===========================================================================
+   ② 「更高」按钮：把设置面板拔到 88vh，图例列表跟着放开 → 一次能看更多条
+      普通模式：列表上限 190px（面板本来就矮 ✓）
+      高的模式：列表放开到 42vh ✓ 面板内部滚动 ✓
+   =========================================================================== */
+#mob-sheet .mob-tallbtn {
+  margin-left: auto; align-self: center;
+  min-height: 26px; padding: 0 10px; border-radius: 13px;
+  border: 1px solid #2b3743; background: #101820; color: #9fb0c2;
+  font: 600 12px/1 "Microsoft YaHei", system-ui, sans-serif;
+}
+#mob-sheet .mob-tallbtn.on { border-color: #c9a94e; color: #f0d98a; }
+
+/* 高度**不写死** ✗ —— JS 会把它顶到 place() 算出来的那个上限（贴着底部往上长 ✓）
+   写死 88vh 会顶出屏幕（用户报过 ✓）；而且列表还被上限卡着 → 下面留一大块空地 ✗
+
+   ⚠ **每条都要加 :not([hidden])** ✗ —— 这些 display:flex 带 !important，
+     会把"面板自带的 hidden"直接压过去 → 四个面板一起显出来 ✗（踩过三次了 ✗）
+     :not([hidden]) 既把权重抬够 ✓ 又天然绕开该藏起来的那些 ✓
+*/
+#mob-sheet.mob-tall { display: flex !important; flex-direction: column !important; }
+#mob-sheet.mob-tall #mob-sheet-body:not([hidden]) {
+  flex: 1 1 auto !important; min-height: 0 !important;
+  display: flex !important; flex-direction: column !important; overflow-y: hidden !important;
+}
+#mob-sheet.mob-tall .mob-group:not([hidden]) {
+  flex: 1 1 auto !important; min-height: 0 !important;
+  display: flex !important; flex-direction: column !important;
+}
+#mob-sheet.mob-tall .mob-panes:not([hidden]) {
+  flex: 1 1 auto !important; min-height: 0 !important;
+  display: flex !important; flex-direction: column !important; overflow-y: auto !important;
+}
+/* 图例那一页：列表**把剩下的空间全吃掉** ✓ 内部滚动 ✓ 不再留空地 ✓ */
+#mob-sheet.mob-tall .mob-pane[data-pane="legend"]:not([hidden]) {
+  flex: 1 1 auto !important; min-height: 0 !important;
+  display: flex !important; flex-direction: column !important;
+}
+#mob-sheet.mob-tall .mob-pane[data-pane="legend"]:not([hidden]) .legend-list {
+  flex: 1 1 auto !important; max-height: none !important; min-height: 60px !important;
+}
+/* 兜底：高模式下面，凡是带 hidden 的都别想冒出来 ✓（权重按需要抬到最高） */
+#mob-sheet.mob-tall .mob-group[hidden],
+#mob-sheet.mob-tall .mob-panes[hidden],
+#mob-sheet.mob-tall .mob-pane[hidden],
+#mob-sheet.mob-tall .mob-subs[hidden],
+#mob-sheet.mob-tall #mob-sheet-body[hidden] { display: none !important; }
+
+/* 量"最高那页"的时候，临时把列表收回普通上限 ✓
+   —— 不然在高的模式下量一次，高度锁就被顶到那么高 ✗ 之后普通模式也跟着变高 ✗ */
+#mob-sheet.measuring .legend-list { max-height: 190px !important; }
+
+
+/* ===========================================================================
+   ① 「地区 · 涂色」那个小标（#brush-target）在手机上藏掉 ✓（用户要求去掉 ✓）
+   =========================================================================== */
+#brush-target { display: none !important; }
+
+/* ===========================================================================
+   ③ 颜色页变高时：让"搜索结果"那块**吃掉剩余空间** ✓ 内部滚动 ✓
+      （面板本身的高度由 JS 顶到可用上限 ✓ 见 place() ✓）
+   =========================================================================== */
+#mob-sheet.mob-tall[data-group="color"] .mob-grow {
+  flex: 1 1 auto !important; min-height: 0 !important;
+  display: flex !important; flex-direction: column !important;
+}
+/* 搜索结果（#results）：**普通模式给它一个上限** ✗
+   基类里 `.results { flex: 1 1 auto; max-height: 100% }` 自己就会撑满容器 ✓
+   面板矮的时候它一长（搜个 a 就 231 条 ✓）就把上面的「当前颜色 / 最近使用」顶出视野 ✗
+   → 用户报的"搜索结果把原来的 UI 挡住"就是这个 ✓ 普通模式留 34vh、内部滚动 ✓ */
+#mob-sheet .results { max-height: 34vh !important; }
+
+/* 「更高」模式下改成**只吃剩下的空间** ✓（不是卡一个死数字 ✗）
+   之前写死 52vh → 面板里"当前颜色 + 最近使用 + 查找 + 结果"加起来超过面板 ✗
+   → 变成面板滚一层、列表内部再滚一层 ✗ 底下一行正好卡在缝上 ✓
+     （用户："是不是还差一点没显示" ✓）
+   现在：固定那几块各占各的 ✓ 列表把余量填满 ✓ **只有一层滚动** ✓ 一行都不卡缝 ✓ */
+#mob-sheet.mob-tall[data-group="color"] .mob-panes:not([hidden]) {
+  overflow-y: hidden !important;          /* 外层的滚动关掉 ✓ 交给列表自己滚 ✓ */
+  padding-bottom: 6px !important;         /* 最后一行不贴着边 ✓ */
+}
+#mob-sheet.mob-tall[data-group="color"] .mob-grow {
+  flex: 1 1 auto !important; min-height: 0 !important;
+  display: flex !important; flex-direction: column !important;
+}
+#mob-sheet.mob-tall[data-group="color"] .mob-grow #results {
+  flex: 1 1 auto !important; max-height: none !important; min-height: 0 !important;
+  overflow-y: auto !important;
+}
+/* 面板头里那个「▾」按钮：贴右边 ✓ */
+#mob-sheet .panel-head .mob-tallbtn { margin-left: auto; flex: none; }

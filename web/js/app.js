@@ -232,7 +232,7 @@ const state = {
   wasteAuto: false,
   painted: new Set(),          // 玩家涂过的头衔（'颜色变没'无关'
   paintColor: new Map(),       // 手绘层每个头衔用的颜色（涂色只写这儿，不改头衔色'
-  brushLabel: '默认标记',        // 当前画笔的标记：默认就写这四个字 ✓（用户要求）
+  brushLabel: '请输入文本',      // 当前画笔的标记：默认就写这五个字 ✓（用户要求 ✓）
   titleLabel: new Map(),       // 头衔 '涂它时用的标'
   titleName: new Map(),        // 头衔 → 改过的名字（改名工具写的）
   colorIndex: new Map(),
@@ -705,6 +705,7 @@ function renameAt(pid, name) {
   return true;
 }
 
+
 /** 改名工具点下去：先把它现在的名字填进弹窗 ✓ */
 let _renamePid = 0;
 function openRename(pid) {
@@ -912,6 +913,66 @@ function syncLayerSwitches() {
     renderer.paintOnly = _paintOnly;
     renderer.dirty = true;
   }
+  /* ---- 水域边界（海洋 / 湖泊 / 河流 ✓ 用户定的四条 ✓）------------------------
+   *   · **一直画** ✓ 只有下面这三个**全关了**才跟着藏 ✓（用户指着截图定的 ✓）
+   *       势力 · 边界 ✓  地区 · 边界 ✓  填色 · 边界 ✓
+   *       （不是"按当前模式挑出来的那一个" ✗ 那样会漏掉另一个 ✓ 父级边界也不算 ✓）
+   *   · 粗细取**势力边界**那个值 ✓（= 链上最粗那条 ✓）
+   *       数值一样 ✓ 但**各是各的** ✗ 不做绑定（以后改一边不会动另一边 ✓）
+   *   · 浓度实心 ✓（着色器那边写死 1，没有浓度 uniform ✓）
+   *   · 三个水域色每帧送上去 ✓ 设置里改了颜色立刻生效 ✓
+   */
+  {
+    /* **只有这三个全关才藏** ✓（用户指着截图定的 ✓）
+     *   · 势力 · 边界（showPowerBorder）
+     *   · 地区 · 边界（showRegionBorder）
+     *   · 填色 · 边界（showBorderPaint）
+     * 注意不是 showBorderTitle ✗ —— 那个是"**按当前模式**挑出来的那一个" ✓
+     * 只算它的话就漏了另一个 ✓（我第一版就是这么写的 ✗ 只看了两个 ✓）
+     * 父级边界不算在里头 ✓（它是地区那一组的子选项 ✓）
+     */
+    const _anyBorderOn = !!(state.showPowerBorder || state.showRegionBorder || state.showBorderPaint);
+    if (renderer.showWater !== _anyBorderOn) { renderer.showWater = _anyBorderOn; renderer.dirty = true; }
+    /* 粗细：**取链上最后一级**（= 势力 / 国家那一圈 ✓）
+     *   不能取"最粗那条" ✗ —— 那只是**大概率**是势力 ✓ 不保证 ✓（用户追问过 ✓）
+     *   填色边界用的就是这个精确写法（爷爷那一级 ✓），这里跟它保持一致 ✓
+     *   链是空的时候（没有上级）就退回本层基准宽 ✓ */
+    const _wi = Math.min(renderer.extraCount || 0, (renderer.extraWs ? renderer.extraWs.length : 0)) - 1;
+    const _wChain = _wi >= 0 ? renderer.extraWs[_wi] : renderer.borderWidth;
+    if (isFinite(_wChain) && _wChain > 0 && Math.abs(renderer.waterW - _wChain) > 0.01) {
+      renderer.waterW = _wChain;
+      renderer.dirty = true;
+    }
+    /* 三个水域色：**必须跟 LUT 里真正生效的那个颜色一致** ✓
+     *
+     * ⚠ 两个坑我都踩过 ✗
+     *   ① 不能读 state.special ✗ —— 那是"从地图数据里认出来的默认色"，跟 LUT 没关系 ✓
+     *   ② 光读 state.set 也不行 ✗ —— 它默认是 **null**（用户没改过就没值 ✓）
+     *      而 applyLutOverrides 是 `if (c) 才覆盖` ✓ null 就不覆盖 ✓
+     *      → 那会儿 LUT 里用的是**地图数据烘进去的原色** ✓
+     *
+     * 所以：设置里有就用设置的 ✓ 没有就退回**原色** ✓ 两条合起来才等于 LUT 里的真值 ✓
+     *（诊断打出来的：renderer.seaCol=[0,0,0]、set.sea=null、#sea 在 keys 的索引 17675 ✓
+     *  —— 伪头衔是有的 ✓ 就是颜色没取到 ✓）
+     */
+    const _tkeys = (state.titles && state.titles.keys) || [];
+    const _origCol = (key) => {
+      const t = _tkeys.indexOf(key);
+      if (t < 0) return null;
+      const c = (state.titles && state.titles.colors && state.titles.colors[t]) || null;
+      return (c && c.length >= 3) ? [c[0] / 255, c[1] / 255, c[2] / 255] : null;
+    };
+    const _effCol = (key) => {
+      const s = (state.set || {})[key.slice(1)];      // '#sea' → state.set.sea ✓
+      if (s && s.length >= 3) return [s[0] / 255, s[1] / 255, s[2] / 255];
+      return _origCol(key);
+    };
+    const _sea = _effCol('#sea'), _lake = _effCol('#lake'), _river = _effCol('#river');
+    const _same = (a, b) => a && b && Math.abs(a[0] - b[0]) < 0.002 && Math.abs(a[1] - b[1]) < 0.002 && Math.abs(a[2] - b[2]) < 0.002;
+    if (_sea && !_same(renderer.seaCol, _sea)) { renderer.seaCol = _sea; renderer.dirty = true; }
+    if (_lake && !_same(renderer.lakeCol, _lake)) { renderer.lakeCol = _lake; renderer.dirty = true; }
+    if (_river && !_same(renderer.riverCol, _river)) { renderer.riverCol = _river; renderer.dirty = true; }
+  }
   // 玩家名字要不要**全图重分组**：只在国家/剧本那层 ✓（细层只画涂过的块 ✓）
   // 剧本层的国名（原版那批）现在也由这份分组负责 ✓ —— 以前那个「势力 · 名称」
   // 开关算出来的是同一批点，所以删了，只剩这一个开关说了算 ✓
@@ -978,19 +1039,38 @@ function syncParentBorder() {
   // 有链的时候本层自己**再细一档**（它是最细的那条线）
   const thinBase = baseW * 0.75;
   const step = 0.25;
-  if (state.grain != null && nEra > 0) {
+  /* 粗细阶梯（用户定的）：本层 1 / 父层 1.25 / 填色线与多级链 1.5
+   *   整体乘「基准线宽 / 1.6」：默认正好 1 / 1.25 / 1.5；拉基准线宽则整条等比缩放。
+   *   填色线与多级链再乘「势力线宽」pw。 */
+  const _wScale = ((state.set && state.set.w) ? state.set.w : 1.6) / 1.6;
+  const W_THIN = 1.0 * _wScale;    // 本层
+  const W_PARENT = 1.25 * _wScale; // 父层
+  const W_TOP = 1.5 * _wScale;     // 填色线 / 多级链
+  const _pwMul = state.set && state.set.pw ? state.set.pw : 1;   // 势力线宽倍率
+  /* **势力那条线的粗细：跟「填色线」同一套规则** ✓（用户要求 ✓）
+   *
+   * 填色线（下面几行）是这么算的：
+   *     max(链上最粗那条, baseW + 0.25) × 「填色线宽」倍率
+   *     ↑ 浓度固定吃「势力边界浓度」_CA
+   * 所以势力那条线就取**同一个下限、同一个基准** ✓（它是那条基准粗线，不加倍率 ✓）：
+   *     powerW = max(thinBase + step * 2, baseW + 0.25)
+   * 以前它是写死的 `thinBase + step * 2` = 0.75×基准 + 0.5 ✗
+   * → 永远不等于你在设置里拉的那个宽度 ✓（用户报的"程度和设置不一样"✓）
+   */
+    if (state.grain != null && nEra > 0) {
     // **只画"上一层"这一条** —— 不要再一路往上扫：
     // 省份粒度时把区域/都扫进来，会冒出用户不要的上二级边界 ✗
     const _pt = Math.max(nEra, state.grain - 1);
-    list.push({ tier: _pt, width: thinBase + step, show: showOf(_pt) });
+    list.push({ tier: _pt, width: W_PARENT, show: showOf(_pt) });
     // 剧本（国家）那一圈仍旧画 —— 它有自己的一档浓度（「剧本国家边界」）✓
+    // 粗细用 powerW ✓ = 跟填色线同一个下限、同一个基准 ✓（用户要求 ✓）
     list.push({ tier: Math.max(0, state.tier),
-                width: thinBase + step * 2, show: showOf(state.tier) });
+                width: W_TOP * _pwMul, show: showOf(state.tier) });
   } else if (state.grain != null) {
     // CK3（没有年代层）：只描**地理上的上一层**（父级）✓
     // 注意："爷爷级"不是更高的地理单位，而是**玩家填色的那条线**（见下面的 _paintIsTop）
     const pt = Math.max(0, state.grain - 1);
-    list.push({ tier: pt, width: thinBase + step, show: showOf(pt) });
+    list.push({ tier: pt, width: W_PARENT, show: showOf(pt) });
   } else {
     const detail = [fine, fine - 1];
     if (fine > 0 && detail.indexOf(state.tier) >= 0) {
@@ -1005,7 +1085,21 @@ function syncParentBorder() {
   // 所以 CK3 里「头衔·边界」+「填色·边界」一起开时：本层 0.5 / 父级 0.75 / 填色线 1.0
   const _paintIsTop = nEra === 0 && !!state.showBorderPaint && !!state.showBorderTitle;
   const hasGrand = (list.length + (_paintIsTop ? 1 : 0)) >= 2;
-  if (!state.showParentBorderTitle) list.length = 0;
+  /* 「父级边界」关着 → 不要**中间那些父辈** ✓ 但**不能把整条链清空** ✗
+   * 用户报的：剧本视图 + 开了粒度 + **只勾「势力 · 边界」**（父级边界没勾 ✗）
+   *   → 那条"势力 / 国家"线是挂在**链上**的一环 ✓
+   *   → `list.length = 0` 把它也一起清掉了 ✗
+   *   → 本层那条线又归「地区 · 边界」（没开 ✗）→ **画面上什么都没有** ✓
+   * 所以只清中间父辈 ✓ 剧本/势力那一环（tier < nEra）留着 ✓
+   *（它跟「父级边界」是两回事：前者是独立的一层开关 ✓ 后者才是"要不要再往上画几环"✓）*/
+  if (!state.showParentBorderTitle) {
+    // **只留"开着的那一环"**：势力/剧本那一环 ✓
+    //   `showPowerBorder` 关着就什么都不留 ✓ —— 原来那条"链就是空的"测试守的就是它 ✓
+    //   这样两边诉求正好对上：只勾势力边界 → 有线 ✓；势力也没勾 → 依旧全空 ✓
+    const _keepEra = list.filter((e) => nEra > 0 && e.tier < nEra && !!state.showPowerBorder);
+    list.length = 0;
+    for (const e of _keepEra) list.push(e);
+  }
   // 浓度：本层 0.45（在下面设）；**有上两层时，上一级 0.75**；更高层实心
   const _PA = ((state.set && state.set.pa != null ? state.set.pa : 50) / 100);
   const _RA = ((state.set && state.set.ra != null ? state.set.ra : 75) / 100);
@@ -1038,8 +1132,15 @@ function syncParentBorder() {
     renderer.borderStrength = _bs;
     renderer.dirty = true;
   }
+  /* 「势力线宽」倍率（用户定的 ✓ 这个滑条**同时管两条线** ✓）
+   *   滑条名字原来是「填色线宽」✓ 现在改叫「势力线宽」✓（见 index.html ✓ 内部字段仍叫 pw ✓
+   *   免得旧存档和测试崩 ✗）
+   *   它乘在**势力那条线**和**填色线**上 ✓ 两条线因此粗细完全一致 ✓（用户要求 ✓）*/
+  
   // 本层（链上最细那条）也跟着细一档；没有链时恢复基准
-  const _wBase = list.length ? thinBase : baseW;
+  // **没有链 + 当前就在势力那层 → 这条本层线就是势力线** ✓
+  // 要跟填色线同一套（同一个下限 + 乘「势力线宽」倍率）✓ 用户要求 ✓
+  const _wBase = _isPowerBase ? (W_TOP * _pwMul) : W_THIN;
   if (Math.abs(renderer.borderWidth - _wBase) > 0.01) {
     renderer.borderWidth = _wBase;
     renderer.dirty = true;
@@ -1048,9 +1149,7 @@ function syncParentBorder() {
   // **填色边界**：它就是链上的**爷爷那一级** —— 粗细按"爷爷档"（基准×0.75 再加 0.5）+ 实心 ✓
   // 注意不能只取"链上最粗那条"：CK3 的链只有父级一级，那样拿到的是**父级档** ✗
   // 所以以"爷爷档"为下限 —— 链本身更粗就跟着链（年代模式不变），CK3 则从父级提到爷爷 ✓
-  const _pwMul = state.set && state.set.pw ? state.set.pw : 1;
-  const _pw = Math.max(thinBase + step * 2,
-                       list.length ? list[list.length - 1].width : (baseW + 0.25)) * _pwMul;
+  const _pw = W_TOP * _pwMul;   // 填色线：跟多级链同一档 1.5（再乘势力线宽）
   if (Math.abs(renderer.paintWidth - _pw) > 0.01) {
     renderer.paintWidth = _pw;
     renderer.dirty = true;
@@ -1541,12 +1640,23 @@ function syncPaint(tid, rgb, clear) {
   const tm = state.titlemap;
   // 这一笔的标记编号（整块地共用一个，不必每格重算）'
   // 手绘描边要靠它区分"同色但不同标记"的两块，所以得写进那张标记纹理
-  // **用的是自己的名（= 这一层头衔本来的名字）→ 等于没换标记** ✓
-  //   （否则"用自己的色+自己的名涂自己那块"会平白多出一圈线 ✗ —— 测试里那条就是抓它的 ✓）
+  /* **一律取"这一笔用的名字"的编号** ✓ —— 不要再有 `-1` 那个特例 ✗
+   *
+   * 以前写的是：`_brushNm === _ownNm ? -1 : labelIdOf(_brushNm)`
+   * 想法是"用的是自己的名 → 等于没换标记"✓ 可 `-1` 存进去变成 **0** ✗
+   * 而着色器眼里 **0 就是一个普通的标记编号**（不是"没标记"）✗
+   * → 于是：选一个头衔涂色（名字正好等于它自己的名 ✓）拿到 0 ✓
+   *         周围同一颜色涂的格子拿到别的编号 ✓
+   *         颜色一样、标记不同 → paintDiffers 判成两片 → **在它的边界上画一条粗线** ✗
+   *   用户报的「这个头衔本身会和你涂的那一大堆划边界」就是它 ✓
+   *
+   * 现在：同名 → 同一个编号 ✓ 同色同号 → 真是一片 ✓ 线自然就没了 ✓
+   * （"用自己的色 + 自己的名涂自己那块不该多一圈线"这个效果**反而更稳** ✓
+   *   因为两边是**真的**同号，而不是靠一个哨兵值去糊 ✓）
+   */
   const _ownNm = String(state.titles.names[tid] || '');
   const _brushNm = String(state.brushLabel || _ownNm);
-  const lid = clear ? -1
-    : (_brushNm && _brushNm === _ownNm ? -1 : labelIdOf(_brushNm));
+  const lid = clear ? -1 : labelIdOf(_brushNm);
   let hits = 0;
   for (let pid = 1; pid < n; pid++) {
     if (tm[row + pid] !== tid) continue;
@@ -1768,9 +1878,23 @@ function isSpecialTid(tid) {
   return tid !== NO_TITLE && tid != null && state.titles.keys[tid].charCodeAt(0) === 35;
 }
 
-/** 能不能对这块地动手：没头衔、或者只是背景地形，都算锁住 */
+/** 能不能对这块地动手：没头衔、或者只是背景地形，都算锁住
+ *
+ * **荒地例外**：开了「荒地可上色」（state.showWaste）时，荒地是可以动手的 ✓
+ *   以前这里一律按伪头衔锁住 ✗ → 那个开关打开也涂不上去 ✓
+ *   （用户报的：开了允许上色但是无法上色 ✓）
+ *   荒地 = meta.wasteland 里列的那些 ✓ 或者最细层那个 #impassable* 节点 ✓
+ *   （跟悬停卡片那边的判法保持一致 ✓）
+ */
 function isLocked(tid) {
-  return tid === NO_TITLE || tid == null || isSpecialTid(tid);
+  if (tid === NO_TITLE || tid == null) return true;
+  if (!isSpecialTid(tid)) return false;
+  if (state.showWaste) {
+    const _key = String((state.titles.keys && state.titles.keys[tid]) || '');
+    if (_key.indexOf('#impassable') === 0) return false;
+    if ((state.meta.wasteland || []).indexOf(tid) >= 0) return false;
+  }
+  return true;
 }
 
 /** 能编辑的地块给十字光标，锁住的给禁止'*/
@@ -1790,6 +1914,7 @@ function renderHoverCard(pid) {
 
   const box = $('hover-chain');
   $('hover-pid').textContent = pid ? `#${pid}` : '';
+
 
   if (!pid) {
     box.innerHTML = `<p class="empty">${GAME.notInMap}</p>`;
@@ -2054,8 +2179,20 @@ function displayedLabel(pid, tid) {
  * @param {number}  pid            地块，用来查手绘'
  * @param {boolean} switchToPaint  取完是否顺手切到涂色
  */
+/* 取色（吸管）：**遵循玩家在屏幕上看到的颜色** ✓（用户定的 ✓）
+ *
+ * 曾经改成"取纯色"（涂过的取涂的色、没涂的取 LUT 原色 ✗）—— 用户否了 ✓
+ * 吸管就该给"眼睛看到的那个" ✓ 屏幕上的颜色掺过地形 / 底图那一层 ✓（见 displayedColor）
+ *
+ * ⚠ 再**四舍五入成整数 RGB** ✓（用户要求 ✓）：
+ *   屏幕上那个色是算出来的，经常带小数（比如 189.7 / 20.4 / 65.2 ✗）
+ *   小数带进画笔 → 涂上去跟原色差一丁点 ✗ → 边界判据严格比 RGB → 平白划一条线 ✓
+ *   取整之后就干净了 ✓（HEX 那格显示的也是整数值 ✓ 两边一致 ✓）
+ */
 function pickTitle(tid, switchToPaint = false, pid = 0) {
-  const col = displayedColor(pid, tid);
+  const _raw = displayedColor(pid, tid) || [0, 0, 0];
+  const _c255 = (v) => Math.max(0, Math.min(255, Math.round(Number(v) || 0)));
+  const col = [_c255(_raw[0]), _c255(_raw[1]), _c255(_raw[2])];
   setBrush(col, true);
   // 标记名取法 ✓（两条：涂过 / 没涂过）
   //   · **你涂过的地** → 用它的**涂色标记**（你给它起的名字 ✓）
@@ -2091,9 +2228,27 @@ function syncAllPaintLabels() {
   if (!renderer || !state.meta || !state.titles) return;
   const n = state.meta.numProvinces;
   const nEra = (state.meta.eraDates && state.meta.eraDates.length) || 0;
+  /* **记录色块的单位 = province ✓ 标记也给每块地都标上** ✓（用户定的 ✓）
+   *
+   * 标记看哪一层（用户的"最简方案" ✓ 原话）：
+   *   · **开了剧本 → 标记就是该剧本的** ✓（除非你换了一个剧本 ✓）
+   *   · 没剧本   → 用当前视图那一层 ✓
+   * 「该剧本」= 离当前视图最近的那个剧本层 ✓（视图停在细层时不会被粒度带走 ✓）
+   *
+   * ⚠ 这一行我来回改坏过两次 ✗ 记在这儿别再犯：
+   *   ① 改成 `state.tier` ✗（视图停在细层时就不是剧本了 ✓ 你要的是"该剧本" ✓）
+   *   ② 改成 `editTier()` ✗（会把粒度掺进来 ✓ 你特意说不要 ✓ 被当场抓 ✓）
+   */
   const ct = nEra > 0 ? Math.min(state.tier, nEra - 1) : state.tier;
+  /* **逐块地取"它自己"的归属** ✓（一个州半边日本半边中国 → 5 块日本 5 块中国 ✓）
+   *   绝不能按州整体给一个名字 ✗ 也绝不能取不到就写 0 ✗
+   *   （"标记被清空"就是这个 0 ✓ 用户抓到的 ✓）
+   *   → 取不到就退到**最底层单位**那一层 ✓ 绝不再出现 0 ✓
+   */
+  const FINE = Math.max(0, ((state.meta.tierNames && state.meta.tierNames.length) || 1) - 1);
   for (let pid = 1; pid < n; pid++) {
-    const nm = String(displayedLabel(pid, titleAt(pid, ct)) || '');
+    let nm = String(displayedLabel(pid, titleAt(pid, ct)) || '');
+    if (!nm) nm = String(displayedLabel(pid, titleAt(pid, FINE)) || '');   // 兜底：最底层单位 ✓
     renderer.setPaintLabel(pid, nm ? Math.min(labelIdOf(nm) + 1, 65535) : 0);
   }
   state._lblPassKey = ct + '|' + (state.painted ? state.painted.size : 0)
@@ -2351,6 +2506,9 @@ function setTier(tier) {
   renderer.setTier(tier);
   renderer.setEditTier(editTier());
   refreshTierButtons();
+  // **换层 = 换了一批色块** ✓ 分组要重算 ✓
+  //（图例列表本身不去当场刷 ✗ —— 按用户的主意：只在"点图例 / 导出"时才更新 ✓）
+  blocksDirty = true;
   const hl = hoverTargetTid(state.hover.pid, state.hover.tids[editTier()]);
   // '''山是背景板，不给选中也不高亮 —'高亮会把**整片'*当成一个头衔点'
   applyHoverHighlight(state.hover.pid, hl == null ? null : hl);
@@ -2417,6 +2575,7 @@ function applyGameText() {
     ['show-paint', state.showPaint],
     ['show-labels', state.showLabelsTitle],
     ['show-labels-paint', state.showLabelsPaint],
+    ['show-power-names', state.showLabelsPaint],   // 势力那组的镜像开关 ✓ 跟上面同一个状态 ✓
     ['show-border-paint', state.showBorderPaint],
     ['show-parent-border', state.showParentBorderTitle],
     ['show-parent-border-ck3', state.showParentBorderTitle],
@@ -2983,7 +3142,9 @@ function projectData() {
                           title: (state.set && state.set.legendTitle) || '',
                           pos: (state.set && state.set.legendPos) || 'tl',
                           names: Object.assign({}, state.legendNames || {}),
-                          on: Object.assign({}, state.legendOn || {}) },
+                          on: Object.assign({}, state.legendOn || {}),
+                          // 图例的**手动顺序**也跟存档走 ✓（在图例列表里用 ↑↓ 排的 ✓）
+                          order: Array.isArray(state.legendOrder) ? state.legendOrder.slice() : [] },
                 settings: Object.assign({}, state.set || {}),
                 names: (() => {
                   const o = {};
@@ -3035,20 +3196,41 @@ function stashNow() {
   } catch (e) { return false; }
 }
 
+/* ---- 暂存的写入时机：**只在"回主菜单"那一刻** -------------------------------
+ * 用户要把两条路分开：
+ *   · **回主菜单** → 存住 ✓ 回来接上 ✓
+ *   · **F5 / 刷新** → 清空 ✓ 从零开始 ✓
+ * 所以这里（涂一笔就触发的那个自动保存）**故意不落盘** ✗
+ * —— 一旦在这儿存，F5 也会把东西接回来 ✗ 两条路就分不开了 ✓
+ * 真正写盘的地方只有一处：goHome() 里那次 stashNow() ✓
+ */
 function saveProject() {
-  // 涂完停手 0.8 秒（scheduleSave）就悄悄写一份 ✓
-  // 这样**手滑刷新 / 误关标签页 / 回主菜单**都能原样接上 ✓
-  stashNow();
+  // 空实现 ✓（别在这儿写 stashNow() ✗ 见上面那段说明）
 }
 
 function loadProject() {
-  // 只有回到**同一张图**才接上 ✓ 换了地图当然不接（压根不是一套数据）✓
+  // 回到**同一张图**就把上次"回主菜单"存下的那份接上 ✓
+  // **接完立刻删掉** ✓ —— 这样紧跟着按 F5 就是干干净净从零开始 ✓
+  // （不删的话 F5 会又接回来 ✗ 那跟主菜单就分不开了 ✓）
   try {
     const k = mapKeyOf(state.meta);
     if (!k) return 0;
-    const data = stashBox()[k];
+    const box = stashBox();
+    const data = box[k];
     if (!data) return 0;
-    return applyProject(data) || 0;
+    const n = applyProject(data) || 0;
+    /* **接完立刻把它删掉** ✓ 不然紧接着按 F5 又接回来 ✗（刷新就等于清不掉 ✓ 用户报的 ✓）
+     *
+     * ⚠ 必须"删 + **写回 localStorage**"两步都做 ✗
+     *   上一版我只 delete 了内存里那份，然后调了一个**当时根本不存在的**存档写入函数 ✗
+     *   → 抛错被 catch 吞掉 ✓ 内存删了、localStorage 里那份**原封不动** ✗
+     *   → 于是每次刷新都从旧的读回来 ✓ 涂色怎么清都清不掉 ✓（用户报的那个 ✓）
+     */
+    try {
+      delete box[k];
+      localStorage.setItem(STASH_KEY, JSON.stringify(box));
+    } catch (e) { /* ✓ */ }
+    return n;
   } catch (e) { return 0; }
 }
 
@@ -3067,6 +3249,8 @@ function applyProject(data) {
     state.set.legendPos = data.legend.pos || 'tl';
     state.legendNames = Object.assign({}, data.legend.names || {});
     state.legendOn = Object.assign({}, data.legend.on || {});
+    // 图例顺序一起还原 ✓（老存档没有这个字段 → 空数组 = 照旧按大小排 ✓）
+    state.legendOrder = Array.isArray(data.legend.order) ? data.legend.order.slice() : [];
   }
   const labels = data.labels || {};
   if (Array.isArray(data.capitals)) state.capitalPids = data.capitals.slice();   // 首都一起恢复 ✓
@@ -3220,9 +3404,16 @@ function bindEvents() {
     goHome();
   });
 
+  /* ---- 滚轮缩放：**一步到位**（回滚了那版"分帧缓动" ✗）-----------------------
+   * 曾经试过把累积量分几帧吃掉 ✓ 看着确实滑一点 ✓ 但带"尾巴"：
+   *   滚轮停了画面还在自己走 ✗ 手感就是"卡 / 拖" ✓ 用户否了 ✓ 回滚 ✓
+   * 现在还是：一格滚轮 = 当场算完 ✓ 立刻出结果 ✓
+   * 嫌一格跳太大就只调下面那个系数（越小越细 ✓ 没有任何缓动 ✓）：
+   */
+  const WHEEL_K = 0.0016;
   stage.addEventListener('wheel', (e) => {
     e.preventDefault();
-    zoomBy(Math.exp(-e.deltaY * 0.0016), e.clientX, e.clientY);
+    zoomBy(Math.exp(-e.deltaY * WHEEL_K), e.clientX, e.clientY);
   }, { passive: false });
 
   stage.addEventListener('mousedown', (e) => {
@@ -3444,11 +3635,24 @@ function bindEvents() {
     renderer.dirty = true;
   });
 
-  $('show-labels-paint').addEventListener('change', (e) => {
+  /* 「名称」有两个开关：填色那组的 #show-labels-paint（哪一代都有 ✓）
+     和势力那组的 #show-power-names（只有有国家/年代层时才看得见 ✓）
+     —— 它们写的是**同一个状态**、互相镜像 ✓ 因为 CK3 没有国家层，
+        势力那一整组在 CK3 里是隐藏的，只留那一个的话 CK3 就点不到 ✗ */
+  const _setLabelPaint = (on) => {
     blocksDirty = true;      // 玩家名字 = 全图实时重分组 ✓
-    state.showLabelsPaint = e.target.checked;
+    state.showLabelsPaint = on;
     labelDirty = true;
-  });
+    const a = $('show-labels-paint'), b = $('show-power-names');
+    if (a && a.checked !== on) a.checked = on;
+    if (b && b.checked !== on) b.checked = on;
+  };
+  if ($('show-labels-paint')) {
+    $('show-labels-paint').addEventListener('change', (e) => _setLabelPaint(e.target.checked));
+  }
+  if ($('show-power-names')) {
+    $('show-power-names').addEventListener('change', (e) => _setLabelPaint(e.target.checked));
+  }
 
   // 按钮
   $('btn-undo').onclick = undo;
@@ -3626,6 +3830,24 @@ function bindEvents() {
 // ================================================================ 渲染循环
 
 function frame() {
+    /* **标记表必须在这里写** - 全项目原来只有 applyHoverHighlight 里调过一次，
+     * 那是悬停高亮那条路：没悬停 -> 永远不写 -> 没涂过的地标记全是 0，
+     * 只有涂色自己的那条路写了标记。表现就是"这个标记居然只看填色的"（用户抓到的）。
+     * 放在渲染之前，写完立刻强制上传，保证这一帧着色器就拿得到。
+     * 仍旧用那个键做闸（层 / 涂色数 / 标记名数变了才重算），不然每帧几万次白跑。*/ 
+    try {
+      if (renderer) {
+        const _nEraF = (state.meta && state.meta.eraDates && state.meta.eraDates.length) || 0;
+        const _ctF = _nEraF > 0 ? Math.min(state.tier, _nEraF - 1) : state.tier;
+        const _keyF = _ctF + '|' + (state.painted ? state.painted.size : 0)
+          + '|' + ((state.labelNames && state.labelNames.length) || 0);
+        if (state._lblPassKey !== _keyF) {
+          syncAllPaintLabels();
+          renderer.paintDirty = true;
+          if (typeof renderer.flushPaint === 'function') renderer.flushPaint();
+        }
+      }
+    } catch (e) { /* ok */ }
   // ---- 分块（EU5 原尺寸）：按视野补齐缺的块、离开视野的自然被缓存淘汰 ----
   // 半尺寸那套 state.tileMap 是 null → 这段整个跳过 ✓
   if (state.tileMap && renderer && renderer.provArrTex && renderer.tileInfo) {
@@ -4202,10 +4424,18 @@ function rebuildPaintBlocks(all = false, unpainted = false) {
     //   于是"中华苏维埃吞并全国之后名字还只有陕北那么大"✗，迁都到南京才突然变大 ✓ = 用户报的假连通域 ✓
     out.push({ name, x: g.x / g.w, y: g.y / g.w, area: g.w, rgb: g.rgb,
                w: Math.max(0, (g.maxx || 0) - (g.minx || 0)),   // 横向跨度 ✓（限字号用 ✓）
+               tid: nameTidOf(_p0n),   // 这一坨代表哪个头衔 ✓（图例里改名要写回它 ✓）
                _key: g.key, _hasCap: !!g.hasCap, _capPid: g.capPid || 0 });
   }
   out.sort((a, b) => b.area - a.area);   // 大的先摆'
   state.paintBlocks = out;
+
+  /* 图例列表**不在这儿刷** ✗ —— 这里是"涂一笔就重新分组"的地方 ✓
+   * 每次涂色都重建一遍图例 DOM 是白费力气 ✓（而且面板开着的时候你根本涂不了地图 ✓）
+   * 按用户的主意：**列表只在「点开图例 / 导出」时才更新** ✓
+   *   · 手机版：切到「导出图例」那一页时刷一遍 ✓（见 mobile/mobile_js.txt 的 showTab）
+   *   · 导出：maybeDrawLegend 开头会把欠着的色块重算补上 ✓ 用的就是同一份新数据 ✓
+   */
 }
 
 /**
@@ -4344,16 +4574,35 @@ function legendEntries() {
     const size = anyPainted ? pSize : (b.area || 0);
     const hit = seen.get(key);
     if (!hit || size > hit.size) {
-      seen.set(key, { key, rgb, size, area: b.area || 0, painted: pSize, name: String(b.name) });
+      seen.set(key, { key, rgb, size, area: b.area || 0, painted: pSize,
+                      name: String(b.name), tid: b.tid });
     }
   }
-  return [...seen.values()]
+  const _ordered = [...seen.values()]
     .sort((a, b) => b.size - a.size)
     .map((e) => ({
       ...e,
-      name: (state.legendNames && state.legendNames[e.key]) || e.name,
+      // **名字用"现在显示的那个"** ✓ —— b.name 是 rebuildPaintBlocks 从
+      // state.titleName 现算的 ✓ 所以用改名工具改完、或者在图例里改完，
+      // 这边**立刻就是新名字** ✓（用户要的"实时变更"✓）
+      // 只有在它空着的时候才退回图例自己存的旧名字 ✓
+      name: e.name || (state.legendNames && state.legendNames[e.key]) || '',
       on: !(state.legendOn && state.legendOn[e.key] === false),
     }));
+  /* **手动顺序优先** ✓（在图例列表里用 ↑↓ 排过的 ✓ 存在 state.legendOrder ✓）
+   * 排过的按你排的次序走 ✓；没排过的（比如刚涂出来的一族）接在后面按大小走 ✓
+   * 不然手动排一次就把新来的条目挤没了 ✗ */
+  const ord = state.legendOrder;
+  if (Array.isArray(ord) && ord.length) {
+    const at = new Map(ord.map((k, i) => [k, i]));
+    _ordered.sort((a, b) => {
+      const ia = at.has(a.key) ? at.get(a.key) : Infinity;
+      const ib = at.has(b.key) ? at.get(b.key) : Infinity;
+      if (ia !== ib) return ia - ib;
+      return b.size - a.size;
+    });
+  }
+  return _ordered;
 }
 
 const _hexOf = (rgb) => {
@@ -4361,38 +4610,160 @@ const _hexOf = (rgb) => {
   return h && h[0] === '#' ? h : '#' + h;
 };
 
+/**
+ * **按"现在这一刻"的视图重算色块，然后刷图例列表** ✓
+ *
+ * 为什么要这么写：色块分组（state.paintBlocks）是"跟当前剧本/层级"绑定的 ✓
+ * 而它是**上一帧**算的 —— 你换了剧本、打开设置的时候那一帧可能还没轮到 ✗
+ * 只刷列表就会把**上一个剧本**的条目列出来 ✗（用户报的正是这个 ✓）
+ * 所以：先把欠着的那次重算补上 ✓ 再列 ✓
+ *
+ * 导出图例走的是同一套（见 maybeDrawLegend ✓），两边口径一致 ✓
+ */
+function freshPaintBlocks() {
+  if (!blocksDirty) return;
+  try {
+    rebuildPaintBlocks(!!state._blocksAll);
+    blocksDirty = false;
+    labelDirty = true;
+  } catch (e) { /* 出错就按现有的数据来 ✓ 别把界面打断 ✗ */ }
+}
+
+/** 打开设置那一栏用的：先补算色块 ✓ 再刷列表 ✓ */
+function legendFresh() {
+  freshPaintBlocks();
+  rebuildLegendPanel();
+}
+
 /** 把设置页里的图例列表刷一遍（打开设置、涂完色都该刷 ✓） */
 function rebuildLegendPanel() {
   const box = $('legend-list');
   if (!box) return;
   const list = legendEntries();
   if (!list.length) {
-    // 一条都没有：**什么都不写** ✓ 连这个空框也藏起来（用户要求 ✓）
+    /* 一条都没有：**什么都不写** ✓ 连这个空框一起藏起来 ✓
+     * （用户：那句提示字去掉 ✓ 加它是为了诊断"我图例呢"，现在刷新已经修好了 ✓
+     *   有涂过的时候，点开这一页就会列出条目 ✓ 真的没内容就安安静静不显示 ✓） */
     box.innerHTML = '';
     box.style.display = 'none';
     return;
   }
   box.style.display = '';
-  box.innerHTML = list.map((e) => (
-    '<div class="legend-row" data-key="' + e.key + '">'
+  box.innerHTML = list.map((e, i) => (
+    '<div class="legend-row" data-key="' + e.key + '"'
+    + ' data-tid="' + (e.tid == null ? '' : e.tid) + '">'
     + '<input type="checkbox" class="legend-on"' + (e.on ? ' checked' : '') + '>'
     + '<span class="legend-sw" style="background:' + _hexOf(e.rgb) + '"></span>'
     + '<input type="text" class="legend-name" maxlength="24" spellcheck="false" autocomplete="off" value="'
     + String(e.name).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;') + '">'
+    + '<span class="legend-move">'
+    +   '<button type="button" class="legend-up" aria-label="上移"'
+    +     (i === 0 ? ' disabled' : '') + '>▲</button>'
+    +   '<button type="button" class="legend-down" aria-label="下移"'
+    +     (i === list.length - 1 ? ' disabled' : '') + '>▼</button>'
+    + '</span>'
+    + '<span class="legend-drag" title="" aria-label="按住拖动排序">⠿</span>'
     + '</div>'
   )).join('');
+  let dragRow = null;      // 正在拖的那一行（拖动排序用 ✓ 一次只可能有一行 ✓）
+
+  /** 拖动中：看指针掠过哪一行，就把拖的那行插到它前/后 ✓（事件挂在 window 上 ✓ 见下面说明） */
+  const onLegendDragMove = (ev) => {
+    if (!dragRow) return;
+    ev.preventDefault();
+    const over = document.elementFromPoint(ev.clientX, ev.clientY);
+    const target = over && over.closest ? over.closest('.legend-row') : null;
+    if (!target || target === dragRow || !box.contains(target)) return;
+    // 指针在目标行的上半 → 插到它前面 ✓；下半 → 插到它后面 ✓
+    const r = target.getBoundingClientRect();
+    const after = ev.clientY > r.top + r.height / 2;
+    box.insertBefore(dragRow, after ? target.nextSibling : target);
+  };
+
+  /** 松手 / 被系统打断：收尾 ✓ 顺序存下来 ✓ 那一行立刻恢复原样 ✓ */
+  const endLegendDrag = () => {
+    window.removeEventListener('pointermove', onLegendDragMove);
+    window.removeEventListener('pointerup', endLegendDrag);
+    window.removeEventListener('pointercancel', endLegendDrag);
+    try { document.body.style.userSelect = ''; } catch (e) { /* ✓ */ }
+    if (!dragRow) return;
+    dragRow.classList.remove('dragging');   // **立刻取消变暗** ✓（用户报过：放开后一直暗着 ✗）
+    dragRow = null;
+    // 松手这一刻的 DOM 顺序就是新顺序 ✓ 存下来 ✓
+    const keys = [...box.querySelectorAll('.legend-row')]
+      .map((r2) => r2.getAttribute('data-key')).filter((k) => k != null);
+    if (keys.length) { state.legendOrder = keys; scheduleSave(); }
+    rebuildLegendPanel();                   // 重建一遍：变暗状态、箭头灰亮、上下边界全对上 ✓
+  };
+
   for (const row of box.querySelectorAll('.legend-row')) {
     const key = row.dataset ? row.dataset.key : row.getAttribute('data-key');
+    const tidAttr = row.getAttribute('data-tid');
     const on = row.querySelector('.legend-on');
     const nm = row.querySelector('.legend-name');
+    /* 顺序调整：点一下换一格 ✓
+     * 把**当前看到的顺序**整条存进 state.legendOrder ✓（含没手动排过的 ✓）
+     * 这样后面再排、以及导出图例，都按这个顺序走 ✓ */
+    const move = (dir) => {
+      const keys = legendEntries().map((e) => e.key);
+      const i = keys.indexOf(key);
+      const j = i + dir;
+      if (i < 0 || j < 0 || j >= keys.length) return;
+      const tmp = keys[i]; keys[i] = keys[j]; keys[j] = tmp;
+      state.legendOrder = keys;
+      legendFresh();     // 先补算色块再列 ✓ 不然列的是上一个剧本的 ✗          // 立刻重排 ✓
+      scheduleSave();
+    };
+    const up = row.querySelector('.legend-up');
+    const down = row.querySelector('.legend-down');
+    if (up) up.addEventListener('click', () => move(-1));
+    if (down) down.addEventListener('click', () => move(1));
+
+    /* **按住拖动排序** ✓（除了上面那对小箭头，多一条更顺手的路 ✓）
+     * 用 Pointer Events 一套通吃鼠标和手指 ✓（HTML5 那套 draggable 在手机上不能用 ✗）
+     * 拖动时**直接挪 DOM**：手指掠过哪一行就插到它前/后面 ✓ 松手才写 state ✓
+     *
+     * ⚠ 事件**挂在 window 上，不挂在把手上** ✗ —— 踩过的坑：
+     *   把手挂 pointer capture 的话，拖到一半我们把整行 insertBefore 挪走 ✓
+     *   而 DOM 规范里"移动节点"是先摘下来再插回去 ✗ → **capture 当场失效** ✗
+     *   于是后面的 pointerup 收不到 → finish 不跑 → 那一行**一直暗着** ✗
+     *   （用户报的"放开不会变回来、还得再按一下把手"就是这个 ✓）
+     */
+    const dragGrip = row.querySelector('.legend-drag');
+    if (dragGrip) {
+      dragGrip.addEventListener('pointerdown', (ev) => {
+        if (dragRow) return;                // 一次只拖一行 ✓
+        ev.preventDefault();                // 别让它变成选文字 / 滚页面 ✓
+        dragRow = row;
+        row.classList.add('dragging');
+        try { document.body.style.userSelect = 'none'; } catch (e) { /* ✓ */ }
+        window.addEventListener('pointermove', onLegendDragMove, { passive: false });
+        window.addEventListener('pointerup', endLegendDrag);
+        window.addEventListener('pointercancel', endLegendDrag);
+      });
+    }
     if (on) on.addEventListener('change', () => {
       state.legendOn = state.legendOn || {};
       state.legendOn[key] = on.checked;
       scheduleSave();
     });
     if (nm) nm.addEventListener('change', () => {
+      const v = nm.value.trim();
       state.legendNames = state.legendNames || {};
-      state.legendNames[key] = nm.value.trim();
+      state.legendNames[key] = v;
+      /* **图例里改名 = 改名工具改名** ✓（用户要求：两边就是同一件事 ✓）
+       * 所以除了图例自己那份，还要写进 state.titleName ✓
+       * —— 地图上那一块的名字会立刻跟着改，跟用「改名」工具点它一下完全一样 ✓
+       * （以前这里只写 legendNames ✗ 于是"图例改了名、地图上还是老名字" ✓） */
+      const tid = (tidAttr === null || tidAttr === '') ? null : Number(tidAttr);
+      if (v && tid != null && Number.isFinite(tid) && state.titles) {
+        state.titleName = state.titleName || new Map();
+        state.titleName.set(tid, v);
+        state.titles.names[tid] = v;      // 标签层读的是这份 ✓
+        blocksDirty = true;               // 重新分组 → b.name 跟着变 → 列表实时刷新 ✓
+        labelDirty = true;
+        if (renderer) renderer.dirty = true;
+      }
       scheduleSave();
     });
   }
@@ -4430,12 +4801,13 @@ function drawLegend(ctx, W, H) {
   let nameW = 0;
   for (const e of list) nameW = Math.max(nameW, ctx.measureText(e.name).width);
   const boxW = Math.round(pad * 2 + sw + fs * 0.7 + Math.max(nameW, tw));
-  const boxH = Math.round(pad * 2 + (title ? fs * 2 : 0) + (list.length + (more > 0 ? 1 : 0)) * rowH);
-  // 位置只留**左上 / 右上** ✓（用户定的 ✓ 顶部两角最不挡地图 ✓）
-  // 老存档里要是存着别的值（以前有过正上方/左下/右下 ✓）→ 一律当左上 ✓ 不会画到图外 ✓
-  const onRight = pos === 'tr';
+  const boxH = Math.round(pad * 2 + (title ? fs * 2 : 0) + list.length * rowH);
+  // 位置：**左上 / 右上 / 左下 / 右下** ✓（原先只留了上面两个 ✓ 用户要四个角 ✓）
+  // 认不出来的一律当左上 ✓ 不会画到图外 ✓（老存档里可能存着别的值 ✓）
+  const onRight = pos === 'tr' || pos === 'br';
+  const onBottom = pos === 'bl' || pos === 'br';
   const x = onRight ? Math.max(M, W - boxW - M) : M;
-  const y = M;
+  const y = onBottom ? Math.max(M, H - boxH - M) : M;
   // 底板：半透明白，浅色深色底图都读得清 ✓
   const r = Math.round(fs * 0.6);
   ctx.beginPath();
@@ -4470,12 +4842,12 @@ function drawLegend(ctx, W, H) {
     ty += rowH;
   }
   if (more > 0) {
-    ctx.fillStyle = '#555';
-    ctx.fillText('另有 ' + more + ' 组…', x + pad, ty);
+    // **不再画「另有 N 组…」那一行了** ✓（用户：这个去掉 ✓）
+    // more 还留着（只是个数字 ✓）万一以后想在别处用 ✓ 但图上不再画它 ✓
   }
   ctx.restore();
   // 画了标题也算"画到了东西" ✓（哪怕一条图例都没有 —— 不然调用方会误报"空的" ✗）
-  return list.length + (more > 0 ? 1 : 0) + (title && !list.length ? 1 : 0);
+  return list.length + (title && !list.length ? 1 : 0);
 }
 
 /** 导出前统一调这个：勾了图例就画上去 ✓
@@ -4483,6 +4855,10 @@ function drawLegend(ctx, W, H) {
  *  （-1 是为了能在提示里说清"为什么看不见" ✗ —— 以前它悄悄返回 0，啥也不说 ✓）
  */
 function maybeDrawLegend(ctx, W, H) {
+  /* **导出这一刻先把色块重算一遍** ✓（用户的主意：导出时才更新 ✓）
+   * 换完剧本要是还没轮到那一帧重算，这里不补一刀的话，导出的图例还是上一层的 ✗
+   * 列表那边同样只在「点开图例 / 导出」时才刷 ✓ 平时不打扰 ✓ */
+  freshPaintBlocks();   // 跟"打开设置"用的是同一套 ✓ 口径一致 ✓
   if (!(state.set && state.set.legend)) return 0;
   try {
     const n = drawLegend(ctx, W, H);
@@ -4693,7 +5069,7 @@ async function boot() {
     buildToolbar();
     bindEvents();
     setBrush(state.brush, false);
-    setBrushLabel(state.brushLabel);      // 「标记」框里一开始就写着「默认标记」✓
+    setBrushLabel(state.brushLabel);      // 「标记」框里一开始就写着「请输入文本」✓
     renderPalette();
     setTier(meta.defaultTier ?? 3);
     setTool('paint');          // 默认工具：**涂色** ✓（用户要求；拖动平移按中键 ✓）

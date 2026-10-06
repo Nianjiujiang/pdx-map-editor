@@ -68,7 +68,20 @@ uniform vec3  uWasteGrey;       // 荒漠显示成什么灰（设置页可改）
 uniform float uMix;
 uniform int   uBorderTitle;     // 画不画头衔之间的分界线
 uniform int   uBorderPaint;     // 画不画手绘色块的分界线
-uniform int   uPaintOnly;       // 1 = 这条边界**只比手绘层**（CK3：不管原版颜色差）
+uniform int   uPaintOnly;       // 1 = **当前没停在年份视图**（CK3 那种没有年份层的也算）
+                                //     JS 那边 = !(有年份层 && 视图停在年份层)
+                                //     用途：没开年份视图时，未上色的地块之间不互相划界
+/* ---- 水域边界（海洋 / 湖泊 / 河流 ✓ 用户定的四条 ✓）------------------------
+ *   · **一直画** ✓ 只有"当前模式下能关的边界**全关了**"才跟着藏 ✓（uShowWater）
+ *   · 浓度**实心** ✓（下面那笔不加浓度系数 ✓）
+ *   · 粗细取值跟势力边界一样 ✓ 但**各是各的** ✗ 不做绑定（uWaterW 单独一个）
+ *   · 判据：一侧是水、一侧不是 ✓（水与水之间不画 ✓ 那是海面 ✗）
+ */
+uniform int   uShowWater;       // 1 = 画水域边界
+uniform float uWaterW;          // 水域边界粗细（数值取势力边界那个 ✓ 不绑定 ✗）
+uniform vec3  uSeaCol;          // 三个水域色：拿来认"这块地是不是水"
+uniform vec3  uLakeCol;
+uniform vec3  uRiverCol;
 uniform float uBorderW;         // 分界线线宽，单位是**设备像素**
 uniform int   uExtraCount;      // 链上还有几级（0~4）
 uniform int   uExtraTier[4];    // 每一级看哪一层
@@ -131,18 +144,20 @@ vec4 colorOfPid(uint pid) {
   vec4 lc = texelFetch(uColorLut, ivec2(int(tid) % uLutW, int(tid) / uLutW), 0);
   // 无主地（NONE）在 LUT 里没有自己那一格，越界读到的 alpha 是未定义值 ——
   // 它**不是荒地**，别被那个值判成"该显示荒地灰"✗（否则无主地会跟荒地一个色）
-  if (uShowWaste == 0 && tid != NONE && lc.a > 0.5) {
-    return vec4(uWasteGrey, 1.0);
-  }
-
-  // **手绘在最上层**（荒地那条例外：它上面已经返回了）。
-  // 玩家涂过的地方就该显示他涂的那个色：不管这一层此刻是海/湖这类
-  // 伪头衔（地形是"永远显示、开关管不着"的），还是这个层级压根没有归属，
-  // 也不管「浓度」调到了多少 —— 手绘不受浓度影响（浓度是给头衔色用的）。
-  // 早先手绘排在两条提前返回**后面**，涂过的地块会被地形色顶掉。
+  // **手绘在最上层，连荒地那层灰也压得住。**
+  // 荒地只有开着「荒地可上色」才涂得上去，所以"涂过"就等于"允许涂"，
+  // 那就该显示他自己涂的色。早先荒地灰排在手绘**前面**，于是荒地涂了也是灰
+  // （用户报的：开了允许上色还是没法上色，始终灰色）。
+  // 其余照旧：不管这一层此刻是海/湖这类伪头衔，还是压根没有归属，
+  // 也不管「浓度」调到多少 —— 手绘不受浓度影响（浓度是给头衔色用的）。
   if (uShowPaint == 1) {
     vec4 pc = paintOf(pid);
     if (pc.a > 0.5) return vec4(pc.rgb, 1.0);
+  }
+
+  // 荒地标记（LUT 的 alpha）：没涂过、且「荒漠涂色」关着 → 一律显示那层灰
+  if (uShowWaste == 0 && tid != NONE && lc.a > 0.5) {
+    return vec4(uWasteGrey, 1.0);
   }
 
   // 没有归属的地块画成中性灰（150,150,150），不是透明 —— 透明的话露出来的
@@ -248,6 +263,20 @@ float rayDistTitle(ivec2 ip, vec2 f, ivec2 dir, uint t, int R, int tier) {
       float wb = wasteAlphaOf(tt);
       if (wa < 0.5 && wb < 0.5) continue;
     }
+    /* ⚠ **这里一个字都不许动** ✗ —— 用户定的规矩：
+     *
+     *   · **地区边界绝对不要动** ✓ 它根本不看玩家画了什么 ✓
+     *     而 rayDistTitle 是「本层头衔线 + 多级边界」**共用**的 ✓
+     *     在这里加"涂过就跳过"的闸 ✗ 会同时把地区边界一起吃掉 ✗
+     *     （我这么干过一次：地区边界全没了 ✓ 挨了一顿 ✓）
+     *
+     *   · 国家 / 玩家填色的边界规矩，全在那个判据函数里 ✓（名字不带括号写，
+     *     免得被测试当成一次调用 ✗ —— 它连注释一起扫 ✓ 我踩过 ✓）
+     *     填色边界**不开** → 按当前剧本的默认边界 ✓ 玩家怎么画都不影响 ✓
+     *     填色边界**开**   → 一律按色块（颜色 + 标记）划界 ✓
+     *                        且**未上色与未上色之间不划界** ✓
+     *     （那正是手绘层判据的语义 ✓ 别在这儿重复实现 ✗）
+     */
     if (tt != t) {
       float kf = float(k);
       if (dir.x != 0) return dir.x > 0 ? kf - f.x : f.x + kf - 1.0;
@@ -265,31 +294,101 @@ vec3 lutColour(ivec2 ip) {
   return texelFetch(uColorLut, ivec2(int(tid) % uLutW, int(tid) / uLutW), 0).rgb;
 }
 
-/** 边界判据 = **颜色 + 标签** ✓
- *  ① 颜色不同（涂的色 / 原版色，各取显示的那个）→ 边界 ✓
- *  ② 颜色相同：两侧都没涂 → 头衔不同就算不同国家（标签不同 ✓）
- *             有一侧涂过 → **不画** ✓（他就是他自己那块，比如用自己的色涂自己的首都 ✓）*/
+/** 手绘那条边界线的判据 ✓
+ *
+ * **用户定的口径（权威 ✓ 别自己发明 ✓）**：
+ *
+ *   填色边界**开着**时 → 这条线看**颜色 + 标记**，一个不同就划 ✓
+ *     颜色取"显示出来的那个" ✓：**玩家涂过的用玩家色 ✓ 没涂的用当前剧本色** ✓
+ *
+ *     · 两边都**没有颜色**（海 / 无主地）→ **不划** ✓
+ *         （用户说的"未上色与未上色之间不划界"就是这个意思 ✓
+ *          不是"玩家没涂过"✗ —— 我按后者理解过一次，结果国家之间全没线 ✗ 挨了一顿 ✓）
+ *     · 一边有颜色一边没有 → 划 ✓
+ *     · **颜色不同 → 划** ✓ ← **国家与国家之间就是靠这条** ✓
+ *     · 颜色相同 → **一律比标记** ✓ 三种情况都比 ✓
+ *         两边都涂过 → 比手绘层的标记 ✓
+ *         两边都没涂 → 比**头衔** ✓（同色不同国也得有线 ✓ 比如 HOI4 同色国家 ✓）
+ *         一涂一没涂 → 一边有标记一边没有 → **标记不同 → 划** ✓
+ *
+ *   填色边界**不开**时 → 这条 pass 根本不跑 ✓（外面有闸 ✓）
+ *     国家/地区边界走「头衔线 + 多级边界」那条路 ✓ = 当前剧本的默认边界 ✓
+ *     玩家怎么画都不影响 ✓ **那条路一个字都不许动** ✗（地区边界就是它 ✓）
+ */
+/* **屏幕上那一格到底是什么颜色** - 判定必须用玩家看到的那个，不是 LUT 原色。
+ *
+ * 荒地（LUT 的 alpha 打了标记）在「荒漠 / 荒地涂色」关着时，画面上是 uWasteGrey；
+ * 而 lutColour 返回的是 LUT 里的原色，跟屏幕上那个灰不是一个东西。
+ * 势力那一趟一直是按"灰"处理的（wasteAlphaOf + 灰），填色这趟以前按原色比，
+ * 于是荒地那条边两趟结果对不上（用户报的出入）。
+ */
+vec3 shownColour(ivec2 ip) {
+  vec3 c = lutColour(ip);
+  if (c.x < -0.5) return c;                       // 没颜色（海 / 无主地）原样返回
+  uint tid = titleAt(pidAt(ip), uTier);
+  if (uShowWaste == 0 && tid != NONE && wasteAlphaOf(tid) > 0.5) return uWasteGrey;
+  return c;
+}
+
 bool shownDiffers(ivec2 a, ivec2 b) {
-  // CK3：这条边界只管**自己涂出来的**分界，原版颜色差归「头衔·边界」管 ✓
-  if (uPaintOnly == 1) return paintDiffers(a, b);
   vec4 pa = paintAt(a);
   vec4 pb = paintAt(b);
   bool ta = pa.a > 0.5;
   bool tb = pb.a > 0.5;
-  vec3 ca = ta ? pa.rgb : lutColour(a);
-  vec3 cb = tb ? pb.rgb : lutColour(b);
-  if (ca.x < -0.5 && cb.x < -0.5) return false;         // **两侧都没颜色（无主地）→ 不算分界** ✓
-  if (ca.x < -0.5 || cb.x < -0.5) return true;          // 一侧有一侧没有 → 算分界 ✓
-  if (distance(ca, cb) > 0.02) return true;             // 颜色不同 ✓
-  if (ta && tb) {
-    // **两侧都涂过、颜色还一样 → 比标记** ✓
-    // 同色不同标记是两块，中间必须有线 ✗（以前这里直接 return false ✗ = 用户报的"边界没分开"✓）
-    return paintLabelAt(a) != paintLabelAt(b);
+  /* **年份视图没开 → 未上色的省份之间，一律不划国家级边界** ✓
+   *   （用户定的 ✓ **不管颜色** ✗ —— 两个都没涂就是没线 ✓）
+   *   ⚠ 这一行必须在**最前面** ✓：
+   *     放到颜色比较后面的话，"颜色不同的两个没涂省份"照样会划一条 ✗
+   *     —— 那是**年份视图里**的规矩 ✓；没开年份视图时不该有这些线 ✓
+   *     （uPaintOnly 的定义就是"当前没停在年份层" ✓ CK3 那种没有年份层的也算 ✓）
+   */
+  if (uPaintOnly == 1 && !ta && !tb) return false;
+  vec3 ca = ta ? pa.rgb : shownColour(a);          // 显示出来的颜色 ✓
+  vec3 cb = tb ? pb.rgb : shownColour(b);
+  if (ca.x < -0.5 && cb.x < -0.5) return false;  // 两边都没颜色（海 / 无主地）→ 不划 ✓
+  if (ca.x < -0.5 || cb.x < -0.5) return true;   // 一边有一边没有 → 划 ✓
+
+    if (distance(ca, cb) > 0.02) return true;      // **颜色不同 → 划**（国家之间 ✓）
+  /* 颜色相同 → **一律比标记** ✓ 三种情况一个不落（用户明确要求 ✓）
+   *
+   * ⚠ 这里**只有一套编号** ✗ —— JS 那边 syncAllPaintLabels 给**每一块地**都写了标记：
+   *     涂过的地 = 你填的那个名 ✓
+   *     没涂的地 = **它自己原版的国名** ✓（**不是 0** ✗ —— 用户点醒的：没涂过的地方也有标记 ✓）
+   *   所以"原版那块地"和"你涂出来的那块地"**名字一样就是同一个编号** ✓
+   *   → 用自己的色 + 自己的名涂自己那块 → 两边同号 → **不划** ✓（本来就该这样 ✓）
+   *   我以前在这里又把没涂的地换成比头衔 ✗ —— 两套编号对不上，比出来永远是"不同" ✓
+   */
+  return paintLabelAt(a) != paintLabelAt(b);
+}
+
+/** 这块地是不是水域（海洋 / 湖泊 / 河流）
+ *
+ *  判法：拿它 LUT 里的颜色跟**设置里那三个水域色**比 ✓
+ *  （用户在设置里改了水域颜色，这里跟着变 ✓ 因为颜色是每帧传上来的 ✓）
+ *  没颜色的地（海以外的无主地 ✓）不算水 ✓
+ */
+bool isWaterAt(ivec2 ip) {
+  vec3 c = lutColour(ip);
+  if (c.x < -0.5) return false;
+  if (distance(c, uSeaCol) <= 0.02) return true;
+  if (distance(c, uLakeCol) <= 0.02) return true;
+  if (distance(c, uRiverCol) <= 0.02) return true;
+  return false;
+}
+
+/** 沿 dir 找最近的一条**水岸线**（一侧是水、一侧不是 ✓） */
+float rayDistWater(ivec2 ip, vec2 f, ivec2 dir, int R) {
+  bool wa = isWaterAt(ip);
+  for (int k = 1; k <= MAXR; k++) {
+    if (k > R) break;
+    ivec2 q = ip + ivec2(dir.x * k, dir.y * k);
+    if (isWaterAt(q) != wa) {
+      float kf = float(k);
+      if (dir.x != 0) return dir.x > 0 ? kf - f.x : f.x + kf - 1.0;
+      return dir.y > 0 ? kf - f.y : f.y + kf - 1.0;
+    }
   }
-  if (!ta && !tb) {                                     // 都没涂：看标签（头衔）✓
-    return titleAt(pidAt(a), uTier) != titleAt(pidAt(b), uTier);
-  }
-  return false;   // 一侧涂、一侧没涂且同色 → 不分界 ✓（"用自己的色涂自己的地"那种 ✓）
+  return 1e9;
 }
 
 float rayDistPaint(ivec2 ip, vec2 f, ivec2 dir, int R) {
@@ -358,9 +457,17 @@ void main() {
   // 该跳过的是**根本没有省份的地图底**（provAt = 0）✓ 无主地照样要算。
   if (pidAt(ip) != 0u) {
     // 只要这个半径以内看得见线；半径之外算出来也是 0，不用白找
-    int R = int(clamp(ceil(0.5 * uMapPerPx * (max(uBorderW, uPaintBorderW) + 1.0)), 1.0, float(MAXR)));
+    int R = int(clamp(ceil(0.5 * uMapPerPx * (max(max(uBorderW, uPaintBorderW), uWaterW) + 1.0)), 1.0, float(MAXR)));
     float dTitle = 1e9;
     float dPaint = 1e9;
+    float dWater = 1e9;
+    /* **水域边界**：一直画 ✓ 只有"当前模式里能关的边界全关了"才跟着藏 ✓（JS 给 uShowWater） */
+    if (uShowWater == 1) {
+      dWater = min(dWater, rayDistWater(ip, f, ivec2( 1, 0), R));
+      dWater = min(dWater, rayDistWater(ip, f, ivec2(-1, 0), R));
+      dWater = min(dWater, rayDistWater(ip, f, ivec2( 0, 1), R));
+      dWater = min(dWater, rayDistWater(ip, f, ivec2( 0,-1), R));
+    }
     if (uBorderTitle == 1) {
       uint t0 = tidAt(ip);
       dTitle = min(dTitle, rayDistTitle(ip, f, ivec2( 1, 0), t0, R, -1));
@@ -386,6 +493,13 @@ void main() {
       float bwp = 0.5 * uPaintBorderW * uMapPerPx;
       float bp  = 1.0 - smoothstep(bwp - ramp, bwp + ramp, dPaint);
       col = mix(col, vec3(0.035, 0.045, 0.06), bp * uPaintBorderA);
+    }
+    /* **水域边界**：浓度**实心** ✓（不加浓度系数 ✓ 用户定的 ✓）
+     * 粗细用 uWaterW ✓（数值跟势力边界一样 ✓ 但各是各的 ✓ 不绑定 ✗）*/
+    if (dWater < 1e8) {
+      float bww = 0.5 * uWaterW * uMapPerPx;
+      float bwv = 1.0 - smoothstep(bww - ramp, bww + ramp, dWater);
+      col = mix(col, vec3(0.035, 0.045, 0.06), bwv);
     }
     // **多级边界**：粒度那层之上，一层比一层粗（地区 → 国家）——
     // 中间那些"年份"层跳过（不然 1618 + 省份 会冒出 1789 那条 ✗）。
@@ -508,6 +622,7 @@ export class MapRenderer {
                      'uMapSize', 'uTitleMapW', 'uNumProvinces', 'uPaintW', 'uTier', 'uEditTier',
                      'uShowTitles', 'uShowPaint', 'uMix',
                      'uShowWaste', 'uWasteGrey', 'uBorderTitle', 'uBorderPaint', 'uPaintOnly', 'uBorderW', 'uBorderA', 'uPaintBorderW', 'uPaintBorderA', 'uMapPerPx',
+                     'uShowWater', 'uWaterW', 'uSeaCol', 'uLakeCol', 'uRiverCol',
                      'uExtraCount', 'uExtraTier', 'uExtraW', 'uExtraShow', 'uExtraA',
                      'uLutW', 'uRealTitles', 'uHoverTid', 'uHoverPaintOn', 'uHoverPaint', 'uHoverPid', 'uHoverLabel',
                      'uBackdrop']) {
@@ -532,7 +647,16 @@ export class MapRenderer {
     this.mix = 1.0;
     this.borderTitle = true;    // 头衔区域描边（和 borderPaint 互斥，由 UI 保证）
     this.borderPaint = false;
-    this.paintOnly = false;   // 见 uPaintOnly：CK3 会打开它   // 玩家涂色范围描边
+    this.paintOnly = false;
+    /* 水域边界（海 / 湖 / 河 ✓ 用户定的四条）：
+     *   · showWater：一直画 ✓ 只有"当前模式里能关的边界全关了"才藏（app 每帧给）
+     *   · waterW：粗细取势力边界那个值 ✓ 但**各是各的** ✗ 不绑定
+     *   · 三个水域色：用来认"这块地是不是水" ✓ 设置里改了颜色这里跟着变 ✓ */
+    this.showWater = true;
+    this.waterW = 2.6;
+    this.seaCol = [0, 0, 0];
+    this.lakeCol = [0, 0, 0];
+    this.riverCol = [0, 0, 0];   // 玩家涂色范围描边
     this.paintWidth = 1.7;      // 填色那条边界：默认取链上最粗那条的粗细（app 每帧给）
     this.paintAlpha = 1.0;      // 且实心
     // 分界线是两个可调的旋钮：粗细按**设备像素**算，所以缩放多少都是同一个粗细；
@@ -943,6 +1067,12 @@ export class MapRenderer {
     gl.uniform1i(u.uBorderTitle, this.borderTitle ? 1 : 0);
     gl.uniform1i(u.uBorderPaint, this.borderPaint ? 1 : 0);
     gl.uniform1i(u.uPaintOnly, this.paintOnly ? 1 : 0);
+    // 水域边界：开关 + 粗细 + 三个水域色（实心 ✓ 所以没有浓度 uniform）
+    gl.uniform1i(u.uShowWater, this.showWater ? 1 : 0);
+    gl.uniform1f(u.uWaterW, this.waterW);
+    gl.uniform3f(u.uSeaCol, this.seaCol[0], this.seaCol[1], this.seaCol[2]);
+    gl.uniform3f(u.uLakeCol, this.lakeCol[0], this.lakeCol[1], this.lakeCol[2]);
+    gl.uniform3f(u.uRiverCol, this.riverCol[0], this.riverCol[1], this.riverCol[2]);
     gl.uniform1f(u.uBorderW, this.borderWidth);
     gl.uniform1f(u.uPaintBorderW, this.paintWidth);
     gl.uniform1f(u.uPaintBorderA, this.paintAlpha);
