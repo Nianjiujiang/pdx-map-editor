@@ -424,7 +424,12 @@ export class LabelLayer {
    */
   draw(view, tier, hover = null) {
     if (!this.enabled) { this.resize(); this.clear(); return; }
-    const need = this.zoom[tier];
+    // **地名的显示门槛**：这一层要缩放到百分之多少才画 ✓（meta.labelZoom 给的）
+    // 用户觉得"要放很大才一起冒出来"太晚了 ✗ → 统一放宽一档：
+    // 这里乘一个系数，**越小越早出现** ✓ 想再宽/再紧就改这一个数 ✓
+    const LABEL_ZOOM_RELAX = 0.7;
+    const raw = this.zoom[tier];
+    const need = raw == null ? null : raw * LABEL_ZOOM_RELAX;
     if (need == null) { this.resize(); this.clear(); return; }
 
     const ctx = this._begin(view);

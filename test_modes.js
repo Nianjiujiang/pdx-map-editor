@@ -208,14 +208,32 @@ function ok(name, cond, extra = '') {
   }
 
   // 涂色边界那条：一侧有颜色、一侧没有 → 也必须算分界（原来那分支是空的 ✗）
-  // 同色时：**两侧都涂过就比标记** ✓（同色不同标记之间要有线 ✓）；用自己的色+自己的名涂自己那块 → 不出线 ✓
+  // 涂色边界那条：颜色取"显示出来的那个"（涂过的用玩家色、没涂的用剧本色）✓
+  //   两边都没颜色（海 / 无主地）→ 不划 ✓；颜色不同 → 划 ✓（国家之间靠它 ✓）
+  //   颜色相同 → **一律比标记** ✓（JS 给每块地都写了标记：涂过的=你填的名、没涂的=它原版的国名 ✓）
   {
     const g2 = require('fs').readFileSync('web/js/gl.js', 'utf8');
-    ok('涂色边界看「颜色 + 标签」：两侧都涂过就比标记、自己的色涂自己那块 → 不出线 ✓',
+    ok('涂色边界看「颜色 + 标记」：颜色不同就划、同色比标记、没开年份视图时未上色互不划 ✓',
        g2.includes('vec3 lutColour(ivec2 ip)') && g2.includes('if (shownDiffers(ip, q))')
+       && g2.includes('if (ca.x < -0.5 && cb.x < -0.5) return false;')
+       && g2.includes('if (distance(ca, cb) > 0.02) return true;')
+       && g2.includes('if (uPaintOnly == 1 && !ta && !tb) return false;')
        && g2.includes('return paintLabelAt(a) != paintLabelAt(b);')
-       && g2.includes('一侧涂、一侧没涂且同色')
        && !g2.includes('shownOf('), 'ok');
+  }
+
+  // 主菜单与 F5 的分工：接完必须把存档**写回 localStorage**
+  // （只删内存里那份没用 ✗ 刷新还会从旧的读回来 → 涂色怎么清都清不掉 ✓ 踩过 ✓）
+  {
+    const src = require('fs').readFileSync('web/js/app.js', 'utf8');
+    const i = src.indexOf('function loadProject()');
+    // 找函数结尾：行首那个 } ✓（**别写 \n}\n** ✗ 这个文件是 CRLF，那样找不到、body 会是空的 ✓ 我栽过 ✓）
+    const m = i < 0 ? null : /^}/m.exec(src.slice(i));
+    const body = (i >= 0 && m) ? src.slice(i, i + m.index) : '';
+    ok('主菜单接完存档要写回 localStorage（且不能调用不存在的函数）',
+       body.includes('localStorage.setItem(STASH_KEY')
+       && body.includes('delete box[k];')
+       && !body.includes('stashWrite('), body.length + ' 字节');
   }
 
   ok('边界的射线搜索有硬上界（防止驱动把循环判成不合规）',
@@ -703,6 +721,66 @@ const factory = new Function(
   if (bootStep && !/就绪|100/.test(bootStep)) console.log('    启动失败：', bootStep);
 
   const st = ex.state;
+  // **用自己的色 + 自己的名涂自己那块 → 两边必须同色同标记** ✓
+  //   （数据层对不上，填色那趟就会平白划一条线 ✗ 用户报过 ✓ 这条锁死它 ✓）
+  {
+    try {
+      const r0 = ex.renderer;
+      const n = st.meta.numProvinces;
+      const tm = st.titlemap;
+      const nEra = (st.meta.eraDates && st.meta.eraDates.length) || 0;
+      const ct = nEra > 0 ? Math.min(st.tier, nEra - 1) : st.tier;
+      const row = ct * n;
+      const nReal = st.meta.numRealTitles != null ? st.meta.numRealTitles : 1e9;
+      const counts = new Map();
+      for (let p = 1; p < n; p++) {
+        const t = tm[row + p];
+        if (t >= 0 && t < nReal) counts.set(t, (counts.get(t) || 0) + 1);
+      }
+      let tid = -1, bestC = 0;
+      for (const [t, c] of counts) if (c > bestC) { bestC = c; tid = t; }
+      const pids = [];
+      for (let p = 1; p < n && pids.length < 2; p++) if (tm[row + p] === tid) pids.push(p);
+      const nm = String(st.titles.names[tid] || '');
+      const xy = r0.lutXY(tid);
+      const i = (xy[1] * r0.lutW + xy[0]) * 4;
+      const lutC = [r0.lutData[i], r0.lutData[i + 1], r0.lutData[i + 2]];
+      const hasPaint = typeof ex.paintAt === 'function' && pids.length === 2;
+      const a = pids[0], b = pids[1];
+      // **整张快照**：涂色是按头衔刷的（会一次涂掉它名下**所有**省份 ✓）
+      //   所以只还原一块没用 ✗ 后面的测试会被脏数据坑 ✓（我栽过一次 ✓）
+      const svPD = hasPaint ? r0.paintData.slice() : null;
+      const svPL = hasPaint ? r0.paintLabelData.slice() : null;
+      const svProvLabelAll = (hasPaint && st.provLabel) ? st.provLabel.slice() : null;
+      const svProvTitleAll = (hasPaint && st.provTitle) ? st.provTitle.slice() : null;
+      const svPainted = st.painted ? Array.from(st.painted) : null;
+      const svTitleLabel = st.titleLabel ? new Map(st.titleLabel) : null;
+      const svBrushLabel = st.brushLabel, svBrush = st.brush;
+      try { if (hasPaint) { st.brushLabel = nm; st.brush = lutC; ex.paintAt(pids[0], tid); } } catch (e) { /* ✓ */ }
+      const sameMark = hasPaint && r0.paintLabelData[a] === r0.paintLabelData[b];
+      const sameCol = hasPaint && r0.paintData[a * 4] === lutC[0]
+        && r0.paintData[a * 4 + 1] === lutC[1] && r0.paintData[a * 4 + 2] === lutC[2];
+      const extra = hasPaint ? ('标记 ' + r0.paintLabelData[a] + '/' + r0.paintLabelData[b]
+                     + '，涂的色 ' + JSON.stringify([r0.paintData[a * 4], r0.paintData[a * 4 + 1], r0.paintData[a * 4 + 2]])
+                     + ' vs LUT ' + JSON.stringify(lutC)
+                     + '，该头衔 ' + bestC + ' 块地') : '拿不到 paintAt ✗';
+      // 整张还原现场 ✓
+      try {
+        if (hasPaint) {
+          r0.paintData.set(svPD);
+          r0.paintLabelData.set(svPL);
+          if (svProvLabelAll) st.provLabel.set(svProvLabelAll);
+          if (svProvTitleAll) st.provTitle.set(svProvTitleAll);
+          if (svPainted) st.painted = new Set(svPainted);
+          if (svTitleLabel) st.titleLabel = svTitleLabel;
+          st.brushLabel = svBrushLabel; st.brush = svBrush;
+          r0.paintDirty = true; r0.dirty = true;
+        }
+      } catch (e) { /* ✓ */ }
+      ok('用自己的色 + 自己的名涂自己那块 → 颜色和标记都跟原版一致（填色线不该划）',
+         sameMark && sameCol, extra);
+    } catch (e) { ok('用自己的色 + 自己的名涂自己那块（跑不动）', false, String(e && e.message)); }
+  }
   const HTML = require('fs').readFileSync('web/index.html', 'utf8');
   // 二级设置页：控件都在 / 改了真生效 / 恢复默认 / 跟着存档走 ✓
   {
@@ -737,7 +815,8 @@ const factory = new Function(
     st.set.w = 3.4; st._parentSig = null; ex.syncParentBorder();
     const w1 = ex.renderer.borderWidth;
     // 默认没有链（父级边界出厂是关的）→ 本层线宽就等于基准本身 ✓
-    ok('改「基准线宽」→ 渲染器线宽跟着变', Math.abs(w1 - 3.4) < 0.01,
+    // 粗细阶梯改成了“基准线宽 / 1.6”的倍率：默认（基准=1.6）正好是本层 1 / 父层 1.25 / 填色线与多级链 1.5
+         ok('改「基准线宽」→ 渲染器线宽跟着变（按 1/1.6 倍率）', Math.abs(w1 - 3.4 / 1.6) < 0.01,
        w0.toFixed(2) + ' → ' + w1.toFixed(2));
     // 「恢复默认」→ 回到出厂值
     st.set = { bg: null, waste: null, sea: null, lake: null, impass: null,
@@ -1429,8 +1508,15 @@ const factory = new Function(
     }
     st.tier = _svT4; st._layerSig = null; ex.syncLayerSwitches();
     const g3 = require('fs').readFileSync('web/js/gl.js', 'utf8');
-    ok('着色器里那条只比手绘层的短路在',
-       g3.includes('if (uPaintOnly == 1) return paintDiffers(a, b);'), 'ok');
+    /* 新口径（用户定的 ✓）：填色边界那条线 = **颜色 + 标记**，颜色取"显示出来的那个" ✓
+     *   · 两边都没颜色（海 / 无主地）→ 不划 ✓
+     *   · 一边有一边没有 / 颜色不同 → 划 ✓（**国家之间靠颜色这条** ✓）
+     *   · 颜色相同 → 都涂过比标记 ✓ 都没涂比头衔 ✓
+     * 旧的"只有势力/剧本层才纯比手绘层"那条短路（uPaintOnly）已经**收掉了** ✗
+     * → 这里改查"两边都没颜色才不划"这条 ✓ 它才是新口径的地基 ✓ */
+    ok('着色器里"两边都没颜色才不划界"这条在（新口径的地基 ✓）',
+       g3.includes('if (ca.x < -0.5 && cb.x < -0.5) return false;')
+       && !g3.includes('if (uPaintOnly == 1) return paintDiffers(a, b);'), 'ok');
   }
 
   // 分组/身份**不能跟着显示开关变** ——
@@ -2085,13 +2171,13 @@ const factory = new Function(
        `列表内容长度 ${(get('legend-list').innerHTML || '').length}`);
     // 位置参数四个角落都得能算（不能因为角落算成负数就画到图外 ✗）
     let cornerOk = true;
-    for (const pos of ['tl', 'tr']) {
+    for (const pos of ['tl', 'tr', 'bl', 'br']) {
       st.set = st.set || {};
       st.set.legend = true; st.set.legendPos = pos; st.set.legendTitle = '测试标题';
       try { ex.drawLegend(cv.getContext('2d'), 1200, 800); } catch (e) { cornerOk = false; }
     }
     st.set.legend = false;
-    ok('两种位置都能画（左上/右上，不会越界崩 ✓）', cornerOk, 'tl/tr');
+    ok('四个角都能画（左上/右上/左下/右下，不会越界崩 ✓）', cornerOk, 'tl/tr/bl/br');
   }
 
   // 新手引导：**就在编辑器里**（不另开页面 ✓），所以它得能被单文件版打包器收进去 ✓
@@ -3697,11 +3783,14 @@ const factory = new Function(
     const si = st.titles.keys.indexOf('#sea');
     ok('CK3 的海回到共享伪头衔 #sea（海域分组已按要求删除）', si >= 0, '#' + si);
   }
-  for (const name of pseudo) {
+  const _svWaste = st.showWaste;
+    st.showWaste = false;
+    for (const name of pseudo) {
     const i = st.titles.keys.indexOf(name);
     ok(`${name} 是伪头衔（锁住）`, i >= 0 && ex.isSpecialTid(i) && ex.isLocked(i), `序号 ${i}`);
   }
   ok('地图上确实有锁住的地块', ids.some((p) => ex.isSpecialTid(ex.titleAt(p, st.tier))));
+    st.showWaste = _svWaste;
 
   if (!isEU4) {
     console.log('\n（CK3 模式到此为止 —— EU4 专属的导出不掺和）');
