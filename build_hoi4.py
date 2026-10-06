@@ -74,52 +74,6 @@ SPECIAL_CATEGORIES = [
     ("#sea", "海洋", (32, 57, 92), "sea"),
 ]
 
-#: 战略区名的中文兜底（汉化 mod 没覆盖的 10 个，与 app 里那张手工表一致）
-SR_ZH_EXTRA = {
-    "Bolovia": "玻利维亚", "East Karelia": "东卡累利阿", "Ferghana": "费尔干纳",
-    "Gulf of Bothnia": "波的尼亚湾", "North-Western Australia": "澳大利亚西北部",
-    "Northern Norrland": "北诺尔兰", "Patagonia": "巴塔哥尼亚",
-    "Tanscaspia": "外里海", "Transbaikal": "外贝加尔", "Western Finland": "芬兰西部",
-}
-
-
-def read_strategic_regions(root: Path) -> list[tuple[str, list[int]]]:
-    """map/strategicregions/*.txt → [(中文区名, 省份号)]（顺序稳定）"""
-    # 中文名：优先创意工坊汉化 mod
-    loc_zh: dict[str, str] = {}
-    ws = Path(r"C:\Steam\steamapps\workshop\content\394360")
-    pat = re.compile(r'^\s*(STRATEGICREGION_\d+)\s*:\s*\d*\s*"([^"]*)"', re.M)
-    for d in ([ws / "2142407679"] if ws.is_dir() else []):
-        loc = d / "localisation"
-        if not loc.is_dir():
-            continue
-        for f in loc.rglob("*.yml"):
-            try:
-                txt = f.read_text(encoding="utf-8-sig", errors="ignore")
-            except OSError:
-                continue
-            for m in pat.finditer(txt):
-                loc_zh.setdefault(m.group(1), m.group(2))
-
-    out: list[tuple[str, list[int]]] = []
-    for f in sorted((root / "map" / "strategicregions").glob("*.txt")):
-        try:
-            txt = f.read_text(encoding="utf-8", errors="ignore")
-        except OSError:
-            continue
-        mk = re.search(r'name\s*=\s*"([^"]+)"', txt)
-        mp = re.search(r"provinces\s*=\s*\{([^}]*)\}", txt, re.S)
-        if not (mk and mp):
-            continue
-        key = mk.group(1)
-        fallback = re.sub(r"^\d+-", "", f.stem).strip()
-        name = loc_zh.get(key) or SR_ZH_EXTRA.get(fallback) or fallback
-        pids = [int(x) for x in re.findall(r"\d+", mp.group(1))]
-        if pids:
-            out.append((name, pids))
-    return out
-
-
 #: 国家名的意识形态后缀，按这个顺序挑
 NAME_SUFFIXES = ("", "_DEF")
 
@@ -547,16 +501,12 @@ def main() -> int:
     # 8. 海 / 湖
     blank = np.all(titlemap == NO_TITLE, axis=0) & present
     log(f"完全没有归属的地块：{int(blank.sum())} 个")
-    _sr_groups = read_strategic_regions(root)
     _special_names: dict[str, str] = {}
-    _group_split = TIER_ORDER.index("st")          # 1936/1939/sr 用整片，st/pr 逐块
-    log(f"  战略区分组 {len(_sr_groups)} 个（粗层整片、{TAIL_TIERS[1]}/{TAIL_TIERS[2]} 逐块）")
-    special, assign, stats, _fine_assign, _waste_pids, _low_assign, _waste_tids = build_special_titles(
+    special, assign, stats, _fine_assign, _waste_pids, _waste_tids = build_special_titles(
         {"lake": set(np.nonzero(is_lake)[0].tolist()),
          "sea": set(np.nonzero(is_sea)[0].tolist())},
         n_prov, blank, n_real, categories=SPECIAL_CATEGORIES, fine_tier=TIER_ORDER[-1],
-        groups=_sr_groups, group_split=_group_split,
-        group_key="#sea", name_sink=_special_names,
+        name_sink=_special_names,
         )
     log("锁住的地形：" + ("，".join(stats) if stats else "无"))
     sel = assign >= 0
@@ -564,12 +514,6 @@ def main() -> int:
         vals = assign[sel].astype(np.uint16)
         for r in range(len(TIER_ORDER)):
             titlemap[r, sel] = vals
-    # 海域：st / pr 两层换成**逐块节点**（1936/1939/sr 仍旧整片战略区 ✓）
-    sel_low = _low_assign >= 0
-    if sel_low.any():
-        low_vals = _low_assign[sel_low].astype(np.uint16)
-        for r in range(TIER_ORDER.index("st"), len(TIER_ORDER)):
-            titlemap[r, sel_low] = low_vals
 
     ordered_all = ordered + special
     n_all = len(ordered_all)
@@ -607,7 +551,7 @@ def main() -> int:
 
     # 11. 名字
     special_names = {k: label for k, label, _c, _s in SPECIAL_CATEGORIES}
-    # 战略区分组的中文名 + 逐块海块名（上面 name_sink 带出来的）✓
+    # 伪头衔的中文名（name_sink 带出来的）✓
     special_names.update(_special_names)
     resolved: list[str] = []
     names_en: list[str] = []

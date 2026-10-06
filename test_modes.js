@@ -3241,8 +3241,13 @@ const factory = new Function(
        st.tier === 1 && ex.editTier() === 1 && isOn(1));
 
     // 端到端：按省份粒度真的只涂到那一个省份
+    // **粒度要落在这一作的「省份」层上** ✓ —— EU4 是 5、HOI4/V3 是 4：
+    // 写死 4 的话 EU4 选到的是「地区」层，下面那条"隔壁省份没被连坐"
+    // 就变成"隔壁地区"，是测试自己错了 ✗（产品行为一直是对的）
+    const _provTier = st.meta.tierNames.indexOf('省份');
+    const _provT = _provTier >= 0 ? _provTier : LAST_TIER;
     ex.pressTier(0);
-    ex.pressTier(4);
+    ex.pressTier(_provT);
     const W = st.meta.mapWidth, H = st.meta.mapHeight, NP = st.meta.numProvinces;
     const tm = st.titlemap;
     // 拿一块**在图上、且没锁**的地当锚：HOI4 的 1 号省是个湖，不能用
@@ -3250,7 +3255,8 @@ const factory = new Function(
     const country = ex.titleAt(anchor, 0);
     let target = -1, mate = -1;
     for (let p = 1; p < NP; p++) {
-      if (tm[p] !== country || tm[(st.meta.tierNames.length - 1) * NP + p] === ex.titleAt(anchor, LAST_TIER)) continue;
+      // 同一国家、且**省份节点**跟锚点不同的两块地（同一层比才有意义 ✓）
+      if (tm[p] !== country || tm[_provT * NP + p] === ex.titleAt(anchor, _provT)) continue;
       if (target < 0) target = p; else { mate = p; break; }
     }
     ok('找得到同国但不同省份的两块地', target > 0 && mate > 0, `#${target} / #${mate}`);
@@ -3793,6 +3799,16 @@ const factory = new Function(
   if (WHICH === 'CK3') {
     const si = st.titles.keys.indexOf('#sea');
     ok('CK3 的海回到共享伪头衔 #sea（海域分组已按要求删除）', si >= 0, '#' + si);
+    // 「不可通行海域」是**水**：开着「荒漠·允许」也不给涂（用户要求 ✓）
+    // 「不可通行陆地」（#impassable）照旧放行 —— 这两条别被同一句放行一起放掉 ✗
+    const _seaT = st.titles.keys.indexOf('#impassable_sea');
+    const _landT = st.titles.keys.indexOf('#impassable');
+    const _svW0 = st.showWaste;
+    st.showWaste = true;
+    ok('不可通行海域：开着「允许」也锁住', _seaT >= 0 && ex.isLocked(_seaT), `序号 ${_seaT}`);
+    ok('不可通行陆地：开着「允许」能涂（别一起锁掉 ✗）', _landT >= 0 && !ex.isLocked(_landT),
+       `序号 ${_landT}`);
+    st.showWaste = _svW0;
   }
   const _svWaste = st.showWaste;
     st.showWaste = false;

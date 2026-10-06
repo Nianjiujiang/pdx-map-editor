@@ -45,6 +45,10 @@ class Handler(SimpleHTTPRequestHandler):
         # GET /../server.py 这类路径会被 OS 解析到 WEB 之外，本机任意
         # 进程都能借这个端口读文件。
         raw = urllib.parse.unquote(path.split("?", 1)[0].split("#", 1)[0])
+        # Windows 上 `\` 也是路径分隔符 —— 不换成 `/` 的话 posixpath.normpath
+        # 认不出 `..\..`（实测 /a/..%5C..%5C..%5C 能读出项目外的文件 ✗），
+        # 下面那两道 `..` 过滤就形同虚设。
+        raw = raw.replace("\\", "/")
         denied = str(ROOT / "__denied__")   # 必然不存在的路径 → 404
         # /data/、/data_miller/ 之类都映射到项目下的同名目录
         m = re.match(r"^/(data[a-z0-9_]*)/(.*)$", raw)

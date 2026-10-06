@@ -1908,14 +1908,21 @@ function isSpecialTid(tid) {
  *   （用户报的：开了允许上色但是无法上色 ✓）
  *   荒地 = meta.wasteland 里列的那些 ✓ 或者最细层那个 #impassable* 节点 ✓
  *   （跟悬停卡片那边的判法保持一致 ✓）
+ *
+ * **但「不可通行海域」不算荒地**（用户要求 ✓）—— 它是**水**，跟海一个待遇：
+ *   开着「允许」也不给涂。以前那句"`#impassable` 开头就放行"把海也放了 ✗ →
+ *   光标是十字、点下去还会在历史和「改动 N」里记一笔（syncPaint 因为它是 `@`
+ *   层，最后并没上色，只留下一笔脏状态 ✗）。
+ *   判法照抄别处那两处（悬停卡片 / 水域判据）：`#impassable` 开头 **且** 含 sea ✓
  */
 function isLocked(tid) {
   if (tid === NO_TITLE || tid == null) return true;
   if (!isSpecialTid(tid)) return false;
   if (state.showWaste) {
     const _key = String((state.titles.keys && state.titles.keys[tid]) || '');
-    if (_key.indexOf('#impassable') === 0) return false;
-    if ((state.meta.wasteland || []).indexOf(tid) >= 0) return false;
+    const _impSea = _key.indexOf('#impassable') === 0 && _key.indexOf('sea') >= 0;
+    if (_key.indexOf('#impassable') === 0 && !_impSea) return false;   // 不可通行**陆地**：允许时可涂
+    if ((state.meta.wasteland || []).indexOf(tid) >= 0) return false;  // 荒地：同上
   }
   return true;
 }
@@ -1967,15 +1974,12 @@ function renderHoverCard(pid) {
     const _ck3 = (typeof GAME !== 'undefined' && GAME && GAME.id === 'ck3');
     const _dataName = state.titles.names[special] || '';
     // 陆地统一叫「不可通行区域」；海域保留原本的类型名（不可通行海域）✓
-    // 海节点（海域组 / 逐块海块）类型一律是「海洋」；不可通行陆地统一「不可通行区域」✓
-    const _isSeaNode = _key.startsWith('#sea_grp_') || _key.startsWith('wz_');
-    const _typeLabel = _isSeaNode ? '海洋'
-      : _isImpassable ? (_dataName.includes('海域') ? _dataName : '不可通行区域')
+    // （海分区/逐块海块那套已经删了：现在海就是共享的 #sea 节点，名字本来就叫「海洋」✓）
+    const _typeLabel = _isImpassable ? (_dataName.includes('海域') ? _dataName : '不可通行区域')
       : _dataName;
     // **CK3 的湖泊与不可通行都不显示名字**（用户要求）；别的游戏照显示 ✓
     // 海洋、河流不显示名字；湖泊显示 ✓
-    const _isSeaKey = _key.startsWith('#sea') || _key.startsWith('#grp_')
-      || _key.startsWith('#seaname_') || _key.startsWith('wz_');
+    const _isSeaKey = _key.startsWith('#sea') || _key.startsWith('#seaname_');
     const _noName = _isImpassable || _isSeaKey
       || _key.startsWith('#lake') || _key.startsWith('#river');   // 水域一律不显示名字 ✓
     const manual = manualWaterName(raw);
@@ -2066,7 +2070,7 @@ function specialTileLabel() {
   const dn = String(state.titles.names[state.hover.tids[editTier()]] || '');
   // CK3 的「不可通行海域」= 键 #impassable_sea ✓ 它是**水**，跟别的海一个待遇 ✓
   const _impSea = key.indexOf('#impassable') === 0 && key.indexOf('sea') >= 0;
-  const _isWater = _impSea || key.indexOf('wz_') === 0 || key.indexOf('#sea') === 0
+  const _isWater = _impSea || key.indexOf('#sea') === 0
     || key.indexOf('#lake') === 0 || key.indexOf('#river') === 0;
   // 这一块自己的名字：优先各地块名册，其次最细层那个节点的名字 ✓
   if (!_isWater) {
@@ -2083,7 +2087,7 @@ function specialTileLabel() {
     if (_impSea) return '不可通行海域';                 // CK3 那种：就叫海域 ✓
     return impassLabel(dn.indexOf('海域') >= 0 || key.indexOf('sea') >= 0 ? (dn || '不可通行海域') : '不可通行区域');
   }
-  if (key.indexOf('wz_') === 0 || key.indexOf('#sea') === 0) return '海洋';
+  if (key.indexOf('#sea') === 0) return '海洋';
   if (key.indexOf('#lake') === 0) return '湖泊';
   if (key.indexOf('#river') === 0) return '河流';
   return impassLabel(dn);
@@ -3205,11 +3209,10 @@ function projectData() {
   const out = { version: 1, generated: new Date().toISOString(), titles: {}, labels: {},
                 capitals: (state.capitalPids || []).slice(),
                 capitalOf: Object.assign({}, state.capitalOf || {}),
-                // 图例的设定 + 改过的名字，跟着「导出涂色」一起存 ✓
+                // 图例的设定，跟着「导出涂色」一起存 ✓（名字不再存 ✗ —— 列表里不能改名了 ✓）
                 legend: { show: !!(state.set && state.set.legend),
                           title: (state.set && state.set.legendTitle) || '',
                           pos: (state.set && state.set.legendPos) || 'tl',
-                          names: Object.assign({}, state.legendNames || {}),
                           on: Object.assign({}, state.legendOn || {}),
                           // 图例的**手动顺序**也跟存档走 ✓（在图例列表里用 ↑↓ 排的 ✓）
                           order: Array.isArray(state.legendOrder) ? state.legendOrder.slice() : [] },
@@ -3315,7 +3318,7 @@ function applyProject(data) {
     state.set.legend = !!data.legend.show;
     state.set.legendTitle = data.legend.title || '';
     state.set.legendPos = data.legend.pos || 'tl';
-    state.legendNames = Object.assign({}, data.legend.names || {});
+    // 老存档里的 legend.names 直接忽略 ✓ —— 图例改名的功能已经删了 ✓
     state.legendOn = Object.assign({}, data.legend.on || {});
     // 图例顺序一起还原 ✓（老存档没有这个字段 → 空数组 = 照旧按大小排 ✓）
     state.legendOrder = Array.isArray(data.legend.order) ? data.legend.order.slice() : [];
@@ -4514,8 +4517,7 @@ function rebuildPaintBlocks(all = false, unpainted = false) {
       if ((_tW != null && _wl.indexOf(_tW) >= 0)
           || _kW.indexOf('#impassable') === 0 || _kW.indexOf('wl_') === 0
           || _kW.indexOf('#lake') === 0 || _kW.indexOf('#sea') === 0
-          || _kW.indexOf('#river') === 0 || _kW.indexOf('#grp_') === 0
-          || _kW.indexOf('wz_') === 0) name = '';
+          || _kW.indexOf('#river') === 0) name = '';
     }
     if (all && g.key) name = g.key.split('|')[0];
     // 落点与字号 = **首都所在的那一族连通域自己**的几何中心与像素数 ✓
@@ -4633,7 +4635,7 @@ function drawLabels(view) {
  * 导出的图加一段**图例 + 标题**，发出去才像一张"图" ✓
  *   · 条目**自动来自你涂出来的颜色分组**（state.paintBlocks ✓ 名字用当前的显示名 ✓）
  *     同色算一组，取面积最大那一族的名字当组的名字 ✓
- *   · 名字可以改（state.legendNames ✓），不想要的可以关掉（state.legendOn ✓）
+ *   · 名字就是**地图上现在显示的那个**（想改走「改名」工具 ✓），不想要的可以关掉（state.legendOn ✓）
  *   · 面板在「设置」里（用户要求 ✓）；勾上之后「导出窗口 / 导出整图」都会画进去 ✓
  *   · 整图 9216 宽时字号会自动放大，不会小得像蚂蚁 ✓
  */
@@ -4684,10 +4686,9 @@ function legendEntries() {
     .map((e) => ({
       ...e,
       // **名字用"现在显示的那个"** ✓ —— b.name 是 rebuildPaintBlocks 从
-      // state.titleName 现算的 ✓ 所以用改名工具改完、或者在图例里改完，
-      // 这边**立刻就是新名字** ✓（用户要的"实时变更"✓）
-      // 只有在它空着的时候才退回图例自己存的旧名字 ✓
-      name: e.name || (state.legendNames && state.legendNames[e.key]) || '',
+      // state.titleName 现算的 ✓ 所以用「改名」工具改完，这边**立刻就是新名字** ✓
+      //（图例自己那份 legendNames 已经删了 ✗ —— 列表里不再能改名 ✓）
+      name: e.name || '',
       on: !(state.legendOn && state.legendOn[e.key] === false),
     }));
   /* **手动顺序优先** ✓（在图例列表里用 ↑↓ 排过的 ✓ 存在 state.legendOrder ✓）
@@ -4750,13 +4751,16 @@ function rebuildLegendPanel() {
     return;
   }
   box.style.display = '';
+  // 名字的 HTML 转义（就地在模板里拼，别让 & < > " 把结构破了 ✗）
+  const esc = (s) => String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   box.innerHTML = list.map((e, i) => (
-    '<div class="legend-row" data-key="' + e.key + '"'
-    + ' data-tid="' + (e.tid == null ? '' : e.tid) + '">'
+    '<div class="legend-row" data-key="' + e.key + '">'
     + '<input type="checkbox" class="legend-on"' + (e.on ? ' checked' : '') + '>'
     + '<span class="legend-sw" style="background:' + _hexOf(e.rgb) + '"></span>'
-    + '<input type="text" class="legend-name" maxlength="24" spellcheck="false" autocomplete="off" value="'
-    + String(e.name).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;') + '">'
+    // **名字只读** ✓ —— 列表里不再能改名（想改走「改名」工具 ✓）
+    // title 里放全名：太长了会被省略号截掉，悬停还能看全 ✓
+    + '<span class="legend-name" title="' + esc(e.name) + '">' + esc(e.name) + '</span>'
     + '<span class="legend-move">'
     +   '<button type="button" class="legend-up" aria-label="上移"'
     +     (i === 0 ? ' disabled' : '') + '>▲</button>'
@@ -4799,9 +4803,7 @@ function rebuildLegendPanel() {
 
   for (const row of box.querySelectorAll('.legend-row')) {
     const key = row.dataset ? row.dataset.key : row.getAttribute('data-key');
-    const tidAttr = row.getAttribute('data-tid');
     const on = row.querySelector('.legend-on');
-    const nm = row.querySelector('.legend-name');
     /* 顺序调整：点一下换一格 ✓
      * 把**当前看到的顺序**整条存进 state.legendOrder ✓（含没手动排过的 ✓）
      * 这样后面再排、以及导出图例，都按这个顺序走 ✓ */
@@ -4848,25 +4850,8 @@ function rebuildLegendPanel() {
       state.legendOn[key] = on.checked;
       scheduleSave();
     });
-    if (nm) nm.addEventListener('change', () => {
-      const v = nm.value.trim();
-      state.legendNames = state.legendNames || {};
-      state.legendNames[key] = v;
-      /* **图例里改名 = 改名工具改名** ✓（用户要求：两边就是同一件事 ✓）
-       * 所以除了图例自己那份，还要写进 state.titleName ✓
-       * —— 地图上那一块的名字会立刻跟着改，跟用「改名」工具点它一下完全一样 ✓
-       * （以前这里只写 legendNames ✗ 于是"图例改了名、地图上还是老名字" ✓） */
-      const tid = (tidAttr === null || tidAttr === '') ? null : Number(tidAttr);
-      if (v && tid != null && Number.isFinite(tid) && state.titles) {
-        state.titleName = state.titleName || new Map();
-        state.titleName.set(tid, v);
-        state.titles.names[tid] = v;      // 标签层读的是这份 ✓
-        blocksDirty = true;               // 重新分组 → b.name 跟着变 → 列表实时刷新 ✓
-        labelDirty = true;
-        if (renderer) renderer.dirty = true;
-      }
-      scheduleSave();
-    });
+    /* 「在图例列表里改名」这条路已经删掉 ✓（用户要的）
+     * 名字就是地图上现在显示的那个；真要改名走「改名」工具（renameAt）✓ */
   }
 }
 

@@ -620,7 +620,7 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin
 
 /* ===========================================================================
    设置页里的「导出图例」那一栏
-   —— 条目是自动列出来的（同色一组 ✓），能改名、能关掉 ✓
+   —— 条目是自动列出来的（同色一组 ✓），名字**只读**、能关掉 ✓
    =========================================================================== */
 .legend-list {
   margin: 8px 0 6px; max-height: 190px; overflow: auto;
@@ -634,13 +634,14 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin
   flex: none; width: 18px; height: 18px; border-radius: 4px;
   border: 1px solid rgba(255, 255, 255, .35); box-shadow: 0 0 0 1px rgba(0, 0, 0, .5) inset;
 }
+/* 名字只读（列表里不再能改名 ✓）—— 想改走「改名」工具 ✓
+   太长就省略号截掉，全名挂在 title 上，悬停还能看全 ✓ */
 .legend-row .legend-name {
-  flex: 1 1 auto; min-width: 0;
-  background: #121a22; color: #e8eef6; border: 1px solid #26313d;
-  border-radius: 6px; padding: 4px 8px;
+  flex: 1 1 auto; min-width: 0; overflow: hidden;
+  color: #e8eef6; padding: 4px 2px;
+  white-space: nowrap; text-overflow: ellipsis;
   font: 13px/1.4 "Microsoft YaHei", "Noto Sans SC", system-ui, sans-serif;
 }
-.legend-row .legend-name:focus { outline: none; border-color: #f0d98a; }
 /* 图例条目的**顺序调整**：每行两个小箭头 ✓（点一下换一格 ✓ 手机上也好点 ✓） */
 .legend-row .legend-move {
   flex: none; display: flex; flex-direction: column; gap: 2px;
