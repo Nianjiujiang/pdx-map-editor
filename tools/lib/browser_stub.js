@@ -38,6 +38,9 @@ function flattenModules(modules = MODULES, root = ROOT) {
 
 // ---------------------------------------------------------------- 假 DOM
 
+//: 自闭合标签：它们不该被当成容器往栈上压
+const VOID_TAGS = new Set(['BR', 'HR', 'IMG', 'INPUT', 'META', 'LINK', 'SOURCE', 'AREA', 'BASE', 'COL']);
+
 class El {
   constructor(tag = 'div', id = '') {
     this.tagName = tag.toUpperCase();
@@ -66,26 +69,107 @@ class El {
     this.offsetWidth = 120;
     this.offsetHeight = 40;
     this._listeners = {};
+    this._attrs = {};
+    this.parentNode = null;
   }
   get innerHTML() { return this._html; }
-  set innerHTML(v) { this._html = String(v); if (v === '') this.children = []; }
+  set innerHTML(v) {
+    this._html = String(v);
+    this.children = [];
+    /* **真把子节点造出来** ✓
+     *
+     * 手机端核心那句就是 `ui.innerHTML = '<div id="mob-topbar">…'`，
+     * 之后全靠 `$('mob-sheet')` / `$('mob-backdrop')` 按 id 取回来 ✓
+     * 只把字符串存起来、不造节点的话，那些节点永远取不到 ✗
+     * （我第一版就是这样：#mob-ui 造出来了却"子节点 0 个"，
+     *   看着像手机版坏了，其实是桩不解析 innerHTML）
+     *
+     * 只认**开标签**、靠 depth 收尾就够了 —— 真实 DOM 那套（文本节点、属性转义、
+     * 注释）这里不需要，桩要的是"id 找得到、父子关系对" ✓
+     */
+    const stack = [this];
+    const re = /<(\/?)([a-zA-Z][\w-]*)((?:"[^"]*"|'[^']*'|[^>"'])*?)(\/?)>/g;
+    let m;
+    while ((m = re.exec(this._html))) {
+      const closing = m[1] === '/';
+      const tag = m[2].toUpperCase();
+      const attrs = m[3] || '';
+      if (closing) {
+        if (stack.length > 1) stack.pop();
+        continue;
+      }
+      const el = new El(tag);
+      const idm = /\bid\s*=\s*["']([^"']*)["']/.exec(attrs);
+      if (idm) el.id = idm[1];
+      const clm = /\bclass\s*=\s*["']([^"']*)["']/.exec(attrs);
+      if (clm) for (const c of clm[1].split(/\s+/)) if (c) el.classList.add(c);
+      const attrsAll = attrs.matchAll(/([\w-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g);
+      for (const a of attrsAll) el._attrs[a[1]] = a[2] !== undefined ? a[2] : a[3];
+      stack[stack.length - 1].appendChild(el);
+      // 自闭合标签（br / img / input / meta …）不当容器
+      if (!m[4] && !VOID_TAGS.has(tag)) stack.push(el);
+    }
+  }
   get clientWidth() { stats.clientW++; return this._cw; }
   set clientWidth(v) { this._cw = v; }
   get clientHeight() { stats.clientH++; return this._ch; }
   set clientHeight(v) { this._ch = v; }
-  appendChild(c) { this.children.push(c); return c; }
+  appendChild(c) { this.children.push(c); if (c) c.parentNode = this; return c; }
+  insertBefore(c, ref) {
+    const i = ref ? this.children.indexOf(ref) : -1;
+    if (i >= 0) this.children.splice(i, 0, c); else this.children.push(c);
+    if (c) c.parentNode = this;
+    return c;
+  }
+  removeChild(c) {
+    const i = this.children.indexOf(c);
+    if (i >= 0) this.children.splice(i, 1);
+    return c;
+  }
   addEventListener(t, fn) { (this._listeners[t] || (this._listeners[t] = [])).push(fn); }
   removeEventListener() {}
+  /** 派发一次事件 —— 手机端那套按钮是"点一下开面板"，自检要能点 ✓ */
+  dispatchEvent(ev) {
+    const type = ev && ev.type;
+    for (const fn of (this._listeners[type] || [])) fn(ev || { type, target: this });
+    return true;
+  }
+  // ---- 属性：手机端生造那批按钮全靠这些 ✓（桩缺了它，bindMobile 第一步就抛）
+  setAttribute(k, v) { this._attrs[k] = String(v); if (k === 'id') this.id = String(v); }
+  getAttribute(k) { return this._attrs[k] !== undefined ? this._attrs[k] : null; }
+  removeAttribute(k) { delete this._attrs[k]; }
+  hasAttribute(k) { return this._attrs[k] !== undefined; }
+  focus() {}
+  blur() {}
+  contains(n) {
+    if (!n) return false;
+    if (this === n) return true;
+    return this.children.some((c) => c && c.contains && c.contains(n));
+  }
+  /** 在子树里按 id 找（真 DOM 的 getElementById 语义）—— 手机端"造出来再按 id 取回来"要用 ✓ */
+  findById(id) {
+    if (this.id === id) return this;
+    for (const c of this.children) {
+      if (!c || !c.findById) continue;
+      const hit = c.findById(id);
+      if (hit) return hit;
+    }
+    return null;
+  }
   getBoundingClientRect() {
     return { left: 0, top: 0, width: this.clientWidth, height: this.clientHeight,
              right: this.clientWidth, bottom: this.clientHeight };
   }
   getContext(kind) { return kind === '2d' ? ctx2d() : fakeGL(); }
   querySelectorAll() { return []; }
-  click() {}
-  /** 递归拼出子元素的文本，方便断言 */
+  querySelector() { return null; }
+  click() { this.dispatchEvent({ type: 'click', target: this }); }
+  /** 递归拼出子树里的文本，方便断言
+   *  （innerHTML 现在会真造子节点，所以有子节点就以子节点为准 ——
+   *    不然 _html 和 children 各拼一遍，同一段文字会出现两次 ✗） */
   flat() {
-    return (this._html || '') + this.children.map((c) => c.flat()).join(' | ') +
+    const own = this.children.length ? '' : (this._html || '');
+    return own + this.children.map((c) => c.flat()).join(' | ') +
       (this.textContent ? ' ' + this.textContent : '');
   }
 }
@@ -154,9 +238,32 @@ function makeEnv(opt = {}) {
   const root = opt.root || ROOT;
   const els = new Map();
   const containers = { tier: new El(), tool: new El() };
+  const bodyEl = new El('body');
+  /**
+   * getElementById —— **先在树里找，再退回懒建的桩** ✓
+   *
+   * 手机端那套是"createElement 造按钮 → appendChild 挂进去 → 之后按 id 取回来"，
+   * 所以只认懒建 map 的桩会让它第二步就找不到节点 ✗（我第一版就是这样，
+   * bindMobile 一跑就炸 setAttribute —— 看着像手机版坏了，其实是桩不忠实）
+   *
+   * 三个地方都要翻：
+   *   ① 已经懒建出来那个节点自己的名字
+   *   ② **懒建节点的子树** —— 手机端把 #mob-ui 挂在 #app 底下，
+   *      而 #app 是懒建的桩、不在 body 的子树里，只搜 body 会漏掉它 ✗
+   *   ③ body 的子树
+   */
   const get = (id) => {
-    if (!els.has(id)) els.set(id, new El('div', id));
-    return els.get(id);
+    const direct = els.get(id);
+    if (direct) return direct;
+    for (const el of els.values()) {
+      const hit = el.findById(id);
+      if (hit) return hit;
+    }
+    const inBody = bodyEl.findById(id);
+    if (inBody) return inBody;
+    const fresh = new El('div', id);
+    els.set(id, fresh);
+    return fresh;
   };
 
   const documentStub = {
@@ -168,7 +275,9 @@ function makeEnv(opt = {}) {
     querySelectorAll: (sel) => (sel.includes('tier') ? containers.tier.children
                                : sel.includes('tool') ? containers.tool.children : []),
     elementFromPoint: () => null,
-    body: new El('body'),
+    body: bodyEl,
+    documentElement: new El('html'),
+    head: new El('head'),
   };
 
   let savedBlob = null;
