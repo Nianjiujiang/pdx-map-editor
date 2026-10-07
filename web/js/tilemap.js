@@ -97,13 +97,7 @@ export class TileMap {
   }
 }
 
-/** 数据目录里有没有分块清单 */
-export async function loadTileManifest(base) {
-  try {
-    const res = await fetch(`${base}/tiles.json`);
-    if (!res.ok) return null;
-    return await res.json();
-  } catch (e) {
-    return null;
-  }
-}
+// 读 tiles.json 这件事**只在 data.js 的 api.tileManifest() 里做一遍**。
+// 这里原来还导出一个 loadTileManifest()，逻辑跟它一模一样（连 try/catch 的写法都相同），
+// 但没人 import 过 —— 两条路各改一次就是迟早对不上，删掉那条没人走的。
+// 需要清单请用 api.tileManifest()：它会认单文件版的内嵌数据，这里那份不会。

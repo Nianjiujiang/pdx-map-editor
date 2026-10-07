@@ -2061,7 +2061,15 @@ const factory = new Function(
       let c = 0;
       for (const tid of (st.meta.wasteland || [])) {
         const pid = st.meta.wastelandPidOf ? st.meta.wastelandPidOf[tid] : null;
-        if (pid != null && st.provTitle && st.provTitle[pid] >= 0) continue;   // 玩家自己涂的，不算
+        /* **没进 pid 映射的荒地节点不算** —— 自动上色是按地块（pid）走的：
+         * wastePerimeter 里没有它 → 它根本轮不到"上色"，永远是数据里那个原色 ✓
+         * 以前这里只挡了"玩家自己涂的"，`pid == null` 的那几个就漏进来了：
+         * EU5 有 4 个（helene_atoll / olohega / uracas / vatoa 那种小岛），
+         * 它们的 LUT 色正好等于 titles.colors（因为压根没被改过），
+         * 于是 isBase() 判"不是荒地灰" → 报成"还有 4 块自动色没还原" ✗
+         * 那是断言自己看错了对象，不是自动上色漏了 ✓ */
+        if (pid == null) continue;
+        if (st.provTitle && st.provTitle[pid] >= 0) continue;   // 玩家自己涂的，不算
         if (!isBase(tid)) c++;
       }
       return c;
