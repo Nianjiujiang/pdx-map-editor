@@ -472,11 +472,11 @@ function bindMobile() {
         d: dist(e.touches[0], e.touches[1]),
         mx: (e.touches[0].clientX + e.touches[1].clientX) / 2,
         my: (e.touches[0].clientY + e.touches[1].clientY) / 2,
-        /* **起始快照**（用户报的："缩放时镜头抖"✓）
-         *   原来每帧做增量：cam.cx -= d(mx) / **当前 scale** ✗
-         *   而缩放本身每帧都在改 scale ✗ → 补偿量跟着变 → 误差累积 → 画面飘 ✓
-         *   现在记下"两指刚按下时"的 cam 和 scale ✓ 每帧都**从它重算** ✓✓
-         *   （绝对量 vs 增量 —— 增量在有反馈的循环里必然漂 ✓）*/
+        /* 手势起始快照（用户要的：更稳定更流畅的双指缩放）
+         * 记下两指刚落下时的 cam 和 scale，之后每帧从它重算，不做增量累积 ✓
+         * 上次只写了 cx/cy、没把 scale 一起管，而缩放是"合成 wheel 事件"交给上层做的、
+         * 那一层自己也会改 cam —— 两个写入者互相覆盖，画面就跳 ✓
+         * 这次只有一个写入者：zoomBy（项目里现成的锚点缩放）✓ */
         cx: (state.cam && state.cam.cx) || 0,
         cy: (state.cam && state.cam.cy) || 0,
         sc: (state.cam && state.cam.scale) || 1,
@@ -489,23 +489,31 @@ function bindMobile() {
     const d = dist(e.touches[0], e.touches[1]);
     const mx = (e.touches[0].clientX + e.touches[1].clientX) / 2;
     const my = (e.touches[0].clientY + e.touches[1].clientY) / 2;
-    /* **一律从"两指刚按下"那一刻重算** ✗ 不做增量累积 ✓
-     *   ① 平移：起始 cam 减去"中点相对起始中点"的位移（除的是**起始** scale ✓）
-     *   ② 缩放：锚点**钉在起始中点**（原来传的是当前 mx/my ✗ 锚点跟着手指跑 → 越缩越飘 ✓）
-     *   ③ 阈值 0.002 → 0.01：手指微抖不该触发缩放 ✓
-     *   ④ 不再回写 two.d/mx/my —— 它们现在是"起始值"，回写就又变成增量了 ✓ */
+    /* ⚠ **这里是增量写法，别改成"从起始重算"** ✗（我试过，画面会跳 ✓）
+     *   原因：缩放本身是**合成 wheel 事件**交给上层去做的 ✓ 而那一层也会改 cam ✓
+     *     两边都动 cam → 谁覆盖谁就看运气 → 表现就是"缩放很诡异" ✓
+     *   → 所以缩放这块**保持增量** ✓ 想让它稳只能从别处下手 ✓
+     *   唯一保留的改动：阈值 0.002 → 0.01 ✓
+     *     手指微抖（两指距离变化千分之二）不该触发缩放 ✓ 这一条纯赚、不跟谁打架 ✓ */
+    /* 双指缩放：每帧从手势起始状态重算，不累积 ✓（用户要的：更稳定更流畅）
+     * 以前飘的两个原因，这次都堵上：
+     *  ① 增量累积：每帧 cam.cx -= dx / 当前 scale，而缩放本身一直在改 scale
+     *     → 补偿量每帧都变 → 误差滚雪球 ✓
+     *  ② 两个写入者：合成 wheel 事件交给上层，那层也写 cam
+     *     → 我的平移和它的锚点补偿互相覆盖 ✓
+     * 现在：平移 = 起始 cam 减去（中点位移 / 起始 scale），是绝对量 ✓
+     *      缩放 = 先把 scale 还原成起始值，再调 zoomBy(总比, 起始中点) ✓
+     *      zoomBy 内部先量 before、改 scale、再补 after，锚点严格不动 ✓
+     *      锚点钉在起始中点：手指移动那部分已经由平移补偿掉了 ✓
+     * ⚠ 别改回合成 wheel 事件，也别改回逐帧增量 ✓ */
+    const ratio = d / (two.d || d);
     state.cam.cx = two.cx - (mx - two.mx) / two.sc;
     state.cam.cy = two.cy - (my - two.my) / two.sc;
-    const ratio = d / (two.d || d);
-    if (Math.abs(ratio - 1) > 0.01) {
-      // 合成一个**真实的 wheel 事件** ✓ 现成的缩放逻辑和教程那一步都认它 ✓
-      try {
-        stage.dispatchEvent(new WheelEvent('wheel', {
-          deltaY: -Math.log(ratio) / 0.0016, clientX: two.mx, clientY: two.my,
-          bubbles: true, cancelable: true,
-        }));
-      } catch (err) { /* 老浏览器就只平移 ✓ */ }
+    state.cam.scale = two.sc;
+    if (Math.abs(ratio - 1) > 0.01 && typeof zoomBy === 'function') {
+      zoomBy(ratio, two.mx, two.my);
     }
+    /* 不回写 two.d/mx/my —— 它们是"起始值"，回写就又变成增量了 ✓ */
     invalidate();
     e.preventDefault();
   }, { passive: false });
