@@ -29,8 +29,10 @@ WEB = ROOT / "web"
 DATA = ROOT / "data"
 OUT = ROOT / "pdx-map-editor.html"
 
-#: 拼接顺序有讲究：data/zip/bmp 先，app 最后（app 一加载就会跑起来）
-MODULES = ("data.js", "zip.js", "bmp.js", "gl.js", "labels.js", "tilemap.js", "tutorial.js", "app.js")
+#: 拼接顺序有讲究：log 最前（报错日志要在 app 跑之前就挂上 ✓），app 最后
+#: （app 一加载就会跑起来）。tools/lib/browser_stub.js 里有一份同样的清单，
+#: 改这里记得一起改 —— 漏了的话那套桩里没有 PDXLOG，app.js 一取就炸 ✗
+MODULES = ("log.js", "data.js", "zip.js", "bmp.js", "gl.js", "labels.js", "tilemap.js", "tutorial.js", "app.js")
 
 
 def strip_module(src: str) -> str:

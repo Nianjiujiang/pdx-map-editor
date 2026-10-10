@@ -509,12 +509,12 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin
 .modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
 .modal-head h2 { font-size: 13px; color: var(--gold); letter-spacing: 1px; margin: 0; }
 .set-grid { display: flex; gap: 22px; flex-wrap: wrap; }
-/* **设置这一个弹窗要宽一点** ✓（用户：字体那块掉在最下面，丑死了 ✓）
-   四列（颜色 / 边界 / 导出图例 / 名字等）各占 ≥200px，加上三道 22px 的缝 ≈ 866px ✓
-   而 .modal-box 是 760px ✗ 塞不下 → 第四列换行、孤零零占底下一条 ✗
-   只放宽这一个（#settings ✓），别的弹窗照旧 760px ✓ */
-#settings .modal-box { width: min(980px, 94vw); }
-.set-col { flex: 1 1 220px; min-width: 200px; }
+/* **设置这一个弹窗要更宽一点** ✓（用户要求：不然标签那列会把字挤换行 ✓）
+   四列（颜色 / 边界 / 导出图例 / 名字等）各占 ≥240px，加三道 22px 的缝 ≈ 1026px ✓
+   所以给到 1120px —— 留点余量，标签和滑条都不挤 ✓
+   小屏幕照样收在 94vw，不会顶出屏幕 ✓ */
+#settings .modal-box { width: min(1120px, 94vw); }
+.set-col { flex: 1 1 240px; min-width: 220px; }
 .set-col h3 { font-size: 11px; color: var(--text-faint); letter-spacing: .5px; margin: 4px 0 8px; }
 .set-row {
   display: flex;
@@ -525,8 +525,44 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin
   font-size: 11.5px;
   color: var(--text-dim);
 }
+/* 标签那一列**不许换行** ✓（"省份边界浓度"六个字在窄列里会被折成两行 ✓）
+   `flex: none` + nowrap：宁可把滑条挤短一点，也别让标签断行 ✓ */
+.set-row > span:first-child { flex: none; white-space: nowrap; }
+
+/* ---- 设置页里那些控件**统一长相** -------------------------------------------
+ * 以前只给 color / range 写了样式，select、text、checkbox 一个都没有 ✗ ——
+ * 于是「图例位置」「图例标题」「取色后切到」在深色主题里就是**浏览器默认的白底**，
+ * 字号也走浏览器默认（13~16px ✗），跟旁边 11.5px 的标签根本不在一个调上 ✓
+ * 现在：控件**一律继承行里的字体**，颜色 / 边框 / 圆角 / 焦点色共用同一套变量 ✓
+ * （手机版那份 CSS 会在这之上再调宽度，不冲突 ✓）
+ */
+.set-row input[type=text],
+.set-row input[type=number],
+.set-row select {
+  font: inherit;
+  font-size: 11.5px;
+  color: var(--text);
+  background: #10161d;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 1px 6px;
+  min-height: 22px;
+  box-sizing: border-box;
+}
+.set-row select { max-width: 132px; }
+.set-row input[type=text] { max-width: 150px; }
 .set-row input[type=color] { width: 46px; height: 20px; padding: 0; border: 1px solid var(--line); background: none; }
 .set-row input[type=range] { width: 118px; accent-color: var(--gold); }
+.set-row input[type=checkbox] { width: 14px; height: 14px; margin: 0; flex: none; accent-color: var(--gold); }
+/* 「名字上限」那种**跟在标签后面的当前值**（"12 个" / "无上限"）——
+ * 跟顶栏 `.panel-head .hint` 同一套字（等宽、faint）✓
+ * `margin-right: auto` 让它**贴着标签**，把右边的空间全让给滑块 ✓
+ * （不写这句的话 `.set-row` 是 space-between —— 三个元素会把滑块挤到中间去，
+ *   跟"标签 + 滑块"那种两个元素的行就对不齐了 ✗）*/
+.set-row .hint { font: 11px/1 var(--mono); color: var(--text-faint); white-space: nowrap; margin-right: auto; }
+.set-row select:focus,
+.set-row input[type=text]:focus,
+.set-row input[type=number]:focus { outline: none; border-color: var(--gold); }
 .set-note { font-size: 10.5px; color: var(--text-faint); margin: 10px 0 0; line-height: 1.6; }
 
 
@@ -624,10 +660,10 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin
    =========================================================================== */
 .legend-list {
   margin: 8px 0 6px; max-height: 190px; overflow: auto;
-  border: 1px solid #26313d; border-radius: 8px; padding: 6px 8px;
+  border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px;
   background: rgba(8, 12, 17, .6);
 }
-.legend-list .legend-empty { font-size: 12.5px; color: #6f7f92; padding: 6px 4px; }
+.legend-list .legend-empty { font-size: 12px; color: var(--text-faint); padding: 6px 4px; }
 .legend-row { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
 .legend-row .legend-on { flex: none; }
 .legend-row .legend-sw {
@@ -638,9 +674,9 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin
    太长就省略号截掉，全名挂在 title 上，悬停还能看全 ✓ */
 .legend-row .legend-name {
   flex: 1 1 auto; min-width: 0; overflow: hidden;
-  color: #e8eef6; padding: 4px 2px;
+  color: var(--text); padding: 4px 2px;
   white-space: nowrap; text-overflow: ellipsis;
-  font: 13px/1.4 "Microsoft YaHei", "Noto Sans SC", system-ui, sans-serif;
+  font-size: 12px; line-height: 1.4;
 }
 /* 图例条目的**顺序调整**：每行两个小箭头 ✓（点一下换一格 ✓ 手机上也好点 ✓） */
 .legend-row .legend-move {
@@ -649,10 +685,10 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin
 .legend-row .legend-up, .legend-row .legend-down {
   width: 20px; height: 15px; padding: 0; line-height: 1; cursor: pointer;
   display: flex; align-items: center; justify-content: center;
-  background: #121a22; color: #9fb0c2; border: 1px solid #26313d; border-radius: 4px;
+  background: #121a22; color: var(--text-dim); border: 1px solid var(--line); border-radius: 4px;
   font-size: 9px;
 }
-.legend-row .legend-up:hover, .legend-row .legend-down:hover { color: #f0d98a; border-color: #4a5a6b; }
+.legend-row .legend-up:hover, .legend-row .legend-down:hover { color: var(--gold); border-color: #4a5a6b; }
 .legend-row .legend-up:disabled, .legend-row .legend-down:disabled { opacity: .3; cursor: default; }
 /* **按住拖动排序**的把手 ✓（鼠标 / 手指通用 ✓ 用 Pointer Events 那套 ✓） */
 .legend-row .legend-drag {
@@ -675,7 +711,7 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin
   border: 1px solid #26313d;
   border-radius: 6px;
   padding: 4px 8px;
-  font: 13px/1.4 "Microsoft YaHei", "Noto Sans SC", system-ui, sans-serif;
+  font: 12px/1.4 inherit;
   min-width: 132px;
   outline: none;
 }

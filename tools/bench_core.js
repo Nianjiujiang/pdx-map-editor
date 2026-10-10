@@ -53,8 +53,14 @@ function bench(name, fn, iters = 7) {
   for (let i = 0; i < 400 && !env.get('map-pick-list').children.length; i++) {
     await new Promise((r) => setImmediate(r));
   }
-  const card = env.get('map-pick-list').children.find((c) => c.flat().includes(CARD));
+  // 卡片怎么找：**按地图清单的 label**（`MAP_CHOICES`）——
+  // 不要去读卡片上的文字 ✗：那套桩里 `innerHTML` 会真造子节点，
+  // 而 `flat()` 见子节点就只拼子节点（文字在解析时被丢掉了）→ 永远是空串 ✗
+  const pick = ex.MAP_CHOICES.findIndex((m) => String(m.label || '').includes(CARD)
+    || String(m.emb || '') === WHICH.toLowerCase());
+  const card = env.get('map-pick-list').children[pick >= 0 ? pick : 0];
   if (!card) { console.log('  ✘ 选单里没有这张图'); process.exit(1); }
+  if (pick < 0) console.log(`  （清单里没有「${CARD}」，用第一张顶替 ✓）`);
   card.onclick();
   await booting;
   const bootMs = Date.now() - t0;
@@ -84,7 +90,7 @@ function bench(name, fn, iters = 7) {
   r.blocksAll = bench('rebuildPaintBlocks(all=true)', () => ex.rebuildPaintBlocks(true), 5);
   r.blocksPaint = bench('rebuildPaintBlocks(all=false)', () => ex.rebuildPaintBlocks(false), 5);
 
-  // ② 认族：全图扫（「填色·边界」下点一下涂色 / 擦除都走这里）
+  // ② 认族 / 定范围：全图扫（点一下涂色、擦除都走这里）
   const paint = ex.renderer && ex.renderer.paintData;
   let pidOne = 0;
   if (paint) {
@@ -93,9 +99,30 @@ function bench(name, fn, iters = 7) {
   const probePid = pidOne || Math.max(1, Math.floor(st.meta.numProvinces / 2));
   r.groupPids = bench(`playerGroupPidsAt(#${probePid})`, () => ex.playerGroupPidsAt(probePid), 5);
   r.groupTids = bench('playerGroupTidsAt(#同上)', () => ex.playerGroupTidsAt(probePid), 5);
-  r.sameBlock = bench('sameBlockPids(tid, #同上)', () => {
-    ex.sameBlockPids(ex.titleAt(probePid, ex.editTier()), probePid);
+  // **每点一次 / 拖动时每动一下都跑这个** —— 现在的热点 ✓（它逐格解析归属）
+  r.targets = bench(`paintTargetsAt(#${probePid})`, () => ex.paintTargetsAt(probePid), 5);
+  r.provInfo = bench('provInfoAt(#同上) ×1000', () => {
+    for (let i = 0; i < 1000; i++) ex.provInfoAt(probePid, ex.countryTier ? ex.countryTier() : 0);
   }, 5);
+  // 落笔 + 账本重算（涂一笔之后的固定开销）
+  r.paintOne = bench('paintPidsAsOne(1 格)', () => ex.paintPidsAsOne([probePid], [200, 30, 30]), 5);
+  r.recompute = bench('recomputePainted()', () => ex.recomputePainted(), 5);
+
+  // ⑥ 标签层：**鼠标每换一格 / 每次滚轮缩放都会重画它** ✓
+  //    （这是"鼠标一划就卡"的头号嫌疑犯）
+  const _vr = () => ({ x: st.cam.cx - 400, y: st.cam.cy - 300, w: 800, h: 600 });
+  r.labels = bench('drawLabels(视口 800×600)', () => ex.drawLabels(_vr()), 5);
+
+  // ⑦ 鼠标移动那条链（每次 mousemove 都跑）
+  const _stg = env.get('stage');
+  const _cx = Math.floor(_stg.clientWidth / 2), _cy = Math.floor(_stg.clientHeight / 2);
+  r.hoverSame = bench('updateHover(同一格，只挪鼠标)', () => ex.updateHover(_cx, _cy), 21);
+  r.hoverMove = bench('updateHover(每次都换一格)', () => {
+    st.hover.pid = -1;                 // 逼它走"换格"那条（建卡片 + 高亮 + 标脏）
+    ex.updateHover(_cx, _cy);
+  }, 11);
+  r.card = bench('renderHoverCard(pid)', () => ex.renderHoverCard(probePid), 11);
+  r.highlight = bench('applyHoverHighlight(pid)', () => ex.applyHoverHighlight(probePid, null), 11);
 
   // ③ 打开设置里的图例栏 / 导图例
   r.legendPanel = bench('rebuildLegendPanel()', () => ex.rebuildLegendPanel(), 5);

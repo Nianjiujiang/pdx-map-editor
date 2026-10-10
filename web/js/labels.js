@@ -549,7 +549,7 @@ export class LabelLayer {
    * @param {Array<{name:string, x:number, y:number, area:number}>} points
    */
   /** 某一层的地名导成点数组（给"两套名字合并画"用）
-   *  `tid` 是头衔序号 —— 上层要按"首都那片连通域"挪位置时得认得出来 ✓ */
+   *  `tid` 是头衔序号 —— 上层拿它认"这个名字是哪个头衔的"（改名、图例归属 ✓） */
   pointsFor(tier) {
     const list = this.byTier[tier];
     if (!list || !list.length) return [];
@@ -629,9 +629,18 @@ export class LabelLayer {
       S[n] = size;
       HOT[n] = false;
       LY[n] = p.layer || 0;
-      // 国名（含玩家涂出来的国名）统一半透明 —— 它们压在细层名字上面，
-      // 太实会把底下的省名糊掉。
-      F[n] = p.fade ? 0.6 : 1;
+      /* **所有名字一律 50% 不透明** ✓（用户要求：地名和国名都要 ✓）
+       *   以前只有"玩家涂出来的国名"（`p.fade`）拿 0.6 ✗ 地名是全不透明的 1 ✓
+       *   两者现在一起压在地图上 —— 半透的好处是底下的填色/边界还看得见 ✓
+       * **现在两档可调**（用户定的：设置里 25 / 50 / 75 / 100 ✓）：
+       *   分法是按**层**——"剧本/年份那几层"算国名（势力名 ✓）、其余算地名 ✓
+       *   跟 drawLabels 里那条分层口径必须一致 ✗ 错一处就没法单独调 ✓
+       *   玩家涂出来的色块名（p.fade）归到地名那一档 ✓
+       *   ⚠ 这里只有 **this.nEra** ✗（那个自由变量 nEra 在模块顶上，类里取不到 ✓）*/
+      const _aC = this.alphaCountry == null ? 0.5 : this.alphaCountry;
+      const _aP = this.alphaPlace == null ? 0.5 : this.alphaPlace;
+      const _nEra = this.nEra || 0;
+      F[n] = (!p.fade && _nEra > 0 && (p.tier || 0) < _nEra) ? _aC : _aP;
       C[n] = p.color || '';   // 「国名取色」：带着自己那族的颜色画
       n++;
     }

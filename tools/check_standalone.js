@@ -104,6 +104,33 @@ async function bootWith(embedded, wantLabel) {
      !!ex.state.provinceIds || !!ex.state.tileMap,
      ex.state.tileMap ? '分块' : '整张');
   ok('标签层建起来了', !!ex.labels);
+
+  // 报错日志：log.js 得**真的拼进单文件**，而且 boot 完已经有东西可导 ✓
+  // 漏拼的话 app.js 那边是个空壳、编辑器照常跑 —— 这种"功能悄悄没了"
+  // 比报错难发现得多 ✗ 所以让自检盯着它
+  const log = env.sandbox && env.sandbox.window && env.sandbox.window.PDXLOG;
+  ok('报错日志模块在（log.js 拼进单文件了）', !!(log && typeof log.text === 'function'));
+  const logTxt = log && typeof log.text === 'function' ? log.text() : '';
+  ok('日志里有启动轨迹和地图信息（不是个空壳）',
+     /\[轨迹\]/.test(logTxt) && /就绪/.test(logTxt) && /\[当时的状态\]/.test(logTxt),
+     logTxt ? `'${logTxt.split(/\r?\n/).find((l) => /版本戳/.test(l)) || ''}'` : '');
+
+  // 崩溃上屏：结构改过（多一层容器 + 一颗导出按钮），
+  // "文字还进得去""按钮还在""再崩一次不会把按钮冲掉"这三件都要盯
+  // （这个框是白屏时唯一的出口，它坏掉等于现场彻底看不见 ✗）
+  if (typeof ex.showFatal === 'function') {
+    ex.showFatal('✗ 自检用的假崩溃');
+    ex.showFatal('✗ 第二次假崩溃');
+    const ft = env.get('fatal-text');
+    const fl = env.get('fatal-log');
+    ok('崩溃能上屏（两条都进内层 pre）',
+       /假崩溃/.test(ft.textContent || '') && /第二次/.test(ft.textContent || ''),
+       (ft.textContent || '').trim().split('\n').join(' / '));
+    ok('上屏框里带着「导出日志」按钮，而且接着导出日志',
+       !!fl && typeof fl.onclick === 'function');
+  } else {
+    ok('崩溃上屏函数拿得到（探针在）', false, 'ex.showFatal 没暴露 ✗');
+  }
   ok('状态栏写上了版本信息',
      /地块/.test((env.get('status-meta') || {}).textContent || ''),
      (env.get('status-meta') || {}).textContent || '');
