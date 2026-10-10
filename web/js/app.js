@@ -5470,20 +5470,12 @@ function showFatal(msg) {
  * ⚠ 用最原始的东西（inline style + <div>）✗ 不依赖任何样式表 ✓
  */
 function bootMark(txt) {
-  try {
-    if (!(typeof window !== 'undefined' && window.innerWidth && window.innerWidth <= 900)) return;
-    let d = document.getElementById('pdx-boot');
-    if (!d) {
-      d = document.createElement('div');
-      d.id = 'pdx-boot';
-      d.style.cssText = 'position:fixed;left:0;top:0;right:0;z-index:2147483646;'
-        + 'background:rgba(0,0,0,.82);color:#7fff7f;font:11px/1.45 monospace;'
-        + 'padding:3px 6px;white-space:pre-wrap;word-break:break-all;pointer-events:none';
-      (document.body || document.documentElement).appendChild(d);
-      d.textContent = '';
-    }
-    d.textContent += (d.textContent ? ' → ' : '') + txt;
-  } catch (e) { /* ✓ */ }
+  /* 排障用的启动里程表（手机上那行荧光绿的字）—— **正式版不显示** ✓
+   * 手机版黑屏时它很有用：字停在哪一步就指向哪一步 ✓
+   * ⚠ 但它每帧都调 getError()，那会**吞掉真实的 GL 错误** ✗ 所以正式版静音 ✓
+   * 要再排障：去掉这个 return，并把 gl.js 里逐帧探针的 getError 加回来 ✓ */
+  return;
+  void txt;
 }
 
 function rawErr(msg) {

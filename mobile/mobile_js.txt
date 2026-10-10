@@ -472,6 +472,14 @@ function bindMobile() {
         d: dist(e.touches[0], e.touches[1]),
         mx: (e.touches[0].clientX + e.touches[1].clientX) / 2,
         my: (e.touches[0].clientY + e.touches[1].clientY) / 2,
+        /* **起始快照**（用户报的："缩放时镜头抖"✓）
+         *   原来每帧做增量：cam.cx -= d(mx) / **当前 scale** ✗
+         *   而缩放本身每帧都在改 scale ✗ → 补偿量跟着变 → 误差累积 → 画面飘 ✓
+         *   现在记下"两指刚按下时"的 cam 和 scale ✓ 每帧都**从它重算** ✓✓
+         *   （绝对量 vs 增量 —— 增量在有反馈的循环里必然漂 ✓）*/
+        cx: (state.cam && state.cam.cx) || 0,
+        cy: (state.cam && state.cam.cy) || 0,
+        sc: (state.cam && state.cam.scale) || 1,
       };
       e.preventDefault();
     }
@@ -481,20 +489,23 @@ function bindMobile() {
     const d = dist(e.touches[0], e.touches[1]);
     const mx = (e.touches[0].clientX + e.touches[1].clientX) / 2;
     const my = (e.touches[0].clientY + e.touches[1].clientY) / 2;
-    const sc = (state.cam && state.cam.scale) || 1;
-    state.cam.cx -= (mx - two.mx) / sc;
-    state.cam.cy -= (my - two.my) / sc;
+    /* **一律从"两指刚按下"那一刻重算** ✗ 不做增量累积 ✓
+     *   ① 平移：起始 cam 减去"中点相对起始中点"的位移（除的是**起始** scale ✓）
+     *   ② 缩放：锚点**钉在起始中点**（原来传的是当前 mx/my ✗ 锚点跟着手指跑 → 越缩越飘 ✓）
+     *   ③ 阈值 0.002 → 0.01：手指微抖不该触发缩放 ✓
+     *   ④ 不再回写 two.d/mx/my —— 它们现在是"起始值"，回写就又变成增量了 ✓ */
+    state.cam.cx = two.cx - (mx - two.mx) / two.sc;
+    state.cam.cy = two.cy - (my - two.my) / two.sc;
     const ratio = d / (two.d || d);
-    if (Math.abs(ratio - 1) > 0.002) {
+    if (Math.abs(ratio - 1) > 0.01) {
       // 合成一个**真实的 wheel 事件** ✓ 现成的缩放逻辑和教程那一步都认它 ✓
       try {
         stage.dispatchEvent(new WheelEvent('wheel', {
-          deltaY: -Math.log(ratio) / 0.0016, clientX: mx, clientY: my,
+          deltaY: -Math.log(ratio) / 0.0016, clientX: two.mx, clientY: two.my,
           bubbles: true, cancelable: true,
         }));
       } catch (err) { /* 老浏览器就只平移 ✓ */ }
     }
-    two.d = d; two.mx = mx; two.my = my;
     invalidate();
     e.preventDefault();
   }, { passive: false });
@@ -524,6 +535,7 @@ function bindMobile() {
    * 这里自己接上：跟双指平移用**同一套算法**（cam.cx -= dx / scale ✓）
    */
   let viewPan = null;
+  let fillPending = null;      // 单击式工具（填色）按下的位置：一动就转平移 ✓
 
   stage.addEventListener('touchstart', (e) => {
     if (e.touches.length !== 1) { stopStroke(); viewPan = null; return; }  // 两根手指是平移缩放 ✓
@@ -538,6 +550,11 @@ function bindMobile() {
     stroke = true; strokePainted = false; holdPicked = false;
     painting = false;                                        // 还没落笔 ✓
     strokeAt = { x: t.clientX, y: t.clientY };
+    /* **单击式的工具（填色）：拖动就当作移动视线** ✓（用户要的 ✓ 跟「查看」一样）
+     *   填色本来就是"点一下动一次"✗ —— 按住拖它也没有连续涂的意义 ✓
+     *   所以：先当点击记下来 ✓ 手指一动超过阈值 → 转成平移、**取消这次落笔** ✓
+     *   ⚠ 判据用**手指移动距离**（不是时间 ✓）—— 慢一点的点按仍然算点按 ✓ */
+    fillPending = (state.tool === 'fill') ? { x: t.clientX, y: t.clientY } : null;
     e.preventDefault();                                      // 挡掉合成鼠标事件 ✓ 免得涂两遍
   }, { passive: false });
 
@@ -550,6 +567,16 @@ function bindMobile() {
       state.cam.cy -= (t.clientY - viewPan.y) / sc;
       viewPan.x = t.clientX; viewPan.y = t.clientY;
       invalidate();
+      e.preventDefault();
+      return;
+    }
+    if (fillPending) {                                       // 单击式工具：动了就转平移 ✓
+      if (Math.hypot(t.clientX - fillPending.x, t.clientY - fillPending.y) > 10) {
+        viewPan = { x: t.clientX, y: t.clientY };
+        fillPending = null;
+        stroke = false;                                      // ⚠ 取消这次落笔
+        strokePainted = true;                                // ⚠ 抬手时**不再补涂**那一块
+      }
       e.preventDefault();
       return;
     }
@@ -570,10 +597,11 @@ function bindMobile() {
     }
     strokeAt = null;
     viewPan = null;
+    fillPending = null;
     stopStroke();
   };
   stage.addEventListener('touchend', endStroke);
-  stage.addEventListener('touchcancel', () => { viewPan = null; stopStroke(); });
+  stage.addEventListener('touchcancel', () => { viewPan = null; fillPending = null; stopStroke(); });
 
   // 长按 = 右键 = 取色 ✓
   let lpTimer = null, lpTouched = null;

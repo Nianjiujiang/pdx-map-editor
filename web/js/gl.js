@@ -1622,8 +1622,8 @@ export class MapRenderer {
         && typeof bootMark === 'function') {
       try {
         const cv1 = gl.canvas;
-        const vp = gl.getParameter(gl.VIEWPORT);
-        const err = gl.getError();
+        /* 逐帧探针已停用（它会吞掉真实的 GL 错误）✓ */
+        /* 逐帧探针已停用（它会吞掉真实的 GL 错误）✓ */
         bootMark('帧:画布' + cv1.width + '×' + cv1.height
           + ' 视口' + vp[2] + '×' + vp[3] + ' 画后错' + err
           + ' 贴图' + (gl.isTexture(this.provTex) ? 'ok' : '坏'));
