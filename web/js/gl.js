@@ -1,4 +1,5 @@
-/**
+// ==================== gl.js ====================
+﻿/**
  * WebGL2 渲染器。
  *
  * 三层间接查表，全程在 GPU 上：
@@ -25,6 +26,18 @@
  *   * 玩家手绘盖在头衔色上面 —— 玩家涂的是"地图上这块地方"，
  *     不管当前在看哪个层级，涂过的地方都保持那个色。
  */
+
+/*: **画布的像素总数上限**（自动降 dpr 用 ✓）。
+
+ * 边界是逐像素算的，一帧开销 ∝ 画布像素数 ✗ 所以给总像素封顶：
+ * 超了就把 dpr 降下来（`resize()` 里那句 ✓），画面略糊、但省下的是十几倍时间 ✓
+ *
+ * 2.6e6 这个数的来源：手机（390×844、dpr 2）就是 260 万左右 ✓ ——
+ * 也就是"拿手机上那个流畅的量级"当标准 ✓
+ * 普通 1080p 屏（1920×1080×1 ≈ 200 万）在限额内，**一点不受影响** ✓
+ * 会被降的是 4K 屏、以及 Windows 缩放 125%/150% 那种高 dpr 场合 ✓
+ */
+const MAX_CANVAS_PX = 2.6e6;
 
 const VERT = `#version 300 es
 in vec2 aPos;
@@ -54,6 +67,27 @@ uniform int   uUseTiles;          // 0 = 用 uProv（老路）, 1 = 用 uProvArr
 uniform usampler2D uTitleMap;   // R16UI  (省份, 层级) → 头衔序号（**拍平成一维**存）
 uniform sampler2D  uColorLut;   // RGBA8  头衔序号 -> 颜色
 uniform sampler2D  uPaint;      // RGBA8  province -> 手绘色（alpha=0 表示没涂）
+/* **距离场**：RGBA8 ✓ 每通道一条主线（R 填色 · G 水岸线 · B 荒地边 · A 本层 ✓）
+ *   值 = "格心到最近那条缝的距离 − 0.5"（单位是**格** ✗ 所以采样后要 ×255 ✓）
+ *   ⚠ **必须 LINEAR 采样** ✗ —— 缝两侧的格都存 0，靠插值在缝的位置过零才拿得到亚格精度 ✓
+ *     用 NEAREST 就退化成"一格一格"的阶梯了 ✓（我拿布尔掩码试过一轮，就是栽在这 ✓）*/
+/* **边掩码**：R16UI ✓ 每格 16 bit —— 每条线 4 位（1 左 · 2 右 · 4 上 · 8 下 ✓）
+ *   线0 填色（bit0~3）· 线1 水（4~7）· 线2 荒地（8~11）· 线3 本层（12~15）✓
+ *   用户点破的：边界就是"把一部分格子的**边框**点亮"✓ 所以缝就是**格子的边** ✓
+ *   → 亚格精度天然有（用的是片元在格内的小数 f ✓）**不需要插值、也不需要距离场** ✓ */
+/* **距离场**：RGBA8 ✓ 每格 4 个字节 = 四路"到最近那条缝有多远"（单位：格 ✓）
+ *   R 填色 · G 水 · B 荒地 · A 头衔（本层 + 多级链共用 ✓ 它俩只差线宽 ✓）
+ *   加载时算一次（app.js 的 buildBorderDepth ✓）· 用来**粗筛**每帧要不要细算 ✓
+ *   实测 EU4：需要承担边界的只有 8.6% ✗ 其余 91.4% 在这儿一次采样就返回了 ✓
+ *   ⚠ **不参与画线** ✗ 只当守门员 —— 算不准最多多跑几趟射线 ✓ 线的样子不会变 ✓ */
+/* ⚠ **归一化 sampler2D，不是 usampler2D** ✗ —— 上传用的是 gl.R8（归一化 ✓）
+ *   归一化 R8 是各家的**最快上传路径** ✓ 而整数纹理（R8UI）会走格式转换的慢路 ✓
+ *   代价：texelFetch 出来是 **0~1 的 float** ✗ 所以取位前要 ×255 还原 ✓
+ *   🔴 **这两处必须同时改** ✗ 只改一处就是白屏：
+ *     纹理用 R8、声明却写 usampler2D → texelFetch 给 uint → uint x float 编不过 ✓
+ *     报错长这样：'*' : no operation exists that takes 'highp uint' and 'const float' ✓（踩过 ✓）*/
+uniform sampler2D  uBorderDepth;
+uniform int        uBorderDepthOn;
 uniform usampler2D uPaintLabel; // R16UI  province -> 标记编号+1（0 = 没涂）
 uniform ivec2 uMapSize;
 uniform int   uTitleMapW;       // 归属表纹理的宽度
@@ -71,28 +105,29 @@ uniform int   uBorderPaint;     // 画不画手绘色块的分界线
 uniform int   uPaintOnly;       // 1 = **当前没停在年份视图**（CK3 那种没有年份层的也算）
                                 //     JS 那边 = !(有年份层 && 视图停在年份层)
                                 //     用途：没开年份视图时，未上色的地块之间不互相划界
-/* ---- 水域边界（海洋 / 湖泊 / 河流 ✓ 用户定的四条 ✓）------------------------
- *   · **一直画** ✓ 只有"当前模式下能关的边界**全关了**"才跟着藏 ✓（uShowWater）
- *   · 浓度**实心** ✓（下面那笔不加浓度系数 ✓）
- *   · 粗细取值跟势力边界一样 ✓ 但**各是各的** ✗ 不做绑定（uWaterW 单独一个）
- *   · 判据：一侧是水、一侧不是 ✓（水与水之间不画 ✓ 那是海面 ✗）
+/* ---- 水域边界 / 荒地边界（背景上那两条线 ✓）---------------------------------
+ *   · **各有一条自己的开关** ✓（用户要求：能单独关 ✓ ——
+ *     以前两条共用一个 uShowWater ✗ 还得"当前模式里能关的边界全关"才跟着藏 ✓）
+ *   · **各自的粗细和浓度也独立** ✓（用户要求 ✓
+ *     以前：水域写死实心 + 固定 1 格 ✗；荒地借 uPaintBorderW / uPaintBorderA ✗）
+ *   · 判据：一侧是水（或荒地）、一侧不是 ✓（同类之间不画 ✓）
  */
 uniform int   uShowWater;       // 1 = 画水域边界
-uniform float uWaterW;          // 水域边界粗细（**固定 1 格 × 基准线宽** ✓ 用户定的 ✓ 不跟链走 ✗）
+uniform float uWaterW;          // 水域边界粗细（**就是格数** ✓）
+uniform float uWaterA;          // 水域边界浓度
 uniform vec3  uSeaCol;          // 三个水域色：拿来认"这块地是不是水"
 uniform vec3  uLakeCol;
 uniform vec3  uRiverCol;
-/* ---- 荒地边界（宽浓**跟"填色边界"同一套** ✓ 用户定的 ✓）---------------------
- *   · 所以它**没有自己的 uniform** —— 直接用 uPaintBorderW / uPaintBorderA ✓
- *     （那两个来自设置页的「势力线宽」和「势力边界浓度」✓ 默认 = 1.5 格 × 缩放、实心 ✓）
- *   · 范围：**所有**带荒地的缝都归这一趟 ✓（荒地↔国家 ✓、荒地↔荒地 ✓、荒地↔无主地 ✓）
- *     本层 / 多级边界那几趟一律让出来 ✗（水岸线先 break，归水域那条 ✓）
- *     ⚠ 我按"另一侧是不是真头衔"分过一次家 ✗ —— 荒地 ↔ 国家 被判给本层那条线，
- *       于是荒地轮廓看着还是**子级的宽浓**（细 + 50%）✗ 用户报的"怎么还是子级" ✓
- *   · 以前它没有自己这一趟 —— 荒地边缘是头衔那趟顺手画的 ✗
+uniform int   uShowWasteBorder; // 1 = 画荒地边界
+uniform float uWasteW;          // 荒地边界粗细（**就是格数** ✓）
+uniform float uWasteA;          // 荒地边界浓度
+/* 荒地那趟的范围：**所有**带荒地的缝都归它 ✓（荒地↔国家 ✓、荒地↔荒地 ✓、荒地↔无主地 ✓）
+ *   本层 / 多级边界那几趟一律让出来 ✗（水岸线先 break，归水域那条 ✓）
+ *   ⚠ 我按"另一侧是不是真头衔"分过一次家 ✗ —— 荒地 ↔ 国家 被判给本层那条线，
+ *     于是荒地轮廓看着还是**子级的宽浓**（细 + 50%）✗ 用户报的"怎么还是子级" ✓
+ *   以前它没有自己这一趟 —— 荒地边缘是头衔那趟顺手画的 ✗
  *     于是宽浓跟着"本层那条线"走：剧本层 + 没开粒度时是 1.5 + 实心，
- *     细层视图里是 1.0 + 50% ✗（用户报的"开不开剧本会变" ✓）
- */
+ *     细层视图里是 1.0 + 50% ✗（用户报的"开不开剧本会变" ✓）*/
 uniform float uBorderW;         // 分界线线宽，单位是**设备像素**
 uniform int   uExtraCount;      // 链上还有几级（0~4）
 uniform int   uExtraTier[4];    // 每一级看哪一层
@@ -230,9 +265,30 @@ bool paintDiffers(ivec2 a, ivec2 b) {
   return paintLabelAt(a) != paintLabelAt(b);
 }
 
-//: 沿一个方向最多找多少格。缩到全图时一个屏幕像素能盖住几十个地图像素，
-//: 半径要跟着它走；48 是给"窗口拉得很窄、还缩到底"留的余量。
-const int MAXR = 48;
+/*: 沿一个方向**最多找多少格**。
+ *
+ * ⚠ 这个数**直接决定性能** ✗（用户报"边界很吃性能、缩放时特别卡"✓）：
+ *   每个像素是**四个方向各走 R 步**找边界的，而 R 会跟着缩放涨 ——
+ *   缩到全图时 uMapPerPx 能有几十，R 就顶到这个上限 ✗
+ *   一帧的采样次数 ≈ 像素 × 4 × R × 边界趟数（本层 / 填色 / 水域 / 荒地 / 多级链最多 4 级）
+ *   48 的时候：144 万像素 × 4 × 48 × 6 ≈ **十六亿次** ✗✗ 那就是卡顿的来源 ✓
+ *
+ * 12 为什么够：屏幕上一条线的**半宽最多就是这个数（像素）** ✓
+ *   真要更粗的线，那是"缩得很小、线糊成一片"的视图 —— 那时候多走的那几十步
+ *   在画面上根本分不出来 ✓ 拿这点精度换 4 倍速度，划算 ✓
+ */
+const int MAXR = 12;
+
+/*: 射线**跳步预筛**从多大的 R 开始用（见 rayDistTitle / rayDistPaint 里那段说明 ✓）。
+ *
+ *   ⚠ 这个数是**画质与速度的分界**，动它之前先想清楚 ✗：
+ *     · 定太小（原来就是 4 ✗）→ 用户涂一小块时"跳过去看一眼"会漏掉新边界，
+ *       表现成"涂了色 / 还原之后边界不更新" ✓（用户报的，踩过 ✓）
+ *     · 定太大（比如 12）→ 预筛几乎不生效，缩小时又慢回去 ✓
+ *   8 是个平衡点：正常编辑（R ≤ 6）走**精确路径** ✓ 只有缩得比较小才用近似 ✓
+ *   想要**绝对精确**：把它改成一个到不了的数（999 ✓ 预筛就永远不生效 ✓）
+ */
+const int PRESCREEN_MIN_R = 8;
 
 /** LUT 里某一格的 alpha = **荒地标记**（setWasteland() 按 meta.wasteland 打的）。
  *
@@ -261,11 +317,24 @@ vec3 lutColour(ivec2 ip) {
  *    （GLSL 要求先声明后使用，测试里也有那一条 ✗ 挪下去就编译不过 ✓）
  */
 bool isWaterAt(ivec2 ip) {
+  /* **"这儿是不是水"必须按颜色**精确**判 ✗ 不能近似** ✓
+   *
+   * 为什么（用户报的那三个 HOI4 省份 ✓）：以前这里写的是 distance(...) <= 0.02 ✗
+   *   而 HOI4 的省份色是**技术色**（为了把相邻省份分开随便生成的 ✓），
+   *   跟 #lake 的 [47,110,150] 只差几个数：
+   *     p_3511 [44,111,153] ≈ 0.0172 ✓  p_4788 [50,111,148] ≈ 0.0147 ✓
+   *     p_4343 [48,114,148] ≈ 0.0184 ✓          ← 全都小于 0.02 ✗
+   *   → 那三块地在画面上被当成湖水，边界走了"水域那一趟" ✗（用户报的 ✓）
+   *
+   * 真正的水平白：水域节点的 LUT 色跟 uSeaCol / uLakeCol / uRiverCol 是**同一份数据** ✓
+   *   （见 app.js 里"三个水域色必须跟 LUT 真正生效的那个一致"那段 ✓）→ 距离是 0 ✓
+   *   所以阈值收到 0.004 足够，而上面那三个（最接近的也有 0.0147）稳稳妥妥被排除 ✓
+   */
   vec3 c = lutColour(ip);
   if (c.x < -0.5) return false;
-  if (distance(c, uSeaCol) <= 0.02) return true;
-  if (distance(c, uLakeCol) <= 0.02) return true;
-  if (distance(c, uRiverCol) <= 0.02) return true;
+  if (distance(c, uSeaCol) <= 0.004) return true;
+  if (distance(c, uLakeCol) <= 0.004) return true;
+  if (distance(c, uRiverCol) <= 0.004) return true;
   return false;
 }
 
@@ -279,12 +348,46 @@ bool isWaterAt(ivec2 ip) {
     而我们必定落在它那一格的跨度之内，所以不用开方。 */
 float rayDistTitle(ivec2 ip, vec2 f, ivec2 dir, uint t, int R, int tier, bool wasteOnly) {
   bool _wSelf = isWaterAt(ip);
+  /* **先跳一步探路** ✓（用户报的"缩放太卡"✓）
+   *
+   * 每个像素是**四个方向各走 R 步**，每步 3 次纹理采样 ✗ ——
+   * 而画面里**绝大多数像素不在边界上**：它们要一路走满 R 步、
+   * 才能确认"这个方向附近没有线"✗ 纯白烧 ✓ 缩放时 R 变大，这笔开销成倍涨 ✗✗
+   *
+   * 所以先只采**一个点**：ip + dir*R（正好是"这条射线能看到的尽头"✓）
+   *   同头衔 → 这一向**基本**没有边界 ✓ 直接返回"很远" ✓ 省掉整整 R 步 ✗
+   *
+   * ⚠ 三点分寸：
+   *   · 只在 R >= 8 时才这么干 ✗ —— **门槛原来定在 4，太高了，捅过篓子** ✓
+   *     用户报的"涂了色 / 还原之后边界不更新"就是它 ✗：
+   *     你涂一小块时，新边界就在这一小块的边缘上；只要这块**比 R 格还窄**，
+   *     "跳到 dir*R 看一眼"就会说"这一向没边界" ✓ 那条线**根本不画** ✗
+   *     而 R=4 时就已经能盖住很常见的小地块了 ✓（放大编辑时 R 常常才 1~2 ✓）
+   *     提到 8 之后：**正常编辑（R ≤ 6）走的是精确路径** ✓
+   *     只有缩得比较小（R 到 8~12 ✓）才用近似 —— 那时候比 8 格还窄的细线本来就看不清 ✓
+   *   · 这是**近似**（同头衔不代表中间没有别的 ✗），拿它换掉的是 R 倍的采样量 ✓
+   *   · 想要**绝对精确**就把这两处预筛删掉 ✓ 代价是缩小时慢回 2~3 倍 ✓
+   */
+  if (R >= PRESCREEN_MIN_R) {
+    ivec2 far = ip + ivec2(dir.x * R, dir.y * R);
+    if (isWaterAt(far) == _wSelf
+        && (tier < 0 ? tidAt(far) : titleAt(pidAt(far), tier)) == t) return 1e9;
+  }
+  /* 🔴 **跳步**（用户报的"缩放超级无敌卡"✓）——
+   *   半径 R 是按**地图格**算的 ✗ 缩到全图时它能有 10 格 ✓
+   *   而"地图上 10 格"在屏幕上**不到 2 个像素** ✗ 为它走 10 步纯属白烧 ✓
+   *   → 每步跨 stride 格：stride ≈ 半个屏幕像素跨的地图格数 ✓
+   *   于是步数 = R / stride ≈ 线宽（**跟缩放到多少无关** ✓✓）
+   *   ⚠ 会漏掉的只有"比 stride 还细"的东西 ✗ 而它在屏幕上不到半像素 ✓ 本来就看不见 ✓
+   *   ⚠ 放大时 uMapPerPx < 2 ⇒ stride = 1 ⇒ **一步不跳** ✓ 精度**完全不变** ✓ */
+  int _st = max(1, int(uMapPerPx * 0.5));
   for (int k = 1; k <= MAXR; k++) {
-    if (k > R) break;
+    int _d = k * _st;                       // 这一趟实际跨了多少格 ✓
+    if (_d > R) break;
     // 写成 ivec2(dir.x * k, dir.y * k) 而不是 dir * k ——
     // 整数向量乘整数标量在 GLSL ES 3.0 里规不规范我记不准，展开最保险
     // tier：看哪一层的边界（-1 表示跟 uEditTier 一样）
-    ivec2 q = ip + ivec2(dir.x * k, dir.y * k);
+    ivec2 q = ip + ivec2(dir.x * _d, dir.y * _d);
     /* **水岸线不归这一趟** ✓（用户定的：它固定宽 1、实心 ✓ 由水域那一趟画 ✓）
      *   用 break 不用 continue：continue 会让射线**穿过水面**继续往外找 ✗
      *   → 把对岸那条线当成本格的边界画上来（线就跑到岸两边去了 ✗）*/
@@ -297,15 +400,23 @@ float rayDistTitle(ivec2 ip, vec2 f, ivec2 dir, uint t, int R, int tier, bool wa
     //     就整条没了 ✗）
     bool _tw = (t != NONE && t >= uint(uRealTitles));
     bool _uw = (tt != NONE && tt >= uint(uRealTitles));
-    /* **这一格算不算"荒地边"**：一门心思看 LUT 那个荒地标记 ✓
-     *   ⚠ 不许再加"必须是伪头衔（>= uRealTitles）"的前置 ✗ ——
-     *     那是 CK3 / EU4 那类数据的习惯，**EU5 不成立**：
-     *     EU5 的荒地节点序号**混在真头衔范围内**（1819 个荒地里有 1818 个 < numRealTitles ✗，
-     *     阿卜杜勒库里岛那种 —— 打空白剧本补丁时踩过同一个坑 ✓）
-     *     加了那个前置 → EU5 的荒地缝**一条都进不来** ✗ → 全落到"本层那条线"上（50%）✗
-     *     用户报的"EU5 的荒地不会像其他那样划界，用的全是 50%" ✓ 就是它 ✓
-     *   （wasteAlphaOf 自己对 NONE 返回 0 ✓ 所以无主地不会被误判成荒地 ✓）*/
-    bool _hasWaste = wasteAlphaOf(t) > 0.5 || wasteAlphaOf(tt) > 0.5;
+    /* **这一格算不算"荒地边"**：看 LUT 那个荒地标记 ✓ —— **但被涂过的不算** ✗
+     *
+     * 用户定的（2026）：**荒地一旦被玩家涂上色，它在边界上就不再是"荒地身份"** ✓
+     *   那块地已经是你的版图了 ✓ 边界该按**普通地块**走（本层那条线 ✓），
+     *   不该再顶着"荒地轮廓"那一套宽浓 ✓
+     *   判据就是手绘层那个 alpha（paintAt 的 .a > 0.5 = 涂过 ✓）
+     *   两侧各判一次：ip 是起点那侧、q 是射线当前那侧 ✓
+     *
+     * ⚠ 不许再加"必须是伪头衔（>= uRealTitles）"的前置 ✗ ——
+     *   那是 CK3 / EU4 那类数据的习惯，**EU5 不成立**：
+     *   EU5 的荒地节点序号**混在真头衔范围内**（1819 个荒地里有 1818 个 < numRealTitles ✗，
+     *   阿卜杜勒库里岛那种 —— 打空白剧本补丁时踩过同一个坑 ✓）
+     *   加了那个前置 → EU5 的荒地缝**一条都进不来** ✗ → 全落到"本层那条线"上（50%）✗
+     *   用户报的"EU5 的荒地不会像其他那样划界，用的全是 50%" ✓ 就是它 ✓
+     * （wasteAlphaOf 自己对 NONE 返回 0 ✓ 所以无主地不会被误判成荒地 ✓）*/
+    bool _hasWaste = (wasteAlphaOf(t) > 0.5 && paintAt(ip).a < 0.5)
+                  || (wasteAlphaOf(tt) > 0.5 && paintAt(q).a < 0.5);
     /* **荒地边单独走一趟**（wasteOnly）✓ —— 宽浓吃「填色边界」那套 ✓（用户定的 ✓）
      *   也就是"以国家为准"：跟势力/填色那条线一样粗、一样浓 ✓
      *   —— 这一趟管的是**所有**带荒地的缝：荒地 ↔ 国家 ✓、荒地 ↔ 荒地 ✓、
@@ -320,9 +431,10 @@ float rayDistTitle(ivec2 ip, vec2 f, ivec2 dir, uint t, int R, int tier, bool wa
      *   1.5+实心（剧本层）和 1.0+50%（细层）之间跳 ✗ */
     if (_hasWaste != wasteOnly) continue;
     // 两侧都是伪头衔、且都不是荒地 → 海与海之间那种，不画 ✓
+    //（"是不是荒地"这儿也得**算上"涂过就不算"** ✓ 跟上面那句一个口径 ✗ 别两套）
     if (_tw && _uw) {
-      float wa = wasteAlphaOf(t);
-      float wb = wasteAlphaOf(tt);
+      float wa = wasteAlphaOf(t) > 0.5 && paintAt(ip).a < 0.5 ? 1.0 : 0.0;
+      float wb = wasteAlphaOf(tt) > 0.5 && paintAt(q).a < 0.5 ? 1.0 : 0.0;
       if (wa < 0.5 && wb < 0.5) continue;
     }
     /* ⚠ **这里一个字都不许动** ✗ —— 用户定的规矩：
@@ -340,7 +452,7 @@ float rayDistTitle(ivec2 ip, vec2 f, ivec2 dir, uint t, int R, int tier, bool wa
      *     （那正是手绘层判据的语义 ✓ 别在这儿重复实现 ✗）
      */
     if (tt != t) {
-      float kf = float(k);
+      float kf = float(_d);
       if (dir.x != 0) return dir.x > 0 ? kf - f.x : f.x + kf - 1.0;
       return dir.y > 0 ? kf - f.y : f.y + kf - 1.0;
     }
@@ -385,11 +497,49 @@ vec3 shownColour(ivec2 ip) {
   return c;
 }
 
-bool shownDiffers(ivec2 a, ivec2 b) {
-  vec4 pa = paintAt(a);
-  vec4 pb = paintAt(b);
-  bool ta = pa.a > 0.5;
-  bool tb = pb.a > 0.5;
+/** 一格**在屏幕上**的样子：颜色 + 涂没涂 + 标记 + 是不是水 ✓
+ *
+ *  为什么要有这个"先算一次再比"的结构（用户要求的"维持矢量画法、只降压"✓）：
+ *   射线循环里**起点那一侧从头到尾都没变** ✗ 可以前每步都把它重算一遍 ——
+ *   paintAt + shownColour（里面还有 pidAt / titleAt / wasteAlphaOf）+ paintLabelAt
+ *   一趟下来是 10 次左右的纹理采样 ✗✗ 而它 4 方向 × R 步 全在重复同一件事 ✓
+ *   缩放时 R 一涨，这笔账就是卡顿的大头 ✓
+ *   → 起点算一次（cellViewOf(ip) ✓），循环里每步只算对面那一格 ✓ **省一半** ✓
+ */
+struct CellView {
+  vec3 col;       // 屏幕上的颜色（x < -0.5 = 这一格没颜色）
+  bool painted;   // 玩家涂过没有
+  bool water;     // 是不是水（水岸线要用 ✓）
+  bool waste;     // 是不是**没被涂过**的荒地（荒地边要用 ✓）
+  uint tid;       // **编辑层**的头衔序号（荒地边还要判"两侧头衔不同" ✓）
+  uint label;     // 标记编号
+};
+
+CellView cellViewOf(ivec2 ip) {
+  CellView v;
+  vec4 p = paintAt(ip);
+  v.painted = p.a > 0.5;
+  v.col = v.painted ? p.rgb : shownColour(ip);
+  v.water = isWaterAt(ip);
+  /* **荒地身份要"没被涂过"才算** ✓（用户定的：涂上色的荒地不再是荒地 ✓）
+   *   跟 rayDistTitle 里 _hasWaste 那两行**同一个口径** ✗ 别两套 ✓
+   *
+   * ⚠ **层要用 uEditTier，不是 uTier** ✗ —— 我图省事写过 uTier，捅了篓子 ✓
+   *   结果：用户报「不可通行区域边界变成密密麻麻网格」✓ 根因就是它：
+   *     rayDistTitle 那边取的是 tidAt() = **编辑层** ✓
+   *     而不可通行区在**编辑层**上是**一格一个伪头衔**（17677、17678、17679… ✗）
+   *     → 每格都被判成"荒地" → 起点侧恒真 → 第一格就 break、距离恒为 1
+   *     → **每格四条边都画** ✓ 密密麻麻 ✓
+   *   视图层（比如"帝国"）上那片往往同属一个头衔 → 不会这样 ✗ 所以看着"有时正常" ✓
+   */
+  v.tid = titleAt(pidAt(ip), uEditTier);
+  v.waste = wasteAlphaOf(v.tid) > 0.5 && !v.painted;
+  v.label = paintLabelAt(ip);
+  return v;
+}
+
+/** 两格在**画面上**算不算"两种东西"（就是原来那个 shownDiffers 的判断 ✓ 一个字没改）*/
+bool viewsDiffer(CellView A, CellView B) {
   /* **年份视图没开 → 未上色的省份之间，一律不划国家级边界** ✓
    *   （用户定的 ✓ **不管颜色** ✗ —— 两个都没涂就是没线 ✓）
    *   ⚠ 这一行必须在**最前面** ✓：
@@ -397,9 +547,8 @@ bool shownDiffers(ivec2 a, ivec2 b) {
    *     —— 那是**年份视图里**的规矩 ✓；没开年份视图时不该有这些线 ✓
    *     （uPaintOnly 的定义就是"当前没停在年份层" ✓ CK3 那种没有年份层的也算 ✓）
    */
-  if (uPaintOnly == 1 && !ta && !tb) return false;
-  vec3 ca = ta ? pa.rgb : shownColour(a);          // 显示出来的颜色 ✓
-  vec3 cb = tb ? pb.rgb : shownColour(b);
+  if (uPaintOnly == 1 && !A.painted && !B.painted) return false;
+  vec3 ca = A.col, cb = B.col;
   if (ca.x < -0.5 && cb.x < -0.5) return false;  // 两边都没颜色（海 / 无主地）→ 不划 ✓
   if (ca.x < -0.5 || cb.x < -0.5) return true;   // 一边有一边没有 → 划 ✓
 
@@ -413,51 +562,99 @@ bool shownDiffers(ivec2 a, ivec2 b) {
    *   → 用自己的色 + 自己的名涂自己那块 → 两边同号 → **不划** ✓（本来就该这样 ✓）
    *   我以前在这里又把没涂的地换成比头衔 ✗ —— 两套编号对不上，比出来永远是"不同" ✓
    */
-  return paintLabelAt(a) != paintLabelAt(b);
+  return A.label != B.label;
 }
 
-/** 沿 dir 找最近的一条**水岸线**（一侧是水、一侧不是 ✓） */
-float rayDistWater(ivec2 ip, vec2 f, ivec2 dir, int R) {
-  bool wa = isWaterAt(ip);
-  for (int k = 1; k <= MAXR; k++) {
-    if (k > R) break;
-    ivec2 q = ip + ivec2(dir.x * k, dir.y * k);
-    if (isWaterAt(q) != wa) {
-      float kf = float(k);
-      if (dir.x != 0) return dir.x > 0 ? kf - f.x : f.x + kf - 1.0;
-      return dir.y > 0 ? kf - f.y : f.y + kf - 1.0;
-    }
-  }
-  return 1e9;
-}
-
-/** 这一格是**水岸线或荒地边**吗（不归手绘那趟管 ✓）—— 见下面 rayDistPaint ✓ */
-bool _terrainSeam(ivec2 ip, ivec2 q) {
-  if (isWaterAt(ip) != isWaterAt(q)) return true;                 // 水岸线 ✓
-  uint t0 = titleAt(pidAt(ip), uTier);
+/** 这一格是**水岸线或荒地边**吗（不归手绘那趟管 ✓）
+ *
+ * ⚠ **起点那一侧必须由调用方算一次传进来** ✗（wIp = 起点是不是水、jIp = 起点是不是荒地）
+ *   以前这儿每次调用都重算 titleAt(pidAt(ip)) ✗ 而 ip 是**循环不变量** ——
+ *   射线每走一步就白采两次纹理 ✓ 单这一步就占这一趟四成的采样量 ✓
+ *   （rayDistPaint 每帧是 4 方向 × R 步 ✗ 所以省下来的是四倍那份 ✓）
+ *   这跟 rayDistTitle 里把 _wSelf 提到循环外是同一件事 ✓ */
+bool _terrainSeam(ivec2 q, bool wIp, bool jIp) {
+  if (wIp != isWaterAt(q)) return true;                           // 水岸线 ✓
   uint t1 = titleAt(pidAt(q), uTier);
-  return wasteAlphaOf(t0) > 0.5 || wasteAlphaOf(t1) > 0.5;        // 荒地边 ✓
+  return jIp || wasteAlphaOf(t1) > 0.5;                           // 荒地边 ✓
 }
 
-float rayDistPaint(ivec2 ip, vec2 f, ivec2 dir, int R) {
+/* **沿 dir 找最近的分界线，一次吐出两个距离** ✓（用户要求"合并那几趟射线"✓）
+ *   .x = 填色/头衔边界的距离、.y = **水岸线**的距离 ✓
+ *
+ *   为什么合成一个：水岸线原来有**单独一趟**（rayDistWater × 4 方向 ✗），
+ *   可它判的"这一侧是不是水"，这趟的 _terrainSeam **本来就在判** ✗ ——
+ *   同一件事每帧算两遍 ✓ 现在撞上水岸线时先把它记进 .y 再 break ✓
+ *   → **四趟射线变三趟** ✓ 判据一个字没改，画出来的线完全一样 ✓
+ */
+vec3 rayDistPaint(ivec2 ip, vec2 f, ivec2 dir, int R) {
   // **显示出来的颜色边界**：手绘层不同 ✓ 或**原版色**不同 ✓ 都算
   //（地图本来就有的剧本色也算 ✓ —— 不用"先涂一笔"✗）
   // 每步比这两样就够（2~4 次取纹理 ✓），不再算 showPaint/showTitles/荒地那一堆分支 ✗
-  for (int k = 1; k <= MAXR; k++) {
-    if (k > R) break;
-    ivec2 q = ip + ivec2(dir.x * k, dir.y * k);
-    /* **水岸线 / 荒地边不归这一趟** ✓（用户定的：那两条固定宽 1、实心 ✓ 各有各的一趟 ✓）
-     *   用 break 不用 continue：continue 会穿过水面/荒地继续往外找 ✗
-     *   → 把对岸那条色块线当成本格的边界画上来（线跑到岸两边去 ✓）*/
-    if (_terrainSeam(ip, q)) break;
-    if (shownDiffers(ip, q)) {
-      float kf = float(k);
-      if (dir.x != 0) return dir.x > 0 ? kf - f.x : f.x + kf - 1.0;
-      return dir.y > 0 ? kf - f.y : f.y + kf - 1.0;
-    }
+  /* **起点那一侧算一次** ✓（循环不变量 ✗ 原来每步重算，一趟下来 10 次采样 ✗ 见 cellViewOf ✓）
+   * ⚠ **这里不能写 const** ✗ —— GLSL 的 const 是**编译期常量**，
+   *   接运行时函数（isWaterAt / titleAt）会直接编不过：
+   *     ERROR: 0:507: '=': assigning non-constant to 'const bool'
+   *   （用户报过一次，整个着色器编译失败 → 画面全白 ✓ 我踩的 ✓）*/
+  CellView _A = cellViewOf(ip);
+  bool _wIp = _A.water;
+  bool _jIp = _A.waste;
+  /* **先跳一步探路** ✓（见 rayDistTitle 上面那段注释 ✓）
+   *   这一趟每步要跑水 / 荒地 / 颜色 / 标记四样判定 ✗
+   *   是这几条射线里最贵的一条 ✗ 所以这个预筛在这儿收益最大 ✓ */
+  if (R >= PRESCREEN_MIN_R) {
+    ivec2 far = ip + ivec2(dir.x * R, dir.y * R);
+    CellView _F = cellViewOf(far);
+    if (!_jIp && !_F.waste && _wIp == _F.water && !viewsDiffer(_A, _F)) return vec3(1e9);
   }
-  return 1e9;
+  float _wa = 1e9;                     // 水岸线的距离（顺便算 ✓）
+  float _ja = 1e9;                     // 荒地边的距离（顺便算 ✓）
+  /* 🔴 **跳步**（用户报的"缩放超级无敌卡"✓）——
+   *   半径 R 是按**地图格**算的 ✗ 缩到全图时它能有 10 格 ✓
+   *   而"地图上 10 格"在屏幕上**不到 2 个像素** ✗ 为它走 10 步纯属白烧 ✓
+   *   → 每步跨 stride 格：stride ≈ 半个屏幕像素跨的地图格数 ✓
+   *   于是步数 = R / stride ≈ 线宽（**跟缩放到多少无关** ✓✓）
+   *   ⚠ 会漏掉的只有"比 stride 还细"的东西 ✗ 而它在屏幕上不到半像素 ✓ 本来就看不见 ✓
+   *   ⚠ 放大时 uMapPerPx < 2 ⇒ stride = 1 ⇒ **一步不跳** ✓ 精度**完全不变** ✓ */
+  int _st = max(1, int(uMapPerPx * 0.5));
+  for (int k = 1; k <= MAXR; k++) {
+    int _d = k * _st;                       // 这一趟实际跨了多少格 ✓
+    if (_d > R) break;
+    ivec2 q = ip + ivec2(dir.x * _d, dir.y * _d);
+    float kf = float(_d);
+    float dl = dir.x != 0 ? (dir.x > 0 ? kf - f.x : f.x + kf - 1.0)
+                          : (dir.y > 0 ? kf - f.y : f.y + kf - 1.0);
+    CellView _B = cellViewOf(q);       // **每步只算一次** ✓ 四样判定共用它 ✓
+    /* **水岸线**：先记下距离再 break ✓（它不归这趟画，各有各的宽浓 ✓
+     *   用 break 不用 continue：continue 会穿过水面继续往外找 ✗
+     *   → 把对岸那条色块线当成本格的边界画上来（线跑到岸两边去 ✓）*/
+    if (_wIp != _B.water) { _wa = dl; break; }
+    /* **荒地边**：两个条件**缺一不可** ✗ —— 我合并时漏了第二条，捅了大篓子 ✓
+     *   ① 两侧至少一侧是"没被涂过的荒地" ✓
+     *   ② **而且两侧的（编辑层）头衔序号不同** ✓ ← 就是这一句
+     *   为什么 ② 不能省（用户报的"荒地密密麻麻"✓）：
+     *     不可通行区是**一整片共用一个伪头衔**（meta.wasteland 里 672 个 id = 672 片 ✗）
+     *     → 片**内部**每一格 tt == t、**不算缝** ✓ 射线继续走 → 到**片边缘**才返回 ✓
+     *     → 画出来的是这片的外轮廓 ✓（这才是对的样子）
+     *   只留 ① 的话：片内每格起点都是荒地 → **第一格就 break、距离恒为 1**
+     *     → 每格四条边全画 ✓ 密密麻麻的网格 ✓（用户报的 ✓）*/
+    if ((_jIp || _B.waste) && _B.tid != _A.tid) { _ja = dl; break; }
+    if (viewsDiffer(_A, _B)) return vec3(dl, _wa, _ja);
+  }
+  return vec3(1e9, _wa, _ja);
 }
+
+/** **一条线在某一格里的距离** ✓（b 是那 4 个边标记位：1 左 · 2 右 · 4 上 · 8 下 ✓）
+ *  f 是片元在格内的小数 ✓ 所以 f.x 天然就是"到左边那条边的距离" ✓
+ *  → **亚格精度是天然的，不需要插值、也不需要距离场** ✓（用户点破的：缝就是格子的边 ✓）*/
+float edgeDist(uint b, vec2 f) {
+  float d = 1e9;
+  if ((b & 1u) != 0u) d = min(d, f.x);
+  if ((b & 2u) != 0u) d = min(d, 1.0 - f.x);
+  if ((b & 4u) != 0u) d = min(d, f.y);
+  if ((b & 8u) != 0u) d = min(d, 1.0 - f.y);
+  return d;
+}
+
 
 void main() {
   if (vMap.x < 0.0 || vMap.y < 0.0 ||
@@ -517,21 +714,61 @@ void main() {
     float dPaint = 1e9;
     float dWater = 1e9;
     float dWaste = 1e9;
-    /* **水域边界**：一直画 ✓ 只有"当前模式里能关的边界全关了"才跟着藏 ✓（JS 给 uShowWater） */
-    if (uShowWater == 1) {
-      dWater = min(dWater, rayDistWater(ip, f, ivec2( 1, 0), R));
-      dWater = min(dWater, rayDistWater(ip, f, ivec2(-1, 0), R));
-      dWater = min(dWater, rayDistWater(ip, f, ivec2( 0, 1), R));
-      dWater = min(dWater, rayDistWater(ip, f, ivec2( 0,-1), R));
-      // **荒地边界**跟它一个待遇（都"一直画" ✓）—— 但宽浓吃的是**填色边界**那一套 ✓
-      //   （见下面 dWaste 那一段 ✓ 不归本层/多级那几趟 ✓ 见 rayDistTitle）
-      uint t9 = tidAt(ip);
-      dWaste = min(dWaste, rayDistTitle(ip, f, ivec2( 1, 0), t9, R, -1, true));
-      dWaste = min(dWaste, rayDistTitle(ip, f, ivec2(-1, 0), t9, R, -1, true));
-      dWaste = min(dWaste, rayDistTitle(ip, f, ivec2( 0, 1), t9, R, -1, true));
-      dWaste = min(dWaste, rayDistTitle(ip, f, ivec2( 0,-1), t9, R, -1, true));
+    /* **缩小那一档：四路距离直接填进去** ✓（放大走边掩码、射线只当兜底 ✓）
+     *   四路各跟自己的半宽比就行 —— 半宽那步在下面混色处做 ✓ 不用在这儿判 ✓
+     *   ⚠ 头衔那一通道（A）同时供"本层线"和"多级链"✓ 它俩只差线宽 ✓ */
+    /* 多级链也各有自己的宽度 ✗ 新路径一次扫描要扫到"最粗那条"的半径才够 ✓
+     *（距离本身**不按线宽裁剪** ✓ 每条线各自在混色那步判够不够 ✓ 所以取最大就对 ✓）*/
+    float _wAll = max(max(uBorderW, uPaintBorderW), max(uWaterW, uWasteW));
+    for (int ex = 0; ex < 4; ex++) if (ex < uExtraCount) _wAll = max(_wAll, uExtraW[ex]);
+    int Rall = int(clamp(ceil(0.5 * uMapPerPx * (_wAll + 1.0)), 1.0, float(MAXR)));
+
+    /* ============ **逐像素射线：缩小时的兜底路径** ============
+     * 放大时四条主线 + 多级链全走边掩码（一次采样 ✓ 见下面 _useEdges 那段 ✓）
+     * **缩小时只能回这儿** ✗ —— 线宽超过 1 格时，缝可能落在**邻居的边**上，
+     *   而每格只记自己的四条边，量不到 → 线会断 ✓
+     * 好在缩小的时候屏幕像素本来就少，射线不贵 ✓ 加上深度图粗筛挡掉九成，够用 ✓
+     *
+     * 🔴 走过的两条弯路（都删了，别再走一遍）：
+     *   ① **布尔掩码**：把"这一格有没有缝"记在**格**上 ✗
+     *      可"缝"是**格子之间那条边** ✓ 于是"到缝的距离"丢了一维（缝在我哪一侧 ✓）
+     *      靠它凑距离，放大时线断成台阶、一般缩放下又粗得离谱 ✓
+     *      （用户截图里那个"梯子"就是它 ✓ 仿真里 bw=0.15 全空、bw=0.6 却有十格宽 ✓）
+     *   ② **浮点距离场**（RGBA8 + 双线性插值）：方向对了，但真机上线宽乱 ✗
+     *      根因是"多级链还在走射线"跟它叠在同一位置 ✓ 1 粗 1 细压在一起 ✓
+     *   ③ 正解 = **边掩码**：只记"我这一格的四条边里哪几条是缝" ✓
+     *      亚格精度**天然有**（用片元在格内的小数 f ✓）不需要插值、不需要距离 ✓
+     */
     }
-    if (uBorderTitle == 1) {
+
+    /* ⚠ 这一整套声明**不能挪位置、不能删** ✗
+     *   它们原来是写在上面那个 if 块里的 ✗ 而那个 if 在上一轮清理时被提前闭合了 ✓
+     *   → 射线代码就跑到块外、看不到它们 → 白屏报 dTitle undeclared ✓
+     *   现在在这里补一份（块外、main 作用域 ✓）**别再动它** ✓
+     *
+     * **射线半径**：按"最粗那条线"算 ✓
+     *   ⚠ 每条线各自在混色那步按**自己的**半宽判 ✓ 所以这里取最大就够 ✓
+     *   （被删掩码块时连这几个声明一起吃掉了 ✗ 白屏报 dTitle undeclared ✓ 别再删这段 ✓）*/
+    int R = int(clamp(ceil(0.5 * uMapPerPx
+             * (max(max(uBorderW, uPaintBorderW), max(uWaterW, uWasteW)) + 1.0)),
+             1.0, float(MAXR)));
+    float dTitle = 1e9;
+    float dPaint = 1e9;
+    float dWater = 1e9;
+    float dWaste = 1e9;
+    /* **粗筛：一位定生死** ✓（加载时算好的那张"省界 ±2 格"轮廓位图 ✓）
+     *   bit 1 ⇒ 值得看一眼（跑射线）· bit 0 ⇒ **一辈子画不到线**，直接退出 ✓
+     *   ⚠ 它跟"当前层 / 涂色"无关 ✗ 所以换层、涂色都**不用重算**这张图 ✓
+     *   ⚠ 没接上图时 _nearSeam 恒真 → 完全退回旧行为 ✓ 不会画错 ✓ */
+    bool _nearSeam = true;
+    if (uBorderDepthOn == 1) {
+      /* ⚠ 这里原来是算 _maxHalf（"最粗那条线的半宽"）再拿它跟位图覆盖范围比 ✗
+       *   现在位图是"省界 ±2 格"，覆盖范围由 CPU 侧膨胀的格数决定 ✓
+       *   → _maxHalf **没人读了**，整段是死代码 ✓ 删掉（顺带少一个常量上界的循环 ✓）*/
+      uint _cb = uint(texelFetch(uBorderDepth, ivec2(ip.x >> 3, ip.y), 0).r * 255.0 + 0.5);
+      _nearSeam = ((_cb >> uint(ip.x & 7)) & 1u) != 0u;
+    }
+    if (_nearSeam && uBorderTitle == 1) {
       uint t0 = tidAt(ip);
       // 正常那条（**荒地边缘和水岸线都让出来** ✓）
       dTitle = min(dTitle, rayDistTitle(ip, f, ivec2( 1, 0), t0, R, -1, false));
@@ -539,11 +776,18 @@ void main() {
       dTitle = min(dTitle, rayDistTitle(ip, f, ivec2( 0, 1), t0, R, -1, false));
       dTitle = min(dTitle, rayDistTitle(ip, f, ivec2( 0,-1), t0, R, -1, false));
     }
-    if (uBorderPaint == 1) {
-      dPaint = min(dPaint, rayDistPaint(ip, f, ivec2( 1, 0), R));
-      dPaint = min(dPaint, rayDistPaint(ip, f, ivec2(-1, 0), R));
-      dPaint = min(dPaint, rayDistPaint(ip, f, ivec2( 0, 1), R));
-      dPaint = min(dPaint, rayDistPaint(ip, f, ivec2( 0,-1), R));
+    /* **这一趟顺便把水岸线 + 荒地边都算出来** ✓ —— 搭便车的（合并那几趟射线 ✓）
+     *   三个开关里有**任何一个**要画，这一趟就得跑 ✓ */
+    if (_nearSeam && (uBorderPaint == 1 || uShowWater == 1 || uShowWasteBorder == 1)) {
+      vec3 _w0 = rayDistPaint(ip, f, ivec2( 1, 0), R);
+      vec3 _w1 = rayDistPaint(ip, f, ivec2(-1, 0), R);
+      vec3 _w2 = rayDistPaint(ip, f, ivec2( 0, 1), R);
+      vec3 _w3 = rayDistPaint(ip, f, ivec2( 0,-1), R);
+      dWater = min(min(_w0.y, _w1.y), min(_w2.y, _w3.y));
+      dWaste = min(min(_w0.z, _w1.z), min(_w2.z, _w3.z));
+      if (uBorderPaint == 1) {
+        dPaint = min(min(_w0.x, _w1.x), min(_w2.x, _w3.x));
+      }
     }
     // 过渡带 ≈ 一个设备像素（**要提到外面**：下面多级边界那圈也要用 ✗）
     float ramp = 0.5 * uMapPerPx;
@@ -552,16 +796,12 @@ void main() {
       float b  = 1.0 - smoothstep(bw - ramp, bw + ramp, dTitle);
       col = mix(col, vec3(0.035, 0.045, 0.06), b * uBorderA);
     }
-    /* **荒地边界**：宽与浓**跟"填色边界"同一套** ✓（用户定的 ✓）——
-     *   也就是受设置页那两个滑条调：「**势力线宽**」（pw → uPaintBorderW ✓）与
-     *   「**势力边界浓度**」（ca → uPaintBorderA ✓，默认 100 = 实心 ✓）
-     *   于是它跟填色线永远一样粗一样浓，不再是自己的固定档 ✓
-     *   范围只管"两侧都没有真头衔"的荒地缝 ✓ —— 荒地 ↔ 国家那条归国家那趟 ✓
-     *   它以前是借头衔那一趟画的 ✗ → 跟着剧本/粒度在 1.5+实心 与 1.0+50% 之间跳 ✓ */
+    /* **荒地边界**：宽浓**自己一套** ✓（设置页「荒地宽度 / 荒地浓度」✓
+     *   以前是借「填色边界」那两个值 ✗ 用户要求拆开 ✓）*/
     if (dWaste < 1e8) {
-      float bwwd = 0.5 * uPaintBorderW * uMapPerPx;
+      float bwwd = 0.5 * uWasteW * uMapPerPx;
       float bwd  = 1.0 - smoothstep(bwwd - ramp, bwwd + ramp, dWaste);
-      col = mix(col, vec3(0.035, 0.045, 0.06), bwd * uPaintBorderA);
+      col = mix(col, vec3(0.035, 0.045, 0.06), bwd * uWasteA);
     }
     // **填色边界**：永远用自己那套（链上最粗那条的粗细 + 实心），跟本层互不干扰 ✓
     if (dPaint < 1e8) {
@@ -569,46 +809,67 @@ void main() {
       float bp  = 1.0 - smoothstep(bwp - ramp, bwp + ramp, dPaint);
       col = mix(col, vec3(0.035, 0.045, 0.06), bp * uPaintBorderA);
     }
-    /* **水域边界**：浓度**实心** ✓（不加浓度系数 ✓ 用户定的 ✓）
-     * 粗细固定 1 格 × 基准线宽（uWaterW ✓ 用户定的 ✓ 不再跟链/本层宽走 ✗）*/
+    /* **水域边界**：宽浓**自己一套** ✓（设置页「海域宽度 / 海域浓度」✓
+     *   以前粗细固定 1 格 × 基准缩放、浓度写死实心 ✗ 用户要求拆开 ✓）*/
     if (dWater < 1e8) {
       float bww = 0.5 * uWaterW * uMapPerPx;
       float bwv = 1.0 - smoothstep(bww - ramp, bww + ramp, dWater);
-      col = mix(col, vec3(0.035, 0.045, 0.06), bwv);
+      col = mix(col, vec3(0.035, 0.045, 0.06), bwv * uWaterA);
     }
     // **多级边界**：粒度那层之上，一层比一层粗（地区 → 国家）——
     // 中间那些"年份"层跳过（不然 1618 + 省份 会冒出 1789 那条 ✗）。
+    /* 🔴🔴 **上界必须是常量 4，用 break 收** ✗ —— 别改成 uniform ✓
+     *   我为了"少让编译器展开、编译快一点"改成过 ex < uExtraCount ✗
+     *   规范上 GLSL ES 3.0 确实允许运行时上界 ✓ 但**手机驱动不认** ✗
+     *   → 着色器编译失败 → **整屏黑** ✓（用户报的"手机版黑屏"✓）
+     *   💡 取舍：**兼容性 > 编译速度** ✗
+     *     编译慢是"第一次打开等一会儿" ✓ 编译不过 = 直接不能用 ✓
+     *   ⚠ 想再提速就从别处省 ✗ 这里不许动 ✓ */
     for (int ex = 0; ex < 4; ex++) {
       if (ex >= uExtraCount) break;
       if (uExtraShow[ex] == 0) continue;
+      /* **闸门只能比它守的门框宽** ✗ 宁可给链多留一条路 ✓
+       *   粗筛位图圈的是"省界 ±2 格"✓ 链上那几层必然落在里面 ✓
+       *   （以前的教训：闸门比门框窄 → 链整片消失 ✓）*/
+      if (!_nearSeam) break;
       int et = uExtraTier[ex];
       if (et < 0) continue;
-      uint te = titleAt(pidAt(ip), et);
-      int Re = int(clamp(ceil(0.5 * uMapPerPx * (uExtraW[ex] + 1.0)), 1.0, float(MAXR)));
-      float de = 1e9;
-      de = min(de, rayDistTitle(ip, f, ivec2( 1, 0), te, Re, et, false));
-      de = min(de, rayDistTitle(ip, f, ivec2(-1, 0), te, Re, et, false));
-      de = min(de, rayDistTitle(ip, f, ivec2( 0, 1), te, Re, et, false));
-      de = min(de, rayDistTitle(ip, f, ivec2( 0,-1), te, Re, et, false));
+      /* **链上这一环也走边掩码** ✓（用户点破的：多级边界没有新增边界 ✗
+       *   它画的就是"这一层的头衔缝" ✓ 所以 CPU 侧按层各存了一组 4 位 ✓）
+       *   组 4+ex（位 16 + 4*ex ✓）—— 顺序跟 app.js 传的 headTiers[1..4] 对齐 ✗ */
+      float de;
+      {
+        uint te = titleAt(pidAt(ip), et);
+        int Re = int(clamp(ceil(0.5 * uMapPerPx * (uExtraW[ex] + 1.0)), 1.0, float(MAXR)));
+        de = 1e9;
+        de = min(de, rayDistTitle(ip, f, ivec2( 1, 0), te, Re, et, false));
+        de = min(de, rayDistTitle(ip, f, ivec2(-1, 0), te, Re, et, false));
+        de = min(de, rayDistTitle(ip, f, ivec2( 0, 1), te, Re, et, false));
+        de = min(de, rayDistTitle(ip, f, ivec2( 0,-1), te, Re, et, false));
+      }
       if (de < 1e8) {
         float bwe = 0.5 * uExtraW[ex] * uMapPerPx;
         float be  = 1.0 - smoothstep(bwe - ramp, bwe + ramp, de);
         col = mix(col, vec3(0.035, 0.045, 0.06), be * uExtraA[ex]);
       }
     }
-  }
 
-  // 悬停高亮：整个头衔一起亮。
-  // 亮的是 **uEditTier** 那一级 —— 换粒度时（看 1444 的配色、按省份改）
-  // 亮起来的那块必须正好是"点下去会涂到的那块"，不然根本不知道会改到谁。
+  // 悬停**压暗**：整个头衔一起暗 ✓（用户要求：高亮 → 高暗）
+  // **亮**起来的是 **uEditTier** 那一级 ✓（用户要求：把"高暗"改回"高亮"✓）
+  // 暗下去的那块必须正好是"点下去会涂到的那块"，不然根本不知道会改到谁。
   // 注意：**不看 uShowTitles**。关掉原版颜色之后图上是底色，
-  // 但悬停仍然要亮起来 —— 不然根本不知道会涂到哪一块。
+  // 但悬停仍然要暗下去 —— 不然根本不知道会涂到哪一块。
   if (uHoverPid > 0) {
-    // 海/湖/荒地：只点亮光标底下这**一块**（它们共用同一个伪节点，按头衔会整片亮 ✗）
-    if (int(pidAt(ip)) == uHoverPid) col = mix(col, vec3(1.0, 1.0, 1.0), 0.18);
+    // 海/湖/荒地：只压暗光标底下这**一块**（它们共用同一个伪节点，按头衔会整片变暗 ✗）
+    /* **悬停一律提亮** ✓（用户定的：低亮 → 高亮 ✓ 就是字面意思）
+     *   ⚠ 我中途自作聪明改成过"跟着底色走"（浅色压暗）✗ 用户又提了一次
+     *     → **不要自适应** ✗ 用户要的是提亮 ✓
+     *   💡 浅色地也不是问题：各省的色基本是中低亮度的饱和色 ✓
+     *     往白里混 0.30 一眼就看得出来 ✓ */
+    if (int(pidAt(ip)) == uHoverPid) col = mix(col, vec3(1.0), 0.30);
   } else if (uHoverPaintOn == 1) {
-    // 整族高亮：按**显示色 + 标记**认 —— 涂过的用手绘色，没涂的用原版色。
-    // 这样"取大清的颜色涂俄罗斯"之后，大清和俄罗斯会一起亮 ✓
+    // 整族变暗（"高暗"）：按**显示色 + 标记**认 —— 涂过的用手绘色，没涂的用原版色。
+    // 这样"取大清的颜色涂俄罗斯"之后，大清和俄罗斯会一起变暗 ✓
     // 但**同色不同标记**是两块 ✗ → 标记也得对上（0 = 没涂，跟没涂的一起 ✓）
     vec4 hp = paintAt(ip);
     vec3 hc = hp.a > 0.5 ? hp.rgb : lutColour(ip);
@@ -617,12 +878,12 @@ void main() {
     //   · **涂过的** → 必须同一标记 ✓（同色不同标记是两块 ✗）
     bool sameLabel = (paintLabelAt(ip) == uHoverLabel);
     if (hc.x > -0.5 && distance(hc, uHoverPaint) < 0.01 && sameLabel) {
-      col = mix(col, vec3(1.0, 1.0, 1.0), 0.18);
+      col = mix(col, vec3(1.0), 0.30);              // 同样是提亮 ✓
     }
   } else if (uHoverTid != NONE) {
     uint h = pidAt(ip);
     if (h != 0u && titleAt(h, uEditTier) == uHoverTid) {
-      col = mix(col, vec3(1.0, 0.99, 0.9), 0.24);
+      col = mix(col, vec3(1.0), 0.32);              // 整片稍微再亮一点，好认 ✓
     }
   }
 
@@ -677,6 +938,17 @@ export class MapRenderer {
     // 每帧 GL 调用全部静默 no-op，画面冻结成白板还没任何提示。preventDefault
     // 表示"我们知道出事了"；真恢复要重建全部纹理，直接提示用户刷新最稳。
     this.onContextLost = null;
+    /* 🔴 **每个 sampler 都必须指向一张"完整纹理"** ✗ —— WebGL 的硬规矩 ✓
+     *   用户报：手机版黑屏、中心像素 [0,0,0]、**drawArrays 报 1282** ✓
+     *   根因：着色器里声明了 sampler2D uBorderDepth ✓ 而**手机上不建那张粗筛位图** ✗
+     *     → render 里走 else 分支，只把 uBorderDepthOn 设成 0 ✗
+     *       **纹理单元 9 上什么都没绑** → 采样器指向空 → 1282 → 整帧丢弃 → 全黑 ✓✓
+     *   规矩：**就算这一路根本不采样，也得绑一张完整纹理** ✗（1×1 就够 ✓）
+     *   ⚠ 电脑上没事是因为那张图建得出来、绑上了 ✓ → "电脑行手机不行"就是这么来的 ✓
+     *   ⚠ 这张占位纹理要**在 render 之前**就建好 ✗（constructor 里最省事 ✓）
+     *     而 constructor 时 gl 已经拿到了 ✓ 所以放这儿没问题 ✓ */
+    this.dummyTex = makeTexture(gl, 1, 1, gl.R8, gl.RED, gl.UNSIGNED_BYTE,
+      new Uint8Array([0]), gl.NEAREST);
     canvas.addEventListener('webglcontextlost', (e) => {
       e.preventDefault();
       this.dirty = false;
@@ -703,11 +975,12 @@ export class MapRenderer {
     this.prog = prog;
 
     this.uni = {};
-    for (const n of ['uView', 'uProv', 'uProvArr', 'uProvTiles', 'uProvCols', 'uUseTiles', 'uNoAA', 'uShowWaste', 'uTitleMap', 'uColorLut', 'uPaint', 'uPaintLabel',
+    for (const n of ['uView', 'uProv', 'uProvArr', 'uProvTiles', 'uProvCols', 'uUseTiles', 'uNoAA', 'uShowWaste', 'uTitleMap', 'uColorLut', 'uPaint', 'uPaintLabel', 'uBorderDepth', 'uBorderDepthOn',
                      'uMapSize', 'uTitleMapW', 'uNumProvinces', 'uPaintW', 'uTier', 'uEditTier',
                      'uShowTitles', 'uShowPaint', 'uMix',
                      'uShowWaste', 'uWasteGrey', 'uBorderTitle', 'uBorderPaint', 'uPaintOnly', 'uBorderW', 'uBorderA', 'uPaintBorderW', 'uPaintBorderA', 'uMapPerPx',
-                     'uShowWater', 'uWaterW', 'uSeaCol', 'uLakeCol', 'uRiverCol',
+                     'uShowWater', 'uWaterW', 'uWaterA', 'uSeaCol', 'uLakeCol', 'uRiverCol',
+                      'uShowWasteBorder', 'uWasteW', 'uWasteA',
                      'uExtraCount', 'uExtraTier', 'uExtraW', 'uExtraShow', 'uExtraA',
                      'uLutW', 'uRealTitles', 'uHoverTid', 'uHoverPaintOn', 'uHoverPaint', 'uHoverPid', 'uHoverLabel',
                      'uBackdrop']) {
@@ -742,8 +1015,13 @@ export class MapRenderer {
      *   · **荒地那条没有自己的字段** ✓ —— 它直接吃"填色边界"那套
      *     （uPaintBorderW / uPaintBorderA ✓ 用户定的 ✓）
      *   · 三个水域色：用来认"这块地是不是水" ✓ 设置里改了颜色这里跟着变 ✓ */
+    this.lowRes = false;         // resize() 里判定：这台机器我给降过分辨率（见它那段说明 ✓）
     this.showWater = true;
     this.waterW = 1.0;
+    this.waterA = 1.0;
+    this.showWasteBorder = true;
+    this.wasteW = 1.5;
+    this.wasteA = 1.0;
     this.seaCol = [0, 0, 0];
     this.lakeCol = [0, 0, 0];
     this.riverCol = [0, 0, 0];   // 玩家涂色范围描边
@@ -882,16 +1160,35 @@ export class MapRenderer {
     if (!layout && provinceIds) {
       const lim = this.maxTex || gl.getParameter(gl.MAX_TEXTURE_SIZE);
       if (m.mapWidth > lim || m.mapHeight > lim) {
-        const tileW = Math.max(1, Math.min(m.mapWidth, lim));
-        const tileH = Math.max(1, Math.min(m.mapHeight, lim));
+        /* 🔴 **块尺寸别贴着上限开** ✗（用户报：手机版黑屏，而电脑正常 ✓）
+         *   原来 tileW/tileH 直接取 lim（手机上 4096 ✓）✓
+         *   → 地图 5632×2048 被切成 **2 块 4096×4096** ✗
+         *     每层 = 4096×4096×2 字节 = **33MB** → 两层 **67MB 显存** ✓
+         *     再加 CPU 那份 buf（33MB）+ 省份数据（23MB）→ 手机直接爆 ✓
+         *     → 上下文丢失 / 纹理变坏 → **画面全黑** ✓
+         *   ⚠ 这条路**只有手机走** ✗（电脑上限 16384 > 5632 → 不切块 ✓）
+         *     所以电脑上永远测不出来 ✓ 这正是"电脑行、手机不行"的原因 ✓
+         *   💡 改成**按实际需要开**：一块 2048 是条舒服的线 ✓
+         *     同样这张图：2048 → 3 层 × 8MB = 24MB ✓（省 2.7 倍 ✓）
+         *     层数多一点反而更好：显存按**块**算，不用一次占满 ✓ */
+        const cap = Math.min(lim, 2048);
+        const tileW = Math.max(1, Math.min(m.mapWidth, cap));
+        const tileH = Math.max(1, Math.min(m.mapHeight, cap));
         layout = {
           tileW, tileH,
           cols: Math.ceil(m.mapWidth / tileW),
           rows: Math.ceil(m.mapHeight / tileH),
           synthetic: true,
         };
+        const _mb = (layout.cols * layout.rows * tileW * tileH * 2 / 1048576).toFixed(0);
         console.log(`贴图上限 ${lim}px 装不下 ${m.mapWidth}×${m.mapHeight}`
-          + ` → 就地切成 ${layout.cols}×${layout.rows} 块（每块 ${tileW}×${tileH}）`);
+          + ` → 就地切成 ${layout.cols}×${layout.rows} 块（每块 ${tileW}×${tileH}，约 ${_mb}MB）`);
+        /* ⚠ 顺手写进"启动里程表" ✗ —— 用户手机上能直接看到走没走这条路 ✓ */
+        try {
+          if (typeof bootMark === 'function') {
+            bootMark('切块' + layout.cols + '×' + layout.rows + ' 每块' + tileW + '×' + tileH + ' 约' + _mb + 'MB');
+          }
+        } catch (e) { /* ✓ */ }
       }
     }
 
@@ -1088,7 +1385,41 @@ export class MapRenderer {
   setMix(v) { this.mix = v; this.dirty = true; }
   setBorderTitle(v) { this.borderTitle = !!v; this.dirty = true; }
   setBorderPaint(v) { this.borderPaint = !!v; this.dirty = true; }
-  setHover(tid) { this.hoverTid = tid == null ? this.noTitle : tid; this.dirty = true; }
+  setHover(tid) {
+    const v = tid == null ? this.noTitle : tid;
+    if (this.hoverTid === v) return;        // 没换就别标脏 ✓（见下面 setHoverState 的说明）
+    this.hoverTid = v;
+    this.dirty = true;
+  }
+
+  /**
+   * 悬停高亮那一组值**整体设一次**，而且**跟上一帧完全一样就不重画** ✓
+   *
+   * 为什么非要比较：高亮是画在着色器里的（不是叠一层透明的框），所以
+   * "换高亮"= 整张图重跑一遍 fragment shader ✗
+   * 而鼠标在地图上划动时**每换一格**都会走到这儿 —— 划过一整片海、或者划过一个
+   * 大国家的许多省份时，高亮范围其实**一直没变**（还是那一片 / 还是那个国家）✓
+   * 以前 `setHover()` 无条件 `dirty = true` ✗ → 每个 mousemove 都白渲染一整张图 ✗
+   */
+  setHoverState(hoverPid, paintOn, paint, label, tid) {
+    const t = (tid == null) ? this.noTitle : tid;
+    const p = paintOn ? 1 : 0;
+    const c = paint || this.hoverPaint;
+    const lb = label || 0;
+    const hp = this.hoverPid || 0;
+    const same = hp === (hoverPid || 0)
+      && this.hoverPaintOn === p
+      && this.hoverTid === t
+      && (this.hoverLabel || 0) === lb
+      && this.hoverPaint[0] === c[0] && this.hoverPaint[1] === c[1] && this.hoverPaint[2] === c[2];
+    if (same) return;
+    this.hoverPid = hoverPid || 0;
+    this.hoverPaintOn = p;
+    if (paint) this.hoverPaint = paint;
+    this.hoverLabel = lb;
+    this.hoverTid = t;
+    this.dirty = true;
+  }
 
   setView(x, y, w, h) {
     this.view.x = x; this.view.y = y;
@@ -1096,11 +1427,66 @@ export class MapRenderer {
     this.dirty = true;
   }
 
-  resize() {
+  /** **边界深度图** ✓（CPU 侧算好的 —— 见 app.js 的 buildBorderDepth ✓）
+   *  R8UI ✓ 每格一个数 = "到最近那条缝的距离"（格 ✓ 0 = 紧挨着 ✓）
+   *  ⚠ NEAREST ✗ —— 它是整数枚举（粗筛门槛），插值出来的小数没有意义 ✓
+   *  ⚠ 跟 uProv / uTitleMap 同一套写法（整型纹理 + texelFetch ✓）不会引入新写法 ✓ */
+  setBorderDepth(dist, w, h) {
+    const gl = this.gl;
+    /* 🔴 **先看这张卡吃不吃得下** ✗ —— 用户报"手机版进地图黑屏、只剩地名" ✓
+     *   地名走 2D canvas ✗ 不受影响 → 所以问题在 WebGL 这边 ✓
+     *   手机的 MAX_TEXTURE_SIZE 常常只有 4096 ✗ 而地图宽 5632 ✓
+     *   超限时 texImage2D **不抛错**（只设个错误码 ✓）→ 纹理是坏的 → 后面全乱 ✓
+     *   → 索性**不上传**：borderDepthOn 保持 false → 着色器 on = 0 → 退回射线 ✓ 画得对 ✓
+     *   ⚠ 拿不到上限时按 16384 算（别因为读不到参数就把功能关了 ✓）*/
+    const _maxTex = (gl.getParameter && gl.getParameter(gl.MAX_TEXTURE_SIZE)) || 16384;
+    if (w > _maxTex || h > _maxTex) {
+      this.borderDepthOn = false;
+      this.dirty = true;
+      return;
+    }
+    if (this.borderDepthTex) gl.deleteTexture(this.borderDepthTex);
+    /* **等级图**：R8UI ✓ 每格 1 字节 = **四路各 2 位**（0 压在边界上 · 1 紧挨着 · 2 更远 ✓）
+     *   用户点的：离边界 2 格和 3 格**没有区别** ✗ 都不画 ✓ 所以 2 位就够 ✓
+     *   它**只管排除**（这一路还要不要细算 ✓）· **画线仍旧走边掩码**（那里才有方向/亚格精度 ✓）
+     *   ⚠ NEAREST ✗ —— 等级是枚举，插值没有意义 ✓ */
+    /* ⚠ **用归一化 R8 而不是 R8UI** ✗ —— 整数纹理上传在某些驱动上会走
+     *   **格式转换的慢路** ✓ 而归一化 R8 是各家的最快路径 ✓
+     *   代价：texelFetch 出来是 0~1 的浮点 ✗ 着色器里 ×255 还原即可 ✓ */
+    this.borderDepthTex = makeTexture(gl, w, h, gl.R8, gl.RED, gl.UNSIGNED_BYTE, dist, gl.NEAREST);
+    this.borderDepthW = w;       // ⚠ 改签名时**必须一起来看函数体** ✗ 我漏过两次（w → bw → w）
+    this.borderDepthH = h;       //   → 抛 ReferenceError → 纹理压根没传上去（异步的，同步断言抓不到 ✗）
+    this.borderDepthOn = true;
+    this.dirty = true;
+  }
+
+  
+      resize() {
     if (this.fixedSize) return;   // 整图导出期间由调用方自己定尺寸
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const w = Math.max(1, Math.floor(this.canvas.clientWidth * dpr));
-    const h = Math.max(1, Math.floor(this.canvas.clientHeight * dpr));
+    const cssW = Math.max(1, this.canvas.clientWidth);
+    const cssH = Math.max(1, this.canvas.clientHeight);
+    let dpr = Math.min(window.devicePixelRatio || 1, 2);
+    /* **画布像素总数封顶** ✓（用户报的"电脑版非常卡"✓ 这条是主因）
+     *
+     * 边界那几趟是**逐像素**算的，一帧的开销 ∝ 画布像素数 ✗
+     * 而 dpr 上限原来写死 2 ✗ —— 于是：
+     *   · 4K 屏（3840×2160）dpr 2 → 3840×2160×4 ≈ **3300 万像素** ✗✗
+     *   · Windows 缩放 125% / 150% 时 dpr 也已经到 1.25 / 1.5 ✗ 同样爆
+     *   · 手机（390×844）dpr 2 → 才 260 万 ✓
+     * 差了十几倍，这就是"手机不卡、电脑卡"的原因 ✓
+     *
+     * 所以给总量封顶：超了就把 dpr 降下来（画面略糊一点，但那点糊换的是十几倍速度 ✓）。
+     * 下限 0.75 —— 再低就真糊了，宁可慢一点 ✗
+     * ⚠ 普通 1080p（1920×1080×1 ≈ 200 万）**稳稳在限额内** ✓ 一点不受影响 ✓
+     */
+    const px = cssW * cssH * dpr * dpr;
+    this.lowRes = false;
+    if (px > MAX_CANVAS_PX) {
+      dpr = Math.max(0.75, Math.sqrt(MAX_CANVAS_PX / (cssW * cssH)));
+      this.lowRes = true;                 // 记住"这台机器我给它降过" ✓ 见 render() 里那个抗锯齿
+    }
+    const w = Math.max(1, Math.floor(cssW * dpr));
+    const h = Math.max(1, Math.floor(cssH * dpr));
     if (this.canvas.width !== w || this.canvas.height !== h) {
       this.canvas.width = w;
       this.canvas.height = h;
@@ -1109,6 +1495,22 @@ export class MapRenderer {
   }
 
   render() {
+    /* 🔴 **逐帧体检**（只在手机上）✗ —— 用户报：手机版黑屏、中心像素 [0,0,0]、
+     *   出错码 **1282（GL_INVALID_OPERATION）** ✓
+     *   1282 是**异步**留下的：getError 返回的是"上一个还没被取走的错" ✓
+     *   所以光看一次不知道是谁干的 ✓ 这里画前清空、画后看看还剩什么 ✓
+     *   ⭐ 同时把**视口和画布尺寸**一起打出来 —— 我怀疑是"渲染器建的时候
+     *     画布才 300×150（canvas 默认尺寸 ✓）而后来的视口没跟上" ✓
+     *     → 画面被画进一个 300×150 的小角 → 屏幕其余地方全黑 ✓✓
+     * ⚠ 只在手机上打 ✗ 桌面不刷屏 ✓ */
+    const _diag = (typeof window !== 'undefined') && window.innerWidth && window.innerWidth <= 900;
+    let _e0 = 0;
+    if (_diag) {
+      try {
+        const g0 = this.gl;
+        while (g0.getError() !== g0.NO_ERROR) { /* 清空历史错误 ✓ 最多几次 */ }
+      } catch (e) { /* ✓ */ }
+    }
     if (!this.provTex) return false;
     this.flushPaint();
     this.flushLut();
@@ -1137,6 +1539,23 @@ export class MapRenderer {
     gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.provArrTex);
     gl.uniform1i(u.uProvArr, 5);
 
+
+    // **深度图：单元 9** ✓（0~8 已经被上面占满）
+    if (this.borderDepthTex && this.borderDepthOn) {
+      gl.activeTexture(gl.TEXTURE9);
+      gl.bindTexture(gl.TEXTURE_2D, this.borderDepthTex);
+      gl.uniform1i(u.uBorderDepth, 9);
+      gl.uniform1i(u.uBorderDepthOn, 1);
+    } else {
+      /* ⚠ **关掉也得绑** ✗ —— 光设 uBorderDepthOn=0 不够 ✓
+       *   着色器里那个 sampler 仍然存在 ✓ WebGL 会检查它指向的纹理完不完整 ✓
+       *   （这条就是手机黑屏的根 ✓ 踩过一次别再踩 ✓）*/
+      gl.activeTexture(gl.TEXTURE9);
+      gl.bindTexture(gl.TEXTURE_2D, this.dummyTex);
+      gl.uniform1i(u.uBorderDepth, 9);
+      gl.uniform1i(u.uBorderDepthOn, 0);
+    }
+
     gl.uniform4f(u.uView, this.view.x, this.view.y, this.view.w, this.view.h);
     gl.uniform2i(u.uMapSize, this.mapW, this.mapH);
     gl.uniform1i(u.uTitleMapW, this.titleMapW);
@@ -1157,9 +1576,13 @@ export class MapRenderer {
     gl.uniform1i(u.uBorderTitle, this.borderTitle ? 1 : 0);
     gl.uniform1i(u.uBorderPaint, this.borderPaint ? 1 : 0);
     gl.uniform1i(u.uPaintOnly, this.paintOnly ? 1 : 0);
-    // 水域边界：开关 + 粗细 + 三个水域色（实心 ✓ 所以没有浓度 uniform）
+    // 水域 / 荒地边界：各一条开关 + 各自的粗细浓度 ✓
     gl.uniform1i(u.uShowWater, this.showWater ? 1 : 0);
     gl.uniform1f(u.uWaterW, this.waterW);
+    gl.uniform1f(u.uWaterA, this.waterA != null ? this.waterA : 1);
+    gl.uniform1i(u.uShowWasteBorder, this.showWasteBorder ? 1 : 0);
+    gl.uniform1f(u.uWasteW, this.wasteW != null ? this.wasteW : 1.5);
+    gl.uniform1f(u.uWasteA, this.wasteA != null ? this.wasteA : 1);
     gl.uniform3f(u.uSeaCol, this.seaCol[0], this.seaCol[1], this.seaCol[2]);
     gl.uniform3f(u.uLakeCol, this.lakeCol[0], this.lakeCol[1], this.lakeCol[2]);
     gl.uniform3f(u.uRiverCol, this.riverCol[0], this.riverCol[1], this.riverCol[2]);
@@ -1185,9 +1608,27 @@ export class MapRenderer {
     // 用 canvas.width（设备像素）而不是 clientWidth，固定尺寸渲染时才对得上。
     const scale = this.canvas.width / this.view.w;
     gl.uniform1f(u.uMapPerPx, 1 / Math.max(scale, 1e-6));
-    gl.uniform1i(u.uNoAA, this.noAA ? 1 : 0);
+    gl.uniform1i(u.uNoAA, (this.noAA || this.lowRes) ? 1 : 0);
 
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    /* 🔴 **逐帧体检**（只在手机上）✗ —— 用户报：手机版黑屏、中心像素 [0,0,0]、
+     *   出错码 **1282（GL_INVALID_OPERATION）** ✓
+     *   这里把"这一帧画的时候"的几个关键状态一起打出来：
+     *     · 画布 vs **视口**（我怀疑是视口没跟上画布 ✗）
+     *     · 画完之后的 GL 错误码（画前我清过 ✓ 所以这儿报的就是**这一帧**的 ✓）
+     *     · 采样用的那几张纹理有没有绑上 ✓
+     * ⚠ 只在手机上打 ✗ 桌面不刷屏 ✓ */
+    if ((typeof window !== 'undefined') && window.innerWidth && window.innerWidth <= 900
+        && typeof bootMark === 'function') {
+      try {
+        const cv1 = gl.canvas;
+        const vp = gl.getParameter(gl.VIEWPORT);
+        const err = gl.getError();
+        bootMark('帧:画布' + cv1.width + '×' + cv1.height
+          + ' 视口' + vp[2] + '×' + vp[3] + ' 画后错' + err
+          + ' 贴图' + (gl.isTexture(this.provTex) ? 'ok' : '坏'));
+      } catch (e) { /* ✓ */ }
+    }
     this.dirty = false;
     return true;
   }

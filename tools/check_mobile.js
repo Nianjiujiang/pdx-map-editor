@@ -61,6 +61,14 @@ function readScript(htmlPath) {
   const nBind = (js.match(/function bindMobile\s*\(/g) || []).length;
   ok('bindMobile 只有一份（没重复打补丁）', nBind === 1, String(nBind));
 
+  // **面板宽度分档** ✓（用户定的）：工具 / 视图 / 文件里面就几个字 → 窄；
+  // 设置 / 颜色是一排排的开关和输入框 → 摊到接近整屏 ✓
+  ok('「文件」面板跟工具 / 视图同宽（不再单独一档 220 ✓）',
+     /WANT = \{ tool: 148, view: 148, io: 148 \}/.test(js),
+     /io: 148/.test(js) ? 'io=148 ✓' : '文件那档还是旧的 ✗');
+  ok('「设置」「颜色」面板摊到接近整屏（a.width - 16 ✓）',
+     /const FULL = \{ display: 1, color: 1 \}/.test(js) && /FULL\[key\] \? \(a\.width - 16\)/.test(js));
+
   // ③ 真跑一遍
   console.log('\n---- 真跑一遍（补丁后的 app.js）----');
   const env = H.makeEnv({ embedded, root: H.ROOT });
@@ -79,6 +87,12 @@ function readScript(htmlPath) {
   ok('标签层建起来了', !!ex.labels);
   ok('meta / 头衔表都装上了', !!(ex.state.meta && ex.state.titles),
      ex.state.meta ? `${ex.state.meta.numProvinces} 地块 / ${ex.GAME.name}` : '');
+
+  // 报错日志：手机版跟电脑版共用同一套源码 ✓ —— 补丁只碰界面，
+  // 日志该在也得在（漏拼了 log.js 的话手机版玩家出事就没现场可发 ✗）
+  const log = env.sandbox && env.sandbox.window && env.sandbox.window.PDXLOG;
+  ok('报错日志模块也在（手机版同一套源码 ✓）', !!(log && typeof log.text === 'function'),
+     log && typeof log.text === 'function' ? 'PDXLOG 有了' : '没有 ✗');
 
   // ④ 手机版特有：bindMobile 跑过之后应该造出 #mob-ui 那些节点
   const mobUi = env.get('mob-ui');

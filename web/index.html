@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
@@ -50,36 +50,52 @@ if (location.protocol === 'file:') {
       <div class="segmented" data-role="tool"></div>
     </div>
 
+    <!-- **教程 + 署名：紧跟在左侧工具栏右边** ✓（用户要求）
+         ⚠ `author-row` 这个**容器 id 得留着** ✗ —— 手机版按它找（`$('author-row')`）
+           搬进「设置」面板；换成别的名字那边就搬不到了 ✓ -->
+    <div class="tool-group actions" id="help-row">
+      <button class="btn ghost" id="btn-tutorial">教程</button>
+      <div class="tool-group actions" id="author-row">
+        <a class="btn ghost" id="btn-author">永夜廿九</a>
+      </div>
+    </div>
+
     <div class="spacer"></div>
 
-    <div class="tool-group actions" id="author-row">
-      <a class="btn ghost" id="btn-author">永夜廿九</a>
-    </div>
-
     <div class="tool-group actions" id="settings-row">
-      <button class="btn ghost" id="btn-tutorial">教程</button>
       <button class="btn ghost" id="btn-settings">设置</button>
-    </div>
-
-    <div class="tool-group actions" id="export-row">
-      <button class="btn ghost" id="btn-export">导出 ▾</button>
-      <div class="dropdown" id="export-menu" hidden>
-        <button class="btn ghost" id="btn-png">导出窗口</button>
-        <button class="btn ghost" id="btn-png-full">导出整图</button>
-        <button class="btn ghost" id="btn-project">导出涂色</button>
-        <button class="btn ghost" id="btn-import">导入涂色</button>
-      </div>
     </div>
 
     <div class="tool-group actions" id="history-row">
       <button class="btn ghost" id="btn-undo" disabled>↶</button>
       <button class="btn ghost" id="btn-redo" disabled>↷</button>
-      <button class="btn ghost" id="btn-reset">清除</button>
     </div>
 
-    <!-- 回选地图那一页 ✓（右上角最外那个；键盘上按 Esc 也一样 ✓） -->
+    <!-- 回选地图那一页 ✓（键盘上按 Esc 也一样 ✓） -->
     <div class="tool-group actions" id="home-row">
       <button class="btn ghost" id="btn-home">主菜单</button>
+    </div>
+
+    <!-- **「文件」：顶栏最右边** ✓（用户要求：导入 / 导出 / 清除都收进这一个菜单 ✓）
+         ⚠ 容器 id 必须还是 export-row、菜单还是 export-menu ✗ ——
+           手机版按这两个 id 找（`move(gIO, $('export-row'))`，再把 export-menu 的子项摊平 ✓）
+           所以这里**既没改名、也没动手机版**，而导入 / 清除放进菜单里之后，
+           手机版的「文件」面板会自动一起带上它们 ✓ -->
+    <div class="tool-group actions" id="export-row">
+      <button class="btn ghost" id="btn-export">文件 ▾</button>
+      <div class="dropdown" id="export-menu" hidden>
+        <button class="btn ghost" id="btn-import">导入</button>
+        <button class="btn ghost" id="btn-png">导出窗口</button>
+        <button class="btn ghost" id="btn-png-full">导出整图</button>
+        <!-- **高清导出**：输出宽高都 ×2，边界按新尺度重画 ✓（不是放大糊 ✗）
+             一个地图像素变 2×2，细边界不再互相咬掉 ✓（用户要求 ✓）-->
+        <button class="btn ghost" id="btn-png-full2">导出高清地图</button>
+        <button class="btn ghost" id="btn-project">导出涂色</button>
+        <!-- 出毛病时把这一份发给作者就行 ✓（日志模块是 js/log.js，比 app.js 先加载 ✓） -->
+        <button class="btn ghost" id="btn-log">导出日志</button>
+        <!-- 清除也收进来 ✓（它原来是挨着撤销放的破坏性按钮，放菜单里更不容易误点 ✓） -->
+        <button class="btn ghost" id="btn-reset">清除</button>
+      </div>
     </div>
   </header>
 
@@ -242,7 +258,11 @@ if (location.protocol === 'file:') {
       </section>
 
       <section class="panel">
-        <div class="panel-head"><h2>最近使用</h2></div>
+        <div class="panel-head">
+          <h2>最近使用</h2>
+          <!-- 清空"最近用过" ✓（这份是**跟着设置持久化**的，所以清完也要落盘 ✓ 见 clearRecent）-->
+          <button type="button" class="btn ghost" id="btn-clear-recent" title="清空这些记忆的颜色">清空</button>
+        </div>
         <div class="palette" id="palette"></div>
       </section>
 
@@ -294,6 +314,9 @@ if (location.protocol === 'file:') {
   </footer>
 
 </div>
+<!-- 报错日志：**必须排在 app.js 前面** —— 编辑器自己没起来的时候，
+     它是唯一还能记录现场的东西 ✓（普通脚本，挂 window.PDXLOG；见 js/log.js） -->
+<script src="js/log.js"></script>
 <script src="js/tutorial.js"></script>
 <script type="module" src="js/app.js"></script>
 
@@ -316,17 +339,51 @@ if (location.protocol === 'file:') {
           <label class="set-row"><span>河流</span><input type="color" id="set-river"></label>
         </div>
 
+        <!-- ============ 边界（**一栏装完** ✓）============
+             命名规范（用户定的 ✓）：**「某某边界」+ 宽度 / 浓度** ——
+               地方边界宽度 = 原「基准线宽」（它管的就是省份 / 地区那些**地方**线 ✓）
+               势力边界宽度 = 原「势力线宽」（势力那条线 + 填色线本身的粗细 ✓）
+               水域边界宽度 = 原「海域宽度」（海 / 湖 / 河 ✓ 叫"水域"更准 ✓）
+               荒地边界宽度 = 原「荒地宽度」
+             **浓度那五条保留各自的层**（用户要求：省份、地区要分开 ✓）
+             顺序：**宽度挨着宽度、浓度挨着浓度** ✓（用户要求的排法 ✓）
+             **滑条**（用户定的 ✓）—— 档位等距，`min/max/step` 一锁就天然只有那几档 ✓：
+               四条宽度都是 **1~3 步长 0.5** ✓   五条浓度都是 **25~100 步长 25** ✓
+             线宽一律是**格数**（不是倍率 ✗）
+             每个滑条前面那个当前值提示由 `buildSliderTips()` 动态插进来 ✓
+             （`min/max/step` 要跟 app.js 里那几张档位表一致 —— 测试盯着两边 ✓）-->
         <div class="set-col">
           <h3>边界</h3>
-          <label class="set-row"><span>基准线宽</span><input type="range" id="set-w" min="0.5" max="4" step="0.1"></label>
-          <label class="set-row"><span>势力线宽</span><input type="range" id="set-pw" min="0.5" max="2" step="0.05"></label>
-          <label class="set-row"><span>省份边界浓度</span><input type="range" id="set-pa" min="0" max="100" step="5"></label>
-          <label class="set-row"><span>地区边界浓度</span><input type="range" id="set-ra" min="0" max="100" step="5"></label>
-          <label class="set-row"><span>势力边界浓度</span><input type="range" id="set-ca" min="0" max="100" step="5"></label>
+          <label class="set-row"><span>地方边界宽度</span><input type="range" id="set-w" min="0.5" max="3" step="0.5"></label>
+          <label class="set-row"><span>势力边界宽度</span><input type="range" id="set-pw" min="0.5" max="3" step="0.5"></label>
+          <label class="set-row"><span>水域边界宽度</span><input type="range" id="set-water-w" min="0.5" max="3" step="0.5"></label>
+          <label class="set-row"><span>荒地边界宽度</span><input type="range" id="set-waste-w" min="0.5" max="3" step="0.5"></label>
+          <label class="set-row"><span>省份边界浓度</span><input type="range" id="set-pa" min="0" max="100" step="25"></label>
+          <label class="set-row"><span>地区边界浓度</span><input type="range" id="set-ra" min="0" max="100" step="25"></label>
+          <label class="set-row"><span>势力边界浓度</span><input type="range" id="set-ca" min="0" max="100" step="25"></label>
+          <label class="set-row"><span>水域边界浓度</span><input type="range" id="set-water-a" min="0" max="100" step="25"></label>
+          <label class="set-row"><span>荒地边界浓度</span><input type="range" id="set-waste-a" min="0" max="100" step="25"></label>
         </div>
 
         <div class="set-col">
-          <h3>导出图例</h3>
+          <h3>名字</h3>
+          <label class="set-row"><span>字号倍率</span><input type="range" id="set-font" min="0.5" max="2" step="0.05"></label>
+          <!-- 一个连通域一个名字之后，全图能有几千坨 → 按**面积从大到小**取前 N 个 ✓
+               N 就 1~20（一眼能看清的国名也就十来个 ✓ 几百几千纯属离谱 ✗）；
+               **拉满（20）就是"无上限"** ✓ —— 省掉单独一个勾选框（用户要求）
+               数值提示放**滑块左边** ✓ 放右边会把滑块挤到中间去，
+               跟上面「字号倍率」那根（只有"标签 + 滑块"两个元素）就对不齐了 ✓ -->
+          <label class="set-row"><span>势力名称上限</span><span class="hint" id="set-labelmax-v"></span><input type="range" id="set-labelmax" min="1" max="21" step="1"></label>
+          <!-- **两张名字各给自己一档不透明度**（用户定的：25 / 50 / 75 / 100 ✓）
+               「势力名称」= 剧本/年份那几层（国名 / 势力名 ✓）·「地名」= 地区/省份/地点那些 ✓
+               （分层口径见 drawLabels 里那段注释 ✓ 着色器/标签层都按 tier 判 ✓）
+               半透明的好处是底下的填色和边界还看得见 ✓ -->
+          <label class="set-row"><span>势力名称不透明度</span><input type="range" id="set-labelac" min="25" max="100" step="25"></label>
+          <label class="set-row"><span>地名不透明度</span><input type="range" id="set-labelap" min="25" max="100" step="25"></label>
+        </div>
+
+        <div class="set-col">
+          <h3>其他</h3>
           <label class="set-row"><span>导出时显示</span><input type="checkbox" id="set-legend"></label>
           <label class="set-row"><span>图例标题</span><input type="text" id="set-legend-title" maxlength="40" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"></label>
           <label class="set-row"><span>位置</span>
@@ -338,13 +395,17 @@ if (location.protocol === 'file:') {
             </select>
           </label>
           <div class="legend-list" id="legend-list"></div>
-        </div>
-
-        <div class="set-col">
-          <h3>名字等</h3>
-          <label class="set-row"><span>字号倍率</span><input type="range" id="set-font" min="0.5" max="2" step="0.05"></label>
+          <!-- 取完色（搜索里点色块 / 右键 / 吸管 / 调色板）自动切到哪个画图工具 ✓
+               已经在涂抹或填色上时**不动** —— 别打断正在画的活儿 ✓ -->
+          <label class="set-row"><span>取色后切到</span>
+            <select id="set-picktool">
+              <option value="paint">涂抹</option>
+              <option value="fill">填色</option>
+            </select>
+          </label>
           <div class="set-row"><span></span><button class="btn ghost" id="set-reset">恢复默认</button></div>
         </div>
+
       </div>
     </div>
   </div>

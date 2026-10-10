@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 浏览器环境的 Node 桩 —— test_modes.js / bench_core.js / check_standalone.js 共用。
  *
  * 这三件事本来各写一份一模一样的假 DOM / 假 localStorage / 假 WebGL / 拍平逻辑
@@ -22,7 +22,7 @@ const path = require('path');
 const ROOT = path.join(__dirname, '..', '..');
 
 //: 单文件版（build_standalone.py）的拼接顺序 —— **必须和那边一致** ✓
-const MODULES = ['data.js', 'zip.js', 'bmp.js', 'gl.js', 'labels.js', 'tilemap.js', 'tutorial.js', 'app.js'];
+const MODULES = ['log.js', 'data.js', 'zip.js', 'bmp.js', 'gl.js', 'labels.js', 'tilemap.js', 'tutorial.js', 'app.js'];
 
 /** 开发时 index.html 只加载 app.js（真 ES module），这里按单文件版的顺序拍平 */
 function flattenModules(modules = MODULES, root = ROOT) {
@@ -294,6 +294,9 @@ function makeEnv(opt = {}) {
     devicePixelRatio: 1,
     __CK3_EMBEDDED__: opt.embedded,
     confirm: () => true,
+    // 真浏览器里 window.console 当然有 —— 报错日志拦的就是这一份 ✓
+    // 以前桩里没有它，于是"拦 console"那条路在自检里**一次都没跑到过** ✗
+    console,
   };
   const sandbox = {
     console,
@@ -342,7 +345,11 @@ function makeEnv(opt = {}) {
  * @param {object} env  makeEnv() 的结果
  */
 function instantiate(js, env) {
-  let src = js.replace(/\nboot\(\);\n/, '\n');
+  // 行尾两种都要认：工作区是 CRLF（core.autocrlf=true 检出来的），
+  // 仓库里是 LF —— 只写 \n 的话在 CRLF 工作区**根本匹配不上**，
+  // 于是那个 boot(); 留着没摘，跑起来就变成"src 自己跑一次 + 调用方再跑一次"，
+  // 日志与状态各初始化两遍 ✗（这个坑是给报错日志验"启动"轨迹时露出来的）
+  let src = js.replace(/\r?\nboot\(\);\r?\n/, '\n');
   src += `
 var _C = {};
 function _p(k, v) { if (v !== undefined) _C[k] = v; }
@@ -350,6 +357,11 @@ _p('boot', boot); _p('state', state); _p('MAP_CHOICES', MAP_CHOICES);
 _p('GAMES', GAMES); _p('frame', frame);
 _p('titleAt', titleAt); _p('renderHoverCard', renderHoverCard); _p('actAt', actAt);
 _p('pickTitle', pickTitle); _p('paintTitle', paintTitle); _p('restoreTitle', restoreTitle);
+_p('undo', undo); _p('redo', redo); _p('recomputePainted', recomputePainted);
+_p('provInfoAt', provInfoAt); _p('paintTargetsAt', paintTargetsAt);
+_p('labelMaxValue', labelMaxValue); _p('buildBorderEdges'); _p('buildBorderDepth', buildBorderDepth); _p('refreshBorderField', refreshBorderField); _p('editTier', editTier);
+_p('saveMapPrefs', saveMapPrefs); _p('loadMapPrefs', loadMapPrefs);
+_p('paintPids', paintPids); _p('paintPidsAsOne', paintPidsAsOne);
 _p('pickAt', pickAt); _p('setBrush', setBrush); _p('setTier', setTier); _p('setTool', setTool);
 _p('needsRestore', needsRestore); _p('isLocked', isLocked); _p('isSpecialTid', isSpecialTid);
 _p('runSearch', runSearch); _p('jumpToResult', jumpToResult); _p('searchJumpScale', searchJumpScale);
@@ -363,7 +375,7 @@ _p('editTier', editTier); _p('setGrain', setGrain); _p('gotoLevel', gotoLevel);
 _p('pressTier', pressTier); _p('eraTierCount', eraTierCount);
 _p('refreshTierButtons', refreshTierButtons);
 _p('projectData', projectData); _p('saveProject', saveProject); _p('applyProject', applyProject);
-_p('setCapitalAt', setCapitalAt); _p('labelForColor', labelForColor);
+_p('labelForColor', labelForColor);
 _p('isDegradedBaron', isDegradedBaron); _p('screenToMap', screenToMap);
 _p('updateHover', updateHover); _p('rebuildPaintBlocks', rebuildPaintBlocks);
 _p('paintedPoints', paintedPoints); _p('playerGroupTidsAt', playerGroupTidsAt);
@@ -376,6 +388,7 @@ _p('impassLabel', impassLabel); _p('specialTileLabel', specialTileLabel);
 _p('computeLabelZoom', computeLabelZoom); _p('applySettings', applySettings);
 _p('applyLutOverrides', applyLutOverrides); _p('lutColorOf', lutColorOf);
 _p('hexToRgb', hexToRgb); _p('renameAt', renameAt); _p('openRename', openRename);
+_p('exportLog', exportLog); _p('showFatal', showFatal);
 if (typeof ARRIVE_SPAN !== 'undefined') _C.ARRIVE_SPAN = ARRIVE_SPAN;
 if (typeof playerGroupTids !== 'undefined') _C.playerGroupTids = playerGroupTids;
 if (typeof titleInfo !== 'undefined') _C.titleInfo = titleInfo;

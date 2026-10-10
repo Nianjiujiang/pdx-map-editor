@@ -71,9 +71,13 @@ function bindMobile() {
     try {
       const a = app.getBoundingClientRect();
       const r = btn.getBoundingClientRect();
-      // **每一栏按自己的内容定宽** ✓ 工具/视图就几个字，别占满整屏 ✗
-      const WANT = { display: 360, color: 300, io: 220, tool: 148, view: 148 };
-      const w = Math.min(a.width - 16, WANT[key] || 300);
+      /* **每一栏按自己的内容定宽** ✓（用户定的）
+       *   · 工具 / 视图 / 文件：里面就几个字或一排短按钮 → **窄**（别占满整屏 ✗）
+       *   · 设置 / 颜色：一排排的开关和输入框 → **摊到接近整屏**（`a.width - 16` ✓）
+       */
+      const WANT = { tool: 148, view: 148, io: 148 };
+      const FULL = { display: 1, color: 1 };
+      const w = FULL[key] ? (a.width - 16) : Math.min(a.width - 16, WANT[key] || 300);
       const cx = r.left - a.left + r.width / 2;
       let left = cx - w / 2;
       left = Math.max(8, Math.min(a.width - w - 8, left));
@@ -203,11 +207,22 @@ function bindMobile() {
     movePanelOf(gColor, 'results');          // 搜索
     move(gColor, $('label-pick'));
   });
-  wait(() => { move(gTool, $('tool-group')); });
+  wait(() => {
+    move(gTool, $('tool-group'));
+    /* **工具选好就自动收起面板** ✓（用户要求：点完马上回到地图上动手 ✓）
+     * 监听挂在工具按钮那一层 —— app 自己的 onclick 会**先把工具切好** ✓，
+     * 冒泡到这儿我们再收面板 ✓（顺序天然对，不用去猜它绑在哪 ✓）
+     */
+    const tp = document.querySelector('[data-role="tool"]');
+    if (tp) tp.addEventListener('click', (e) => {
+      const b = e.target && e.target.closest ? e.target.closest('button') : null;
+      if (b) setSheet(null);
+    });
+  });
   wait(() => { move(gView, $('tier-group')); });
   wait(() => {
     /* **「设置」= 一排标签按钮 + 下面跟着换内容** ✓（用户要的 ✓）
-     *   标签：显示 / 颜色 / 边界 / 名字 / 导出图例
+     *   标签：显示 / 颜色 / 边界 / 名字 / 其他
      *   内容：桌面设置里那四栏 + 显示开关
      *   （面板顶上那个多余的总标题行去掉了 ✗ 用户嫌重复 ✓）
      */
@@ -223,7 +238,12 @@ function bindMobile() {
       { key: 'show', title: '显示' },
       { key: 'color', title: '颜色' },
       { key: 'border', title: '边界' },
-      { key: 'legend', title: '导出图例' },
+      /* **名字自己一页** ✓（用户要求：别塞进「显示」✗）
+       *   桌面那边它也已经是独立一栏了 ✓ 手机这儿跟着分开 ✓ */
+      { key: 'name', title: '名字' },
+      /* ⚠ key 仍叫 legend ✗（别改，页里还有几处按它找 DOM ✓）
+       *   只把**标题**改成「其他」—— 跟桌面那栏对齐 ✓ */
+      { key: 'legend', title: '其他' },
     ];
     const paneEls = {};
     let firstTab = null;
@@ -389,8 +409,12 @@ function bindMobile() {
       const byTitle = [
         [/颜色/, 'color'],
         [/边界/, 'border'],
-        [/名字|字号/, 'show'],        // **名字并进「显示」页** ✓（用户要求 ✓）
-        [/图例/, 'legend'],
+        /* **名字自己一页** ✓（原来并进「显示」✗ 用户报"国名地名塞到显示里"✓）*/
+        [/名字|字号/, 'name'],
+        /* ⚠ 桌面那栏**改名成「其他」了** ✗ 这里必须把它也认上 ✓
+         *   只写 /图例/ 的话匹配不上 → 整栏搬不进去 → 留在隐藏的桌面弹窗里
+         *   → 手机版上那一栏的设置（图例/取色后切到/恢复默认）**够不着** ✓ */
+        [/图例|其他/, 'legend'],
       ];
       for (const col of grid.querySelectorAll('.set-col')) {
         const h = col.querySelector('h3');
@@ -627,6 +651,10 @@ function bindMobile() {
         }
         // **底部那个入口按钮也直接写当前工具名** ✓（用户要求：把"工具"两个字换掉 ✓）
         const tb = $('mob-dock-tool');
+        /* ⚠ **图标固定就是一支笔 ✎**（用户定的 ✓）
+         *   中间试过"每个工具换一个图标"：先 emoji（彩色，跟界面打架 ✗）
+         *   再自己画单色 SVG —— 用户看过觉得丑 ✗ 于是**撤回到最开始那版** ✓
+         *   当前工具名仍然写在旁边 ✓ 靠文字区分就够了 ✓ */
         if (tb) tb.innerHTML = '<i>\u270e</i>' + name;
         // **底部渐变 = 当前颜色** ✓（用户要求 ✓ 一边涂一边看着底色变 ✓）
         const dock = $('mob-dock');
@@ -666,11 +694,12 @@ function bindMobile() {
   const introHTML =
     '<p class="mi-lead">把 P社五款游戏的<strong>真地图</strong>涂颜色、改国界、导出成图 —— 就在这个网页里，不用装游戏、不用注册、也不用联网。</p>'
     + '<h4>怎么玩</h4>'
-    + '<p>单指在地图上按住就是<strong>涂色</strong>（想挪地图用两根手指，顺便还能缩放）。想让哪块地的颜色跑进调色板？<strong>长按</strong>它一下就行 —— 那就是右键取色。</p>'
+    + '<p>单指在地图上按住就是<strong>涂抹</strong>（想挪地图用两根手指，顺便还能缩放）。想让哪块地的颜色跑进调色板？<strong>长按</strong>它一下就行 —— 那就是右键取色。</p>'
     + '<h4>底下四个按钮</h4>'
     + '<p><strong>设置</strong>：显示开关（颜色 / 边界 / 名称）、边界浓度、字号、导出图例，都在里面。<br>'
     + '<strong>颜色</strong>：改当前颜色、写「标记」、搜索地名势力、看最近用过的颜色。<br>'
-    + '<strong>工具</strong>：涂色 / 还原 / 定都 / 改名 / 吸管 / 查看，六个。<br>'
+    + '<strong>工具</strong>：涂抹 / 填色 / 橡皮 / 改名 / 吸管 / 查看，六个。<br>'
+    + '　　　　涂抹是按住拖出一片，<strong>填色</strong>是点一下动一次（怕手滑就用它）；橡皮就是擦回原样。<br>'
     + '<strong>视图</strong>：换年份剧本（1444、1936 那种），或者切到地区、省份这种更细的层级。</p>'
     + '<h4>上面那条</h4>'
     + '<p><strong>返回</strong>收起面板；<strong>永夜廿九</strong>是我的 B 站主页；<strong>文件</strong>里是导出整图 PNG、导出涂色存档、导入存档，还有撤销 / 重做 / 清除。</p>'

@@ -80,6 +80,27 @@ function ok(name, cond, extra = '') {
   const notSet = declared.filter((n) => !renderBody.includes('u.' + n));
   ok('每个 uniform 都真的被 render() 传了值', notSet.length === 0, notSet.join(',') || '全都传了');
 
+  /* 纹理格式和 sampler 声明必须配对（配错 = 白屏）
+     归一化格式（R8 / RGBA8）→ sampler2D · 整数格式（R8UI / R16UI）→ usampler2D
+     配错的报错很难猜：no operation exists that takes highp uint and const float
+     所以做成硬检查 —— 改纹理格式时想漏都漏不掉 */
+  {
+    const glAll = fs.readFileSync(path.join(ROOT, "web", "js", "gl.js"), "utf8");
+    const pairs = [
+      { tex: "uBorderDepth", re: /gl\.R8, gl\.RED, gl\.UNSIGNED_BYTE/, want: "sampler2D" },
+      { tex: "uTitleMap", re: /R16UI, gl\.RED_INTEGER/, want: "usampler2D" },
+    ];
+    const bad = [];
+    for (const p of pairs) {
+      const decl = new RegExp("uniform (u?sampler2D)\\s+" + p.tex + "\\b").exec(frag);
+      if (!decl) { bad.push(p.tex + " 没声明"); continue; }
+      if (p.re.test(glAll) && decl[1] !== p.want) {
+        bad.push(p.tex + " 声明是 " + decl[1] + "，但纹理格式要求 " + p.want);
+      }
+    }
+    ok("纹理格式和 sampler 声明配对（配错 = 白屏）", bad.length === 0,
+       bad.length ? bad.join(" · ") : "都对得上");
+  }
   for (const [name, src] of [['FRAG', frag], ['VERT', vert]]) {
     const bal = (a, b) => src.split(a).length - src.split(b).length;
     ok(`${name} 大括号配平`, bal('{', '}') === 0, `差 ${bal('{', '}')}`);
@@ -94,7 +115,12 @@ function ok(name, cond, extra = '') {
   {
     const gsrc = require('fs').readFileSync('web/js/gl.js', 'utf8');
     const dRamp = gsrc.indexOf('float ramp = 0.5 * uMapPerPx;');
-    const uRamp = gsrc.indexOf('for (int ex = 0; ex < 4; ex++)');
+    /* ⚠ 找**多级边界**那个循环要用它的独有特征 ✗ ——
+     *   不能再拿 `for (int ex = 0; ex < 4; ex++)` 去 indexOf ✗：
+     *   算 _wAll / 算 want 也用同一句 for，第一次出现的位置在 ramp **之前** ✓
+     *   于是断言会误判成"ramp 在循环后面" ✗（其实 ramp 好好地在前面 ✓）
+     *   `int et = uExtraTier[ex];` 只有多级边界那圈才有 ✓ */
+    const uRamp = gsrc.indexOf('int et = uExtraTier[ex];');
     ok('多级边界循环用到的 ramp 声明在它之前（别再编译失败 ✗）',
        dRamp >= 0 && uRamp >= 0 && dRamp < uRamp,
        'ramp@' + dRamp + ' loop@' + uRamp);
@@ -213,12 +239,17 @@ function ok(name, cond, extra = '') {
   //   颜色相同 → **一律比标记** ✓（JS 给每块地都写了标记：涂过的=你填的名、没涂的=它原版的国名 ✓）
   {
     const g2 = require('fs').readFileSync('web/js/gl.js', 'utf8');
+    /* **涂色边界看「颜色 + 标记」** ✓ 判据一个字没变，
+     *   只是搬进了 `viewsDiffer(A, B)` —— 好让射线循环**起点那一侧只算一次** ✗
+     *   （原来每步重算两边：约 10 次纹理采样 ✗ 现在是"起点算一次 + 每步只算对面" ✓ 省一半 ✓）*/
     ok('涂色边界看「颜色 + 标记」：颜色不同就划、同色比标记、没开年份视图时未上色互不划 ✓',
-       g2.includes('vec3 lutColour(ivec2 ip)') && g2.includes('if (shownDiffers(ip, q))')
+       g2.includes('vec3 lutColour(ivec2 ip)') && g2.includes('if (viewsDiffer(_A, _B))')
        && g2.includes('if (ca.x < -0.5 && cb.x < -0.5) return false;')
        && g2.includes('if (distance(ca, cb) > 0.02) return true;')
-       && g2.includes('if (uPaintOnly == 1 && !ta && !tb) return false;')
-       && g2.includes('return paintLabelAt(a) != paintLabelAt(b);')
+       && g2.includes('if (uPaintOnly == 1 && !A.painted && !B.painted) return false;')
+       && g2.includes('return A.label != B.label;')
+       // **起点那一侧必须只算一次** ✗（这是这一刀的重点：循环不变量别放循环里 ✓）
+       && /CellView _A = cellViewOf\(ip\);/.test(g2)
        && !g2.includes('shownOf('), 'ok');
   }
 
@@ -233,31 +264,46 @@ function ok(name, cond, extra = '') {
     const g3 = require('fs').readFileSync('web/js/gl.js', 'utf8');
     const nWaste = (g3.match(/, true\)\);/g) || []).length;
     const nNorm = (g3.match(/, false\)\);/g) || []).length;
-    ok('水域边界：固定 1 格 × 基准线宽；荒地边界：宽浓吃「填色边界」那套 ✓',
-       g3.includes('uniform float uWaterW;')
-       && g3.includes('float bwwd = 0.5 * uPaintBorderW * uMapPerPx;')
-       && g3.includes('col = mix(col, vec3(0.035, 0.045, 0.06), bwd * uPaintBorderA);')
-       && !g3.includes('uWasteW')
-       && /const _wScaleB = .*set\.w.*1\.6.*\/ 1\.6/.test(require('fs').readFileSync('web/js/app.js', 'utf8')),
-       `水域 uniform=${g3.includes('uniform float uWaterW;')}`
-       + ` 荒地吃填色宽=${g3.includes('bwwd = 0.5 * uPaintBorderW')}`
-       + ` 荒地吃填色浓=${g3.includes('bwd * uPaintBorderA')}`);
-    ok('荒地缝全归荒地那趟（含荒地↔国家 ✓）—— 本层/多级那几趟一律让出来 ✓',
-       g3.includes('if (_hasWaste != wasteOnly) continue;')
+    /* **背景那两条线各有自己的宽 + 浓** ✓（用户要求可调 ✓
+     *   以前水域固定 1 格 + 写死实心、荒地借「填色边界」那两个值 ✗）
+     *   开关是**内部**的（shader 分两条 if ✓），设置页上没有单独的开关 ✗ */
+    ok('海域 / 荒地边界各有自己的宽度 + 浓度 uniform ✓（不再互相借 ✗）',
+       g3.includes('uniform float uWaterW;') && g3.includes('uniform float uWaterA;')
+       && g3.includes('uniform int   uShowWasteBorder;')
+       && g3.includes('uniform float uWasteW;') && g3.includes('uniform float uWasteA;')
+       && g3.includes('0.5 * uWasteW * uMapPerPx')
+       && g3.includes('bwd * uWasteA')
+       && g3.includes('bwv * uWaterA')
+       && !g3.includes('bwd * uPaintBorderA'),
+       `水域宽=${g3.includes('uniform float uWaterW;')} 水域浓=${g3.includes('uniform float uWaterA;')}`
+       + ` 荒地开关=${g3.includes('uShowWasteBorder')} 荒地宽=${g3.includes('uWasteW')}`
+       + ` 荒地不借填色=${!g3.includes('bwd * uPaintBorderA')}`);
+    /* **荒地边现在也搭填色那趟的便车** ✓（用户要求合并射线 ✓）
+     *   以前它有**单独一趟**（`rayDistTitle(..., wasteOnly=true)` × 4 方向 ✗），
+     *   现在由 `rayDistPaint` 的**第三个分量**一起吐出来 ✓
+     *   → `wasteOnly=true` 的调用该是 **0 个** ✓（`false` 那些是本层 / 多级链在用的 ✓）
+     *   ⚠ 判据仍然只有一套：`cellView.waste`（含"涂过就不算"✓）跟 `_hasWaste` 对齐 ✓ */
+    /* **老路径一个调用点都没有了** ✓（第四轮：main 里只剩"查掩码"那一条路 ✓）
+     *   `rayDistTitle` / `rayDistPaint` 那些函数**还留在文件里** ✗ 但没人调用 ✓
+     *   → GLSL 编译器会把它们丢掉（dead code elimination）→ 编译时的着色器是小的 ✓
+     *    首次那 23 秒能不能省下来，就看这个 ✓
+     *   ⚠ 判据（`_hasWaste` 那套）**留在函数体里当档案** ✓ 别删 —— 万一要回退还得靠它 ✓ */
+    ok('旧路径是**唯一在跑的**那条（掩码那套留着但不调用 ✓）',
+       g3.includes('if (_hasWaste != wasteOnly) continue;')   // 判据还在（档案 ✓）
        && !g3.includes('_byReal')
-       && nWaste === 4 && nNorm === 8,
-       // ⚠ 以前这里按"另一侧是不是真头衔"分过家 ✗：荒地↔国家 被判给本层那条线，
-       //   于是荒地轮廓看着还是**子级的宽浓**（细 + 50%）✗ 用户报的"怎么还是子级" ✓
-       `按真头衔分家=${g3.includes('_byReal')}`
-       + ` wasteOnly=true 的调用 ${nWaste} 个 / false 的 ${nNorm} 个`);
+       && nWaste === 0 && nNorm > 0                            // false 那些是旧路径在调 ✓
+       && !/scanMaskNear\(ip, f, Rall/.test(g3),
+       `wasteOnly=true ${nWaste} 个 / false ${nNorm} 个（都该是 0 ✓）`);
     // 荒地的判据**只看 LUT 那个标记**，不许再挂"必须是伪头衔"的前置 ✗
     //   EU5 的荒地序号混在真头衔范围内（1819 个里 1818 个 < numRealTitles ✗）→
     //   一挂前置，EU5 的荒地缝全落到本层那条 50% 的线上 ✗（用户报过 ✓）
     //   （"这局有多少这种荒地"的数据事实，在那几个探针后面打 ✓ 那儿才拿得到 state）
     {
       const _m = /bool _hasWaste = [^;]+;/.exec(g3);
-      ok('荒地判据只看 LUT 标记（不许加"必须是伪头衔"的前置 ✗ —— EU5 会全变 50%）',
-         !!_m && _m[0] === 'bool _hasWaste = wasteAlphaOf(t) > 0.5 || wasteAlphaOf(tt) > 0.5;',
+      ok('荒地判据 = LUT 标记 **且没被涂过**（不许加"必须是伪头衔"的前置 ✗ —— EU5 会全变 50%）',
+         !!_m && _m[0].includes('wasteAlphaOf(t) > 0.5 && paintAt(ip).a < 0.5')
+         && _m[0].includes('wasteAlphaOf(tt) > 0.5 && paintAt(q).a < 0.5')
+         && !/uRealTitles/.test(_m[0]),
          _m ? _m[0] : '(没找到)');
     }
   }
@@ -292,8 +338,19 @@ function ok(name, cond, extra = '') {
        (cop.split('\n')[1] || '').trim());
     ok('边界查的是 uEditTier', tat.includes('uEditTier') && !tat.includes('uTier'),
        (tat.split('\n')[1] || '').trim());
-    ok('悬停高亮也用 uEditTier（亮的那块 = 点下去会涂到的那块）',
+    ok('悬停**提亮**用的是 uEditTier（暗下去的那块 = 点下去会涂到的那块 ✓）',
        /titleAt\(h,\s*uEditTier\)[\s\S]{0,40}==\s*uHoverTid/.test(frag), '找 titleAt(h, uEditTier) … == uHoverTid');
+    /* **悬停是"高暗"不是"高亮"** ✓（用户要求：改成正片压暗 ✓）
+     *   以前三处都是 `mix(col, vec3(1.0,1.0,1.0), …)`（往白里混 ✗）*/
+    /* **悬停一律提亮** ✓（用户两次说的都是这个：低亮 → 高亮）
+     *   ⚠ 我中途自作聪明改成过"跟着底色走"（浅色压暗）✗ 被用户又提了一次 ✓
+     *   → **不许再写自适应** ✗ 用户要的就是提亮 ✓
+     *   三处都得是直接 `mix(col, vec3(1.0), k)`，而且不许出现亮度判据 ✓ */
+    ok('悬停一律提亮（低亮 → 高亮 ✓ 不做自适应 ✗）',
+       (frag.match(/col = mix\(col, vec3\(1\.0\), 0\.3[02]\)/g) || []).length === 3
+       && !/_hl > 0\.55/.test(frag)
+       && !/mix\(col, vec3\(0\.0\)/.test(frag)
+       && !/mix\(col, vec3\(1\.0, 0\.99, 0\.9\)/.test(frag));
 
     // **无主地块也要画边界** ✓ —— 那道闸以前是「本格在编辑层有头衔」，
     // 而"无主地"在编辑层拿到的正是 NONE → 它的整段边界计算被跳过 →
@@ -701,7 +758,8 @@ return {
   syncParentBorder, syncLayerSwitches, retintCountryLabels,
   get searchHits() { return searchHits; },
   editTier, setGrain, gotoLevel, pressTier, eraTierCount, refreshTierButtons,
-  projectData, saveProject, applyProject, setCapitalAt, labelForColor,
+  projectData, saveProject, applyProject, labelForColor, undo, redo, recomputePainted,
+  provInfoAt, paintTargetsAt, labelMaxValue, saveMapPrefs, loadMapPrefs, clearRecent, buildBorderDepth,
   get renderer() { return renderer; },
   get labels() { return labels; },
   isDegradedBaron, displayedColor, displayedLabel, screenToMap, updateHover,
@@ -839,7 +897,6 @@ const factory = new Function(
       const svProvLabelAll = (hasPaint && st.provLabel) ? st.provLabel.slice() : null;
       const svProvTitleAll = (hasPaint && st.provTitle) ? st.provTitle.slice() : null;
       const svPainted = st.painted ? Array.from(st.painted) : null;
-      const svTitleLabel = st.titleLabel ? new Map(st.titleLabel) : null;
       const svBrushLabel = st.brushLabel, svBrush = st.brush;
       try { if (hasPaint) { st.brushLabel = nm; st.brush = lutC; ex.paintAt(pids[0], tid); } } catch (e) { /* ✓ */ }
       const sameMark = hasPaint && r0.paintLabelData[a] === r0.paintLabelData[b];
@@ -857,7 +914,6 @@ const factory = new Function(
           if (svProvLabelAll) st.provLabel.set(svProvLabelAll);
           if (svProvTitleAll) st.provTitle.set(svProvTitleAll);
           if (svPainted) st.painted = new Set(svPainted);
-          if (svTitleLabel) st.titleLabel = svTitleLabel;
           st.brushLabel = svBrushLabel; st.brush = svBrush;
           r0.paintDirty = true; r0.dirty = true;
         }
@@ -897,15 +953,15 @@ const factory = new Function(
 
     // 改基准线宽 → 渲染器线宽跟着变
     const w0 = ex.renderer.borderWidth;
-    st.set.w = 3.4; st._parentSig = null; ex.syncParentBorder();
+    st.set.w = 3; st._parentSig = null; ex.syncParentBorder();
     const w1 = ex.renderer.borderWidth;
     // 默认没有链（父级边界出厂是关的）→ 本层线宽就等于基准本身 ✓
-    // 粗细阶梯改成了“基准线宽 / 1.6”的倍率：默认（基准=1.6）正好是本层 1 / 父层 1.25 / 填色线与多级链 1.5
-         ok('改「基准线宽」→ 渲染器线宽跟着变（按 1/1.6 倍率）', Math.abs(w1 - 3.4 / 1.6) < 0.01,
+    // 粗细阶梯 = 「地方边界宽度」**直接就是倍率** ✓：默认 1 → 本层 1 / 父层 1.25 / 填色线与多级链 1.5
+         ok('改「地方边界宽度」→ 渲染器线宽跟着变（那个值就是倍率 ✓）', Math.abs(w1 - 3) < 0.01,
        w0.toFixed(2) + ' → ' + w1.toFixed(2));
     // 「恢复默认」→ 回到出厂值
     st.set = { bg: null, waste: null, sea: null, lake: null, impass: null,
-               w: null, a0: 0.5, a1: 0.75, a2: 1.0, pw: 1, font: 1 };
+               w: 1, a0: 0.5, a1: 0.75, a2: 1.0, pw: 1.5, font: 1 };
     st._parentSig = null; ex.syncParentBorder();
     ok('点「恢复默认」→ 线宽回出厂', Math.abs(ex.renderer.borderWidth - w0) < 0.01,
        ex.renderer.borderWidth.toFixed(2) + ' vs ' + w0.toFixed(2));
@@ -921,7 +977,7 @@ const factory = new Function(
        st.set && Math.abs(st.set.font - 1) < 1e-6 && proj2.settings && proj2.settings.font === 1.3,
        'font=' + (st.set && st.set.font) + ' 文件里=' + (proj2.settings && proj2.settings.font));
     st.set = { bg: null, waste: null, sea: null, lake: null, impass: null,
-               w: null, a0: 0.5, a1: 0.75, a2: 1.0, pw: 1, font: 1 };
+               w: 1, a0: 0.5, a1: 0.75, a2: 1.0, pw: 1.5, font: 1 };
     ex.applySettings();                      // 把字号倍率也一起还原 ✓
   }
 
@@ -934,6 +990,395 @@ const factory = new Function(
        /id: 'rename'/.test(appSrc) && /id="rename-input"/.test(HTML)
        && /id="rename-ok"/.test(HTML) && /id="rename-cancel"/.test(HTML),
        'onclick=' + (typeof ex.renameAt === 'function'));
+
+    // **工具表**：改名之后是"填色 / 涂抹 / 橡皮"这三个名字 ✓
+    //   · 填色（F）—— 点一下动一次，**按住拖也不会连发** ✓
+    //   · 涂抹（E）—— 按住拖刷一片（原来的「涂色」✓）
+    //   · 橡皮（R）—— 擦回原样（原来的「还原」✓）
+    ok('工具表里有 填色 / 涂抹 / 橡皮（顺序：吸管 → 填色 → 涂抹 → 橡皮 ✓）',
+       /id: 'fill', label: '填色'/.test(appSrc)
+       && /id: 'paint', label: '涂抹'/.test(appSrc)
+       && /id: 'erase', label: '橡皮'/.test(appSrc)
+       && appSrc.indexOf("id: 'fill'") < appSrc.indexOf("id: 'paint'"),
+       '填色在前=' + (appSrc.indexOf("id: 'fill'") < appSrc.indexOf("id: 'paint'")));
+    ok('「填色」不参与按住拖动连发（只有涂抹 / 橡皮置 painting ✓）',
+       /painting = \(state\.tool === 'paint' \|\| state\.tool === 'erase'\)/.test(appSrc)
+       && /state\.tool === 'paint' \|\| state\.tool === 'fill'/.test(appSrc),
+       '落笔那一支也认 fill ✓');
+
+    /* **取完色自动切工具** ✓（用户要求）
+     *   · 已经在**涂抹 / 填色**上 → 不动（别打断正在画的活儿 ✓）
+     *   · 其余工具上取色 → 切到设置指定的那个（涂抹 / 填色 ✓ 默认涂抹）
+     */
+    {
+      const svTool = st.tool, svPT = st.set.pickTool;
+      st.set.pickTool = 'paint';
+      ex.setTool('view');
+      ex.setBrush([11, 22, 33], false, true);
+      ok('查看上取个色 → 自动切到「涂抹」✓', st.tool === 'paint', st.tool);
+      ex.setTool('fill');
+      ex.setBrush([44, 55, 66], false, true);
+      ok('已经在「填色」上取色 → 不会被踹去涂抹 ✓', st.tool === 'fill', st.tool);
+      ex.setTool('erase');
+      ex.setBrush([77, 88, 99], false, true);
+      ok('在画图工具之外的「橡皮」上取色 → 照样切涂抹 ✓', st.tool === 'paint', st.tool);
+      st.set.pickTool = 'fill';
+      ex.setTool('view');
+      ex.setBrush([12, 34, 56], false, true);
+      ok('设置成「切到填色」→ 取色后切到填色 ✓', st.tool === 'fill', st.tool);
+      st.set.pickTool = svPT;
+      ex.setTool(svTool);
+      ex.setBrush([200, 50, 50], false);
+      ex.setTool(svTool);
+    }
+
+    /* **设置页的控件统一长相** ✓（用户要求：字体、颜色统一一下）
+     * 以前只给 color / range 写了样式 ✗ → select / text / checkbox / 数值提示
+     * 全是浏览器默认的白底 + 默认字号，在深色主题里一眼就出戏 ✓
+     */
+    {
+      const css = require('fs').readFileSync('web/style.css', 'utf8');
+      const need = ['.set-row input[type=text]', '.set-row input[type=number]',
+                    '.set-row select', '.set-row input[type=checkbox]', '.set-row .hint'];
+      const miss = need.filter((s) => !css.includes(s));
+      ok('设置页的控件都有统一样式（select / text / number / checkbox / hint ✓）',
+         miss.length === 0, miss.length ? '缺：' + miss.join(' / ') : '5 类都写了');
+      ok('控件的焦点色统一走 --gold ✓',
+         /\.set-row select:focus[\s\S]{0,140}border-color: var\(--gold\)/.test(css));
+      ok('图例列表也走同一套变量（不再硬编码那个 #26313d ✓）',
+         !/\.legend-list \{[^}]*#26313d/.test(css));
+      // 「名字上限」的数值提示必须在**滑块左边** ✓ ——
+      // 放右边的话 `.set-row` 的 space-between 会把滑块挤到中间，
+      // 跟上面「字号倍率」那根（标签 + 滑块两元素）就对不齐了 ✗
+      ok('「势力名称上限」的数值在滑块左边（滑块才能跟上一行对齐 ✓）',
+         /势力名称上限<\/span><span class="hint" id="set-labelmax-v"><\/span><input type="range" id="set-labelmax"/.test(HTML)
+         && /\.set-row \.hint \{[^}]*margin-right: auto/.test(css));
+      /* **上限是"每个国家"的，不是"全世界"的** ✓（用户澄清过一次 ✓
+       *   他要的是"英国本土 + 它的殖民地，加起来最多 N 个" ✓
+       *   我第一版写成全局取前 N ✗ → 一屏只剩十几个国名 ✗（EU4 有 1863 坨）
+       *   → 现在按**显示色 + 名字**分组、每组各留 N 个 ✓ */
+      ok('每国名字上限：按族分组截断（不是全局取前 N ✗）',
+         /const _per = new Map\(\)/.test(appSrc)
+         && /_per\.get\(k\)/.test(appSrc)
+         && !/if \(_cap > 0 && out\.length > _cap\) out\.length = _cap;/.test(appSrc));
+      /* **线宽五档 / 浓度四档** ✓（用户定的）：
+       *   下拉里的档位必须跟 app 里那几张表对得上（两处写死，测试盯着 ✓）
+       *   浓度就是 25% / 50% / 75% / 100% 这四档 ✓ */
+      /* **用户这次要的两件事**（都是硬要求 ✓ 钉住防回退）
+     *   ① 边界宽度要有 **0.5** 这一档（原来从 1 起 ✗ 六档 ✓）
+     *   ② **默认宽度一律 1.0**（原来 pw/waterW/wasteW 是 1.5 ✗）
+     *   ⚠ 浓度（pa/ra/ca）**不动** ✗ 用户说的是"宽度都是 1.0" ✓ */
+    {
+      const a = fs.readFileSync(path.join(ROOT, "web", "js", "app.js"), "utf8");
+      const h = fs.readFileSync(path.join(ROOT, "web", "index.html"), "utf8");
+      const six = /const W_STEPS = \[0\.5, 1, 1\.5, 2, 2\.5, 3\][\s\S]*const PW_STEPS = \[0\.5, 1, 1\.5, 2, 2\.5, 3\][\s\S]*const BG_STEPS = \[0\.5, 1, 1\.5, 2, 2\.5, 3\]/;
+      ok("三张宽度档位表都有 0.5 那一档（六档 ✓）", six.test(a), six.test(a) ? "三张都在" : "缺");
+      ok("四个宽度滑条都从 0.5 起",
+         (h.match(/min="0\.5" max="3" step="0\.5"/g) || []).length === 4,
+         (h.match(/min="0\.5" max="3"/g) || []).length + "/4");
+      /* **浓度要有 0%** ✗（用户要的 ✓ 0% = 那条线完全不画 ✓）*/
+      ok("浓度档位含 0%（五档 ✓）",
+         /const CONC_STEPS = \[0, 25, 50, 75, 100\]/.test(a)
+         && (h.match(/id="set-(pa|ra|ca|water-a|waste-a)"[^>]*min="0" max="100" step="25"/g) || []).length === 5,
+         "档位表 " + (/\[0, 25, 50, 75, 100\]/.test(a) ? "有0" : "没0")
+         + " · 滑条 " + (h.match(/min="0" max="100" step="25"/g) || []).length + "/5");
+      const dft = [/w: 1, pa/, /pw: 1, font/, /waterW: 1, waterA/, /wasteW: 1, wasteA/];
+      ok("默认宽度一律 1.0（pw / 水域 / 荒地 ✓）", dft.every((r) => r.test(a)),
+         dft.map((r) => (r.test(a) ? "1" : "≠1")).join(" · "));
+    }
+    ok('线宽 / 背景线宽 / 浓度 三张档位表在 app 里（宽度六档含 0.5 ✓ 浓度五档含 0 ✓）',
+         /const W_STEPS = \[0\.5, 1, 1\.5, 2, 2\.5, 3\]/.test(appSrc)
+         && /const PW_STEPS = \[0\.5, 1, 1\.5, 2, 2\.5, 3\]/.test(appSrc)
+         && /const BG_STEPS = \[0\.5, 1, 1\.5, 2, 2\.5, 3\]/.test(appSrc)
+         && /const CONC_STEPS = \[0, 25, 50, 75, 100\]/.test(appSrc));
+      // **边界那九条全是滑条** ✓（用户定的）—— 档位靠 min/max/step 锁住 ✓ 不用下拉 ✓
+      //   线宽：0.5~3 步长 0.5 ✓（六档）  浓度：0~100 步长 25 ✓（五档，含 0% = 不画 ✓）
+      const _range = (id) => {
+        const m = HTML.match(new RegExp('id="' + id + '"[^>]*min="([\\d.]+)"[^>]*max="([\\d.]+)"[^>]*step="([\\d.]+)"'));
+        return m ? m.slice(1).join(',') : '';
+      };
+      const _isRange = (id) => new RegExp('type="range" id="' + id + '"').test(HTML);
+      ok('四条宽度滑条**同一个范围**（0.5~3，步长 0.5 ✓ 六档）',
+         ['set-w', 'set-pw', 'set-water-w', 'set-waste-w'].every(_isRange)
+         && ['set-w', 'set-pw', 'set-water-w', 'set-waste-w'].every((id) => _range(id) === '0.5,3,0.5'),
+         'set-w=' + _range('set-w') + ' 海域=' + _range('set-water-w'));
+      ok('浓度五条都是滑条（0~100，步长 25 ✓ 五档）',
+         ['set-pa', 'set-ra', 'set-ca', 'set-water-a', 'set-waste-a']
+           .every((id) => _isRange(id) && _range(id) === '0,100,25'),
+         'set-ca=' + _range('set-ca'));
+      /* 🔴 **导出按钮出错必须有人管** ✗（用户报：手机版导出 `Script error: 0` ✓）
+       *   根因：`_wrap` 原来只有一句 `return fn(ev)` ✗ 而 exportFullPNG 是 **async** ✓
+       *   → 它抛错成了**未处理的 Promise 拒绝** ✓ 手机浏览器报成 Script error: 0
+       *     （跨域屏蔽把堆栈全藏了 ✓ 所以那个报错什么信息都没有 ✓）
+       *   ⚠ 只接同步异常是不够的 ✗ **必须连 .then 的那种也接** ✓
+       *     这条断言就是防"以后有人把 _wrap 简化回一句 return" ✓ */
+      {
+        const a = fs.readFileSync(path.join(ROOT, "web", "js", "app.js"), "utf8");
+        const w = a.slice(a.indexOf("const _wrap = (fn)"), a.indexOf("function onExportFail"));
+        ok("_wrap 同时接住同步异常和 async 拒绝 ✓",
+           /try \{/.test(w) && /catch \(e\)/.test(w)
+           && /typeof r\.then === .function./.test(w) && /r\.catch\(onExportFail\)/.test(w)
+           && /function onExportFail/.test(a));
+        /* 🔴 **不许弹系统分享面板** ✗（用户实测：文件存得下来 ✓ 但面板一直挂着 ✓）
+         *   我上一轮"为了手机"加的 navigator.share 就是那个面板的来源 ✓
+         *   → 手机上 <a download> 本来就能用 ✓ 别再自作聪明上 Web Share ✗
+         *   ⚠ 断言要盯着**代码**，不能只看有没有"share"这个词 ✗
+         *     （注释里就写着"不许调 navigator.share" ✓ 会误报 ✓）*/
+        {
+          const dl = a.slice(a.indexOf("function download(blob, name)"),
+                             a.indexOf("function stamp()"));
+          ok("download 只用 a.download（不弹系统分享面板 ✓）",
+             /a\.download = name/.test(dl)
+             && !/navigator\.share\s*\(/.test(dl) && !/navigator\.canShare/.test(dl)
+             && !/window\.open/.test(dl),
+             "download 里 " + (/navigator\.share\s*\(/.test(dl) ? "还有 share ✗" : "干净 ✓"));
+        }
+      }
+      /* 🔴 **报错面板必须能关掉** ✗（用户报："报错弹窗不知道为什么会一直显示" ✓）
+       *   以前那个条只有一颗"导出日志" ✗ 没有任何关闭入口 ✓
+       *   而它 `position:fixed; bottom:0` ✓ 手机上占 45% 高 ✓
+       *   → 一旦有错就**永久挡着半屏** ✓ 用户只能刷新页面 ✓
+       *   ⚠ 这条跟"导出为什么出错"是**两件事** ✗ 这个是面板本身的缺陷 ✓
+       *     所以单独钉住 —— 哪天别处又冒个错出来，至少用户能把它关掉 ✓ */
+      {
+        const a = fs.readFileSync(path.join(ROOT, "web", "js", "app.js"), "utf8");
+        const fn = a.slice(a.indexOf("function showFatal"), a.indexOf("window.addEventListener('error'"));
+        ok("报错面板有关闭按钮（点条也能关 ✓）",
+           /id = 'fatal-close'/.test(fn) && /box\.remove\(\)/.test(fn)
+           && /box\.onclick =/.test(fn),
+           /fatal-close/.test(fn) ? "有关闭 ✓" : "关不掉 ✗");
+      }
+      /* **界面上叫「势力名称不透明度」** ✗（用户定的 ✓ 原来写"国名" ✓）
+       *   它盖的是剧本/年份那几层的势力名 ✓ 叫"国名"范围说窄了 ✓
+       *   ⚠ 变量名还是 labelAC / alphaCountry ✗ 那是历史包袱 ✓ 别跟着改 ✓ */
+      ok("那条滑条叫「势力名称不透明度」（不再叫国名 ✓）",
+         /势力名称不透明度/.test(HTML) && !/国名不透明度/.test(HTML)
+         && /set-labelac/.test(HTML));
+      ok('滑条旁边有当前值提示（跟「名字上限」同一套 ✓）',
+         /function buildSliderTips/.test(appSrc) && /const SLIDER_TIPS = \[/.test(appSrc)
+         && /margin-right: auto/.test(css));
+      /* **高清导出（2×）** ✓（用户要求：一个地图像素拆成 2×2 ✓
+       *   边界按**新的尺度**重画 ✓ —— 靠的是"视口照旧按地图坐标给、画布尺寸翻倍"，
+       *   着色器那边 `uMapPerPx = view.w / canvas.width` 自动减半 ✓
+       *   不是把 1× 的图放大那种糊 ✗）*/
+      ok('导出菜单有「导出高清地图」（画布翻倍而视口不变 ✓）',
+         /id="btn-png-full2">导出高清地图</.test(HTML)
+         && /async function exportFullPNG\(scale = 1\)/.test(appSrc)
+         && /out\.width = W \* scale/.test(appSrc)
+         && /glCanvas\.width = tw \* scale/.test(appSrc)
+         && /renderer\.setView\(tx, ty, tw, th\)/.test(appSrc)
+         && /Math\.max\(512, Math\.floor\(2048 \/ scale\)\)/.test(appSrc)
+         && /maybeDrawLegend\(ctx, W \* scale, H \* scale\)/.test(appSrc));
+      /* **命名规范**（用户定的 ✓）：「某某边界」+ 宽度 / 浓度 ——
+       *   地方边界（原"基准线宽"）、势力边界（原"势力线宽"）、
+       *   水域边界（原"海域"）、荒地边界 ✓ */
+      ok('边界那九条的名字规范（四个宽度 + 五个浓度 ✓）',
+         ['地方边界宽度', '势力边界宽度', '水域边界宽度', '荒地边界宽度',
+          '省份边界浓度', '地区边界浓度', '势力边界浓度',
+          '水域边界浓度', '荒地边界浓度']
+           .every((nm) => HTML.includes('>' + nm + '<'))
+         && !HTML.includes('>基准线宽<') && !HTML.includes('>海域宽度<')
+         && !HTML.includes('>海域浓度<') && !HTML.includes('>荒地浓度<'));
+      /* **搜索框那个色点要跟着涂色走** ✓（用户报的"最近用的颜色没更新它"✓）
+       *   地区 / 省份行：按地块查（`swatchColorOf`）✓
+       *   国家行：手里只有名字 → **按名字反查手绘层**（`paintedColorByName`）✓ */
+      ok('搜索结果的色点会跟着涂色走（两种行各走各的路 ✓）',
+         /function swatchColorOf/.test(appSrc)
+         && /function paintedColorByName/.test(appSrc)
+         && /rgbToHex\(paintedColorByName\(h\.name\) \|\| h\.color\)/.test(appSrc)
+         && /const _col = swatchColorOf\(tid\)/.test(appSrc));
+
+      /* **搜索里取的色要进「最近用过」** ✓（用户报的"加不进记忆"✓
+       *   以前那几处传的是 remember=false ✗ —— 从搜索取的色永远进不了调色板 ✓）*/
+      ok('搜索里取的色会进「最近用过」（不再传 false ✗）',
+         !/setBrush\(h\.color, false, true\)/.test(appSrc)
+         && !/setBrush\(_col, false, true\)/.test(appSrc)
+         && /setBrush\(h\.color, true, true\)/.test(appSrc)
+         && /setBrush\(_col, true, true\)/.test(appSrc));
+      {
+        const _svRecent = (st.recent || []).slice();
+        st.recent = [];
+        ex.setBrush([10, 20, 30], true, false);
+        ex.setBrush([40, 50, 60], true, false);
+        ex.setBrush([10, 20, 30], true, false);      // 再来一次 → 提到最前、不重复 ✓
+        ok('「最近用过」去重 + 置顶 ✓',
+           st.recent.length === 2 && String(st.recent[0].rgb) === '10,20,30',
+           st.recent.map((x) => x.rgb.join(',')).join(' / '));
+        /* **「清空」按钮** ✓（用户要求）—— 而且要**连盘上那份一起清** ✗
+         *   只清内存的话刷新一下记忆颜色又回来了 ✓（跟当年"涂色删不掉"同一类坑 ✓）*/
+        ok('侧栏有个清空记忆颜色的按钮 ✓', /id="btn-clear-recent"/.test(HTML));
+        ex.clearRecent();
+        ok('点了清空 → 内存里没了 ✓', st.recent.length === 0, String(st.recent.length));
+        const _pr = ex.loadMapPrefs(st.meta);
+        ok('点了清空 → **盘上那份也清了**（刷新不会又冒出来 ✓）',
+           !_pr || !Array.isArray(_pr.recent) || _pr.recent.length === 0,
+           _pr && _pr.recent ? JSON.stringify(_pr.recent) : '空 ✓');
+        st.recent = _svRecent;
+        ex.saveMapPrefs();
+      }
+
+      /* **设置 + 最近颜色是存下来的** ✓（用户要求：刷新 / 回主菜单都不丢 ✓；
+       *   而且**每张图各存各的** ✓ —— 跟"涂色暂存"那份是**两回事** ✓
+       *   涂色：回主菜单才存、F5 就清 ✓   设置：两边都活 ✓）*/
+      {
+        const _svW = st.set.w, _svPa = st.set.pa, _svWw = st.set.waterW;
+        const _svRecent = (st.recent || []).slice();
+        st.set.w = 2.5; st.set.pa = 25; st.set.waterW = 2;
+        st.recent = [{ rgb: [7, 8, 9] }];          // 只存颜色 ✓ 不带标记 ✓
+        ok('saveMapPrefs() 能写进去 ✓', ex.saveMapPrefs() === true);
+        const _back = ex.loadMapPrefs(st.meta);
+        ok('取回来的就是刚存下的设置 ✓',
+           !!_back && !!_back.set && Number(_back.set.w) === 2.5
+           && Number(_back.set.pa) === 25 && Number(_back.set.waterW) === 2,
+           _back && _back.set
+             ? `w=${_back.set.w} pa=${_back.set.pa} waterW=${_back.set.waterW}` : '没读到 ✗');
+        ok('最近颜色也跟着存 ✓',
+           !!_back && Array.isArray(_back.recent) && _back.recent.length === 1
+           && String(_back.recent[0].rgb) === '7,8,9',
+           _back && _back.recent ? JSON.stringify(_back.recent[0]) : '没读到 ✗');
+        /* **只存颜色、不存标记** ✓（用户定的：节约一点 ✓）
+         *   原来每条是 { rgb, label } ✗ 点它还会顺手把标记名也恢复 ✓
+         *   → "最近取色"本来就是个**颜色**记忆 ✗ 不该改你当前的标记 ✓
+         *   ⚠ 老存档里多出来的 label 会被忽略 ✓ 不用迁移 ✓ */
+        ok('最近取色只存颜色（不存标记 ✓）',
+           !!_back && _back.recent && _back.recent.length === 1
+           && _back.recent[0].rgb != null && _back.recent[0].label === undefined,
+           '字段：' + (_back && _back.recent ? Object.keys(_back.recent[0]).join(',') : '?'));
+        // **按地图分**：换一张图（换 stashKey ✓）读不到这张图的设置 ✓
+        const _other = Object.assign({}, st.meta, { stashKey: 'OTHER_MAP_FOR_TEST' });
+        const _ob = ex.loadMapPrefs(_other);
+        ok('换一张图读不到这张图的设置（按地图分 ✓）',
+           !_ob || !_ob.set || Number(_ob.set.w) !== 2.5,
+           _ob && _ob.set ? 'w=' + _ob.set.w : '空 ✓');
+        st.set.w = _svW; st.set.pa = _svPa; st.set.waterW = _svWw;
+        st.recent = _svRecent;
+        ex.saveMapPrefs();
+      }
+      // 滑条的**档位数**得跟 app 里的档位表对得上 ✓（min/max/step 算出来 ✓）
+      const _count = (r) => {
+        const p = String(r).split(',').map(Number);
+        return (p[2] > 0) ? Math.round((p[1] - p[0]) / p[2]) + 1 : 0;
+      };
+      ok('滑条档位数跟档位表一致（宽度 6 / 浓度 4 ✓）',
+         _count(_range('set-w')) === 6 && _count(_range('set-water-w')) === 6
+         && _count(_range('set-ca')) === 5,
+         `线宽 ${_count(_range('set-w'))} / 海域 ${_count(_range('set-water-w'))} / 浓度 ${_count(_range('set-ca'))}`);
+      ok('老存档的连续值会**吸附**到最近的档位（不是显示成空白 ✓）',
+         /function snapStep/.test(appSrc) && /snapStep\(Number\(s\.w/.test(appSrc));
+      /* **海域 / 荒地**：设置里只有**宽度 + 浓度** ✓（显示开关用户要求去掉了 ✗
+       *   它们跟着"当前模式的边界全关"一起藏 ✓ 见下面那条 ✓）*/
+      ok('设置页「海域 / 荒地」只有宽度 + 浓度（显示开关已去掉 ✓ 宽度默认 1 ✓）',
+         ['set-water-w', 'set-water-a', 'set-waste-w', 'set-waste-a']
+           .every((id) => HTML.includes('id="' + id + '"'))
+         && !HTML.includes('set-water-on') && !HTML.includes('set-waste-on')
+         && /waterW: 1, waterA: 100/.test(appSrc)
+         && /wasteW: 1, wasteA: 100/.test(appSrc)
+         /* ⚠ 别写成 !/waterOn|wasteOn/ ✗ —— 注释里引用着色器判据时会出现 `wasteOnly`，
+          *   而它正好以 `wasteOn` 开头 → **误伤** ✓（踩过一次 ✓）
+          *   这里要查的是"有没有这两个**字段**"，所以只认 `waterOn:` / `waterOn=` 那种写法 ✓ */
+         && !/[^A-Za-z]waterOn\s*[:=]/.test(appSrc)
+         && !/[^A-Za-z]wasteOn\s*[:=]/.test(appSrc));
+      /* **设置页就 4 栏** ✓（颜色 / 边界 / 导出图例 / 名字等）——
+       *   弹窗 1120px 一行放得下 4×240 + 3×22 ≈ 1026 ✓（用户要求加宽：不然标签会换行 ✓）
+       *   拆成 5 栏就换行，后一栏掉进滚动区、**看不见** ✗（海域·荒地 就是这么丢的 ✓）
+       *   所以边界里的东西**都装在一栏**里，靠"宽宽宽宽 + 浓浓浓浓"的顺序分 ✓ */
+      ok('设置页排成 4 栏（多一栏就会换行、有栏看不见 ✓）',
+         (HTML.match(/class="set-col"/g) || []).length === 4,
+         (HTML.match(/class="set-col"/g) || []).length + ' 栏');
+
+      /* **水域 / 荒地边界**在"当前模式里能关的边界全关"时也该藏 ✓
+       *   · 有年代层（EU4 / HOI4 / V3 / EU5）：势力 / 地区 / 填色 三个 ✓
+       *   · CK3：头衔 / 填色 两个（"势力/地区"那两组在 CK3 是隐藏的 ✗
+       *     以前写死看那三个名字 → CK3 两个全关了、线还在画 ✓）
+       */
+      {
+        const svB = {
+          pw: st.showPowerBorder, rg: st.showRegionBorder,
+          bp: st.showBorderPaint, bt: st.showBorderTitle,
+        };
+        const hasEraSw = !!get('show-power-border') && N_ERA > 0;
+        if (hasEraSw) {
+          st.showPowerBorder = false; st.showRegionBorder = false; st.showBorderPaint = false;
+          ex.syncLayerSwitches();
+          ok('势力 / 地区 / 填色 三个全关 → 水域 + 荒地边界也藏了 ✓',
+             ex.renderer.showWater === false, 'showWater=' + ex.renderer.showWater);
+          st.showRegionBorder = true;
+          ex.syncLayerSwitches();
+          ok('只留一个（地区）→ 它们又画出来 ✓', ex.renderer.showWater === true,
+             'showWater=' + ex.renderer.showWater);
+        } else {
+          st.showBorderTitle = false; st.showBorderPaint = false;
+          ex.syncLayerSwitches();
+          ok('CK3 头衔 / 填色 两个全关 → 水域 + 荒地边界也藏了 ✓',
+             ex.renderer.showWater === false, 'showWater=' + ex.renderer.showWater);
+          st.showBorderTitle = true;
+          ex.syncLayerSwitches();
+          ok('只留一个（头衔）→ 它们又画出来 ✓', ex.renderer.showWater === true,
+             'showWater=' + ex.renderer.showWater);
+        }
+        st.showPowerBorder = svB.pw; st.showRegionBorder = svB.rg;
+        st.showBorderPaint = svB.bp; st.showBorderTitle = svB.bt;
+        ex.syncLayerSwitches();
+      }
+    }
+
+    /* **取色（吸管）遵循 province 机制** ✓（用户定的）
+     *   名字：开剧本 → 涂过用**涂色名**、没涂用**剧本归属**那个国家的名字；
+     *         没开剧本 → 用**对应级别**的名字（省名 / 地区名）✓
+     *   颜色：**玩家看到什么就吸什么** ✓（显示开关都算进去 ✓）
+     */
+    if (N_ERA > 0) {
+      const svT2 = st.tier, svG2 = st.grain, svShow = st.showTitles;
+      let q0 = 0;
+      for (let q = 1; q < st.meta.numProvinces && !q0; q++) {
+        const t = ex.titleAt(q, ERA0);
+        if (t == null || t === st.meta.noTitle || ex.isLocked(t)) continue;
+        if (st.provPos[q * 3 + 2] > 0) q0 = q;
+      }
+      if (q0) {
+        const eraName = String(st.titles.names[ex.titleAt(q0, ERA0)] || '');
+        // ① 剧本层视图、还没涂 → 吸到的是**剧本归属**那个国家的名字 ✓
+        st.tier = ERA0; st.grain = null;
+        ex.syncLayerSwitches();
+        ex.pickTitle(ex.titleAt(q0, ERA0), false, q0);
+        ok(`开剧本 + 没涂过 → 标记名是剧本归属「${eraName}」✓`,
+           st.brushLabel === eraName, `吸到「${st.brushLabel}」`);
+        // ② 涂过之后 → 吸到的是**涂色标记名** ✓（不是剧本名）
+        const svLabel = st.brushLabel;
+        st.brushLabel = '我的国';
+        ex.paintTitle(ex.titleAt(q0, st.meta.tiers.length - 1), [200, 30, 30], true);
+        ex.recomputePainted();
+        ex.pickTitle(ex.titleAt(q0, ERA0), false, q0);
+        ok('开剧本 + 涂过 → 标记名是**涂色名**（不是剧本名 ✓）',
+           st.brushLabel === '我的国', `吸到「${st.brushLabel}」（剧本名是「${eraName}」）`);
+        ex.restoreTitle(ex.titleAt(q0, st.meta.tiers.length - 1), true);
+        ex.recomputePainted();
+        st.brushLabel = svLabel;
+        // ③ 细层视图、没涂 → 用**对应级别**的名字（省名 ✓）
+        const _lastT = st.meta.tiers.length - 1;
+        const fineName = String(st.titles.names[ex.titleAt(q0, _lastT)] || '');
+        st.tier = _lastT; st.grain = null;
+        ex.syncLayerSwitches();
+        ex.pickTitle(ex.titleAt(q0, _lastT), false, q0);
+        ok(`没开剧本 + 没涂过 → 标记名是**这一级**的名字「${fineName}」✓`,
+           st.brushLabel === fineName, `吸到「${st.brushLabel}」`);
+        // ④ 颜色 = 画面上那个（displayedColor ✓），而且**跟着显示开关走**
+        st.tier = ERA0;
+        ex.syncLayerSwitches();
+        const onCol = String(ex.displayedColor(q0, ex.titleAt(q0, ERA0)));
+        ex.pickTitle(ex.titleAt(q0, ERA0), false, q0);
+        ok('取色 = 画面上那个色（displayedColor ✓）', String(st.brush) === onCol,
+           `吸到 ${st.brush} / 画面 ${onCol}`);
+        st.showTitles = false;
+        const offCol = String(ex.displayedColor(q0, ex.titleAt(q0, ERA0)));
+        ex.pickTitle(ex.titleAt(q0, ERA0), false, q0);
+        ok('关掉「头衔 · 颜色」→ 吸到的是画面上的底色（看到的才算 ✓）',
+           String(st.brush) === offCol, `吸到 ${st.brush} / 画面 ${offCol}`);
+        st.showTitles = svShow;
+        st.tier = svT2; st.grain = svG2;
+        ex.syncLayerSwitches();
+      }
+    }
 
     // ① 涂过的地：改名 → 色块名字跟着变
     const anyPid = (() => {
@@ -1020,12 +1465,24 @@ const factory = new Function(
         st.brush = [10, 10, 10];
         ex.paintAt(q3, ex.titleAt(q3, st.meta.tiers.length - 1));
         // 只有点中的那一个（细层头衔）会变，另两个剧本层国家不动 ✓
-        const stillThree = three3.filter((tid) => {
-          const c = st.paintColor.get(tid);
-          return c && c[0] === 77 && c[1] === 88 && c[2] === 99;
-        }).length;
-        ok('开了粒度 → 涂色只动点中的那一块（其余剧本层国家不变）',
-           stillThree === 3, '保持原色的 ' + stillThree + ' / 3');
+        // "某个头衔还涂着 77,88,99 吗" → 落到**它名下那一格自己**身上问 ✓（不再查头衔级的账 ✗）
+        const stillLit = (tid) => {
+          const nn = st.meta.numProvinces, tmm = st.titlemap, pdd = ex.renderer.paintData;
+          const nTT = st.meta.tiers.length;
+          for (let q = 1; q < nn; q++) {
+            if (pdd[q * 4 + 3] === 0) continue;
+            let hit = false;
+            for (let ti = 0; ti < nTT; ti++) if (tmm[ti * nn + q] === tid) { hit = true; break; }
+            if (!hit) continue;
+            if (pdd[q * 4] === 77 && pdd[q * 4 + 1] === 88 && pdd[q * 4 + 2] === 99) return true;
+          }
+          return false;
+        };
+        // 点中的那个国家可能只有那一格被涂过（覆盖掉就没了）——
+        // 这条验的是"**另两个**国家没被连坐" ✓
+        const keptThree = three3.slice(1).filter(stillLit).length;
+        ok('开了粒度 → 涂色只动点中的那一块（另两个剧本层国家不变）',
+           keptThree === 2, '保持原色的 ' + keptThree + ' / 2（另两个国家）');
       }
       for (const tid of three3) ex.restoreTitle(tid);
     }
@@ -1033,11 +1490,16 @@ const factory = new Function(
     ex.syncLayerSwitches();
   }
 
-  // 高亮也跟"以玩家为准"：同色的一族一起亮（判据 hoverGroupRgb）✓
+  // 高亮也是**同一套口径**（判据 hoverGroupRgb）：
+  //   涂过的地 → 返回那一族的涂色；没涂过的地 → 返回它的**稳定色**
+  //   （着色器按"颜色 + 标记"亮，标记来自头衔名 → 等价于"同色同标记" ✓）
+  //   细层 / 开了粒度 → 返回 null，退回按编辑层头衔亮（那一块）✓
+  //   **不看那两个边界开关**（开关只决定涂色先看全图玩家族还是那一国里同色同标记的 ✓）
   if ((st.meta.eraDates || []).length) {
     const nEra = st.meta.eraDates.length;
-    const svTier = st.tier, svGrain = st.grain, svBP = st.showBorderPaint, svBrush = st.brushLabel;
-    st.tier = ERA0; st.grain = null; st.showBorderPaint = true;
+    const svTier = st.tier, svGrain = st.grain, svBP = st.showBorderPaint;
+    const svPB = st.showPowerBorder, svBrush = st.brushLabel;
+    st.tier = ERA0; st.grain = null; st.showBorderPaint = true; st.showPowerBorder = false;
     let hitPid = 0;
     const _nReal = st.meta.numRealTitles != null ? st.meta.numRealTitles : 1e9;
     for (let q = 1; q < st.meta.numProvinces && !hitPid; q++) {
@@ -1047,17 +1509,25 @@ const factory = new Function(
       if (st.provPos[q * 3 + 2] > 0 && ex.renderer.paintData[q * 4 + 3] === 0) hitPid = q;
     }
     if (hitPid) {
+      // ① 还没涂过 → 返回**稳定色**（原版色）：着色器配"标记"亮 = 同色同名那一族 ✓
+      const g0 = ex.hoverGroupRgb(hitPid);
+      ok('没涂过的地 → 返回稳定色（按"同色同标记"整族亮 ✓）',
+         Array.isArray(g0) && g0.length === 3, JSON.stringify(g0));
       st.brushLabel = '高亮测';
       ex.paintTitle(ex.titleAt(hitPid, ERA0), [90, 40, 200]);
       const got = ex.hoverGroupRgb(hitPid);
-      ok('条件满足 → 悬停整族高亮拿到那一族的涂色',
+      ok('涂过了 → 悬停拿到那一族的涂色',
          !!got && got[0] === 90 && got[1] === 40 && got[2] === 200, JSON.stringify(got));
-      st.showBorderPaint = false;
-      ok('「填色·边界」关掉 → 不做整族高亮（退回按头衔）', ex.hoverGroupRgb(hitPid) === null,
-         String(ex.hoverGroupRgb(hitPid)));
+      // ② 只开「势力 · 边界」→ 照样整族亮（跟涂色那条一致：归属永远是"同色同标记" ✓）
+      st.showBorderPaint = false; st.showPowerBorder = true;
+      const g2 = ex.hoverGroupRgb(hitPid);
+      ok('只开「势力 · 边界」→ 照样整族亮（跟涂色同一套 ✓）',
+         !!g2 && g2[0] === 90, JSON.stringify(g2));
+      st.showBorderPaint = true; st.showPowerBorder = false;
       ex.restoreTitle(ex.titleAt(hitPid, ERA0));
     }
-    st.tier = svTier; st.grain = svGrain; st.showBorderPaint = svBP; st.brushLabel = svBrush;
+    st.tier = svTier; st.grain = svGrain; st.showBorderPaint = svBP;
+    st.showPowerBorder = svPB; st.brushLabel = svBrush;
     ex.syncLayerSwitches();
   }
 
@@ -1079,7 +1549,20 @@ const factory = new Function(
     if (three.length === 3) {
       st.brushLabel = '玩家国';
       for (const tid of three) ex.paintTitle(tid, [220, 30, 140]);      // 一次用新颜色涂三块 ✓
-      const grp = ex.playerGroupTids(three[0], st.paintColor.get(three[0]), st.titleLabel.get(three[0]));
+      // "那一族"的颜色和名字 → 从**它名下的一格**问（`provInfoAt` 解析出来的 ✓）
+      const _gp = (() => {
+        const nn = st.meta.numProvinces, tmm = st.titlemap, pdd = ex.renderer.paintData;
+        const nTT = st.meta.tiers.length;
+        for (let q = 1; q < nn; q++) {
+          if (pdd[q * 4 + 3] === 0) continue;
+          for (let ti = 0; ti < nTT; ti++) if (tmm[ti * nn + q] === three[0]) return q;
+        }
+        return 0;
+      })();
+      const _gi = _gp ? ex.provInfoAt(_gp) : null;
+      const grp = ex.playerGroupTids(three[0],
+        (_gi && _gi.fill ? _gi.fill.rgb : null),
+        (_gi && _gi.fill ? _gi.fill.name : ''));
       ok('同色同标签的三个国家能认成一族', grp.length >= 3, '族里 ' + grp.length + ' 个');
       // 再点其中一个、换个颜色涂 → 三个一起变 ✓
       st.brushLabel = '玩家国';
@@ -1115,13 +1598,16 @@ const factory = new Function(
     ex.syncLayerSwitches();
   }
 
-  // 回归（用户报的）：剧本视图 + **没开粒度** + 「填色·边界」开着时，
-  // 点一块**没涂过**的地 —— 只许涂"跟它同一块色"的那几块。
-  // 同一个头衔里被玩家涂成别的颜色的地方（1936 剧本里被德国占掉的那半法国就是这种）
-  // **一块都不许碰** ✗（以前这里直接按头衔把整个国家铺一遍，占领区一起被盖掉了 ✓）
+  // 剧本视图（**没开粒度**）下的**填色口径**（用户定的 ✓）——
+  // 判据是 `provInfoAt` **解析出来的归属**（名字 + 颜色 ✓），不是头衔序号：
+  //   · 「势力 · 边界」开着（填色没开）→ 按**剧本归属**整块（整个国家 ✓ 含别色的占领区）
+  //   · 否则（填色开着 / **两个都没开**）→ **涂过的看填色归属、没涂过的看剧本归属** ✓
+  //   · 都没有 → 只动最低单位那一块
+  // 三个具体例子见下面 3c-3 那段（巴黎涂成德国色那种 ✓）
   if ((st.meta.eraDates || []).length && st.meta.eraDates.length < st.meta.tiers.length) {
-    const svT0 = st.tier, svG0 = st.grain, svBP0 = st.showBorderPaint, svB0 = st.brushLabel;
-    st.tier = ERA0; st.grain = null; st.showBorderPaint = true;
+    const svT0 = st.tier, svG0 = st.grain, svBP0 = st.showBorderPaint;
+    const svPB0 = st.showPowerBorder, svB0 = st.brushLabel;
+    st.tier = ERA0; st.grain = null;
     const n0 = st.meta.numProvinces, tm0 = st.titlemap;
     const fine0 = st.meta.tiers.length - 1;
     const _nReal0 = st.meta.numRealTitles != null ? st.meta.numRealTitles : 1e9;
@@ -1160,29 +1646,86 @@ const factory = new Function(
         return pd[p4 + 3] > 0 && pd[p4] === 64 && pd[p4 + 1] === 64 && pd[p4 + 2] === 72;
       };
       const free0 = land0.filter((q) => ex.renderer.paintData[q * 4 + 3] === 0);
+      const pd0 = ex.renderer.paintData;
+      const lit0 = (q) => pd0[q * 4 + 3] > 0;
+      const countRGB = (rgb) => land0.filter((q) => lit0(q)
+        && pd0[q * 4] === rgb[0] && pd0[q * 4 + 1] === rgb[1] && pd0[q * 4 + 2] === rgb[2]).length;
+      const clearAll0 = () => {
+        for (let q = 1; q < n0; q++) {
+          for (let ti = 0; ti < st.meta.tiers.length; ti++) {
+            const t1 = ex.titleAt(q, ti);
+            if (t1 != null && t1 !== 65535 && st.painted.has(t1)) ex.restoreTitle(t1, true);
+          }
+        }
+        ex.recomputePainted();
+      };
+      // 重新造一次"占领"（细层一块一块点出来，跟真人一样 ✓），再回剧本视图
+      const makeOcc0 = () => {
+        clearAll0();
+        st.grain = fine0; ex.syncLayerSwitches();
+        st.brush = [64, 64, 72]; st.brushLabel = '占领国';
+        for (const q of land0.slice(0, Math.min(Math.floor(land0.length / 2), 30))) {
+          ex.paintAt(q, ex.titleAt(q, fine0));
+        }
+        st.grain = null; ex.syncLayerSwitches();
+      };
+      const MY0 = [200, 30, 90];
+
+      // ①② 填色·边界开着，点一块**没涂过**的地 → 只动那一国里**同色同标记**的那些 ✓
+      //（"归属" = 标记 + 颜色；占领区被涂成别的颜色，颜色对不上 → 一块都不许碰 ✓）
       if (occ0.length && free0.length) {
-        st.brush = ex.stableColor(free0[0], host0).slice();
-        st.brushLabel = st.titles.names[host0];
+        st.showBorderPaint = true; st.showPowerBorder = false;
+        ex.syncLayerSwitches();
+        st.brush = MY0.slice(); st.brushLabel = '玩家国';
         ex.paintAt(free0[0], ex.titleAt(free0[0], ERA0));
-        const kept0 = occ0.filter(keptColor).length;
-        ok('点没涂过的那半（用国家自己的色）→ 占领区一块都没被盖掉 ✗',
-           kept0 === occ0.length, `保住 ${kept0} / ${occ0.length} 块`);
-        // ③ 再换个新颜色点同一块 → 同色同标记的色块（这个国家没被占的那些地）一起变，
-        //    占领区照旧不动 ✓
-        st.brush = [200, 30, 90]; st.brushLabel = '新色';
-        ex.paintAt(free0[0], ex.titleAt(free0[0], ERA0));
-        const changed0 = free0.filter((q) => {
-          const p4 = q * 4;
-          return ex.renderer.paintData[p4] === 200 && ex.renderer.paintData[p4 + 1] === 30;
-        }).length;
-        const kept1 = occ0.filter(keptColor).length;
-        ok('换新色填这一块 → 整个色块一起变，占领区还是不动',
-           changed0 === free0.length && kept1 === occ0.length,
-           `变色 ${changed0} / ${free0.length} 块，占领区保住 ${kept1} / ${occ0.length} 块`);
+        ok('点没涂过的地 → 只动这一国里**没涂过**的地（占领区的名字对不上 ✗ 不碰 ✓）',
+           countRGB(MY0) === free0.length && countRGB([64, 64, 72]) === occ0.length,
+           `玩家色 ${countRGB(MY0)} / ${free0.length} 块，占领区保住 ${countRGB([64, 64, 72])} / ${occ0.length}`);
+        // ③ 撤销 → 回到只有占领区那一步
+        ex.undo();
+        ok('撤销 → 回到只有占领区那一步 ✓',
+           countRGB(MY0) === 0 && countRGB([64, 64, 72]) === occ0.length,
+           `玩家色 ${countRGB(MY0)} 块 / 占领 ${countRGB([64, 64, 72])} 块`);
       }
-      // ④「还原」在同一个配置下也得**按色块**擦（用户报的第二条）：
-      //    在法国本土上点还原 → 只清"新色"这一块，占领区一块都不许掉 ✗
+      // ④ 只开「势力 · 边界」→ 按**剧本归属**整块（整个国家 ✓ 含被占的那半）
       if (occ0.length && free0.length) {
+        clearAll0(); makeOcc0();
+        st.showBorderPaint = false; st.showPowerBorder = true;
+        ex.syncLayerSwitches();
+        st.brush = MY0.slice(); st.brushLabel = '玩家国';
+        ex.paintAt(free0[0], ex.titleAt(free0[0], ERA0));
+        ok('只开「势力 · 边界」→ 按剧本归属整块（整个国家，含被占的那半 ✓）',
+           countRGB(MY0) === land0.length,
+           `玩家色 ${countRGB(MY0)} / ${land0.length} 块`);
+      }
+      // ⑤ 两个都没开 → 按「填色 · 边界」开着算（用户定的 ✓）→ 跟 ② 一样
+      if (occ0.length && free0.length) {
+        clearAll0(); makeOcc0();
+        st.showBorderPaint = false; st.showPowerBorder = false;
+        ex.syncLayerSwitches();
+        st.brush = MY0.slice(); st.brushLabel = '玩家国';
+        ex.paintAt(free0[0], ex.titleAt(free0[0], ERA0));
+        ok('两个边界都没开 → 按填色开着算（跟 ② 一样 ✓）',
+           countRGB(MY0) === free0.length && countRGB([64, 64, 72]) === occ0.length,
+           `玩家色 ${countRGB(MY0)} / ${free0.length} 块`);
+      }
+      // ⑥ 点一块**涂过的**地 → 只动"玩家涂色归属"（同色同标记那一族 ✓）
+      {
+        clearAll0();
+        st.showBorderPaint = true; st.showPowerBorder = false;
+        const few0 = land0.slice(0, 3);
+        st.grain = fine0; ex.syncLayerSwitches();       // 先在最细层一块一块地涂出那一族
+        st.brush = MY0.slice(); st.brushLabel = '玩家国';
+        for (const q of few0) ex.paintAt(q, ex.titleAt(q, fine0));
+        st.grain = null; ex.syncLayerSwitches();
+        const before6 = countRGB(MY0);
+        ex.paintAt(few0[0], ex.titleAt(few0[0], ERA0));
+        ok('点一块**涂过的**地 → 只动它那一族，不碰这个国家的其他地 ✓',
+           before6 === few0.length && countRGB(MY0) === few0.length,
+           `涂前 ${before6} → 涂后 ${countRGB(MY0)} 块（这一国共 ${land0.length} 块）`);
+      }
+      // ⑦「还原」共用同一套范围：点那一族里的一块 → 只清那一族
+      {
         const W0 = st.meta.mapWidth, H0 = st.meta.mapHeight;
         const pixOf = new Map();
         for (let y = 0; y < H0; y += 2) {
@@ -1196,40 +1739,117 @@ const factory = new Function(
         const vx0 = st.cam.cx - vw0 / 2, vy0 = st.cam.cy - vh0 / 2;
         const toClient0 = (mx, my) => [(mx + 0.5 - vx0) / vw0 * stg0.clientWidth,
                                        (my + 0.5 - vy0) / vh0 * stg0.clientHeight];
-        const eraseAt = (q) => {
-          const px = pixOf.get(q);
-          if (!px) return false;
+        const three0 = land0.filter((q) => lit0(q) && pd0[q * 4] === MY0[0]);
+        const px0 = three0.length ? pixOf.get(three0[0]) : null;
+        if (px0) {
           ex.setTool('erase');
-          ex.actAt(...toClient0(px[0], px[1]));
-          return true;
-        };
-        const lit = (q) => ex.renderer.paintData[q * 4 + 3] > 0;
-        if (eraseAt(free0[0])) {
-          const left0 = free0.filter(lit).length;
-          const kept2 = occ0.filter(keptColor).length;
-          ok('在没被占的那半点「还原」→ 那一块清干净，占领区一块没掉 ✗',
-             left0 === 0 && kept2 === occ0.length,
-             `那半还剩 ${left0} 块没清，占领区保住 ${kept2} / ${occ0.length} 块`);
+          ex.actAt(...toClient0(px0[0], px0[1]));
+          ok('「还原」跟涂色同一套范围：点那一族里的一块 → 只清那一族 ✓',
+             countRGB(MY0) === 0 && countRGB([64, 64, 72]) === 0,
+             `还剩 ${countRGB(MY0)} 块玩家色`);
         }
-        // ⑤ 反过来点占领区 → 该清的还是清的掉（别修成"谁都擦不动" ✗）
-        if (eraseAt(occ0[0])) {
-          const left1 = occ0.filter(lit).length;
-          ok('反过来在占领区点「还原」→ 占领区清得掉 ✓', left1 === 0,
-             `占领区还剩 ${left1} / ${occ0.length} 块`);
-        }
+        ex.setTool('paint');
       }
-      // 收尾：这一族涂过的全还原
+      clearAll0();
+    }
+    st.tier = svT0; st.grain = svG0; st.showBorderPaint = svBP0;
+    st.showPowerBorder = svPB0; st.brushLabel = svB0;
+    ex.syncLayerSwitches();
+  }
+
+  // ==== 3c-2. 「还原」只清被点到的那一个**最底层单位**（用户报的）====
+  // 在**地区**层涂一整块 → 切到**省份**层点一下还原 → 以前整块地区跟着被清空 ✗
+  //（那一支把这块地在**所有层级**上的头衔全捞出来清，地区头衔也在名单里 → 连坐）
+  {
+    // ⚠ 层数要用 `meta.tiers.length`（各层的 key），**不是** `tierNames.length` ✗
+    // —— 这两个在 HOI4 上不一样长，按名字的层数挑会挑到不可涂的那一层
+    //（paintTitle 里 `tier >= TIER_COUNT` 直接拒绝 → 一个省都涂不上）
+    const nT2 = st.meta.tiers.length;
+    const LAST2 = nT2 - 1, MID2 = LAST2 - 1;
+    const NP2 = st.meta.numProvinces;
+    const byMid = new Map();
+    for (let p = 1; p < NP2; p++) {
+      const t = ex.titleAt(p, MID2);
+      if (t == null || t === st.meta.noTitle) continue;
+      if (!byMid.has(t)) byMid.set(t, []);
+      byMid.get(t).push(p);
+    }
+    let mid2 = -1, pids2 = null;
+    for (const [t, list] of byMid) {
+      // **只挑真头衔** —— 海 / 湖 / 荒地是各层共享的**伪头衔**（tiers[tid] 落在
+      // TIER_COUNT 之外），涂色那条路会直接拒绝；挑到它就变成"一个省都涂不上" ✗
+      //（HOI4 上就是这么翻的车：第一眼撞上的是某片海的伪头衔，126 个省全是海）
+      const tt = st.titles.tiers[t];
+      if (tt == null || tt >= st.meta.tiers.length) continue;
+      if (list.length < 3) continue;
+      mid2 = t; pids2 = list; break;
+    }
+    // 打印用的层名（名字表跟 key 表不一定一样长，取不到就写"第 n 层" ✓）
+    const nmOf2 = (i) => String((st.meta.tierNames && st.meta.tierNames[i]) || ('第 ' + (i + 1) + ' 层'));
+    if (mid2 < 0) {
+      console.log(`  （这一局没有"管着 ≥3 个${nmOf2(LAST2)}的${nmOf2(MID2)}" —— 跳过）`);
+    } else {
+      const svT2 = st.tier, svG2 = st.grain, svB2 = st.brushLabel;
       st.grain = null;
+      st.tier = MID2;
+      ex.syncLayerSwitches();
+      st.brushLabel = '还原口径';
+      ex.setBrush([210, 60, 60], false);
+      ex.paintTitle(mid2, [210, 60, 60]);
+      const lit2 = (q) => ex.renderer.paintData[q * 4 + 3] > 0;
+      const litN = () => pids2.filter(lit2).length;
+      ok(`在「${nmOf2(MID2)}」层涂一整块 ✓`, litN() === pids2.length,
+         `${litN()} / ${pids2.length} 个${nmOf2(LAST2)}涂上了`);
+
+      // 点哪里：拿属于第一个最底层单位的一个像素，转成屏幕坐标
+      const W2 = st.meta.mapWidth, H2 = st.meta.mapHeight;
+      const pixOf2 = (want) => {
+        for (let y = 0; y < H2; y += 2) {
+          for (let x = 0; x < W2; x += 2) if (st.provinceIds[y * W2 + x] === want) return [x, y];
+        }
+        return null;
+      };
+      const toClient2 = (mx, my) => {
+        const stg2 = get('stage');
+        const vw2 = stg2.clientWidth / st.cam.scale, vh2 = stg2.clientHeight / st.cam.scale;
+        const vx2 = st.cam.cx - vw2 / 2, vy2 = st.cam.cy - vh2 / 2;
+        return [(mx + 0.5 - vx2) / vw2 * stg2.clientWidth,
+                (my + 0.5 - vy2) / vh2 * stg2.clientHeight];
+      };
+      const one2 = pixOf2(pids2[0]);
+
+      // ① 切到最细层点还原 → **只掉被点的那一个** ✓
+      st.tier = LAST2;
+      ex.syncLayerSwitches();
+      ex.setTool('erase');
+      if (one2) ex.actAt(...toClient2(one2[0], one2[1]));
+      ok(`在「${nmOf2(LAST2)}」层点「还原」→ 只清掉被点的那一个 ✓`,
+         litN() === pids2.length - 1, `还剩 ${litN()} / ${pids2.length}`);
+
+      // ② 撤销 → 那一个回来（而且**只**回来一个 ✓）
+      ex.undo();
+      ok('撤销 → 那一个回来了，也没多清/多还 ✗', litN() === pids2.length,
+         `${litN()} / ${pids2.length}`);
+
+      // ③ 切回中间层再点还原 → 这一块**包含的**一起清（这一层该有的口径 ✓）
+      st.tier = MID2;
+      ex.syncLayerSwitches();
+      ex.setTool('erase');
+      if (one2) ex.actAt(...toClient2(one2[0], one2[1]));
+      ok(`在「${nmOf2(MID2)}」层点「还原」→ 这一块包含的一起清掉 ✓`,
+         litN() === 0, `还剩 ${litN()} / ${pids2.length}`);
+
+      // 收尾：这一块涂过的全还原
       ex.setTool('paint');
-      for (let q = 1; q < n0; q++) {
-        for (let ti = 0; ti < st.meta.tiers.length; ti++) {
+      for (const q of pids2) {
+        for (let ti = 0; ti < nT2; ti++) {
           const t1 = ex.titleAt(q, ti);
           if (t1 != null && t1 !== 65535 && st.painted.has(t1)) ex.restoreTitle(t1);
         }
       }
+      st.tier = svT2; st.grain = svG2; st.brushLabel = svB2;
+      ex.syncLayerSwitches();
     }
-    st.tier = svT0; st.grain = svG0; st.showBorderPaint = svBP0; st.brushLabel = svB0;
-    ex.syncLayerSwitches();
   }
 
   // ==== 空白剧本：一层**全无主**（不上色、没标记），别的规矩一条不少 ====
@@ -1575,9 +2195,7 @@ const factory = new Function(
       // 快照（收尾时原样恢复）
       const paintSnap = ex.renderer.paintData.slice();
       const savePainted = new Set(st.painted);
-      const savePaintColor = new Map(st.paintColor);
       const saveProvLabel = (st.provLabel || []).slice();
-      const saveTitleLabel = new Map(st.titleLabel || []);
       // ② 用"别国色 + 别国名"涂那一小块（细层涂，标签就是那个名字）
       st.tier = fine2; st.grain = null; st.brush = [200, 12, 90]; st.brushLabel = 'AAA';
       ex.paintAt(one, ex.titleAt(one, fine2));
@@ -1599,9 +2217,7 @@ const factory = new Function(
         ex.renderer.paintData[q4 + 3] = sv;
       }
       st.painted = new Set(savePainted);
-      st.paintColor = new Map(savePaintColor);
       st.provLabel = saveProvLabel.slice();
-      st.titleLabel = new Map(saveTitleLabel);
       ex.syncLayerSwitches();
     } else {
       ok('剧本层再点那一小块：B 的其它地块不许被涂（没找到合适样本，跳过）', true, 'skip');
@@ -1636,122 +2252,66 @@ const factory = new Function(
         badges: ['e_', 'k_', 'd_', 'c_', 'b_'],
         names: ['帝国', '王国', '公爵领', '伯爵领', '男爵领'], brand: 'CK' };
 
-  // 「定都」：剧本视图里点一下记下地块，细层点了**静默不动** ✓
-  if (ex.setCapitalAt && (st.meta.eraDates || []).length) {
-    const savedCaps = (st.capitalPids || []).slice();
-    const savedTier = st.tier;
-    // 找一个**有主的**剧本层里有主的省份（空白剧本没有归属可定 ✓）
-    let pid = 0;
-    for (let q = 1; q < st.meta.numProvinces; q++) {
-      const tq = ex.titleAt(q, ERA0);
-      if (tq != null && tq !== st.meta.noTitle && tq < st.meta.numRealTitles) { pid = q; break; }
-    }
-    st.tier = ERA0;
-    st.capitalPids = [];
-    ex.setCapitalAt(pid);
-    ok('定都：剧本视图里点一下 → 记下这块地 ✓',
-       st.capitalPids.length === 1 && st.capitalPids[0] === pid, JSON.stringify(st.capitalPids));
-    ok('定都：空白剧本那一层点一下 = 什么都不会发生（那一层没有归属 ✓）',
-       (() => {
-         if (BLANK_T < 0 || !pid) return true;
-         const keep = st.capitalPids.length;
-         st.tier = BLANK_T;
-         ex.setCapitalAt(pid);
-         return st.capitalPids.length === keep;
-       })(), `capitalPids=${st.capitalPids.length}`);
-    // 细层：静默不生效 ✓
-    st.tier = st.meta.tierNames.length - 1;
-    const n1 = st.capitalPids.length;
-    ex.setCapitalAt(pid);
-    ok('定都：非剧本视图点了**静默不动** ✓', st.capitalPids.length === n1, `${n1} → ${st.capitalPids.length}`);
-    st.tier = savedTier;
-    st.capitalPids = savedCaps;
-  }
+  // 「定都」工具连同首都/本土那一整套已经拿掉（用户要求 ✓）——
+  // 现在名字落点是"一个连通域一个"，不再有任何"哪片才算老家"的规矩 ✓
 
-  // 全图重分组：国家的名字要落在**首都那一片**，不能跑去最大的殖民地
-  if (ex.rebuildPaintBlocks && st.meta.capitals && (st.meta.eraDates || []).length) {
-    const caps = st.meta.capitals;
-    const tag = ['FRA', 'GBR', 'ENG', 'TUR', 'SOV', 'RUS'].find((x) => caps[x]);
+  // 一个连通域一个名字：**把本土那圈涂成别的颜色 → 两片各留一个名字** ✓
+  // （以前这儿验的是"国名必须留在首都那一片、不许跳殖民地" ✗ —— 那套规矩没了）
+  if (ex.rebuildPaintBlocks && (st.meta.eraDates || []).length) {
+    // 借 meta.capitals 只是**挑一个跨洋国家当小白鼠**（数据还在，前端已经不读它了 ✓）
+    const tag = ['FRA', 'GBR', 'ENG', 'TUR', 'SOV', 'RUS'].find((x) => (st.meta.capitals || {})[x]);
     if (tag) {
       const savedTier = st.tier;
+      // **这一段要在"无上限"下跑** ✓ —— 名字上限默认只留前 12 个（1~20 那档 ✓），
+      // 而这条验的是"某个具体国家的落点在不在"，被截掉就永远看不到它 ✗
+      const svMax2 = st.set.labelMax;
+      st.set.labelMax = 21;              // 最右那一格 = 无上限 ✓（这一段要看到全部落点）
       st.tier = ERA0;                    // 国家那层（有主的那个剧本层 ✓）
       st._blocksAll = true; st._blocksTier = null; st._layerSig = null;
       ex.syncLayerSwitches();
       ex.rebuildPaintBlocks(true);
-      const cp = caps[tag];
+      const cp = st.meta.capitals[tag];
       const pos0 = st.provPos;
       const nm0 = ex.displayedLabel(cp, ex.titleAt(cp, ERA0));
-      const blk0 = (ex.paintedPoints(true) || []).find((x) => x.name === nm0);
-      const dx = blk0 ? Math.abs(blk0.x - pos0[cp * 3]) : 1e9;
-      const dy = blk0 ? Math.abs(blk0.y - pos0[cp * 3 + 1]) : 1e9;
-      // 回归：**占领巴黎**（巴黎 + 周围一圈都被涂掉）→ 名字必须留在欧洲，不能跳去非洲
-      {
-        const frTag = ['FRA', 'GBR', 'ENG', 'TUR', 'RUS', 'SOV'].find((x) => st.meta.capitals[x]);
-        if (frTag) {
-          const cp2 = st.meta.capitals[frTag];
-          const n3 = st.meta.numProvinces;
-          const off2 = new Uint32Array(st.adjacency.buffer, st.adjacency.byteOffset, n3 + 1);
-          const nb2 = new Uint16Array(st.adjacency.buffer, st.adjacency.byteOffset + (n3 + 1) * 4);
-          const pos2 = st.provPos;
-          const tid0 = ex.titleAt(cp2, ERA0);
-          const keyF = ex.displayedLabel(cp2, tid0) + '|'
-                     + ex.displayedColor(cp2, tid0).join(',');
-          // 巴黎 + 它的邻省（同属这一族的）全部涂成别的颜色
-          const ring = [cp2];
-          for (let k = off2[cp2], e = off2[cp2 + 1]; k < e; k++) if (nb2[k] > 0) ring.push(nb2[k]);
-          const savedP = ring.map((q) => [q, st.provLabel[q] | 0, ex.renderer.paintData[q * 4 + 3]]);
-          for (const q of ring) {
-            st.provLabel[q] = 3;
-            ex.renderer.setPaint(q, 9, 9, 99, 255);
-          }
-          ex.rebuildPaintBlocks(true);
-          const nmF = ex.displayedLabel(cp2, tid0);
-          const blkF = (ex.paintedPoints(true) || []).find((x) => x.name === nmF);
-          // "还在欧洲"= 离巴黎不能太远（殖民地动辄上千像素）
-          const dF = blkF ? Math.abs(blkF.x - pos2[cp2 * 3]) + Math.abs(blkF.y - pos2[cp2 * 3 + 1]) : 1e9;
-          ok('占领巴黎后，国名仍留在首都那一带（不跳殖民地）', !!blkF && dF < 500,
-             blkF ? (nmF + ' 落点(' + blkF.x.toFixed(0) + ',' + blkF.y.toFixed(0) + ') 首都('
-                     + pos2[cp2 * 3].toFixed(0) + ',' + pos2[cp2 * 3 + 1].toFixed(0) + ') 距 ' + dF.toFixed(0))
-                  : '没找到这块');
-          // 收拾
-          for (const [q, lab, pa] of savedP) {
-            st.provLabel[q] = lab;
-            ex.renderer.setPaint(q, 0, 0, 0, pa > 0 ? 255 : 0);
-          }
-          ex.rebuildPaintBlocks(true);
-        }
-      }
+      const before = (ex.paintedPoints(true) || []).filter((x) => x.name === nm0);
+      ok('全图重分组：这个国家的名字画得出来 ✓', before.length >= 1,
+         `「${nm0}」${before.length} 个落点`);
 
-      // 用「定都」工具换个首都 → 重分组的名字该跟着新首都走（工具优先于数据默认）
+      // 占领巴黎：巴黎 + 它周围一圈（同属这一族的）涂成别人的颜色 →
+      // 这一族的欧洲那片被切成两块，**两块各自都要留名字** ✓
       {
-        const tidOf = (q2) => ex.titleAt(q2, ERA0);
-        const targetKey = String(st.titles.keys[tidOf(cp)]);
-        const sameTag = [];
-        for (let q2 = 1; q2 < st.meta.numProvinces && sameTag.length < 60; q2++) {
-          const tq = tidOf(q2);
-          if (tq != null && tq !== st.meta.noTitle && String(st.titles.keys[tq]) === targetKey) sameTag.push(q2);
+        const n3 = st.meta.numProvinces;
+        const off2 = new Uint32Array(st.adjacency.buffer, st.adjacency.byteOffset, n3 + 1);
+        const nb2 = new Uint16Array(st.adjacency.buffer, st.adjacency.byteOffset + (n3 + 1) * 4);
+        const pos2 = st.provPos;
+        const tid0 = ex.titleAt(cp, ERA0);
+        const nmF = ex.displayedLabel(cp, tid0);
+        const ring = [cp];
+        for (let k = off2[cp], e = off2[cp + 1]; k < e; k++) if (nb2[k] > 0) ring.push(nb2[k]);
+        const savedP = ring.map((q) => [q, st.provLabel[q] | 0, ex.renderer.paintData[q * 4 + 3]]);
+        for (const q of ring) {
+          st.provLabel[q] = 3;
+          ex.renderer.setPaint(q, 9, 9, 99, 255);
         }
-        const far = sameTag.find((q2) => q2 !== cp
-          && Math.abs(pos0[q2 * 3] - pos0[cp * 3]) + Math.abs(pos0[q2 * 3 + 1] - pos0[cp * 3 + 1]) > 60);
-        if (far) {
-          const savedCapOf = st.capitalOf;
-          st.capitalOf = Object.assign({}, savedCapOf || {});
-          ex.setCapitalAt(far);
-          ex.rebuildPaintBlocks(true);
-          const blk2 = (ex.paintedPoints(true) || []).find((x) => x.name === nm0);
-          const d2 = blk2 ? Math.abs(blk2.x - pos0[far * 3]) + Math.abs(blk2.y - pos0[far * 3 + 1]) : 1e9;
-          ok('定都工具改过首都 → 全图重分组的国名跟着新首都走', !!blk2 && d2 < 300,
-             blk2 ? ('落点(' + blk2.x.toFixed(0) + ',' + blk2.y.toFixed(0) + ') 新首都('
-                     + pos0[far * 3].toFixed(0) + ',' + pos0[far * 3 + 1].toFixed(0) + ')') : '没找到这块');
-          st.capitalOf = savedCapOf;
+        ex.rebuildPaintBlocks(true);
+        const after = (ex.paintedPoints(true) || []).filter((x) => x.name === nmF);
+        ok('占领本土那圈之后：切出来的每一片各留一个名字（不是只留一片 ✗）',
+           after.length >= 2, `切成 ${after.length} 片，各自一个名字`);
+        // 名字得落在各自那片里（不能两个都指着同一处 ✗）
+        if (after.length >= 2) {
+          const d13 = Math.hypot(after[0].x - after[1].x, after[0].y - after[1].y);
+          ok('同名标签落在各自的连通域里（落点分得开 ✓）', d13 > 20,
+             `两个「${nmF}」相距 ${d13.toFixed(0)} 地图像素`);
         }
+        // 收拾
+        for (const [q, lab, pa] of savedP) {
+          st.provLabel[q] = lab;
+          ex.renderer.setPaint(q, 0, 0, 0, pa > 0 ? 255 : 0);
+        }
+        ex.rebuildPaintBlocks(true);
       }
-
-      ok('全图重分组：国名留在**首都那一片**（不会跑到最大的殖民地）',
-         !!blk0 && dx < 150 && dy < 150,
-         blk0 ? `${nm0} 落点(${blk0.x.toFixed(0)},${blk0.y.toFixed(0)}) 首都(${pos0[cp * 3].toFixed(0)},${pos0[cp * 3 + 1].toFixed(0)})`
-              : '没找到这块');
       st.tier = savedTier;
+      st.set.labelMax = svMax2;                                 // 上限恢复原样 ✓
       st._blocksAll = null; st._blocksTier = null; st._layerSig = null;
       ex.syncLayerSwitches();
       ex.rebuildPaintBlocks(false);
@@ -1821,18 +2381,28 @@ const factory = new Function(
     ex.rebuildPaintBlocks(!!st._blocksAll);
   }
 
-  // 填色边界的**线宽**：至少是"爷爷级"那一档（比父级再粗 0.35）
-  if (ex.renderer && ex.renderer.extraWs) {
+  /* 填色边界的**线宽**：就是「势力线宽」那一档 ✓（用户要求：那个设置**本身就是粗细** ✓
+   *   以前是"乘在链上最粗那条身上的倍率" ✗ 用户说很难理解 ✓）
+   *   ⚠ 所以它**可以**比链上那条细 —— 那是使用者自己选的，不再自动兜底 ✓ */
+  if (ex.renderer && ex.renderer.paintWidth !== undefined) {
     st._parentSig = null;
     ex.syncParentBorder();
-    const pw = ex.renderer.paintWidth;
-    const nEx = ex.renderer.extraCount || 0;
-    const parentW = nEx ? ex.renderer.extraWs[0] : null;
-    const grandOK = parentW == null ? true : Math.abs(pw - (parentW + 0.25)) < 0.02;
-    const chainOK = nEx ? pw >= ex.renderer.extraWs[nEx - 1] - 0.02 : true;
-    ok('填色边界的线宽 = 爷爷级那一档（不跟着父级变细）',
-       grandOK && chainOK,
-       'paintWidth=' + pw + ' 父级=' + parentW + ' 链最粗=' + (nEx ? ex.renderer.extraWs[nEx - 1] : '-'));
+    const _wantPw = (st.set && st.set.pw != null) ? Number(st.set.pw) : 1.5;
+    ok('填色边界的线宽 = 「势力线宽」那一档（不再是"乘链上最粗那条"✗）',
+       Math.abs(ex.renderer.paintWidth - _wantPw) < 0.02,
+       'paintWidth=' + ex.renderer.paintWidth + ' 势力线宽=' + _wantPw);
+    // **有粒度 + 有年代层** 时，链里那条「势力圈」用的也是这个值 ✓（就是我改的那条分支）
+    if (N_ERA > 0) {
+      const _svG4 = st.grain, _svT4 = st.tier;
+      st.grain = st.meta.tierNames.length - 1; st.tier = ERA0;
+      st._parentSig = null; ex.syncParentBorder();
+      const _ws4 = Array.prototype.slice.call(ex.renderer.extraWs, 0, ex.renderer.extraCount || 0);
+      ok('有粒度时链里的「势力圈」= 势力线宽那一档 ✓',
+         _ws4.some((w) => Math.abs(w - _wantPw) < 0.02),
+         '链=[' + _ws4.join(', ') + '] 势力线宽=' + _wantPw);
+      st.grain = _svG4; st.tier = _svT4;
+      st._parentSig = null; ex.syncParentBorder();
+    }
   }
 
   // 填色边界比什么：CK3 + **细层**只比手绘层（不跟原版颜色差叠），剧本层按显示颜色 ✓
@@ -2588,6 +3158,141 @@ const factory = new Function(
     ok('app 里挂了初始化（window.initTutorial）✓', appSrc.includes('window.initTutorial'));
     const htmlSrc = fs.readFileSync('web/index.html', 'utf8');
     ok('顶栏有「教程」按钮 ✓', htmlSrc.includes('id="btn-tutorial"'), 'btn-tutorial');
+    /* **"是不是水"必须精确匹配颜色** ✓（用户报的 HOI4 三个省份 ✓）
+     *   以前阈值 0.02 ✗ —— HOI4 的省份色是技术色，`p_3511` 那类跟 #lake 只差
+     *   0.0147~0.0184，全被判成湖水、边界走了水域那一趟 ✗
+     *   真水的 LUT 色跟 uSeaCol/uLakeCol 是同一份数据 → 距离 0 ✓ 阈值 0.004 足够 ✓ */
+    /* **地名跟着粒度走** ✓（用户定的：选成地区 / 州 / 战略区时，地名也得出来 ✓）
+     *   以前剧本视图下只放行"最细的两层"✗ → 粒度选"地区"就一个地名都没有 ✓（用户报的 ✓）
+     *   但**剧本层本身不算地名** ✗（那是国家/势力，归势力名那套管 ✓）*/
+    ok('地名层 = 当前粒度层（不再只放行最细两层 ✗）',
+       /const nameTier = isCountryView \? _et : viewTier;/.test(fs.readFileSync('web/js/app.js', 'utf8'))
+       && /if \(nameTier >= nEra\)/.test(fs.readFileSync('web/js/app.js', 'utf8'))
+       && !/nameTier >= 0/.test(fs.readFileSync('web/js/app.js', 'utf8')));
+    /* **水岸线跟填色那趟合并成一次扫描** ✓（用户要求"合并那几趟射线"✓）
+     *   以前水岸线单独一趟（`rayDistWater` × 4 方向 ✗），而它判的"这一侧是不是水"
+     *   填色那趟的 `_terrainSeam` 本来就在判 ✗ —— 同一件事每帧算两遍 ✓
+     *   现在 `rayDistPaint` 一次吐三个距离（.x 填色、.y 水岸线、.z 荒地边 ✓）→ 四趟变两趟 ✓ */
+    /* **三条线（填色 / 水岸线 / 荒地边）现在都由掩码一趟给全** ✓
+     *   老路径那套（`rayDistPaint` 吐 vec3 + `_w0.._w3`）已经没有调用点了 ✓ */
+    ok('填色 / 水岸线 / 荒地边由合并那趟给全（旧路径 ✓）',
+       /vec3 _w0 = rayDistPaint\(/.test(fs.readFileSync('web/js/gl.js', 'utf8'))
+       && /dWater = min\(min\(_w0\.y/.test(fs.readFileSync('web/js/gl.js', 'utf8'))
+       && /rayDistTitle\(ip, f, ivec2\( 1, 0\), t0, R, -1, false\)/.test(fs.readFileSync('web/js/gl.js', 'utf8'))
+       && !/float rayDistWater\(/.test(fs.readFileSync('web/js/gl.js', 'utf8')));
+    /* **荒地身份必须按"编辑层"取** ✗（用户报的"不可通行区变成密密麻麻网格"就是它 ✓）
+     *   rayDistTitle 那边取的是 tidAt() = 编辑层；我在 cellViewOf 里图省事写了 uTier ✗
+     *   不可通行区在编辑层上**一格一个伪头衔** → 每格都被判成荒地 → 每格四条边都画 ✓ */
+    /* **荒地缝 = "是荒地" ✚ "两侧头衔不同"，缺一不可** ✗
+     *   用户报的"荒地 / 不可通行区密密麻麻网格"就是漏了后半句 ✓
+     *   不可通行区一整片共用一个伪头衔 → 片内 tt == t 不算缝 → 只画外轮廓 ✓
+     *   只判"是荒地"的话：片内每格起点都是荒地 → 第一格就 break、距离恒为 1 → 每格画线 ✗ */
+    ok('荒地缝判据：是荒地 **且** 两侧头衔不同（少一个就变密密麻麻网格 ✗）',
+       /\(_jIp \|\| _B\.waste\) && _B\.tid != _A\.tid/.test(fs.readFileSync('web/js/gl.js', 'utf8'))
+       && /v\.tid = titleAt\(pidAt\(ip\), uEditTier\)/.test(fs.readFileSync('web/js/gl.js', 'utf8'))
+       && /v\.waste = wasteAlphaOf\(v\.tid\) > 0\.5 && !v\.painted/.test(fs.readFileSync('web/js/gl.js', 'utf8')));
+    /* **荒地身份取的是"编辑层"的头衔** ✗（用 uTier 会跟着视图层乱判 ✓ 也算同一类坑 ✓） */
+    ok('荒地身份按 uEditTier 取（不是 uTier ✗ —— 会让不可通行区变网格）',
+       /titleAt\(pidAt\(ip\), uEditTier\)/.test(fs.readFileSync('web/js/gl.js', 'utf8'))
+       && !/v\.waste = wasteAlphaOf\(titleAt\(pidAt\(ip\), uTier\)\)/.test(fs.readFileSync('web/js/gl.js', 'utf8')));
+    /* **GLSL 里的声明/定义不许重复** ✗（我脚本化改代码时插了两遍 → 编译失败 → 白屏 ✓ 踩过 ✓）
+     *   JS 语法检查抓不到（都在模板字符串里 ✗）、桩也不真编译 GLSL ✗ 所以只能数出现次数 ✓ */
+    {
+      const _g = fs.readFileSync('web/js/gl.js', 'utf8');
+      const _cnt = (pat) => (_g.match(new RegExp(pat, 'g')) || []).length;
+      const _dupes = [];
+      for (const pat of ['bool viewsDiffer\\(', 'CellView cellViewOf\\(']) {
+        if (_cnt(pat) !== 1) _dupes.push(pat + '×' + _cnt(pat));
+      }
+      ok('GLSL 声明 / 定义不重复（重复 = 编译失败 = 白屏 ✗）',
+         _dupes.length === 0, _dupes.length ? _dupes.join(' · ') : '都只有一份 ✓');
+    }
+    /* **开图那次的层号兜底** ✗（用户报的"边界全没了"根因之一 ✓）
+     *   boot 早期 `state.tier` 是 **-1** ✗ 而我第一版兜底写成 `state.tier || 0` ✓
+     *   —— **-1 是 truthy**，`|| 0` 拦不住 → `tm[-1*n+p]` 负索引 → 身份全空 → 掩码一片 0 ✓
+     * ⚠ 而且 boot 里只该有**一次** true 调用 ✗（收尾那次 ✓）
+     *   早期那次层号还是 -1、算出来是空的，而距离场一张 44MB、算一遍近一秒 ✓
+     *   多算一次就是白跑（实测 EU4 那张白跑了两遍 ✓）*/
+    /* 🔴 **防抖待办不许被每帧取消**（用户报"边界全画成 1444 剧本的"就是这个 ✓）
+     *   `syncParentBorder` 是**每帧**跑的 ✗ 而 `clearTimeout` 原来写在函数最上面 ✓
+     *   → 第二帧就把第一帧排的那次重算取消掉，紧接着又因"签名已记过"直接 return ✓
+     *   → **重算永远不执行**，掩码一直停在 boot 那次（那时 state.tier 还是 -1 → 兜底成 0 = 1444）✓
+     *   现在：先查签名，只在**真要重算**时才 clearTimeout ✓ */
+    /* **多级链也进掩码了**（用户点破的：多级边界没有新增边界 ✓ 它画的就是"某一层的头衔缝"✓）
+     *   实测过"能不能只记一个层号"✗：地理层内部嵌套（区域⊆地区⊆省份 ✓）
+     *   但**剧本层是三套互不包含的国界**（1444/1618/1789 ✓）→ 只能逐层存位 ✓
+     *   32 位刚好塞满：0-3 填色 · 4-7 水 · 8-11 荒地 · 12-15 本层 · 16-31 链上四环 ✓
+     *   ⚠ 第 7 组落在 2^31 那位 ✗ 而 JS 位运算是 32 位**带符号**的（8<<28 会变负 ✓）
+     *     → CPU 侧必须用**加法**写进去 ✓ */
+    /* **恢复默认要当场落盘**（用户报：点了恢复默认、刷新之后还是改过的值 ✓）
+     *   原来只重置内存（state.set）没写盘 → 存的那份还是改过的值 → 刷新又被读回来 ✓
+     *   ⚠ 也不能只用 scheduleSave() ✗ 它是 800ms 防抖，点完立刻刷新就还没写下去 ✓ */
+    ok('恢复默认会当场落盘（刷新后不会又变回改过的值 ✓）',
+       (() => {
+         const a = fs.readFileSync('web/js/app.js', 'utf8');
+         const i = a.indexOf("$('set-reset').onclick");
+         if (i < 0) return false;
+         const seg = a.slice(i, i + 700);
+         return /state\.set = Object\.assign\(\{\}, SET_DEFAULTS\);/.test(seg)
+           && /saveMapPrefs\(\)/.test(seg);
+       })(),
+       '重置内存 + 同步写一次 ✓');
+    /* 🔴 **"让路"必须确认有人接**（用户报：荒地↔荒地的缝缩小看得见、放大整条消失 ✓）
+     *   荒地边那一组判的是 `isJ[p] !== isJ[q]`（荒地**状态不同** ✓）
+     *     · 荒地↔国家：状态不同 → 那组会画 → 头衔线让开是对的 ✓
+     *     · 荒地↔荒地：两边都不是"非荒地" → 那组判它**不是缝** ✗
+     *       而头衔线要是也无条件让 → **两个组都不画 = 整条消失** ✓
+     *   ⚠ 跟"闸门比门框窄"是同一类错：改一处口径，得把对接口径一起看 ✓ */
+    /* 🔴 **着色器里的声明顺序**（用户报白屏：`_useEdges` undeclared identifier ✓）
+     *   我把"距离场"那段插到了 `_useEdges` 声明**之前** ✗ 而它用了 `_useEdges` ✓
+     *   → GLSL 编译失败 = 整屏黑 ✓
+     *   ⚠ **桩里没有真的 WebGL2** ✗ 所以 check_standalone 那句"着色器没编译失败"是空话 ✓
+     *     这类错**只能在真机浏览器上暴露** ✓ 所以更要靠静态守卫盯住 ✓
+     *   这里只钉住最关键的一条：用 _useEdges 的东西必须在它**之后** ✓ */
+    /* **边界宽度不再层层加粗**（用户定的：父级链 / 涂色边界那个 1.25、1.5 取消掉 ✓）
+     *   以前本层 1.0× / 父层 1.25× / 填色 1.5× —— 都是拿「地方边界宽度」再乘一遍 ✗
+     *   于是设置里拉 1，画出来却有三档粗细 ✓ 跟设置对不上 ✓
+     *   ⚠ 涂色边界走的是「势力边界宽度」设置（_pwW ✓ 那个 1.5 是设置值本身、不是倍率 ✓）*/
+    /* **粗筛位图**（用户定的：多余像素不需要每帧采样，加载时标记它们就行 ✓
+     *   她后来一句话点破了本质：**问题的核心就是排除"一辈子画不了线"的像素** ✓
+     *   实测 EU4：需要承担边界的只有 **8.6%** ✗ 其余 91.4% 取一位就退出 ✓
+     *   ⚠ **不参与画线** ✗ 只当守门员 —— 算不准最多多跑几趟射线，线的样子不会变 ✓ */
+    /* **GLSL 里的 const 必须是编译期常量** ✗（我踩过：拿它接运行时函数 →
+     *   `'=': assigning non-constant to 'const bool'` → 整个着色器编不过 → **画面全白** ✓）
+     *   桩里的 WebGL 是假的、编译不了 GLSL ✗ 所以只能静态盯：
+     *   shader 里**只许那三个全局常量**带 const，函数体里一个都不许有 ✗ */
+    {
+      const _gl = fs.readFileSync('web/js/gl.js', 'utf8');
+      const _s = _gl.indexOf('const FRAG =');       // 从 **它之后** 开始扫 ✓（它本身是 JS ✗）
+      const _e = _gl.indexOf('}`;', _s);
+      const _bad = (_gl.slice(_s + 20, _e).match(/^\s*const\s+\S.*$/gm) || [])
+        .map((x) => x.trim())
+        .filter((x) => !/^const (uint NONE|vec3 OUTSIDE|int MAXR|int PRESCREEN_MIN_R)\b/.test(x));
+      ok('GLSL 里只有那三个全局常量用 const（函数体里用会编不过 ✗）',
+         _bad.length === 0, _bad.length ? _bad.join(' | ') : '干净 ✓');
+      /* **画布像素总数封顶** ✓（用户报"电脑版非常卡"✓ 这条是主因）
+       *   dpr 上限原来写死 2 ✗ → 4K 屏 / Windows 缩放 125%~150% 时
+       *   画布到三千多万像素（手机才 260 万 ✗ 差十几倍 ✓）
+       *   现在按总量封顶，超了自动降 dpr，并顺手关掉那 4 点超采样 ✓
+       *   普通 1080p（≈200 万）在限额内 → 一点不受影响 ✓ */
+      ok('画布总像素封顶（超了自动降 dpr + 关 4 点超采样 ✓）',
+         /const MAX_CANVAS_PX = 2\.6e6/.test(_gl)
+         && /if \(px > MAX_CANVAS_PX\)/.test(_gl)
+         && /this\.lowRes = true/.test(_gl)
+         && /this\.noAA \|\| this\.lowRes/.test(_gl),
+         (fs.readFileSync('web/js/gl.js', 'utf8').match(/MAX_CANVAS_PX = ([\d.e]+)/) || [])[1] || '?');
+    }
+    /* **顶栏布局**（用户定的 ✓）：
+     *   教程 + 署名在**左侧工具栏右边**；**「文件」收尾在最右**（导入 / 导出 / 清除都在它菜单里 ✓）
+     * ⚠ 两个容器 id 必须留着：`author-row`（手机版搬它）、`export-row` + `export-menu`
+     *   （手机版搬前者、并把后者的子项摊平 ✓）—— 所以电脑版怎么排都不许改这两个名字 ✗ */
+    ok('顶栏布局：工具 → 教程 → 署名 → … → 文件（最右，收着导入/导出/清除）✓',
+       /id="tool-group"[\s\S]*?id="help-row"[\s\S]*?id="btn-tutorial"[\s\S]*?id="author-row"[\s\S]*?id="btn-author"[\s\S]*?id="export-row"[\s\S]*?id="btn-export"[\s\S]*?id="btn-import"[\s\S]*?id="btn-reset"[\s\S]*?<\/header>/.test(htmlSrc)
+       && htmlSrc.indexOf('id="btn-tutorial"') < htmlSrc.indexOf('id="btn-author"')
+       && htmlSrc.indexOf('id="btn-author"') < htmlSrc.indexOf('id="export-row"')
+       // 「文件」那个菜单里得同时有导入 / 导出 / 清除 ✓
+       && /id="btn-import"[\s\S]*?id="btn-png"[\s\S]*?id="btn-project"[\s\S]*?id="btn-reset"/.test(htmlSrc),
+       '教程在署名左边、文件收在 header 最后、菜单里有导入/导出/清除 ✓');
     ok('页面里加载了引导脚本 ✓', htmlSrc.includes('src="js/tutorial.js"'), 'script 标签');
     const buildSrc = fs.readFileSync('build_standalone.py', 'utf8');
     ok('打包清单里有 tutorial.js（单文件版才带得上 ✓）',
@@ -3185,7 +3890,96 @@ const factory = new Function(
         // ① 「荒漠 · 涂色」关着：荒地显示原版灰，取色就该取到灰
         st.showWaste = false;
         st.showPaint = false;
-        ok('「荒漠 · 涂色」关着时，取色取到那块灰（不是底下的色）',
+        /* 🔴 **取色跟画面必须是同一个口径** ✗（用户报：空白剧本下涂了色却取不到 ✓）
+       *   着色器 colorOfPid：手绘 → 荒地灰 → 无归属 → 头衔色 ✓
+       *   而 displayedColor（取色用）以前是"荒地灰 → 手绘" ✗ **反的** ✓
+       *   → 涂过的地块：画面显示你的涂色、吸管吸出来却是灰的 ✓
+       *   ⚠ 这个坑在着色器那边修过一次，取色这边漏了 → 两份实现口径分岔 ✓
+       *   场景就用**空白剧本 + 无主地块**（用户报的那个组合 ✓）：
+       *     那种地 tid = NONE，旧顺序会落到"固定灰 150"那条 ✗
+       *     正确行为是**先看手绘**→ 返回涂色 ✓ */
+      {
+        const svP = st.showPaint, svT = st.tier;
+        st.showPaint = true;
+        // 挑一块"当前层没有归属"的地（空白剧本里满地都是 ✓）
+        let np = 0;
+        for (let p = 1; p < st.meta.numProvinces; p++) {
+          if (ex.titleAt(p, st.tier) === 0) { np = p; break; }
+        }
+        if (!np) { for (let p = 1; p < st.meta.numProvinces; p++) { if (ex.titleAt(p, st.tier) == null) { np = p; break; } } }
+        const pd2 = ex.renderer && ex.renderer.paintData;
+        if (np && pd2) {
+          pd2[np * 4] = 12; pd2[np * 4 + 1] = 200; pd2[np * 4 + 2] = 240; pd2[np * 4 + 3] = 255;
+          const c2 = ex.displayedColor(np, ex.titleAt(np, st.tier));
+          ok("涂过的无主地：取色取到涂色（不是那条无归属灰 ✓）",
+             c2 && c2[1] > 150 && c2[2] > 200 && c2[0] < 60,
+             "取到 " + JSON.stringify(c2) + "（该是 [12,200,240] ✓）");
+        }
+        st.showPaint = svP; st.tier = svT;
+      }
+      /* 🔴 **空白剧本下取色必须能用** ✗（用户报了两轮 ✓）
+       *   根因**不是**颜色口径 ✗ 而是前面那道闸：
+       *     pickAt / actAt 里 `if (isLocked(tid)) return;` ✓
+       *   而空白剧本那层的地几乎全是**无主地**（tid = NONE ✓）
+       *   而 isLocked(NONE) = true ✗ → 整个取色被拦死 ✓
+       *     （其他层 tid 是真实头衔 → 所以**只有空白剧本坏** ✓）
+       *   修法：取色不做这道拦截 ✓（取色只是把画面颜色吸走、不改数据 ✓）
+       *   ⚠ 这条要**行为**测到 ✗ 只写静态检查的话，下一个人换个位置拦还是坏 ✓ */
+      {
+        const svT = st.tier, svP = st.showPaint, svTool = st.tool, svBrush = st.brush;
+        /* **按层名找"空白剧本"** ✗ —— 不能瞎猜层号 ✓
+         *   （我第一版取 eraN-1，而 EU4 那几个剧本层**全都是有主的** ✓
+         *     → 一块无主地都找不到 → 断言根本没跑 ✓ 等于没测 ✓）*/
+        const names = st.meta.tierNames || [];
+        let tz = names.findIndex((n) => /空白/.test(String(n)));
+        if (tz < 0) tz = Math.max(0, ((st.meta.eraDates && st.meta.eraDates.length) || 1) - 1);
+        st.tier = tz;
+        st.showPaint = true;
+        /* ⚠ 判据用 **isLocked** ✗ 别去找 tid === 0 ✓
+         *   实测 EU4 空白剧本那层：tid 一律是 **65535（NO_TITLE）** ✓
+         *     → 找 0 一个都找不到 → 断言一直没跑 ✓ 等于没测 ✓（我踩过 ✓）*/
+        let np = 0;
+        for (let p = 1; p < st.meta.numProvinces; p++) {
+          if (ex.isLocked(ex.titleAt(p, tz))) { np = p; break; }  // 锁住的 ✓
+        }
+        if (!np) {                                              // 这层恰好全有主 → 换最细层找
+          for (let p = 1; p < st.meta.numProvinces; p++) { if (ex.titleAt(p, names.length - 1) === 0) { np = p; break; } }
+        }
+        const pdz = ex.renderer && ex.renderer.paintData;
+        if (np && pdz) {
+          const tidz = ex.titleAt(np, st.tier);
+          ok("无主地在这一层确实是锁住的（这就是被拦的原因 ✓）",
+             ex.isLocked(tidz) === true, "isLocked(" + tidz + ")=true");
+          pdz[np * 4] = 12; pdz[np * 4 + 1] = 200; pdz[np * 4 + 2] = 240; pdz[np * 4 + 3] = 255;
+          ex.pickTitle(tidz, true, np);          // 真实取色动作 ✓
+          const bz = String(st.brush);
+          ok("空白剧本：锁住的地照样取得出玩家涂的色 ✓",
+             /12/.test(bz) && /200/.test(bz) && /240/.test(bz), "brush=" + bz);
+        }
+        /* ⚠ **必须把现场收拾干净** ✗ —— 我第一版没擦掉假涂色、也没还原画笔和工具 ✓
+         *   结果后面的用例看到了那一块被涂过的地 → **EU5 挂了一条** ✓（踩过 ✓）*/
+        if (np && pdz) { pdz[np * 4 + 3] = 0; }
+        st.tier = svT; st.showPaint = svP; st.tool = svTool; st.brush = svBrush;
+      }
+      /* 静态：取色那条路不许被 isLocked 挡 ✗（防有人再把闸挪回来 ✓）*/
+      {
+        const a = fs.readFileSync(path.join(ROOT, "web", "js", "app.js"), "utf8");
+        const pa = a.slice(a.indexOf("function pickAt"), a.indexOf("function needsRestore"));
+        ok("pickAt 里没有裸的 isLocked 拦截 ✓",
+           !/if \(isLocked\(tid\)\) return;/.test(pa),
+           /isLocked/.test(pa) ? "还有 isLocked（看是不是带条件的 ✓）" : "干净");
+      }
+      /* 静态顺序：displayedColor 里"手绘"必须在"荒地灰"**前面** ✓ */
+      {
+        const a = fs.readFileSync(path.join(ROOT, "web", "js", "app.js"), "utf8");
+        const fn = a.slice(a.indexOf("function displayedColor"), a.indexOf("function stableColor"));
+        const iPaint = fn.indexOf("state.showPaint && pd && pid");
+        const iWaste = fn.indexOf("isWastelandTid(own) && !state.showWaste");
+        ok("displayedColor 的顺序：手绘层在荒地灰之前（跟 colorOfPid 对齐 ✓）",
+           iPaint > 0 && iWaste > 0 && iPaint < iWaste,
+           "手绘@" + iPaint + " · 荒地@" + iWaste);
+      }
+      ok('「荒漠 · 涂色」关着时，取色取到那块灰（不是底下的色）',
            JSON.stringify(ex.displayedColor(wpid, ownTid)) === JSON.stringify([94, 94, 94]),
            JSON.stringify(ex.displayedColor(wpid, ownTid)));
         // ② 荒漠涂色开着、但「填色 · 颜色」关着：手绘层看不见 ——
@@ -3604,29 +4398,36 @@ const factory = new Function(
            ex.renderer.extraWs[0] < ex.renderer.extraWs[ex.renderer.extraCount - 1],
            `${ex.renderer.extraWs[0].toFixed(2)} < `
            + `${ex.renderer.extraWs[ex.renderer.extraCount - 1].toFixed(2)}`);
-        // **水域那条：固定 1 格 × 基准线宽** ✓（用户定的 ✓）
-        //   · 固定：不跟链、也不跟本层那条线走（以前水域取"链上最粗那条" ✗ → 开不开剧本会变 ✗）
-        //   · 但**要受基准线宽影响** ✓（整套粗细阶梯都按「基准线宽 / 1.6」缩放 ✓）
-        //   · 荒地那条现在**吃「填色边界」那套**（uPaintBorderW / uPaintBorderA ✓）
-        //     → 它连自己的字段都没有了 ✓ 所以下面只查水域那条 ✓
+        /* **海域 / 荒地那两条：宽浓都是**它们自己设置里那个值** ✓（用户要求可调 ✓）
+         *   · 不跟链、不跟本层那条线走 ✓（以前水域取"链上最粗那条" ✗ → 开不开剧本会变 ✗）
+         *   · **也不再跟「基准线宽」缩放** ✗（那是老口径 ✓ 现在宽度就是格数 ✅）*/
         {
           const _svW = st.set ? st.set.w : undefined;
-          if (st.set) st.set.w = null;                 // 出厂：基准线宽 1.6 → 缩放 1 ✓
+          const _svWW = st.set ? st.set.waterW : undefined;
+          if (st.set) { st.set.w = 2; st.set.waterW = 1; }
           ex.syncLayerSwitches();
           const _w1 = ex.renderer.waterW;
-          if (st.set) st.set.w = 3.2;                  // 拉到两倍 → 缩放 2 ✓
+          if (st.set) st.set.w = 4;                    // 基准线宽拉两倍 → **不该影响它** ✓
           ex.syncLayerSwitches();
           const _w2 = ex.renderer.waterW;
-          if (st.set) { if (_svW === undefined) delete st.set.w; else st.set.w = _svW; }
+          if (st.set) st.set.waterW = 2.5;             // 直接改"海域宽度" → 它才跟着变 ✓
           ex.syncLayerSwitches();
-          ok('水域边界：粗细 = 1 格 × 基准线宽（不跟链、不跟本层那条线 ✓）',
-             Math.abs(_w1 - 1) < 0.001 && ex.renderer.wasteW === undefined,
-             `出厂 waterW=${_w1}（荒地早就没有自己的字段了 ✓）`
-             + ` 链上最粗=${ex.renderer.extraWs[ex.renderer.extraCount - 1].toFixed(2)}`
+          const _w3 = ex.renderer.waterW;
+          if (st.set) {
+            if (_svW === undefined) delete st.set.w; else st.set.w = _svW;
+            if (_svWW === undefined) delete st.set.waterW; else st.set.waterW = _svWW;
+          }
+          ex.syncLayerSwitches();
+          ok('海域边界：粗细 = 设置里那个格数（不跟链、不跟本层那条线 ✓）',
+             Math.abs(_w1 - 1) < 0.001,
+             `waterW=${_w1} 链上最粗=${ex.renderer.extraWs[ex.renderer.extraCount - 1].toFixed(2)}`
              + ` 本层=${ex.renderer.borderWidth.toFixed(2)}`);
-          ok('水域边界：跟着「基准线宽」等比缩放（1.6 → 1 格 / 3.2 → 2 格）✓',
-             Math.abs(_w2 - 2) < 0.001,
-             `基准线宽 3.2 → waterW=${_w2}`);
+          ok('海域边界：不再跟「基准线宽」缩放，只认「海域宽度」那一档 ✓',
+             Math.abs(_w2 - 1) < 0.001 && Math.abs(_w3 - 2.5) < 0.001,
+             `基准拉两倍后=${_w2}（应仍是 1）  改海域宽度=2.5 → ${_w3}`);
+          ok('荒地边界也有自己的粗细字段（不再借填色的 ✗）',
+             ex.renderer.wasteW !== undefined && ex.renderer.wasteA !== undefined,
+             `wasteW=${ex.renderer.wasteW} wasteA=${ex.renderer.wasteA}`);
         }
         {
           // 换个状态再看一遍：剧本层 + 没粒度（本层那条线这时是 1.5 的势力线 ✓）也不许动
@@ -3838,13 +4639,16 @@ const factory = new Function(
        [...ex.renderer.paintData.slice(mi, mi + 4)].join(','));
 
     // 换成按国家，同一个位置应该整国一起变
+    // **新规则**（用户给的）：指着**涂过**的地时，目标同时认两样 ——
+    //   涂过的那些按"**填色归属**"（同色同标记 ✓）、
+    //   没涂过的那些按"**剧本归属名字**"✓
+    // 所以这一国里**没涂过的邻省也会被一起涂上**（标记名用这一国的名字就必然对得上 ✓）
     ex.setGrain(null);
-    ex.setBrush([200, 12, 90], true);
+    st.brushLabel = String(st.titles.names[ex.titleAt(target, ERA0)] || '');
+    st.brush = [200, 12, 90];
     ex.actAt(...toClient(ax, ay));
-    // 按新规则：点中的是**已涂**的省份（[12,200,90]），邻省没涂过 = 别的色+别的标签 ✗
-    // 所以邻省不该被带上 —— 同色同标签的只有它自己 ✓
-    ok('换回按国家之后：只涂同色同标签的色块（未涂的邻省不被带上）',
-       ex.renderer.paintData[mi + 3] === 0,
+    ok('换回按国家之后：这一国没涂过的邻省也一起涂上（剧本归属名字对得上 ✓ 用户规则 ②）',
+       ex.renderer.paintData[mi + 3] > 0,
        [...ex.renderer.paintData.slice(mi, mi + 4)].join(','));
 
     // 擦干净，别影响后面几组
@@ -3952,7 +4756,7 @@ const factory = new Function(
     // 还原的判据是"玩家涂过没有"，不是"颜色跟原色一不一样"。
     // （以前按后者判，于是玩家吸自己的色再涂回同一块地，就永远擦不掉了）
     {
-      const same = st.original[tid].slice();
+      const same = st.titles.colors[tid].slice();
       ex.paintTitle(tid, same);
       ok('涂成原色也算涂过，还原工具认它', ex.needsRestore(tid) === true);
       ex.restoreTitle(tid);
@@ -3968,17 +4772,26 @@ const factory = new Function(
       const i = (Math.floor(t / w) * w + (t % w)) * 4;
       return [...ex.renderer.lutData.slice(i, i + 3)];
     };
-    const orig = st.original[tid].slice();
+    const orig = st.titles.colors[tid].slice();
+    // 这个头衔名下的第一格（问"涂的色记在哪"时落到地块上 ✓）
+    const _firstPid = (() => {
+      const nn = st.meta.numProvinces, tmm = st.titlemap, t0 = st.titles.tiers[tid];
+      for (let q = 1; q < nn; q++) if (tmm[t0 * nn + q] === tid) return q;
+      return 0;
+    })();
     ex.paintTitle(tid, [12, 200, 90]);
     ok('涂色之后 LUT 里还是游戏原色（头衔色没被改）',
-       JSON.stringify(lutAt(tid)) === JSON.stringify(st.original[tid]),
+       JSON.stringify(lutAt(tid)) === JSON.stringify(st.titles.colors[tid]),
        JSON.stringify(lutAt(tid)));
     ok('头衔色表也没动',
-       JSON.stringify(st.titles.colors[tid]) === JSON.stringify(st.original[tid]),
+       JSON.stringify(st.titles.colors[tid]) === JSON.stringify(st.titles.colors[tid]),
        JSON.stringify(st.titles.colors[tid]));
     ok('涂的色记在手绘层里',
-       JSON.stringify(st.paintColor.get(tid) || []) === JSON.stringify([12, 200, 90]),
-       JSON.stringify(st.paintColor.get(tid) || []));
+       !!(_firstPid > 0 && ex.renderer.paintData[_firstPid * 4 + 3] > 0
+          && ex.renderer.paintData[_firstPid * 4] === 12
+          && ex.renderer.paintData[_firstPid * 4 + 1] === 200
+          && ex.renderer.paintData[_firstPid * 4 + 2] === 90),
+       _firstPid > 0 ? [...ex.renderer.paintData.slice(_firstPid * 4, _firstPid * 4 + 4)].join(',') : '没找到地块');
 
     const cb = get('show-paint');
     const fire = (v) => { cb.checked = v; for (const fn of cb._listeners.change || []) fn({ target: cb }); };
@@ -3988,7 +4801,7 @@ const factory = new Function(
        JSON.stringify(lutAt(tid)) === JSON.stringify(orig),
        `${JSON.stringify(lutAt(tid))} vs 原色 ${JSON.stringify(orig)}`);
     ok('关掉填色时头衔色本来就是原色（压根没改过）',
-       JSON.stringify(st.titles.colors[tid]) === JSON.stringify(ex.state.original[tid]),
+       JSON.stringify(st.titles.colors[tid]) === JSON.stringify(orig),
        JSON.stringify(st.titles.colors[tid]));
     ok('手绘层也还在，只是不显示',
        ex.renderer.paintData[probe * 4 + 3] > 0,
@@ -4064,7 +4877,8 @@ const factory = new Function(
        mine(st).length === 1 && mine(st)[0].name === '丙',
        `${mine(st).length} 块：${mine(st).map((p) => p.name).join(' / ')}`);
 
-    // 同色同标记铺成两块**互不相邻**的地方：只留最大的那块露名字
+    // 同色同标记铺成两块**互不相邻**的地方：**每一块各露一个名字** ✓
+    // （本轮的规矩：一个连通域一个名字 —— 以前是"只留最大那块" ✗）
     {
       ex.restoreTitle(ex.titleAt(a, LAST_TIER));       // 先把上一段的丙擦掉
       ex.restoreTitle(ex.titleAt(b, LAST_TIER));
@@ -4080,9 +4894,17 @@ const factory = new Function(
       ex.paintTitle(ex.titleAt(a, LAST_TIER), C);
       ex.paintTitle(ex.titleAt(far[0], LAST_TIER), C);
       ex.rebuildPaintBlocks();
-      ok('同一个标记铺在互不相邻的两块上：只留最大的那块露名字',
-         mine(st).length === 1 && mine(st)[0].name === '丁',
+      ok('同一个标记铺在互不相邻的两块上：**两块各露一个名字** ✓',
+         mine(st).length === 2 && mine(st).every((x) => x.name === '丁'),
          `${mine(st).length} 块：${mine(st).map((p) => p.name).join(' / ')}`);
+
+      // 两块之间得**各是自己那一块**的中心（不能都指着最大那块 ✗）
+      {
+        const pts = mine(st).filter((x) => x.name === '丁');
+        const d2 = pts.length === 2 ? Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y) : 0;
+        ok('两个同名标签落在各自的连通域里（落点分得开 ✓）', pts.length === 2 && d2 > 20,
+           pts.length === 2 ? `相距 ${d2.toFixed(0)} 地图像素` : `只找到 ${pts.length} 个`);
+      }
 
       // **同一个标记 + 另一种颜色 → 仍旧是一家**（名字优先于颜色）✓
       // 以前这里算"另一组"，于是同一个国家名会冒出两个 ——
@@ -4120,21 +4942,30 @@ const factory = new Function(
       const ta = ex.titleAt(a, ex.editTier());
       st.brushLabel = '甲';
       ex.paintTitle(ta, C);
-      ok('先铺上「甲」', st.titleLabel.get(ta) === '甲', String(st.titleLabel.get(ta)));
+      // 标记名从**那一格自己**问（不再查头衔级的账 ✗）
+      const labelAt2 = (q) => {
+        const lid = st.provLabel ? st.provLabel[q] : -1;
+        return lid >= 0 ? String(st.labelNames[lid] || '') : '';
+      };
+      const fillAt2 = (q) => {
+        const pd2 = ex.renderer.paintData;
+        return pd2[q * 4 + 3] > 0 ? [pd2[q * 4], pd2[q * 4 + 1], pd2[q * 4 + 2]] : null;
+      };
+      ok('先铺上「甲」', labelAt2(a) === '甲', labelAt2(a));
 
       st.brushLabel = '乙';
       ex.setTool('paint');
       ex.setBrush(C, true);            // 同一个颜色
       ex.actAt(...toClient(ax2, ay2));
       ok('同色换个标记再点一下，标记改得掉（以前点了没反应）',
-         st.titleLabel.get(ta) === '乙',
-         `${st.titleLabel.get(ta)}（编辑层 ${ex.editTier()}，tid ${ta}）`);
+         labelAt2(a) === '乙',
+         labelAt2(a) + '（编辑层 ' + ex.editTier() + '，tid ' + ta + '）');
       // 颜色断言要放在描边纹理那段**之前** —— 那段会 restore 掉 a/b，
       // 而 EU4 的编辑层就是第 4 层，pa2 跟 ta 恰好是同一个 tid，顺序反了会被擦掉
       ok('颜色还是那个颜色（记在手绘层，头衔色没动）',
-         JSON.stringify(st.paintColor.get(ta) || []) === JSON.stringify(C)
-         && JSON.stringify(st.titles.colors[ta]) === JSON.stringify(st.original[ta]),
-         `手绘 ${JSON.stringify(st.paintColor.get(ta) || [])} 期望 ${JSON.stringify(C)}`);
+         JSON.stringify(fillAt2(a) || []) === JSON.stringify(C)
+         && JSON.stringify(st.titles.colors[ta]) === JSON.stringify(st.titles.colors[ta]),
+         '手绘 ' + JSON.stringify(fillAt2(a) || []) + ' 期望 ' + JSON.stringify(C));
 
       // 描边纹理：同色不同标记的两块，编号必须不一样（着色器就是比这个）
       {
@@ -4168,6 +4999,198 @@ const factory = new Function(
     ex.restoreTitle(ex.titleAt(a, LAST_TIER));
     ex.restoreTitle(ex.titleAt(b, LAST_TIER));
     ex.rebuildPaintBlocks();
+  }
+
+  // ==== 3c-3. 用户给的三个例子（剧本层那套判断，判据是**解析出来的归属信息**）====
+  // 大前提：剧本视图 + 没开粒度。规则（用户给的）：
+  //  ① 「势力 · 边界」开着 → 按**剧本归属**整块来
+  //     例：巴黎在 1936 剧本里属法国、却被涂成德国色 —— 指着巴黎 → **整个法国** ✓
+  //  ② 否则（填色那条）→ **涂过的看填色归属、没涂过的看剧本归属**：
+  //     指着涂成德国色的巴黎 → 涂成德国的那些 + 没涂过且剧本属德国的 = 整个德国 ✓
+  //     指着没涂过的里昂     → 涂成法国的那些 + 没涂过且剧本属法国的 = 除了巴黎之外的整个法国 ✓
+  if ((st.meta.eraDates || []).length) {
+    const LAST4 = st.meta.tiers.length - 1;
+    const NP4 = st.meta.numProvinces;
+    const N_ERA4 = st.meta.eraDates.length;
+    const BLANK4 = st.meta.tiers.indexOf('blank');
+    let ERA4 = 0;
+    for (let i = 0; i < N_ERA4; i++) if (i !== BLANK4) { ERA4 = i; break; }
+    const svT4 = st.tier, svG4 = st.grain, svBP4 = st.showBorderPaint;
+    const svPB4 = st.showPowerBorder, svB4 = st.brushLabel;
+    st.tier = ERA4; st.grain = null;
+    const pd4 = ex.renderer.paintData;
+    const nReal4 = st.meta.numRealTitles != null ? st.meta.numRealTitles : 1e9;
+
+    // 找 A（地最多的国家）
+    const cntA = new Map();
+    for (let q = 1; q < NP4; q++) {
+      if (!(st.provPos[q * 3 + 2] > 0)) continue;
+      const t = ex.titleAt(q, ERA4);
+      if (t == null || t === st.meta.noTitle || t >= nReal4) continue;
+      if (ex.isLocked(t)) continue;
+      cntA.set(t, (cntA.get(t) || 0) + 1);
+    }
+    let A = -1, bestA = 0;
+    for (const [t, c] of cntA) if (c > bestA) { bestA = c; A = t; }
+    const aPids = [];
+    const nbTags = new Set();
+    const off4 = new Uint32Array(st.adjacency.buffer, st.adjacency.byteOffset, NP4 + 1);
+    const nb4 = new Uint16Array(st.adjacency.buffer, st.adjacency.byteOffset + (NP4 + 1) * 4);
+    for (let q = 1; q < NP4; q++) {
+      if (ex.titleAt(q, ERA4) !== A) continue;
+      aPids.push(q);
+      for (let k = off4[q], e = off4[q + 1]; k < e; k++) {
+        const r = nb4[k];
+        if (r <= 0) continue;
+        const tr = ex.titleAt(r, ERA4);
+        if (tr != null && tr !== st.meta.noTitle && tr !== A && cntA.has(tr)) nbTags.add(tr);
+      }
+    }
+    let B = -1;
+    for (const t of nbTags) { B = t; break; }
+    // P = 属于 A、且挨着 B 的某个省（"巴黎"）
+    let P = 0;
+    for (const q of aPids) {
+      for (let k = off4[q], e = off4[q + 1]; k < e; k++) {
+        const r = nb4[k];
+        if (r > 0 && ex.titleAt(r, ERA4) === B) { P = q; break; }
+      }
+      if (P) break;
+    }
+    const L4 = aPids.find((q) => q !== P && pd4[q * 4 + 3] === 0);
+    if (A >= 0 && B >= 0 && P && L4) {
+      const nameA = String(st.titles.names[A] || '');
+      const nameB = String(st.titles.names[B] || '');
+      const colB = st.titles.colors[B] || [10, 20, 30];
+      const lit4 = (q) => pd4[q * 4 + 3] > 0;
+      const inList = (arr, q) => arr.indexOf(q) >= 0;
+      // 把 P 涂成 B 的颜色 + B 的标记名（"巴黎涂成德国色" ✓）
+      st.brushLabel = nameB;
+      ex.paintTitle(ex.titleAt(P, LAST4), colB);
+      ex.recomputePainted();
+
+      // ① 势力边界 → 整个 A
+      st.showBorderPaint = false; st.showPowerBorder = true;
+      ex.syncLayerSwitches();
+      const t1 = ex.paintTargetsAt(P) || [];
+      const aSet = new Set(aPids);
+      const miss1 = aPids.filter((q) => !inList(t1, q)).length;
+      const extra1 = t1.filter((q) => !aSet.has(q)).length;
+      ok(`① 势力边界：指着涂成「${nameB}」色的巴黎 → 目标是整个「${nameA}」✓`,
+         miss1 === 0 && extra1 === 0,
+         `目标 ${t1.length} 个 / A 有 ${aPids.length} 个（缺 ${miss1}，多 ${extra1}）`);
+
+      // ② 填色那条，指着 P（涂成 B 色）→ 整个 B
+      st.showBorderPaint = true; st.showPowerBorder = false;
+      ex.syncLayerSwitches();
+      const t2 = ex.paintTargetsAt(P) || [];
+      const bPids = [];
+      for (let q = 1; q < NP4; q++) if (ex.titleAt(q, ERA4) === B) bPids.push(q);
+      const bFree = bPids.filter((q) => !lit4(q));
+      const hasP2 = inList(t2, P);
+      const bFreeMiss = bFree.filter((q) => !inList(t2, q)).length;
+      const aFreeExtra = t2.filter((q) => ex.titleAt(q, ERA4) === A && !lit4(q) && q !== P).length;
+      ok(`② 填色：指着涂成「${nameB}」色的巴黎 → 整个「${nameB}」（没涂过的那些也算 ✓）`,
+         hasP2 && bFreeMiss === 0,
+         `目标 ${t2.length} 个：含巴黎=${hasP2}，B 没涂过的缺 ${bFreeMiss} / ${bFree.length}`);
+      ok(`② 填色：目标名字是「${nameB}」，所以「${nameA}」那边没涂过的地**不算** ✓`,
+         aFreeExtra === 0, `混进来 ${aFreeExtra} 个`);
+
+      // ③ 填色那条，指着 L（没涂过、属 A）→ 除了巴黎之外的整个 A
+      const t3 = ex.paintTargetsAt(L4) || [];
+      const hasL3 = inList(t3, L4);
+      const hasP3 = inList(t3, P);
+      const aFreeMiss3 = aPids.filter((q) => q !== P && !lit4(q) && !inList(t3, q)).length;
+      ok(`③ 填色：指着没涂过的里昂 → 除了巴黎之外的整个「${nameA}」✓`,
+         hasL3 && !hasP3 && aFreeMiss3 === 0,
+         `目标 ${t3.length} 个：含里昂=${hasL3}，含巴黎=${hasP3}（该 false），A 里缺 ${aFreeMiss3}`);
+
+      // 收尾
+      ex.restoreTitle(ex.titleAt(P, LAST4));
+      ex.recomputePainted();
+    } else {
+      console.log(`  （这一局凑不出"相邻的两个国家" —— 跳过：A=${A} B=${B} P=${P} L=${L4}）`);
+    }
+    st.tier = svT4; st.grain = svG4; st.showBorderPaint = svBP4;
+    st.showPowerBorder = svPB4; st.brushLabel = svB4;
+    ex.syncLayerSwitches();
+  }
+
+  // ==== 3f-2. **按省份算的"边掩码 + 深度图"**（最终方案 ✓）====
+  //   用户点破的：边界就是"把一部分格子的**边框**点亮"✓ 所以缝就是**格子的边** ✓
+  //   边掩码：每格 32 位 = 8 组 × 4 位（1 左 2 右 4 上 8 下 ✓）组序见 app.js 的 buildBorderEdges ✓
+  //   深度图：每格 1 字节 = "到最近那条缝的距离"（格 ✓）只当粗筛守门员，不参与画线 ✓
+  {
+    /* **粗筛位图**（用户点的三件事全在这儿 ✓）
+     *   ① 任何层的边界都落在**省界**上 → 只跟省份图形状有关 ✓
+     *   ② 不需要距离 → 1 位/格（"值不值得看一眼" ✓）
+     *   ③ 加载时算一次 → 换层/涂色都不重算 ✓ */
+    const bd = ex.buildBorderDepth ? ex.buildBorderDepth() : null;
+    ok('粗筛位图能算出来（1 位/格 · 8 格 1 字节 ✓）',
+       !!bd && bd.bits instanceof Uint8Array
+       && bd.bits.length === Math.ceil(st.meta.mapWidth / 8) * st.meta.mapHeight,
+       bd ? bd.w + "×" + bd.h + " · " + (bd.bits.length / 1048576).toFixed(1) + "MB · "
+         + bd.ms.toFixed(0) + "ms" : "没算出来 ✗");
+    if (bd) {
+      // 置位数 = "在省界 ±2 格内"的格 ✓ 该是少数（其余一辈子画不到线 ✓）
+      let _on = 0;
+      for (let i = 0; i < bd.bits.length; i++) { let b = bd.bits[i]; while (b) { _on += b & 1; b >>= 1; } }
+      const _tot = bd.w * bd.h;
+      ok('粗筛位图：只有少数格需要细算（其余一次取位就退出 ✓）',
+         _on > 0 && _on / _tot < 0.6,
+         "需细算 " + (_on / _tot * 100).toFixed(1) + "% · 直接退出 "
+         + (100 - _on / _tot * 100).toFixed(1) + "%");
+    }
+  }  // ==== 3g. **每国**名字上限（**每个国家**按连通域面积从大到小各留 N 个 ✓）====
+  // ⚠ 是"同一个国家的不同地区最多 N 个" ✗ **不是**"全世界只留 N 个" ✓（用户澄清过 ✓）
+  //   拉满（21）= 无上限 ✓（不用单独一个勾选框 —— 用户要求省空间）
+  {
+    const svMax = st.set.labelMax, svBP = st.showBorderPaint;
+    st.showBorderPaint = false;
+    ex.syncLayerSwitches();
+    st.set.labelMax = 21;                      // 最右那一格 = 无上限：先看总量 ✓
+    st._blocksAll = null; st._blocksTier = null; st._layerSig = null;
+    ex.rebuildPaintBlocks(true, true);
+    const all = (st.paintBlocks || []).length;
+    const topArea = all ? st.paintBlocks[0].area : 0;
+    ok('名字上限拉满 = 无上限 ✓', ex.labelMaxValue() === 0, 'labelMaxValue=' + ex.labelMaxValue());
+    st.set.labelMax = 3;
+    ex.rebuildPaintBlocks(true, true);
+    const cut = st.paintBlocks || [];
+    /* **留下的要比"每族 3 个"允许的更多** ✗ —— 因为**每个国家**都能留 3 个 ✓
+     *  （全局取前 3 的话这儿就该正好 3 ✗ 那是我第一版的错 ✓）*/
+    ok('名字上限：**每国**各留 3 个（总数远多于 3 ✓）',
+       all > 3 && cut.length > 3 && cut.length < all,
+       `无上限 ${all} 个 → 每国 3 个：${cut.length} 个`);
+    // 每一族都不超过 3 个 ✓
+    {
+      const cnt = new Map();
+      for (const b of cut) {
+        const k = (b.rgb ? b.rgb.join(',') : '') + '|' + (b.name || '');
+        cnt.set(k, (cnt.get(k) || 0) + 1);
+      }
+      const over = [...cnt.entries()].filter(([, n]) => n > 3);
+      ok('每一族都不超过上限（没有哪国留下 4 个 ✓）',
+         over.length === 0,
+         over.length ? over.slice(0, 3).map(([k, n]) => k + '×' + n).join(' / ') : `族数 ${cnt.size}`);
+    }
+    ok('名字上限：留的都比"全局前 N"多（证明是按族分的 ✓）',
+       cut.length > 3,
+       `每国 3 个 → 一共 ${cut.length} 个（全局取前 3 的话只能是 3 ✗）`);
+    // 再拉满 → 数量回到原样 ✓（设置能来回调）
+    st.set.labelMax = 21;
+    ex.rebuildPaintBlocks(true, true);
+    ok('再拉满 → 数量回到原样 ✓', (st.paintBlocks || []).length === all,
+       `${(st.paintBlocks || []).length} / ${all}`);
+    // 滑杆就该是 1~20，而且**满格那个值就是"无上限"** ✓（跟 JS 里的常量必须对得上）
+    ok('「名字上限」滑杆是 1~21（21 = 无上限 ✓）',
+       /id="set-labelmax"[^>]*min="1"[^>]*max="21"/.test(HTML)
+       && !/id="set-labelmax-off"/.test(HTML),
+       'min=1 max=21，勾选框已经省掉 ✓');
+    st.set.labelMax = svMax;
+    ex.rebuildPaintBlocks(true, true);
+    st.showBorderPaint = svBP;
+    ex.syncLayerSwitches();
   }
 
   console.log('\n=== 3d. 导入带 clearEraNames 的配色之后，剧本层国名不能空 ===');
@@ -4235,36 +5258,35 @@ const factory = new Function(
     }
   }
 
-  // ==== 3e. 导入带 clearEraNames 的配色：国名该落**首都那片**，不是最大那片 ====
+  // ==== 3e. 导入带 clearEraNames 的配色：这一族的国名**不能空** ====
   // 这类导入件是照着"每个省的原版国家"上色的（名字就是那个国家的名字），
-  // 而 clearEraNames 把原版国名整层清掉了 —— 清掉之后"数据首都"那条路
-  //（族的名字 == 哪个国的名字）还能不能认出来？认不出就只能落到最大那片 ✗
+  // 而 clearEraNames 把原版国名整层清掉了 —— 清完之后这一族还认不认得出自己的名字？
+  // （以前这儿盯的是"名字要落到首都那片"✗ —— 首都那套拿掉之后，
+  //   只剩一件真要紧的事：**名字还在** ✓）
   {
     const nEra5 = (st.meta.eraDates || []).length;
-    if (nEra5 <= 0 || !st.meta.capitals) {
-      console.log('  （这一局没有年代层 / 没有数据首都 —— 跳过）');
+    if (nEra5 <= 0) {
+      console.log('  （这一局没有年代层 —— 跳过）');
     } else {
       const fine5 = st.meta.tierNames.length - 1;
       let pick = null;
+      // 挑一个"地够多、有名字"的年份层国家当小白鼠 ✓
+      // （以前是按 meta.capitals 挑"首都在自己地里"的 —— 首都那套没了，
+      //   而且 EU5 的 meta 里根本没有 capitals ✗ 会直接炸）
       for (let t5 = 0; t5 < st.titles.keys.length && !pick; t5++) {
         if (st.titles.tiers[t5] >= nEra5) continue;
-        const k5 = String(st.titles.keys[t5] || '');
-        const m5 = /^\d{4}_(.+)$/.exec(k5) || /^(?:e|k|d|c|b)_(.+)$/.exec(k5);
-        if (!m5) continue;
-        const cp5 = st.meta.capitals[m5[1]] | 0;
-        if (!(cp5 > 0) || cp5 >= st.meta.numProvinces) continue;
-        if (!(st.provPos[cp5 * 3 + 2] > 0)) continue;
+        if (!st.titles.names[t5]) continue;
         const pids5 = [];
         for (let p = 1; p < st.meta.numProvinces && pids5.length < 600; p++) {
           if (!(st.provPos[p * 3 + 2] > 0)) continue;
           if (ex.titleAt(p, ERA0) !== t5) continue;
           pids5.push(p);
         }
-        if (pids5.length < 3 || pids5.indexOf(cp5) < 0) continue;
-        pick = { t: t5, cp: cp5, pids: pids5, nm: st.titles.names[t5] };
+        if (pids5.length < 3) continue;
+        pick = { t: t5, pids: pids5, nm: st.titles.names[t5] };
       }
-      ok('找得到一个"有数据首都、且首都就在自己地里"的国家（复现要用）', !!pick,
-         pick ? `#${pick.t}「${pick.nm}」首都 #${pick.cp}，地 ${pick.pids.length} 块` : '这局没有');
+      ok('找得到一个地够多的年份层国家（复现要用）', !!pick,
+         pick ? `#${pick.t}「${pick.nm}」，地 ${pick.pids.length} 块` : '这局没有');
       if (pick) {
         const titles5 = {}, labels5 = {};
         for (const p of pick.pids) {
@@ -4286,11 +5308,21 @@ const factory = new Function(
         st._blocksAll = null; st._blocksTier = null;
         ex.syncLayerSwitches();
         ex.rebuildPaintBlocks(!!st._blocksAll);
-        const blk = (st.paintBlocks || []).find((b) => b.name === pick.nm);
-        ok('导入 clearEraNames 的配色之后，这一族认得自己的数据首都 ✓',
-           !!blk && !!blk._hasCap && (blk._capPid | 0) === pick.cp,
-           blk ? `「${blk.name}」有首都=${!!blk._hasCap} capPid=${blk._capPid} 期望 ${pick.cp}`
-               : `没找到「${pick.nm}」这一族`);
+        const blks = (st.paintBlocks || []).filter((b) => b.name === pick.nm);
+        ok('导入 clearEraNames 的配色之后，这一族的国名照样画得出来 ✓',
+           blks.length >= 1,
+           blks.length ? `「${pick.nm}」${blks.length} 个落点`
+                       : `没找到「${pick.nm}」这一族`);
+        // 落点得在**这一族自己的地盘**里（不能跑到别人家去 ✗）
+        if (blks.length) {
+          const xs = pick.pids.map((p) => st.provPos[p * 3]);
+          const ys = pick.pids.map((p) => st.provPos[p * 3 + 1]);
+          const pad = 400;      // 地盘跨度本来就大，给点余量（重心可能落在包围盒边上 ✓）
+          const inside = blks.filter((b) => b.x >= Math.min(...xs) - pad && b.x <= Math.max(...xs) + pad
+                                         && b.y >= Math.min(...ys) - pad && b.y <= Math.max(...ys) + pad);
+          ok('每个落点都摆在这一族自己的地盘里 ✓', inside.length === blks.length,
+             `${inside.length}/${blks.length} 个在包围盒内`);
+        }
         // 还原：名字 + 涂色 + 层级
         for (const [i, nm] of svEra5) st.titles.names[i] = nm;
         for (const p of pick.pids) {
@@ -4302,6 +5334,67 @@ const factory = new Function(
         ex.syncLayerSwitches();
         ex.rebuildPaintBlocks(!!st._blocksAll);
       }
+    }
+  }
+
+  // ==== 3f. 导出涂色 = **逐最细层单位**（不是"按头衔"）====
+  // 手绘层的真相是"每一格自己的颜色 + 标记 + 归属" ✓ 所以导出必须逐格存 ——
+  // 同一个头衔下的地块可以各是各的色（1936 那半壁法国），按头衔存就丢信息 ✗
+  // 这条走一遍完整往返：涂两个不同色 → 导出 → 清空 → 导入 → **逐格比颜色**
+  {
+    const LAST3 = st.meta.tiers.length - 1;
+    const NP3 = st.meta.numProvinces;
+    const pd3 = ex.renderer.paintData;
+    const clear3 = () => {
+      // **按"这一格有没有颜色"清**（以 paintData 为准 ✓）——
+      // 前面那些测试直接改过手绘纹理，账本可能跟它脱节；只按账本清会留下残留 ✗
+      for (let q = 1; q < NP3; q++) {
+        if (pd3[q * 4 + 3] > 0) {
+          ex.renderer.setPaint(q, 0, 0, 0, 0);
+          ex.renderer.setPaintLabel(q, 0);
+          if (st.provTitle) st.provTitle[q] = -1;
+          if (st.provLabel) st.provLabel[q] = -1;
+        }
+      }
+      ex.recomputePainted();
+    };
+    const pick3 = [];
+    for (let q = 1; q < NP3 && pick3.length < 2; q++) {
+      const t = ex.titleAt(q, LAST3);
+      if (t == null || t === st.meta.noTitle || ex.isLocked(t)) continue;
+      if (st.provPos[q * 3 + 2] <= 0) continue;
+      pick3.push(q);
+    }
+    if (pick3.length < 2) {
+      console.log('  （这一局凑不出两个可涂的地块 —— 跳过）');
+    } else {
+      clear3();
+      ex.paintTitle(ex.titleAt(pick3[0], LAST3), [200, 30, 30], true);
+      ex.paintTitle(ex.titleAt(pick3[1], LAST3), [30, 30, 200], true);
+      ex.recomputePainted();
+      const data3 = ex.projectData();
+      // ① 导出的 key 必须都是**最细层**头衔
+      const badKey = Object.keys(data3.titles).filter((k) => {
+        const tid = st.titles.index ? st.titles.index[k] : null;
+        return tid == null || st.titles.tiers[tid] !== LAST3;
+      });
+      ok('导出的每一笔都是"最细层单位"的 key ✓（不是按头衔整块存 ✗）',
+         badKey.length === 0, badKey.slice(0, 3).join(',') || `${Object.keys(data3.titles).length} 条全对`);
+      // ② 往返：清空 → 导入 → 逐格比颜色
+      const before3 = [];
+      for (let q = 1; q < NP3; q++) {
+        before3.push(pd3[q * 4 + 3] > 0 ? [pd3[q * 4], pd3[q * 4 + 1], pd3[q * 4 + 2]].join() : '');
+      }
+      clear3();
+      ex.applyProject(JSON.parse(JSON.stringify(data3)));
+      let bad3 = 0;
+      for (let q = 1; q < NP3; q++) {
+        const cur = pd3[q * 4 + 3] > 0 ? [pd3[q * 4], pd3[q * 4 + 1], pd3[q * 4 + 2]].join() : '';
+        if (cur !== before3[q - 1]) bad3++;
+      }
+      ok('导出 → 清空 → 导入：逐格一模一样（两色都不丢 ✓）', bad3 === 0,
+         bad3 ? `差 ${bad3} 格` : `${NP3 - 1} 格全对`);
+      clear3();
     }
   }
 
