@@ -5479,20 +5479,18 @@ function bootMark(txt) {
 }
 
 function rawErr(msg) {
-  try {
-    const host = document.body || document.documentElement;
-    if (!host) return;
-    let box = document.getElementById('pdx-raw-err');
-    if (!box) {
-      box = document.createElement('pre');
-      box.id = 'pdx-raw-err';
-      box.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:2147483647;'
-        + 'max-height:60%;overflow:auto;margin:0;padding:8px;'
-        + 'background:#b00;color:#fff;font:12px/1.5 monospace;white-space:pre-wrap';
-      host.insertBefore(box, host.firstChild);
-    }
-    box.textContent += msg + '\n';
-  } catch (e) { /* 连这个都失败就真没辙了 ✓ */ }
+  /* 排障用的顶部红条 —— **正式版不显示** ✓
+   * 它在手机版黑屏那阵很有用：出错就能看见，不用连电脑看控制台 ✓
+   * ⚠ 但手机上有一种**查不了的**东西会不停冒出来：
+   *     Script error. @ :0   （没有文件名、没有行号）
+   *   那是浏览器对**本地文件**里某些异常做的跨域屏蔽 ✓ 细节永远拿不到 ✓
+   *   实测它由导出时那句 a.click() 引起，而**下载本身是成功的** ✓
+   *   → 一条无害的噪音被红条报出来，比没有提示更糟（用户以为出错了）✓
+   * ⚠ 出错上屏这件事**已经有人管**：showFatal 那个面板 ✓ 它是正式的 ✓
+   *   所以这里静音，不是把"报错"关掉，是把**排障通道**关掉 ✓
+   * 要再排障：去掉下面这个 return ✓ */
+  return;
+  void msg;
 }
 window.addEventListener('error', (e) => {
   /* ⚠ 两条路都走 ✗ 别只留一条 —— rawErr 保证"黑屏时也看得见" ✓ */
