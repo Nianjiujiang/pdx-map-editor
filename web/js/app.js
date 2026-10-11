@@ -1746,6 +1746,18 @@ function sameOwner(a, b) {
 function paintTargetsAt(pid) {
   if (!pid || !(renderer && renderer.paintData)) return null;
   const n = state.meta.numProvinces;
+  /* 🔴 **荒地要一块一块涂** ✗（用户报的 bug：涂一块荒地，整片荒地全上色 ✗）
+   *
+   *   荒地那些地块**共享同一个"归属"**（owner 名字一样 ✓，见 2242 / 2433 那几处的
+   *   `#impassable` / 荒地伪头衔 ✓）—— 下面 B 段是按**名字**匹配的 ✓
+   *   → 点一块，凡是"同一个归属"的荒地全被算进来 ✗ 整片一起变色 ✓
+   *
+   *   荒地本来就该当成**独立的地块**处理 ✓（跟海/湖不一样：海是一个头衔管一大片 ✓）
+   *   所以在这儿直接返回它自己这一块 ✓，后面 A/B/C 三段都不走 ✓ */
+  {
+    const _fineTid = titleAt(pid, TIER_COUNT - 1);
+    if (_fineTid != null && _fineTid !== NO_TITLE && isWastelandTid(_fineTid)) return [pid];
+  }
   const eraT = countryTier();                    // 「最近的**有主**剧本层」✓
   const mine = provInfoAt(pid, eraT);
   if (!mine) return null;
