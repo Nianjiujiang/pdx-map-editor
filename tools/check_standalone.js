@@ -144,6 +144,47 @@ async function bootWith(embedded, wantLabel) {
        (r2.env.get('boot-step') || {}).textContent || '');
   }
 
+  // ---- 显卡上下文丢了又回来（手机切后台再回来黑屏就是这条路）----------------
+  //   丢：接住 + **停画**（丢着的时候画什么都不会上屏 ✓）
+  //   回：**把地图数据重新喂一遍** ✓ 而且**不许把笔迹擦了** ✓
+  //       （笔迹一直存在 CPU 那份 paintData 里 ✓ —— 重喂时无脑重建就把它抹掉了 ✓）
+  console.log('\n---- 显卡上下文丢了又回来 ----');
+  {
+    const cv = env.get('map');
+    const r = ex.renderer;
+    r.setPaint(11, 200, 30, 40, 255);
+    r.setPaintLabel(11, 7);
+    ok('（预备）渲染器在、笔迹写得进去', !!(r.provTex && r.paintData[11 * 4] === 200));
+
+    cv.dispatchEvent({ type: 'webglcontextlost', preventDefault() {} });
+    ok('丢上下文：接住了（preventDefault）+ 停画',
+       r.ctxLost === true && r.dirty === false, `ctxLost=${r.ctxLost} dirty=${r.dirty}`);
+
+    cv.dispatchEvent({ type: 'webglcontextrestored' });
+    for (let i = 0; i < 400 && !r.provTex; i++) await new Promise((res) => setImmediate(res));
+    ok('回来：地图数据重新喂进去了（省份图 / 归属表 / 颜色表 / 手绘层）',
+       !!(r.provTex && r.titleTex && r.colorTex && r.paintTex && r.paintLabelTex),
+       `prov=${!!r.provTex} title=${!!r.titleTex} color=${!!r.colorTex} paint=${!!r.paintTex}`);
+    ok('**笔迹没被重喂擦掉**（颜色 + 标记都还在）',
+       r.paintData[11 * 4] === 200 && r.paintData[11 * 4 + 3] === 255 && r.paintLabelData[11] === 7,
+       `rgba=${r.paintData[11 * 4]},${r.paintData[11 * 4 + 1]},${r.paintData[11 * 4 + 2]},`
+       + `${r.paintData[11 * 4 + 3]} · label=${r.paintLabelData[11]}`);
+    ok('回来之后会自动重画一帧（dirty = true）', r.dirty === true && r.ctxLost === false);
+    ok('恢复这件事进了日志（出事能发出来）',
+       /上下文/.test((log && typeof log.text === 'function' && log.text()) || ''));
+
+    // ---- 没丢上下文那种"切出去再回来"：也要**强制重画一帧** ----
+    // 后台期间 rAF 是冻住的 ✓ 回来时没人碰 dirty 的话，那一帧永远不来 ✓
+    r.dirty = false;
+    env.documentStub.hidden = false;
+    const nVis = env.dispatchDocument('visibilitychange');
+    ok('回到前台：强制重画一帧（visibilitychange 那条）',
+       r.dirty === true, `监听 ${nVis} 个 · dirty=${r.dirty}`);
+    r.dirty = false;
+    env.dispatchWindow('pageshow');
+    ok('回到前台：pageshow 那条也兜住了（有的浏览器只发这个）', r.dirty === true);
+  }
+
   console.log('\n==========================================================');
   console.log(`通过 ${oks.length} 条，失败 ${fails.length} 条`);
   if (fails.length) {

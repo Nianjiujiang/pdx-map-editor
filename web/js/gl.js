@@ -934,69 +934,15 @@ export class MapRenderer {
     if (!gl) throw new Error('这个浏览器/显卡不支持 WebGL2，换 Chrome 或 Edge 试试。');
     this.gl = gl;
 
-    // 显卡驱动重置 / 显存吃紧时浏览器会把 WebGL 上下文整个收走 —— 不接住的话
-    // 每帧 GL 调用全部静默 no-op，画面冻结成白板还没任何提示。preventDefault
-    // 表示"我们知道出事了"；真恢复要重建全部纹理，直接提示用户刷新最稳。
+    /* 显卡驱动重置 / 显存吃紧 / **手机切到后台** 时，浏览器会把整个 WebGL 上下文收走：
+     * 所有 GL 对象（着色器 / 缓冲 / 全部纹理）一起作废，之后每帧 GL 调用静默 no-op ✓
+     * 不 preventDefault 的话浏览器**不会再给 restored 事件**（等于放弃这个上下文）✗
+     * 所以接住它，并等 restored —— 那边把资源重建一遍（见下面的监听与 _build ✓）
+     * ⚠ 上下文丢着的时候**别画** ✗：画了也不上屏，还会把 GL 错误搅浑 ✓ */
+    this.ctxLost = false;
     this.onContextLost = null;
-    /* 🔴 **每个 sampler 都必须指向一张"完整纹理"** ✗ —— WebGL 的硬规矩 ✓
-     *   用户报：手机版黑屏、中心像素 [0,0,0]、**drawArrays 报 1282** ✓
-     *   根因：着色器里声明了 sampler2D uBorderDepth ✓ 而**手机上不建那张粗筛位图** ✗
-     *     → render 里走 else 分支，只把 uBorderDepthOn 设成 0 ✗
-     *       **纹理单元 9 上什么都没绑** → 采样器指向空 → 1282 → 整帧丢弃 → 全黑 ✓✓
-     *   规矩：**就算这一路根本不采样，也得绑一张完整纹理** ✗（1×1 就够 ✓）
-     *   ⚠ 电脑上没事是因为那张图建得出来、绑上了 ✓ → "电脑行手机不行"就是这么来的 ✓
-     *   ⚠ 这张占位纹理要**在 render 之前**就建好 ✗（constructor 里最省事 ✓）
-     *     而 constructor 时 gl 已经拿到了 ✓ 所以放这儿没问题 ✓ */
-    this.dummyTex = makeTexture(gl, 1, 1, gl.R8, gl.RED, gl.UNSIGNED_BYTE,
-      new Uint8Array([0]), gl.NEAREST);
-    canvas.addEventListener('webglcontextlost', (e) => {
-      e.preventDefault();
-      this.dirty = false;
-      if (this.onContextLost) this.onContextLost();
-    });
-
-    const maxTex = gl.getParameter(gl.MAX_TEXTURE_SIZE);
-    // **地图比"单张贴图上限"大时不再拒绝** ✓ —— setData 里会把它就地切成一块块贴图 ✓
-    // （手机 GPU 常见上限只有 4096 / 8192：CK3 9216×4608、EU5 8192×4096、
-    //   米勒投影 11680×5760 都塞不进一张 ✗ 以前这里直接抛错 → 整张图加载不出来 ✗）
-    // 只有小到连一块切片都放不下的设备才真的没救 ✓
-    if (maxTex < 256) {
-      throw new Error(`这个设备的贴图上限只有 ${maxTex}px，放不下任何地图切片。`);
-    }
-    this.maxTex = maxTex;
-
-    const prog = gl.createProgram();
-    gl.attachShader(prog, compile(gl, gl.VERTEX_SHADER, VERT));
-    gl.attachShader(prog, compile(gl, gl.FRAGMENT_SHADER, FRAG));
-    gl.linkProgram(prog);
-    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
-      throw new Error('着色器链接失败：' + gl.getProgramInfoLog(prog));
-    }
-    this.prog = prog;
-
-    this.uni = {};
-    for (const n of ['uView', 'uProv', 'uProvArr', 'uProvTiles', 'uProvCols', 'uUseTiles', 'uNoAA', 'uShowWaste', 'uTitleMap', 'uColorLut', 'uPaint', 'uPaintLabel', 'uBorderDepth', 'uBorderDepthOn',
-                     'uMapSize', 'uTitleMapW', 'uNumProvinces', 'uPaintW', 'uTier', 'uEditTier',
-                     'uShowTitles', 'uShowPaint', 'uMix',
-                     'uShowWaste', 'uWasteGrey', 'uBorderTitle', 'uBorderPaint', 'uPaintOnly', 'uBorderW', 'uBorderA', 'uPaintBorderW', 'uPaintBorderA', 'uMapPerPx',
-                     'uShowWater', 'uWaterW', 'uWaterA', 'uSeaCol', 'uLakeCol', 'uRiverCol',
-                      'uShowWasteBorder', 'uWasteW', 'uWasteA',
-                     'uExtraCount', 'uExtraTier', 'uExtraW', 'uExtraShow', 'uExtraA',
-                     'uLutW', 'uRealTitles', 'uHoverTid', 'uHoverPaintOn', 'uHoverPaint', 'uHoverPid', 'uHoverLabel',
-                     'uBackdrop']) {
-      this.uni[n] = gl.getUniformLocation(prog, n);
-    }
-
-    const vao = gl.createVertexArray();
-    gl.bindVertexArray(vao);
-    const vbo = gl.createBuffer();
-    gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
-    gl.bufferData(gl.ARRAY_BUFFER,
-      new Float32Array([0, 0, 1, 0, 0, 1, 1, 1]), gl.STATIC_DRAW);
-    const loc = gl.getAttribLocation(prog, 'aPos');
-    gl.enableVertexAttribArray(loc);
-    gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
-    this.vao = vao;
+    this.onContextRestored = null;      // 上下文回来了（app 那边要把数据重新喂一遍 ✓）
+    this.onContextRestoreFailed = null;
 
     this.tier = 3;
     this.editTier = 3;          // 默认跟 tier 一样（不换粒度时两者恒等）
@@ -1063,8 +1009,113 @@ export class MapRenderer {
     this.showWaste = true;
     this.wasteGrey = [94 / 255, 94 / 255, 94 / 255];   // 设置页可改    // 荒地（不可通行）显示自己的颜色吗（荒漠涂色开关）
 
+    this._build();
+
+    this.canvas.addEventListener('webglcontextlost', (e) => {
+      /* preventDefault = "我们知道出事了，**请把它还回来**" ✓
+       * 不写这一句，浏览器认为没人管 → 永远不发 restored ✓ */
+      e.preventDefault();
+      this.ctxLost = true;
+      this.dirty = false;          // 丢着的时候别画：画什么都不会上屏 ✓
+      if (this.onContextLost) this.onContextLost();
+    });
+    /* 上下文回来了 —— **每一样 GL 资源都要重建**（WebGL 的规矩：对象全作废 ✓）
+     *   这里只管"跟上下文绑在一起"的那几样 ✓
+     *   纹理交给 app 重新喂（它手上才有省份 id / 归属表 / 笔迹 ✓ 见 onContextRestored ✓）*/
+    this.canvas.addEventListener('webglcontextrestored', () => {
+      try {
+        this._build();
+        // 旧纹理的句柄全部作废：清成 null，render() 会一直等到数据重新喂完才画 ✓
+        this.provTex = null;
+        this.titleTex = null;
+        this.colorTex = null;
+        this.paintTex = null;
+        this.paintLabelTex = null;
+        this.provArrTex = null;
+        this.borderDepthTex = null;
+        this.borderDepthOn = false;
+        this.useTiles = 0;
+        this.tileInfo = null;
+        this.ctxLost = false;
+        this.paintDirty = true;
+        this.lutDirty = true;
+        this.dirty = true;
+        if (this.onContextRestored) this.onContextRestored();
+      } catch (err) {
+        this.ctxLost = true;
+        if (this.onContextRestoreFailed) this.onContextRestoreFailed(err);
+        else if (this.onContextLost) this.onContextLost();
+      }
+    });
+  }
+
+  /**
+   * 建"跟上下文绑在一起"的那几样：着色器 / uniform 位置 / VAO / 占位纹理 ✓
+   *
+   * **可以重复调用** ✗ —— 上下文丢了又回来的时候要整个重建一遍 ✓
+   * （手机切后台再回来就是这么一条路：iOS / Android 都会把上下文收走 ✓）
+   * ⚠ 所以这里**不许碰**任何"用户的东西"（笔迹 / 颜色 / 视角）✗ 那些都在别处存着 ✓
+   */
+  _build() {
+    const gl = this.gl;
+
+    /* 🔴 **每个 sampler 都必须指向一张"完整纹理"** ✗ —— WebGL 的硬规矩 ✓
+     *   用户报：手机版黑屏、中心像素 [0,0,0]、**drawArrays 报 1282** ✓
+     *   根因：着色器里声明了 sampler2D uBorderDepth ✓ 而**手机上不建那张粗筛位图** ✗
+     *     → render 里走 else 分支，只把 uBorderDepthOn 设成 0 ✗
+     *       **纹理单元 9 上什么都没绑** → 采样器指向空 → 1282 → 整帧丢弃 → 全黑 ✓✓
+     *   规矩：**就算这一路根本不采样，也得绑一张完整纹理** ✗（1×1 就够 ✓）
+     *   ⚠ 电脑上没事是因为那张图建得出来、绑上了 ✓ → "电脑行手机不行"就是这么来的 ✓
+     *   ⚠ 这张占位纹理要**在 render 之前**就建好 ✗（这里最省事 ✓）*/
+    this.dummyTex = makeTexture(gl, 1, 1, gl.R8, gl.RED, gl.UNSIGNED_BYTE,
+      new Uint8Array([0]), gl.NEAREST);
+
+    const maxTex = gl.getParameter(gl.MAX_TEXTURE_SIZE);
+    // **地图比"单张贴图上限"大时不再拒绝** ✓ —— setData 里会把它就地切成一块块贴图 ✓
+    // （手机 GPU 常见上限只有 4096 / 8192：CK3 9216×4608、EU5 8192×4096、
+    //   米勒投影 11680×5760 都塞不进一张 ✗ 以前这里直接抛错 → 整张图加载不出来 ✗）
+    // 只有小到连一块切片都放不下的设备才真的没救 ✓
+    if (maxTex < 256) {
+      throw new Error(`这个设备的贴图上限只有 ${maxTex}px，放不下任何地图切片。`);
+    }
+    this.maxTex = maxTex;
+
+    const prog = gl.createProgram();
+    gl.attachShader(prog, compile(gl, gl.VERTEX_SHADER, VERT));
+    gl.attachShader(prog, compile(gl, gl.FRAGMENT_SHADER, FRAG));
+    gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+      throw new Error('着色器链接失败：' + gl.getProgramInfoLog(prog));
+    }
+    this.prog = prog;
+
+    this.uni = {};
+    for (const n of ['uView', 'uProv', 'uProvArr', 'uProvTiles', 'uProvCols', 'uUseTiles', 'uNoAA', 'uShowWaste', 'uTitleMap', 'uColorLut', 'uPaint', 'uPaintLabel', 'uBorderDepth', 'uBorderDepthOn',
+                     'uMapSize', 'uTitleMapW', 'uNumProvinces', 'uPaintW', 'uTier', 'uEditTier',
+                     'uShowTitles', 'uShowPaint', 'uMix',
+                     'uShowWaste', 'uWasteGrey', 'uBorderTitle', 'uBorderPaint', 'uPaintOnly', 'uBorderW', 'uBorderA', 'uPaintBorderW', 'uPaintBorderA', 'uMapPerPx',
+                     'uShowWater', 'uWaterW', 'uWaterA', 'uSeaCol', 'uLakeCol', 'uRiverCol',
+                      'uShowWasteBorder', 'uWasteW', 'uWasteA',
+                     'uExtraCount', 'uExtraTier', 'uExtraW', 'uExtraShow', 'uExtraA',
+                     'uLutW', 'uRealTitles', 'uHoverTid', 'uHoverPaintOn', 'uHoverPaint', 'uHoverPid', 'uHoverLabel',
+                     'uBackdrop']) {
+      this.uni[n] = gl.getUniformLocation(prog, n);
+    }
+
+    const vao = gl.createVertexArray();
+    gl.bindVertexArray(vao);
+    const vbo = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+    gl.bufferData(gl.ARRAY_BUFFER,
+      new Float32Array([0, 0, 1, 0, 0, 1, 1, 1]), gl.STATIC_DRAW);
+    const loc = gl.getAttribLocation(prog, 'aPos');
+    gl.enableVertexAttribArray(loc);
+    gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+    this.vao = vao;
+
     gl.disable(gl.DEPTH_TEST);
     gl.disable(gl.BLEND);
+    // 用**现在**的背景色，不是出厂色 —— 重建时别把用户改过的背景抹回默认 ✓
     gl.clearColor(this.backdrop[0], this.backdrop[1], this.backdrop[2], 1);
   }
 
@@ -1226,16 +1277,26 @@ export class MapRenderer {
     this.titleTex = makeTexture(gl, this.titleMapW, tmRows, gl.R16UI,
       gl.RED_INTEGER, gl.UNSIGNED_SHORT, flat, gl.NEAREST);
 
+    /* ⚠ **上下文恢复时会再调一次本函数** ✗（见 onContextRestored ✓）
+     *   —— 那时候 lutData / paintData 里装的是**用户已经涂好、调好的东西** ✓
+     *   无脑重建 = 把他的笔迹和荒地色全抹掉 ✓（正是"切个后台回来，涂的全没了" ✓）
+     *   所以：**尺寸对得上就留着**，只标个"要重传" ✓
+     *   （纹理本身照样重建 —— 旧的随上下文一起作废了 ✗）*/
     this.lutH = Math.max(1, Math.ceil(m.numTitles / this.lutW));
-    this.lutData = new Uint8Array(this.lutW * this.lutH * 4);
-    for (let i = 0; i < m.numTitles; i++) {
-      const c = colors[i] || [0, 0, 0];
-      this.lutData[i * 4] = c[0];
-      this.lutData[i * 4 + 1] = c[1];
-      this.lutData[i * 4 + 2] = c[2];
-      // alpha 现在当**荒地标记**用（setWasteland 会按 meta.wasteland 打 255），
-    // 默认 0 = 不是荒地。别处没人读这个通道 ✓
-    this.lutData[i * 4 + 3] = 0;
+    const _lutLen = this.lutW * this.lutH * 4;
+    if (this.lutData && this.lutData.length === _lutLen) {
+      this.lutDirty = true;                 // 内容还在，重传一遍就行 ✓
+    } else {
+      this.lutData = new Uint8Array(_lutLen);
+      for (let i = 0; i < m.numTitles; i++) {
+        const c = colors[i] || [0, 0, 0];
+        this.lutData[i * 4] = c[0];
+        this.lutData[i * 4 + 1] = c[1];
+        this.lutData[i * 4 + 2] = c[2];
+        // alpha 现在当**荒地标记**用（setWasteland 会按 meta.wasteland 打 255），
+      // 默认 0 = 不是荒地。别处没人读这个通道 ✓
+      this.lutData[i * 4 + 3] = 0;
+      }
     }
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
     this.colorTex = makeTexture(gl, this.lutW, this.lutH, gl.RGBA8,
@@ -1247,14 +1308,23 @@ export class MapRenderer {
     // 只在上传时拍平成二维。
     this.paintW = Math.max(1, Math.min(maxTex, 4096, this.numProvinces));
     this.paintRows = Math.max(1, Math.ceil(this.numProvinces / this.paintW));
-    this.paintData = new Uint8Array(this.numProvinces * 4);
+    // 笔迹同理：**留着**（重建就等于把用户涂的东西全擦了 ✗）
+    if (this.paintData && this.paintData.length === this.numProvinces * 4) {
+      this.paintDirty = true;               // 重传在 flushPaint() 里 ✓
+    } else {
+      this.paintData = new Uint8Array(this.numProvinces * 4);
+    }
     this.paintFlat = new Uint8Array(this.paintW * this.paintRows * 4);
     this.paintTex = makeTexture(gl, this.paintW, this.paintRows, gl.RGBA8,
       gl.RGBA, gl.UNSIGNED_BYTE, this.paintFlat, gl.NEAREST);
 
     // 手绘层对应的"标记编号"。描边要区分同色不同标记，颜色那张表塞不下了
     // （RGB 是颜色、alpha 是"涂没涂"），所以单开一张 R16UI，一个省一格。
-    this.paintLabelData = new Uint16Array(this.numProvinces);
+    if (this.paintLabelData && this.paintLabelData.length === this.numProvinces) {
+      this.paintDirty = true;
+    } else {
+      this.paintLabelData = new Uint16Array(this.numProvinces);
+    }
     this.paintLabelFlat = new Uint16Array(this.paintW * this.paintRows);
     this.paintLabelTex = makeTexture(gl, this.paintW, this.paintRows, gl.R16UI,
       gl.RED_INTEGER, gl.UNSIGNED_SHORT, this.paintLabelFlat, gl.NEAREST);
@@ -1511,6 +1581,7 @@ export class MapRenderer {
         while (g0.getError() !== g0.NO_ERROR) { /* 清空历史错误 ✓ 最多几次 */ }
       } catch (e) { /* ✓ */ }
     }
+    if (this.ctxLost) return false;      // 上下文被收走了：画也不上屏，等它回来（见 restored ✓）
     if (!this.provTex) return false;
     this.flushPaint();
     this.flushLut();

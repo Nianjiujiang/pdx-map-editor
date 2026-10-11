@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 浏览器环境的 Node 桩 —— test_modes.js / bench_core.js / check_standalone.js 共用。
  *
  * 这三件事本来各写一份一模一样的假 DOM / 假 localStorage / 假 WebGL / 拍平逻辑
@@ -266,11 +266,25 @@ function makeEnv(opt = {}) {
     return fresh;
   };
 
+  /* **window / document 上的监听别一律丢掉** ✗
+   *   原来是个空函数 ✓ 于是"回到前台"（visibilitychange）这类
+   *   只挂在 window/document 上的行为**根本没法测** ✗
+   *   现在照样记下来，自检可以自己派一发（见 dispatchWindow / dispatchDocument ✓）
+   *   ⚠ 语义照着浏览器来：addEventListener 收进去、派发时按顺序调 ✓ */
+  const listeners = { window: {}, document: {} };
+  const listen = (bag) => (t, fn) => { (bag[t] || (bag[t] = [])).push(fn); };
+  const fire = (bag) => (type, ev) => {
+    const list = bag[type] || [];
+    for (const fn of list) fn(Object.assign({ type, target: null }, ev || {}));
+    return list.length;
+  };
+
   const documentStub = {
     title: '',
+    hidden: false,               // 自检要能演"切后台 / 回前台" ✓
     getElementById: get,
     createElement: (t) => new El(t),
-    addEventListener: () => {},
+    addEventListener: listen(listeners.document),
     querySelector: (sel) => (sel.includes('tier') ? containers.tier : containers.tool),
     querySelectorAll: (sel) => (sel.includes('tier') ? containers.tier.children
                                : sel.includes('tool') ? containers.tool.children : []),
@@ -290,7 +304,7 @@ function makeEnv(opt = {}) {
 
   const rafs = [];
   const windowStub = {
-    addEventListener: () => {},
+    addEventListener: listen(listeners.window),
     devicePixelRatio: 1,
     __CK3_EMBEDDED__: opt.embedded,
     confirm: () => true,
@@ -327,6 +341,10 @@ function makeEnv(opt = {}) {
   };
 
   return { sandbox, get, containers, rafs, store, documentStub,
+           /* 自检用：往 window / document 上派发一次事件 ✓
+            *   派"回到前台"：dispatchDocument('visibilitychange')（document.hidden 自己先改成 false ✓）*/
+           dispatchWindow: fire(listeners.window),
+           dispatchDocument: fire(listeners.document),
            get savedBlob() { return savedBlob; } };
 }
 

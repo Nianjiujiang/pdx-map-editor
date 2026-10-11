@@ -100,6 +100,31 @@ function readScript(htmlPath) {
   ok('bindMobile() 造出了手机版界面节点', madeIt,
      mobUi ? `#mob-ui 子节点 ${mobUi.children.length} 个` : '没造出来 ✗');
 
+  // ⑤ 手机切后台再回来 —— 黑屏那条路。
+  //    手机把 WebGL 上下文整个收走（省显存 ✓）回来时必须把数据重喂一遍 ✓
+  //    笔迹在 CPU 那份里，重喂**不许擦掉** ✓（这正是"切个后台回来，涂的全没了" ✓）
+  console.log('\n---- 切后台再回来（丢上下文）----');
+  {
+    const cv2 = env.get('map');
+    const r2 = ex.renderer;
+    r2.setPaint(11, 200, 30, 40, 255);
+    cv2.dispatchEvent({ type: 'webglcontextlost', preventDefault() {} });
+    const stopped = r2.ctxLost === true && r2.dirty === false;
+    ok('丢上下文时停画（不然那几帧全是白费 + 搅浑 GL 错误）', stopped);
+    cv2.dispatchEvent({ type: 'webglcontextrestored' });
+    for (let i = 0; i < 400 && !r2.provTex; i++) await new Promise((res) => setImmediate(res));
+    ok('回来：地图数据重新喂进去了', !!(r2.provTex && r2.titleTex && r2.paintTex),
+       `prov=${!!r2.provTex} paint=${!!r2.paintTex}`);
+    ok('**笔迹没丢**（颜色 + alpha 都在）',
+       r2.paintData[11 * 4] === 200 && r2.paintData[11 * 4 + 3] === 255,
+       `rgba=${r2.paintData[11 * 4]},${r2.paintData[11 * 4 + 1]},`
+       + `${r2.paintData[11 * 4 + 2]},${r2.paintData[11 * 4 + 3]}`);
+    r2.dirty = false;
+    env.documentStub.hidden = false;
+    env.dispatchDocument('visibilitychange');
+    ok('回到前台：强制重画一帧', r2.dirty === true);
+  }
+
   console.log('\n==========================================================');
   console.log(`通过 ${oks.length} 条，失败 ${fails.length} 条`);
   if (fails.length) {

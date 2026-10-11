@@ -3827,6 +3827,15 @@ function bindEvents() {
     invalidate();
   });
 
+  /* **从后台回来** —— 手机切出去再回来黑屏那条路就在这儿收口 ✓
+   *   · visibilitychange 是标准那条（手机 / 桌面都发 ✓）
+   *   · pageshow 兜"从往返缓存回来"（有的浏览器只发这一条 ✓）
+   *   · focus 再兜一道（桌面切窗口回来也顺手重画一帧 ✓）
+   *   （三件都在 onEnterForeground 里，重复触发没关系 ✓）*/
+  document.addEventListener('visibilitychange', onEnterForeground);
+  window.addEventListener('pageshow', onEnterForeground);
+  window.addEventListener('focus', onEnterForeground);
+
   window.addEventListener('keydown', (e) => {
     if (e.target.tagName === 'INPUT') return;
     const k = e.key.toLowerCase();
@@ -5500,7 +5509,7 @@ window.addEventListener('error', (e) => {
     + (e.error && e.error.stack
        ? '\n' + String(e.error.stack).split('\n').slice(1, 4).join('\n') : ''));
 });
-window.addEventListener('unhandledrejection', (e) => {
+window.addEventListener('unhandledrejection', (e) => {
   /* 未处理的 Promise 拒绝也要上屏 ✓ 手机上多半是它 ✓ */
   try { rawErr('✗ 未处理的 Promise 拒绝：' + ((e.reason && (e.reason.message || e.reason)) || '?')); } catch (err) { /* ✓ */ }
   showFatal('✗ Promise 未处理: '
@@ -5520,6 +5529,127 @@ window.addEventListener('beforeunload', (e) => {
   e.preventDefault();
   e.returnValue = '';     // Chrome 要这一句才认
 });
+
+// ================================================================ 显存那份数据 & 上下文恢复
+//
+// 手机切到别的 App / 锁屏 / 切标签页，回来时画面是黑的 —— 这条在手机上几乎是必然的：
+//   · 手机会把 WebGL 上下文**整个收走**（省显存，尤其 iOS ✓）
+//   · 上下文一丢，显存里**所有东西都没了**：地图 id 图、归属表、颜色表、你涂的那层 ✓
+//   · 以前只接住了 lost（还给浏览器 preventDefault 了 ✓）**却没接 restored** ✗
+//     → 回来时上下文是好的、显存里空着、`dirty` 还是 false → **再也不画** ✓ 一直黑 ✓
+//
+// 现在：gl.js 那边把"跟上下文绑的"重建 ✓ 这里把**数据**重新喂一遍 ✓
+//   ⚠ 笔迹不用管 ✗ —— `paintData` 是 CPU 那边的数组 ✓ 一直好好的 ✓
+//     （setData 里特意加了"尺寸对得上就留着"，不然重喂一次就等于把涂色擦了 ✓）
+
+/**
+ * 把地图数据推给显卡。
+ * 开图时跑一次 ✓ 上下文丢了又回来时**再跑一次** ✓
+ *
+ * @param {(name: string) => void} [tick] 开图那条路的细分计时（恢复时不传 ✓）
+ */
+async function uploadMapToGpu(tick) {
+  const say = typeof tick === 'function' ? tick : () => {};
+  await renderer.setData({
+    provinceIds: state.provinceIds,
+    titlemap: state.titlemap,
+    colors: state.titles.colors,
+    // 分块清单**必须传进去** ✗ —— 少了这一行，渲染器会按"整图模式"建
+    // 16384×8192 的纹理，却只拿到 1 个元素的占位数组 → WebGL 报
+    // "ArrayBufferView not big enough"、纹理不完整 → 画面全白。
+    tiles: state.tiles || null,
+  });
+  say('上传地图纹理');
+  // 荒地标记（LUT 的 alpha 通道）+ 自动上色（写手绘层）。
+  // 两个都在 setData 之后做：LUT 和手绘层都是那时才建好的。
+  renderer.setWasteland((state.meta && state.meta.wasteland) || []);
+  // **每块荒地的 LUT 起手 = 荒地灰** ✓（那才是它"没上色"的样子）
+  paintWasteGrey();
+  say('荒地起手灰');
+  syncParentBorder();
+  /* **把接回来的设置推给渲染器** ✓（只在面板里改过才 applySettings 是不够的 ✗
+   *   刷新/回主菜单后那份设置得在**开图时**就生效 ✓）*/
+  applySettings();
+  syncAllPaintLabels();
+  reuploadTiles();
+  say('设置 + 标签同步');
+}
+
+/**
+ * 分块那条路（EU5 原尺寸）：把**已经读过、在缓存里的块**重新传上去 ✓
+ *   上下文一丢，显存里那些块就没了 ✗ 而 CPU 这边还留着（tileMap.cache ✓）
+ *   → 不用重新下载解压，直接重传 ✓
+ * ⚠ 只传缓存里有的 ✗：没进过视野的块本来也没传过，帧循环那条路会按视野补 ✓
+ */
+function reuploadTiles() {
+  if (!state.tileMap || !renderer || !renderer.tileInfo || !renderer.provArrTex) return 0;
+  const cols = renderer.tileInfo.cols || 1;
+  let n = 0;
+  for (const [key, data] of state.tileMap.cache) {
+    const at = key.indexOf('_');
+    if (at < 0) continue;
+    const r = Number(key.slice(0, at));
+    const c = Number(key.slice(at + 1));
+    if (!Number.isFinite(r) || !Number.isFinite(c)) continue;
+    if (renderer.uploadTile(r * cols + c, data)) n++;
+  }
+  if (n) renderer.dirty = true;
+  if (n) LOG.event('分块重传', n + ' 块');
+  return n;
+}
+
+/** 上下文回来之后的重活（gl.js 那个 restored 事件叫过来的 ✓） */
+let ctxRestoring = false;
+async function restoreGpuAfterContextLoss() {
+  if (ctxRestoring) return;
+  ctxRestoring = true;
+  clearTimeout(state._ctxWaitTimer);       // 等恢复的那根表可以撤了 ✓
+  const t0 = performance.now();
+  LOG.event('WebGL 上下文已恢复', '重新喂地图数据');
+  try {
+    await uploadMapToGpu();
+    refreshBorderField();                  // 粗筛位图（桌面才建；手机上它自己会跳过 ✓）
+    renderer.dirty = true;
+    invalidate();                          // 视角照旧 → 重画一帧 ✓
+    labelDirty = true;
+    LOG.event('上下文恢复完成', ((performance.now() - t0) / 1000).toFixed(1) + ' 秒');
+  } catch (e) {
+    LOG.event('上下文恢复失败', (e && e.message) || String(e));
+    showFatal('✗ 显卡上下文恢复失败：' + ((e && e.message) || e) + '\n刷新页面可以重来。');
+  } finally {
+    ctxRestoring = false;
+  }
+}
+
+/**
+ * **回到前台**（手机切出去又回来 / 锁屏解锁 / 从别的标签页切回来）——
+ * 三件事都要做，少一件就是"回来还是黑的" ✗
+ *   ① 重量画布尺寸：浏览器的地址栏 / 工具栏这时候可能收起了 ✗
+ *      而画布是按 clientWidth 定的，不重量的话画面会被拉歪或留边 ✓
+ *   ② **强制重画一帧**：切后台期间 requestAnimationFrame 被冻住 ✓
+ *      回来时若没别的东西碰 dirty，那一帧永远不来 ✓
+ *   ③ 上下文要是**没回来** → 给一条出口（黑屏上什么都没有最难受 ✓）
+ *      （正常路径是 restored 事件 → restoreGpuAfterContextLoss ✓ 这里只管异常）
+ */
+function onEnterForeground() {
+  if (!state.meta || !renderer) return;
+  if (typeof document !== 'undefined' && document.hidden) return;   // 还在后台，别忙 ✓
+  try { renderer.resize(); } catch (e) { /* 尺寸读不到就算了，下一帧还会试 ✓ */ }
+  try { if (labels) labels.resize(); } catch (e) { /* ✓ */ }
+  invalidate();
+  labelDirty = true;
+  if (!renderer.ctxLost) return;
+  /* 上下文还丢着：有的机型不发 restored（或者要等一会儿 ✓）
+   * → 等 3 秒；还丢着就明说"刷新能重来" ✓ 别让人对着黑屏猜 ✓ */
+  clearTimeout(state._ctxWaitTimer);
+  state._ctxWaitTimer = setTimeout(() => {
+    if (!renderer || !renderer.ctxLost) return;
+    if (typeof document !== 'undefined' && document.hidden) return;
+    LOG.event('上下文未恢复', '提示用户刷新');
+    showFatal('✗ 显卡把 WebGL 上下文收走了，一直没还回来 —— 地图现在是黑的。\n'
+      + '刷新页面就能重来（涂色记得先导出 ✓）。');
+  }, 3000);
+}
 
 async function boot() {
   try {
@@ -5662,8 +5792,21 @@ async function boot() {
     _tick('编译着色器 + 建渲染器');
     renderer.onContextLost = () => {
       // 这一条要进日志：白屏的最常见原因之一，而玩家只会说"它黑了" ✓
-      LOG.event('WebGL 上下文丢失', '显卡驱动 / 显存');
-      toast('显卡把 WebGL 上下文弄丢了，地图画不下去了 —— 请刷新页面重试。', true);
+      LOG.event('WebGL 上下文丢失', '显卡驱动 / 显存（手机切后台最常见）');
+      state._ctxLostAt = performance.now();
+    };
+    /* 上下文**回来了** —— 显卡把它们自己的东西重建了（gl.js 里那个 restored ✓），
+     * 现在轮到我们：把地图数据重新喂一遍 ✓（笔迹在 CPU 那份里，没丢 ✓）
+     * ⚠ 这是手机切后台回来黑屏的正解 ✗：以前只接 lost、不接 restored，
+     *   于是回来时"上下文是好的、显存里什么都没有" → 一直黑 ✓ */
+    renderer.onContextRestored = () => {
+      // 开图还没喂完就丢又回来（罕见）→ 别抢：boot 那条路本来就会喂一遍 ✓
+      if (!state.meta || !state.titles) return;
+      restoreGpuAfterContextLoss();
+    };
+    renderer.onContextRestoreFailed = (err) => {
+      LOG.event('上下文恢复失败', (err && err.message) || String(err));
+      showFatal('✗ 显卡上下文恢复失败：' + ((err && err.message) || err) + '\n刷新页面可以重来。');
     };
     /* 🔴 **把关键数字打出来** ✗（用户报：手机版黑屏，绿字停在"③传数据前" ✓）
      *   手机上黑屏最经典的一条就是**纹理超限** ✓
@@ -5679,32 +5822,8 @@ async function boot() {
         + ' 画布' + ((_cv && _cv.width) || 0) + '×' + ((_cv && _cv.height) || 0) + ']'
         + (meta.mapWidth > _mx || meta.mapHeight > _mx ? ' ⚠超限' : ''));
     } catch (e) { bootMark('③传数据前 [查GL失败]'); }
-    await renderer.setData({
-      provinceIds: state.provinceIds,
-      titlemap: state.titlemap,
-      colors: titles.colors,
-      // 分块清单**必须传进去** ✗ —— 少了这一行，渲染器会按"整图模式"建
-      // 16384×8192 的纹理，却只拿到 1 个元素的占位数组 → WebGL 报
-      // "ArrayBufferView not big enough"、纹理不完整 → 画面全白。
-      tiles: state.tiles || null,
-    });
+    await uploadMapToGpu(_tick);
     bootMark('④数据OK');
-    _tick('上传地图纹理');
-    // 荒地标记（LUT 的 alpha 通道）+ 自动上色（写手绘层）。
-    // 两个都在 setData 之后做：LUT 和手绘层都是那时才建好的。
-    renderer.setWasteland(meta.wasteland || []);
-    // **每块荒地的 LUT 起手 = 荒地灰** ✓（那才是它"没上色"的样子）
-    // 这段原来写在文件末尾、`boot()` **之后** —— 而 boot 是 async，跑到那儿
-    // state.meta 还是 null，于是这段**一次都没执行过**：EU5 的荒地就一直顶着
-    // 数据里给省份位图用的技术色，一开「荒漠 · 涂色 / 自动」就是一片怪色 ✗
-    paintWasteGrey();
-    _tick('荒地起手灰');
-    syncParentBorder();
-    /* **把接回来的设置推给渲染器** ✓（只在面板里改过才 applySettings 是不够的 ✗
-     *   刷新/回主菜单后那份设置得在**开图时**就生效 ✓）*/
-    applySettings();
-    syncAllPaintLabels();
-    _tick('设置 + 标签同步');
     // **地名门槛按这张图自己的地块大小现算** ✓（不再吃 meta 里写死那套 ——
     //  那套是照某一张图调的，换个尺寸/换个游戏就对不上：地块小的图地名会提早糊出来）
     meta.labelZoom = computeLabelZoom(meta, titles);
