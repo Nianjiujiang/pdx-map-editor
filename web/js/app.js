@@ -2203,12 +2203,6 @@ function isSpecialTid(tid) {
 function isLocked(tid) {
   if (tid === NO_TITLE || tid == null) return true;
   if (!isSpecialTid(tid)) return false;
-  const _key0 = String((state.titles.keys && state.titles.keys[tid]) || '');
-  /* **「无主」例外** ✓ —— 1066 剧本地图那一层（tier 0）上，那些 1066 年没人占的地
-   *   挂在一个「#unowned」伪头衔上（萨米、撒哈拉那种 ✓ 见 build_data 的 1066 段）。
-   *   它们不是海、不是荒地，就是"那会儿还没人占" ✗ —— 想给谁就给谁，
-   *   所以**不锁**：直接就能涂 ✓（不然整片地只能切到伯爵领层去涂 ✓ 别扭 ✓）*/
-  if (keyStarts(_key0, '#unowned')) return false;
   if (state.showWaste) {
     const _key = String((state.titles.keys && state.titles.keys[tid]) || '');
     // 不可通行**陆地**：允许时可涂；不可通行**海域**不算（它是水，跟海一个待遇）
@@ -2284,16 +2278,6 @@ function renderHoverCard(pid) {
     // 原尺寸那份数据把某些地块挂到了荒地节点上 → 以前会只剩「不可通行区域」✗
     // 现在跟原版一样：有名字（俄罗斯针叶林那种）就把名字放出来 ✓
     const readable = readablePlaceName(pn) && (!_noName || (_isImpassable && !_ck3));
-    /* **1066 年无主的地** ✓ —— 它不是"背景地形"，是"那会儿还没人占" ✗
-     *   （萨米、撒哈拉那种：法理上头衔都在，就是没人持有 ✓ 见 build_data 的 1066 段 ✓）
-     *   所以别跟它说"颜色是固定的"——它**能涂**（isLocked 里特意放行了 ✓）*/
-    if (keyStarts(_key, '#unowned')) {
-      box.innerHTML =
-        `<p class="empty"><b style="color:var(--text-dim)">1066 年无主</b>`
-        + (readable ? `<br><b style="color:var(--text)">${pn}</b>` : '')
-        + `<br>这一带在 ${state.meta.bookmarkDate || '1066.9.15'} 还没有归属，涂色可以直接占 ✓</p>`;
-      return;
-    }
     box.innerHTML =
       `<p class="empty"><b style="color:var(--text-dim)">${_typeLabel}</b>`
       + (readable ? `<br><b style="color:var(--text)">${pn}</b>` : '')

@@ -2779,36 +2779,32 @@ const factory = new Function(
 
   // === 1a2. CK3 的「1066 剧本地图」那一层 ================================
   //   build_data 的 ERA_TIER：显示"这块地 1066 年归哪个**非封臣**政权" ✓
-  //   封臣的地盘算进宗主那一块（CK3 的领地地图 ✓）· 那会儿没人占的算「无主」✓
+  //   封臣的地盘算进宗主那一块（CK3 的领地地图 ✓）
+  //   那会儿没人占的地：**留空**（NONE ✓）—— 跟 EU4 的无主地一个待遇，
+  //   不造伪头衔、不起名字、悬停也不列它 ✓（用户点名的 ✓）
   if (ex.GAME.id === 'ck3' && st.meta.tierNames[0] === '1066') {
     console.log('\n=== 1a2. 1066 剧本地图那一层 ===');
     const NP = st.meta.numProvinces;
     const TN = st.titles;
     const noT = st.meta.noTitle;
     const realN = st.meta.numRealTitles || st.meta.numTitles;
-    const unownedTid = TN.keys.indexOf('#unowned');
-    let holes = 0, realCnt = 0, unownedCnt = 0;
+    let holes = 0, realCnt = 0;
     const realms = new Map();
     for (let p = 1; p < NP; p++) {
       const t = st.titlemap[p];                 // 第 0 行就是 1066 那一层 ✓
-      if (t === noT) { holes++; continue; }
-      if (t === unownedTid) { unownedCnt++; continue; }
+      if (t === noT) { holes++; continue; }     // 留空 = 那会儿没人占（也是那些没头衔的格子）
       if (t > 0 && t < realN) {
         realCnt++;
         realms.set(t, (realms.get(t) || 0) + 1);
       }
     }
     ok('1066 层：有主的地都挂在一个真头衔上', realCnt > 0, `${realCnt} 个省份`);
-    // 「无主」那个伪头衔：**这份数据里可能一个都没有** ✓（holder 收全了的话，
-    //   1066 年每块地都有人占 —— 这版游戏里萨米/撒哈拉也各有酋长/部落 ✓）
-    //   规则是"有才建、建了就得是荒地那个灰" ✓ 所以两种都算过 ✓
-    ok('1066 层：无主的地（如果有）挂在「无主」伪头衔上、颜色是荒地那个灰（150,150,150）✓',
-       unownedCnt === 0
-       || (unownedTid > 0
-           && JSON.stringify(TN.colors[unownedTid]) === JSON.stringify([150, 150, 150])),
-       unownedCnt === 0
-         ? '这份数据里没有无主的地（每块都有人占 ✓）'
-         : `${TN.keys[unownedTid]} · ${unownedCnt} 个省份 · ${JSON.stringify(TN.colors[unownedTid])}`);
+    /* **没人占的地 = 留空** ✓ —— 反着查：**不许**出现"专为无主造的节点" ✗
+     *   （我一开始给它造了个 `#unowned`、悬停还写「1066 年无主」——
+     *     用户点名的：EU4 的无主地块直接没有标记，别自己发明一套 ✓）*/
+    ok('1066 层：没有为"无主"发明新节点（跟 EU4 的无主地一样留空 ✓）',
+       TN.keys.indexOf('#unowned') < 0 && TN.keys.indexOf('#none') < 0,
+       '查了 #unowned / #none：一个都没有 ✓');
     ok('1066 层：非封臣政权数是几百个（不是把封臣也各算一块 ✗）',
        realms.size > 100 && realms.size < 2000, `${realms.size} 个政权`);
     {
@@ -2816,14 +2812,17 @@ const factory = new Function(
       ok('1066 层：最大的政权地盘够大（说明它整个帝国算了一块 ✓）', big >= 100,
          `最大 ${big} 个省份 · 共 ${realms.size} 个政权`);
     }
-    // 空洞只许出现在"别的层也空"的那些格子上（数据里本来就有 519 个没头衔的像素 ✓）
+    // 留空的格子 = "别的层也没头衔的" + "那会儿没人占的" ✓
+    // （这一版数据里后者是 0 ✓ 萨米、撒哈拉也各有酋长/部落 ✓）
     {
       let refHoles = 0;
       for (let p = 1; p < NP; p++) if (st.titlemap[NP + p] === noT) refHoles++;   // 帝国那一行
-      ok('1066 层：空洞跟别的层一样多（没有多出来的洞）', holes === refHoles,
-         `1066 层 ${holes} · 帝国层 ${refHoles}`);
+      ok('1066 层：留空的格子 = 没头衔的格子 + 那会儿没人占的格子',
+         holes >= refHoles,
+         `1066 层 ${holes} · 帝国层 ${refHoles}`
+         + (holes > refHoles ? ` → ${holes - refHoles} 块是"1066 年没人占"（留空 ✓）` : '（没有无主的地 ✓）'));
     }
-    // 真有头衔的陆地，1066 那一格只许是「真头衔」或「无主」——
+    // 真有头衔的陆地，1066 那一格只许是「真头衔」或「留空」——
     // 不许出现海/湖/山的节点（那就是"把陆地当水画了" ✗）
     {
       let wrong = 0, sample2 = '';
@@ -2835,7 +2834,7 @@ const factory = new Function(
         }
         if (native < 0) continue;                  // 本身就是水/山/荒地：不算 ✓
         const t = st.titlemap[p];
-        if (t === unownedTid) continue;             // 无主：合法 ✓
+        if (t === noT) continue;                   // 那会儿没人占：留空 ✓
         if (t > 0 && t < realN) continue;
         wrong++;
         if (!sample2) sample2 = `#${p}: ${TN.keys[t]}`;

@@ -60,8 +60,6 @@ MAP_ORDER: list[str] = [ERA_TIER, *TIER_ORDER]
 ERA_LABEL = "1066"
 #: 1066 的开局日期（common/bookmarks 里那批 bm_1066_* 都是这一天 ✓）
 BOOKMARK_DATE = (1066, 9, 15)
-#: 「1066 年无主」那些地块的颜色 —— 跟无归属荒地同一个灰 ✓（用户定的：荒地那套灰 ✓）
-UNOWNED_GREY = (150, 150, 150)
 
 _T0 = time.time()
 
@@ -347,7 +345,7 @@ def build_realm_layer(
     n_prov: int,
     holders: dict[str, int | str],
     lieges: dict[str, str | None],
-) -> tuple[int, int, int, list[int]]:
+) -> tuple[int, int, int]:
     """写**1066 剧本**那一层：每块地归到它的**非封臣**（独立政权）✓
 
     用户要的那张地图就是这一层：**封臣的地盘算进宗主那一块**（CK3 的领地地图 ✓），
@@ -358,19 +356,22 @@ def build_realm_layer(
        ⚠ 男爵领缺、拿伯爵领顶替过的那些地（degraded），b 那一行填的就是 c 的头衔 ✓
          所以从 b 往上扫一遍就够了 ✓
     ② 拿到人以后顺着 ``liege`` 往上，走到没有封君的那一级 = **非封臣** ✓
-    ③ 整条链**都没人持** → 1066 年确实没人占（萨米、撒哈拉那种 ✓）
-       → 收进返回值，由调用方挂到"无主"那个伪头衔上（荒地那套灰 ✓）
+    ③ 整条链**都没人持** → 1066 年那会儿没人占 → **这一层就留空**（NO_TITLE ✓）
+       ⚠ 别给它造伪头衔、别起名字 ✗（用户点名的：跟 EU4 的无主地一个待遇 ✓
+         着色器里 NONE 本来就画成那块灰（150,150,150 ✓）· 悬停不列它 ·
+         也没有"无主"这种身份可以认族 ✓ 见 gl.js 那段 NONE 的说明 ✓）
+       ⚠ 这一版游戏数据里其实**一块都没有**（萨米、撒哈拉也各有酋长 / 部落 ✓），
+         别的版本 / 别的剧本才可能出现 ✓ 所以这条路要留着、但要**安静** ✓
 
     ⚠ 只动**真有头衔的陆地** ✗ —— 海/湖/山/逐块荒地在各层都是伪头衔，
       第 0 行早就在地形那一步填好了，别覆盖 ✓
 
-    :returns: (判出归属的省份数, 无主的省份数, 有几个独立政权, 无主的省份号列表)
+    :returns: (判出归属的省份数, 无主（留空）的省份数, 有几个独立政权)
     """
     keys = [t.key for t in ordered]
     n_own = 0
     n_none = 0
     realms: set[str] = set()
-    unowned: list[int] = []
     rows = {tier: MAP_ORDER.index(tier) for tier in TIER_ORDER}
     fine_first = [rows[tier] for tier in reversed(TIER_ORDER)]   # b → e
     for pid in range(1, n_prov):
@@ -384,13 +385,12 @@ def build_realm_layer(
             continue                       # 背景地形：这一层照地形那套走 ✓
         top = top_liege(keys[start], titles, holders, lieges)
         if top is None:
-            unowned.append(pid)
-            n_none += 1
+            n_none += 1                    # 留空：什么都不写 ✓（那一格就是 NONE ✓）
         else:
             titlemap[0, pid] = index_of[top]
             realms.add(top)
             n_own += 1
-    return n_own, n_none, len(realms), unowned
+    return n_own, n_none, len(realms)
 
 
 def centroids_for_titles(
@@ -591,22 +591,13 @@ def main() -> int:
 
     # 6b. **1066 剧本地图**那一层（层级栈最上面那层 ✓ 见 build_realm_layer ✓）
     #     放在地形之后：它只动"真有头衔的陆地"，海/湖/山/逐块荒地那一行不碰 ✓
+    #     ⚠ 那会儿没人占的地**什么都不写**（留 NONE ✓）—— 跟 EU4 的无主地一个待遇 ✓
+    #       着色器里 NONE 就是那块灰 ✓ 别给它造伪头衔 / 起名字 ✓（用户点名的 ✓）
     if bookmark_date is not None:
-        _n_own, _n_none, _n_realm, _unowned = build_realm_layer(
+        _n_own, _n_none, _n_realm = build_realm_layer(
             ordered, index_of, titles, titlemap, n_prov, holders, lieges)
-        if _unowned:
-            # 1066 年没人占的地：给它们一个自己的伪头衔（"无主"）
-            # ⚠ 只在这儿建 ✗ —— 不放进 SPECIAL_CATEGORIES：那一套是"没有头衔的地块"，
-            #   而这些地块**有**男爵领/伯爵领，只是那会儿没人持有 ✓ 两码事 ✓
-            #   也不进 SETTABLE_CATEGORIES：那样会被 meta.wasteland 收进去，
-            #   前端就会按"荒地"去自动上色它们 ✗（它们该一直是那块灰 ✓）
-            _ut = Title("#unowned", tier="@")
-            _ut.color = UNOWNED_GREY
-            special.append(_ut)
-            _special_names["#unowned"] = "无主"
-            titlemap[0, np.array(_unowned, dtype=np.int64)] = len(ordered) + len(special) - 1
         log(f"1066 剧本层：{_n_realm} 个非封臣政权 · {_n_own} 个省份有归属 · "
-            f"{_n_none} 个无主（挂到「无主」那个伪头衔上）")
+            f"{_n_none} 个留空（跟 EU4 的无主地一样：没标记、没名字 ✓）")
 
     # 逐块荒地的节点序号（meta 里要报给前端：荒漠涂色开关靠它判"这块是不是荒地"）
     #: 哪些伪头衔是**水**（算荒地边长时不算；荒地/无主地要算）
@@ -733,9 +724,6 @@ def main() -> int:
         "defaultTier": MAP_ORDER.index("c"),
         # 法理按哪一年算的（history/titles 的 de_jure_liege 盖到 landed_titles 骨架上）
         "deJureYear": dejure_year or 0,
-        # 1066 剧本地图那一层：日期（前端/文档/排查都用得上 ✓）
-        "bookmarkDate": ".".join(str(x) for x in bookmark_date) if bookmark_date else "",
-        "eraTier": ERA_TIER if ERA_TIER in MAP_ORDER else "",
         # 每一层从百分之多少的缩放开始上地名（1066 那一层跟帝国层一样，早点出名字 ✓）
         "labelZoom": ([8] if ERA_TIER in MAP_ORDER else []) + [8, 30, 60, 120, 250],
         "noTitle": NO_TITLE,
