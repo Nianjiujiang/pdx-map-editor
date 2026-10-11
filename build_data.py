@@ -379,7 +379,7 @@ def build_realm_layer(
     """
     keys = [t.key for t in ordered]
     n_none = 0
-    out: dict[str, list[int]] = {}
+    raw: dict[str, list[int]] = {}
     rows = {tier: MAP_ORDER.index(tier) for tier in TIER_ORDER}
     fine_first = [rows[tier] for tier in reversed(TIER_ORDER)]   # b → e
     for pid in range(1, n_prov):
@@ -395,7 +395,31 @@ def build_realm_layer(
         if top is None:
             n_none += 1                    # 留空：什么都不写 ✓（那一格就是 NONE ✓）
         else:
-            out.setdefault(top, []).append(pid)
+            raw.setdefault(top, []).append(pid)
+
+    # 🔴 **同一个人手里的头衔算一个政权** ✗ —— 用户报的"西夏的河西变成独立领地"
+    #   就是这么来的：西夏那位（角色 206651）**同时**拿着 `k_xia` 和 `k_hexi` ✓
+    #   而他俩法理上的共同上级 `e_yongliang` 在 1066 **没人持** ✗
+    #   → 链爬到那儿就断了 ✓ 于是"河西"和"夏"各自成了一个政权 ✗（同一个人的两块地 ✓）
+    #   所以第二步：按**持有者**把顶层头衔归并 ✓
+    #   国号取"层级最粗、地盘最大"的那个（同层比省份数，再比 key ✓ 结果稳定 ✓）
+    #   → 西夏 = k_xia（87 省）比 k_hexi（42 省）大 ✓ 国号就是「夏」✓ 河西并进去 ✓
+    holders_of_top = {k2: holders.get(k2) for k2 in raw}
+    by_holder: dict[object, list[str]] = {}
+    for k2 in raw:
+        by_holder.setdefault(holders_of_top[k2], []).append(k2)
+    out: dict[str, list[int]] = {}
+    for _h, group in by_holder.items():
+        if _h is None or len(group) == 1:
+            for k2 in group:
+                out[k2] = raw[k2]
+            continue
+        _rank = {"h": 0, "e": 1, "k": 2, "d": 3, "c": 4, "b": 5}
+        best = min(group, key=lambda k2: (_rank.get(k2[0], 9), -len(raw[k2]), k2))
+        pids: list[int] = []
+        for k2 in group:
+            pids.extend(raw[k2])
+        out[best] = sorted(pids)
     return out, n_none
 
 

@@ -538,6 +538,28 @@ def parse_title_history(history_dir,
     return holders, lieges
 
 
+def liege_of(key: str,
+             titles: dict[str, "Title"],
+             lieges: dict[str, str | None]) -> str | None:
+    """这个头衔的封君是谁（头衔 key）—— **显式 liege 优先，否则认法理父级** ✓
+
+    ⚠ 两条都要认 ✗（我第一版只认显式那一条，用户当场抓到"西夏的河西变成独立领地" ✓）：
+      · **历史里写的 `liege = X`** 是**特例覆盖** —— 跨法理的封臣用这个
+        （爱沙尼亚的萨雷马伯爵在 1066 是利沃尼亚公爵的封臣 ✓ 法理上却不属于它 ✓）
+      · **没写就是法理父级** ✓ —— CK3 开局的封臣关系就是照**法理**铺的
+        （"de jure vassal" 那一套 ✓）：河西（k_hexi）自己那条历史里只有 holder、
+        没有 liege ✗ 但它法理上属于西夏 → 它就该跟着西夏走 ✓
+        只认显式 liege 的话，河西这种会**一整片判成独立** ✓
+
+    ⚠ `lieges[key] = None` 是"历史里明确写了 liege = 0 / none"（**明确独立** ✓）
+      跟"没写过"要分开 ✗ 所以这里用 `key in lieges` 判"写过没有" ✓
+    """
+    if key in lieges:
+        return lieges[key]                    # 写过：写了谁就是谁（None = 明确独立 ✓）
+    t = titles.get(key)
+    return t.parent if t is not None else None
+
+
 def top_liege(key: str,
               titles: dict[str, "Title"],
               holders: dict[str, int | str],
@@ -547,8 +569,9 @@ def top_liege(key: str,
     规则（跟游戏里一致）：
       · 从最细的那一级开始，**第一层有持有者的头衔**才是"谁占着这块地" ✓
         （男爵领常年没有 holder —— 那就是伯爵自己拿着 ✓）
-      · 拿到人以后顺着 ``liege`` 往上；上级头衔要是也没人持（历史里没写），
-        就停在他这儿 ✓（总比把这块地判成无主强）
+      · 拿到人以后顺着封君往上一级一级走（`liege_of` ✓ 显式 liege 优先、
+        没有就认法理父级 ✓）；上级头衔要是**没人持**（历史里没写），
+        就停在他这儿 ✓（总比把这块地判成无主强 ✓）
       · ``holder = 0`` 那一段是空的 → 继续往上找 ✓
 
     :returns: 顶层头衔 key；整条链都没人持 → ``None``（**无主**）
@@ -562,13 +585,13 @@ def top_liege(key: str,
             cur = t.parent if t is not None else None
             continue
         top = cur
-        lg = lieges.get(cur)
+        lg = liege_of(cur, titles, lieges)
         while lg and lg not in seen:
             seen.add(lg)
             if not holders.get(lg):
                 break                                # 上级头衔历史里没人持：到此为止
             top = lg
-            lg = lieges.get(lg)
+            lg = liege_of(lg, titles, lieges)
         return top
     return None
 
