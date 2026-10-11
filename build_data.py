@@ -413,17 +413,27 @@ def build_realm_layer(
     #     自我指涉（河西那层算出来反而更大 ✗ 会把国号叫成「河西」✓ 踩过 ✓）
     holders_of_top = {k2: holders.get(k2) for k2 in raw}
     _ds = dejure_size or {}
+    # **这个人手里的全部头衔**（不只是链的终点 ✓）—— 国号要挑他最高的那一级 ✗
+    # 用户点名的："库曼汗国的主头衔不是里海草原，应该是帝国级的" ✓
+    # 那位可汗同时拿着 `k_caspian_steppe`（里海草原 ✓）和 `e_caspian-pontic_steppe`（帝国 ✓）
+    # 只看链的终点（草原那些游牧县 ✓ obedience → 链停在县/公国 ✗）
+    # → 国号会挑到一个公爵领 ✗ 甚至一个县 ✗；把他手里的头衔全摆出来才对 ✓
+    mine_of: dict[str, list[str]] = {}
+    for _k2, _v2 in holders.items():
+        if _v2:
+            mine_of.setdefault(str(_v2), []).append(_k2)
     by_holder: dict[object, list[str]] = {}
     for k2 in raw:
         by_holder.setdefault(holders_of_top[k2], []).append(k2)
     out: dict[str, list[int]] = {}
     for _h, group in by_holder.items():
-        if _h is None or len(group) == 1:
+        if _h is None:
             for k2 in group:
                 out[k2] = raw[k2]
             continue
         _rank = {"h": 0, "e": 1, "k": 2, "d": 3, "c": 4, "b": 5}
-        best = min(group, key=lambda k2: (_rank.get(k2[0], 9), -_ds.get(k2, 0), k2))
+        _cands = [k2 for k2 in mine_of.get(str(_h), []) if k2 in titles] or group
+        best = min(_cands, key=lambda k2: (_rank.get(k2[0], 9), -_ds.get(k2, 0), k2))
         pids: list[int] = []
         for k2 in group:
             pids.extend(raw[k2])
