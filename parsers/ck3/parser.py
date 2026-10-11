@@ -638,15 +638,13 @@ def liege_of(key: str,
             return None                   # 两边都是 obedience、类型不同：不算封臣 ✓
         return lg
     # 没写 liege：
-    #   · **走 obedience 那套的**（游牧等）→ 就是独立 ✓（草原部落 ✓ 别拿法理父级去套 ✗）
-    #   · 其它的（封建/行政/查不到政府）→ **默认认法理父级** ✓
-    #     （西夏那些县自己没写 liege ✗ 只当独立的话，夏绥/兀剌海会被拆出来 ✗
-    #      用户："为什么夏绥和兀剌海独立了" ✓ 就是这条漏了 ✓）
+    #   · **走 obedience / 草原那套的**（游牧 / 牧民等）→ 就是独立 ✓
+    #   · 其余 → 返回 None ✓（「要不要跟着法理父级」由 top_liege 按
+    #     **父级是不是同一个持有者**判 ✓ —— 辽东那种父级是别人 → 独立 ✓）
     g = (governments or {}).get(key)
     if obedient and g in obedient:
         return None
-    t = titles.get(key)
-    return t.parent if t is not None else None
+    return None
 
 
 def top_liege(key: str,
@@ -678,6 +676,16 @@ def top_liege(key: str,
             continue
         top = cur
         lg = liege_of(cur, titles, lieges, governments, obedient, tributaries)
+        if not lg:
+            # 没写 liege（也不是朝贡）：
+            #   **法理父级是同一个持有者** → 这块地是他自己的直辖 ✓
+            #     跟着他那条链的上级走 ✓（西夏那些县 → 它们的公国 → k_xia ✓）
+            #   是**别人**（辽东 ↔ k_balhae ✓）→ 就到此为止 = **独立** ✓
+            _t2 = titles.get(cur)
+            _par = _t2.parent if _t2 is not None else None
+            if _par and holders.get(_par) and holders.get(_par) == holders.get(cur):
+                cur = _par
+                continue
         while lg and lg not in seen:
             seen.add(lg)
             if not holders.get(lg):
