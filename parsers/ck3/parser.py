@@ -593,26 +593,36 @@ def liege_of(key: str,
       蒙古帝国法理下一堆独立部落" ✓）：
       · CK3 的 `history/titles` **把封臣关系写全了** ✓ → **没写 = 独立** ✓
       · 法理父级 ≠ 封君：大辽法理上管着一大片草原，可 1066 那些部落是各自独立的 ✓
-    🔴 **obedience 那一套只在"同一种政府"内部算封臣** ✗（用户两条反馈合起来就是这个 ✓）：
-      · "obedience 不算封臣" → 游牧部落（`nomad_government`）对**别的政府**的
-        那条 liege 不成立 ✓（乃蛮那些部落不是辽的封臣 ✓）
-      · 但**不能反过来把所有 obedience 政府都当"没封君"** ✗ ——
-        我这么干过一次，辽（`steppe_admin_government`）**自己的普通封臣全被拆碎** ✗
-        （用户第二次当场抓到："辽国领土你怎么把普通的封臣也给拆碎了" ✓）
-      · 所以判据是**两边政府一样不一样**：跟封君同一种政府 → 照旧算封臣 ✓
-        （游牧可汗下面的游牧部落 ✓ 草原行政下面的草原行政封臣 ✓ 都留着 ✓）；
-        跨政府（游牧 ↔ 草原行政）→ 那条 liege 不成立 ✓
+    🔴 **两边都走 obedience、而且不是同一种政府**，那条 liege 才不算封臣 ✗
+      （用户三条反馈合起来就是这个 ✓）：
+      · 游牧部落 → 草原行政的辽：**两边都是 obedience 政府**，类型不同 →
+        那条 liege 不成立 ✓（乃蛮/柯尔克孜那些草原部落独立 ✓）
+      · 西夏的普通封臣（`celestial_government` / `meritocratic_government` ✓ 不走 obedience ✓）
+        → 照旧算封臣 ✓（夏绥 `d_xiasui` ✓ 兀剌海 `d_langshan` ✓ 都留着 ✓）
+      · 辽自己的草原行政封臣（两边同一种）→ 照旧算封臣 ✓（不会被拆碎 ✓）
+      ⚠ 我先后踩过两次 ✗：一次只看"我是 obedience 政府"→ 辽的封臣全碎 ✗；
+        一次看"跨政府"→ 西夏那些游牧县跟它的天体/贤能政府封君也被拆开 ✗
+        （用户："为什么夏绥和兀剌海独立了"✓）
       · 封君那头没记政府（`None`）→ **当同一种**，照旧算封臣 ✓
         （宁可留着，也别因为"查不到"就把一整片拆散 ✗）
     """
     lg = lieges[key] if key in lieges else None
-    if lg and obedient and governments:
-        g_self = governments.get(key)
-        if g_self and g_self in obedient:
-            g_lg = governments.get(lg)
-            if g_lg and g_lg != g_self:
-                return None                   # 跨政府：效忠那一套，不算封臣 ✓
-    return lg
+    if lg:
+        g_self = (governments or {}).get(key)
+        g_lg = (governments or {}).get(lg)
+        if obedient and g_self in obedient and g_lg in obedient and g_lg != g_self:
+            return None                   # 两边都是 obedience、类型不同：不算封臣 ✓
+        return lg
+    # 没写 liege：
+    #   · **走 obedience 那套的**（游牧等）→ 就是独立 ✓（草原部落 ✓ 别拿法理父级去套 ✗）
+    #   · 其它的（封建/行政/查不到政府）→ **默认认法理父级** ✓
+    #     （西夏那些县自己没写 liege ✗ 只当独立的话，夏绥/兀剌海会被拆出来 ✗
+    #      用户："为什么夏绥和兀剌海独立了" ✓ 就是这条漏了 ✓）
+    g = (governments or {}).get(key)
+    if obedient and g in obedient:
+        return None
+    t = titles.get(key)
+    return t.parent if t is not None else None
 
 
 def top_liege(key: str,
