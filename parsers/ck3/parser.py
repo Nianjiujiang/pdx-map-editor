@@ -593,16 +593,26 @@ def liege_of(key: str,
       蒙古帝国法理下一堆独立部落" ✓）：
       · CK3 的 `history/titles` **把封臣关系写全了** ✓ → **没写 = 独立** ✓
       · 法理父级 ≠ 封君：大辽法理上管着一大片草原，可 1066 那些部落是各自独立的 ✓
-    ⚠ **用了 obedience 的政府不算封臣** ✗（用户点名的 ✓ 见 parse_governments ✓）：
-      那些头衔历史上写着 liege ✗ 但游戏里走的是"效忠"那一套 ✓ 不当封臣算 ✓
+    🔴 **obedience 那一套只在"同一种政府"内部算封臣** ✗（用户两条反馈合起来就是这个 ✓）：
+      · "obedience 不算封臣" → 游牧部落（`nomad_government`）对**别的政府**的
+        那条 liege 不成立 ✓（乃蛮那些部落不是辽的封臣 ✓）
+      · 但**不能反过来把所有 obedience 政府都当"没封君"** ✗ ——
+        我这么干过一次，辽（`steppe_admin_government`）**自己的普通封臣全被拆碎** ✗
+        （用户第二次当场抓到："辽国领土你怎么把普通的封臣也给拆碎了" ✓）
+      · 所以判据是**两边政府一样不一样**：跟封君同一种政府 → 照旧算封臣 ✓
+        （游牧可汗下面的游牧部落 ✓ 草原行政下面的草原行政封臣 ✓ 都留着 ✓）；
+        跨政府（游牧 ↔ 草原行政）→ 那条 liege 不成立 ✓
+      · 封君那头没记政府（`None`）→ **当同一种**，照旧算封臣 ✓
+        （宁可留着，也别因为"查不到"就把一整片拆散 ✗）
     """
-    if obedient and governments:
-        g = governments.get(key)
-        if g and g in obedient:
-            return None                       # 效忠那一套：不算封臣 ✓
-    if key in lieges:
-        return lieges[key]                    # 写过：写了谁就是谁（None = 独立 ✓）
-    return None
+    lg = lieges[key] if key in lieges else None
+    if lg and obedient and governments:
+        g_self = governments.get(key)
+        if g_self and g_self in obedient:
+            g_lg = governments.get(lg)
+            if g_lg and g_lg != g_self:
+                return None                   # 跨政府：效忠那一套，不算封臣 ✓
+    return lg
 
 
 def top_liege(key: str,

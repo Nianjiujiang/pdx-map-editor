@@ -568,6 +568,10 @@ def main() -> int:
         holders, lieges, governments = parse_title_history(
             game / "history" / "titles", titles, bookmark_date)
         obedient = parse_governments(game / "common" / "governments")
+        # ⚠ 这套不用收窄成"只有游牧" ✗ —— 判据在 `liege_of` 里是**两边政府一样不一样** ✓
+        #   跟封君同一种政府 → 照旧算封臣（辽的草原行政封臣留着 ✓ 游牧可汗的部落留着 ✓）
+        #   跨政府（游牧 ↔ 草原行政）→ 那条 liege 不成立 ✓（乃蛮那些部落独立 ✓）
+        #   （先收窄过一次、又反过来全拆过一次，都被用户当场抓到 ✓ 见 liege_of 的说明 ✓）
         log(f"剧本 {'.'.join(str(x) for x in bookmark_date)}："
             f"{len(holders)} 个头衔有持有者、{len(lieges)} 个写了封君、"
             f"{len(obedient)} 种政府走 obedience（那些不算封臣 ✓）")
