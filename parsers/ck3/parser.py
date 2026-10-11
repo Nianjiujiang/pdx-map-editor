@@ -313,7 +313,7 @@ def parse_landed_titles(dir_or_files) -> dict[str, Title]:
     """
     if isinstance(dir_or_files, (str, Path)):
         p = Path(dir_or_files)
-        files = sorted(p.glob("*.txt")) if p.is_dir() else [p]
+        files = sorted(p.rglob("*.txt")) if p.is_dir() else [p]   # 递归（landed_titles 也有子目录 ✓）
     else:
         files = [Path(f) for f in dir_or_files]
 
@@ -403,7 +403,7 @@ def parse_de_jure_history(history_dir, titles: dict[str, Title],
 
     #: title -> (日期, 新父级或 None)。同一个头衔有多条就取最后一条
     pending: dict[str, tuple[tuple[int, int, int], str | None]] = {}
-    for fp in sorted(history_dir.glob("*.txt")):
+    for fp in sorted(history_dir.rglob("*.txt")):      # 递归：history/titles/ce3/ 那种子目录 ✓
         try:
             text = fp.read_text(encoding="utf-8-sig", errors="replace")
         except OSError:
@@ -506,7 +506,7 @@ def parse_title_history(history_dir,
     if not history_dir.is_dir():
         return holders, lieges, governments, tributaries
 
-    for fp in sorted(history_dir.glob("*.txt")):
+    for fp in sorted(history_dir.rglob("*.txt")):      # 递归：history/titles/ce3/ 那种子目录 ✓
         try:
             text = fp.read_text(encoding="utf-8-sig", errors="replace")
         except OSError:
@@ -617,7 +617,7 @@ def parse_governments(gov_dir) -> set[str]:
     out: set[str] = set()
     if gov_dir is None or not Path(gov_dir).is_dir():
         return out
-    for fp in sorted(Path(gov_dir).glob("*.txt")):
+    for fp in sorted(Path(gov_dir).rglob("*.txt")):
         try:
             text = fp.read_text(encoding="utf-8-sig", errors="replace")
         except OSError:
