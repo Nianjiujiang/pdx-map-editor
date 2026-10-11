@@ -644,6 +644,15 @@ def liege_of(key: str,
     g = (governments or {}).get(key)
     if obedient and g in obedient:
         return None
+    # **县 / 男爵领（c / b）没写 liege → 认法理父级** ✓
+    #   （"这块地属于哪个公爵领"本来就是法理说了算 ✓ 用户报的辽东范围不对：
+    #     东京道下面那些县自己没写 liege ✗ 只当独立就把它们从辽东拆出去了 ✗
+    #     认法理 → 都并回那位渤海公爵手里 ✓ 辽东的范围才对 ✓）
+    # ⚠ 公国及以上（d / k / e）**不认**法理父级 ✗ —— 那才是"他没写封君 = 独立" ✓
+    #   （辽东那个公国本身就是例子 ✓ 用户点名的 ✓）
+    if key[:1] in ("b", "c"):
+        t = titles.get(key)
+        return t.parent if t is not None else None
     return None
 
 
