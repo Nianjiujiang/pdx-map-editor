@@ -571,6 +571,28 @@ def main() -> int:
         holders, lieges, governments, tributaries = parse_title_history(
             game / "history" / "titles", titles, bookmark_date)
         obedient = parse_governments(game / "common" / "governments")
+        # 🔴 **头衔自己没记 `government` 的，跟"这个人别的头衔"里那个政府** ✗
+        #   用户报的："塔奔孛黑答在游戏里也应该不是大辽的" ✓
+        #   查下来 `c_tavan_bogd` 自己那条历史里**没写 government** ✗
+        #   而同一个持有者（303309）另外三个县全是 `nomad_government` ✓
+        #   → 它也该按游牧算 ✓ 才不会被 `liege = e_great_liao` 带走 ✓
+        #   （一个人手里的头衔政府当然是一致的 ✓ 照他别的头衔取一个就行 ✓）
+        _by_holder: dict[str, list[str]] = {}
+        for _k, _v in holders.items():
+            if _v:
+                _by_holder.setdefault(str(_v), []).append(_k)
+        _filled = 0
+        for _k, _v in holders.items():
+            if not _v or governments.get(_k):
+                continue
+            for _k2 in _by_holder.get(str(_v), []):
+                _g2 = governments.get(_k2)
+                if _g2:
+                    governments[_k] = _g2
+                    _filled += 1
+                    break
+        if _filled:
+            log(f"头衔没记政府的 {_filled} 个：照持有者别的头衔补上了 ✓")
         # ⚠ 这套不用收窄成"只有游牧" ✗ —— 判据在 `liege_of` 里是**两边政府一样不一样** ✓
         #   跟封君同一种政府 → 照旧算封臣（辽的草原行政封臣留着 ✓ 游牧可汗的部落留着 ✓）
         #   跨政府（游牧 ↔ 草原行政）→ 那条 liege 不成立 ✓（乃蛮那些部落独立 ✓）
