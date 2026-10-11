@@ -455,10 +455,20 @@ def build_realm_layer(
         _rank = {"h": 0, "e": 1, "k": 2, "d": 3, "c": 4, "b": 5}
         _cands = [k2 for k2 in mine_of.get(str(_h), []) if k2 in titles] or group
         best = min(_cands, key=lambda k2: (_rank.get(k2[0], 9), -_ds.get(k2, 0), k2))
+        # ⚠ 国号那个头衔**自己还有封君**的话，这个政权其实挂在别人名下 ✓（实控 ✓）
+        #   例：西夏那位公爵（拿着 d_xiasui + 几个县 ✓）→ d_xiasui 的 liege = k_xia ✓
+        #   → 那些县并进他的同时，整个政权算进 k_xia 的势力 ✓（= 西夏 ✓）
+        _up = top_liege(best, titles, holders, lieges, governments, obedient, tributaries)
+        if _up:
+            best = _up
         pids: list[int] = []
         for k2 in group:
             pids.extend(raw[k2])
-        out[best] = sorted(pids)
+        # ⚠ 好几个持有者的组可能会并到**同一个国号**上（他们都挂在同一位君主名下 ✓）
+        #   所以这里要**累加** ✗ 不能直接赋值（赋值会把前一组的地盘冲掉 ✗ 我踩过 ✓）
+        out.setdefault(best, []).extend(pids)
+    for _k2 in out:
+        out[_k2] = sorted(out[_k2])
     return out, n_none
 
 

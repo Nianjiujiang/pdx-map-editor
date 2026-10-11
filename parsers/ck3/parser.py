@@ -549,6 +549,20 @@ def parse_title_history(history_dir,
                 tb = block_get(dval, TRIBUTARY_KEY)
                 if isinstance(tb, list) and isinstance(block_get(tb, "suzerain"), str):
                     tributaries.add(key)     # 朝贡者 ✓（给谁上贡不影响它是"自己一块地"✓）
+
+    # 🔴 **holder 换人之后，早于那条块的 liege 一律作废** ✗（用户点名的 ✓）
+    #   `liege` 是**持有人**跟别人的关系 ✓ 换人 = 那条关系作废 ✓
+    #   而 `government` 是**头衔自己**的性质 ✓ 换人也留着 ✓（两回事 ✗）
+    #   证据：`c_LIAO_yinzhou` 867 那条写着 liege = d_LIAO_dongjing（持有者 balhae_baek_1 ✓）
+    #        1066 那条只换了 holder = nn_yelu_alian ✗
+    #        → 那条 liege 属于**上一个人** ✓ 带下来就成了"渤海国王当辽东公爵的封臣" ✗
+    stale = 0
+    for _k in list(lieges):
+        if _k in h_at and _k in l_at and l_at[_k] < h_at[_k]:
+            del lieges[_k]
+            stale += 1
+    if stale:
+        print(f"  [剧本] 换人前的旧 liege 作废 {stale} 条 ✓")
     return holders, lieges, governments, tributaries
 
 
@@ -650,9 +664,11 @@ def liege_of(key: str,
     #     认法理 → 都并回那位渤海公爵手里 ✓ 辽东的范围才对 ✓）
     # ⚠ 公国及以上（d / k / e）**不认**法理父级 ✗ —— 那才是"他没写封君 = 独立" ✓
     #   （辽东那个公国本身就是例子 ✓ 用户点名的 ✓）
-    if key[:1] in ("b", "c"):
-        t = titles.get(key)
-        return t.parent if t is not None else None
+    # ⚠ **一点法理都不认** ✗（用户点名的："你把法理和实控搞混了" ✓）
+    #   这一层要的是**实控**：谁持着、他的封君写的是谁 ✓
+    #   法理父级是**另一张图**（编辑器那五级 ✓）✗ 拿它填实控的洞就会到处横跳 ✗
+    #   （我先后加过"认法理父级""父级是同一个人才跟"两条，全是这个毛病 ✓ 都撤 ✓）
+    #   —— 一块地归谁，改由 `build_realm_layer` 里"持有人那条链"决定 ✓
     return None
 
 
@@ -686,15 +702,8 @@ def top_liege(key: str,
         top = cur
         lg = liege_of(cur, titles, lieges, governments, obedient, tributaries)
         if not lg:
-            # 没写 liege（也不是朝贡）：
-            #   **法理父级是同一个持有者** → 这块地是他自己的直辖 ✓
-            #     跟着他那条链的上级走 ✓（西夏那些县 → 它们的公国 → k_xia ✓）
-            #   是**别人**（辽东 ↔ k_balhae ✓）→ 就到此为止 = **独立** ✓
-            _t2 = titles.get(cur)
-            _par = _t2.parent if _t2 is not None else None
-            if _par and holders.get(_par) and holders.get(_par) == holders.get(cur):
-                cur = _par
-                continue
+            # 没写 liege = 独立 ✓（法理那套不再参与 ✗ 见 liege_of 的说明 ✓）
+            return top
         while lg and lg not in seen:
             seen.add(lg)
             if not holders.get(lg):
