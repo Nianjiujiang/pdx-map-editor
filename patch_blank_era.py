@@ -25,7 +25,8 @@
 * 空白层那一行**照抄最细那层的背景地形**（海/湖/荒地/不可通行），
   其余一律写成 `noTitle` ✓
 
-CK3 不加（它本来就没有剧本层 ✓）。
+**每一套缓存都补**（CK3 从 2026-10-11 起也有剧本层了 —— 1066 那一层 ✓
+所以链上读作 `1066 / 空白剧本 / 帝国 / 王国 / 公爵领 / 伯爵领 / 男爵领` ✓）。
 """
 from __future__ import annotations
 
@@ -41,8 +42,8 @@ try:
 except Exception:
     pass
 
-#: 打包单文件版时会用到的几份缓存（data_eu4_hd 只在本地测，也一起补 ✓）
-DEFAULT_DIRS = ("data_eu4", "data_eu4_hd", "data_hoi4", "data_hoi4_alt",
+#: 打包单文件版时会用到的几份缓存（data = CK3 那份；data_eu4_hd 只在本地测，也一起补 ✓）
+DEFAULT_DIRS = ("data", "data_eu4", "data_eu4_hd", "data_hoi4", "data_hoi4_alt",
                 "data_vic3", "data_eu5", "data_eu5_full")
 
 BLANK_KEY = "blank"        # meta.tiers 里那一格（app 拿它当层级 key 用）

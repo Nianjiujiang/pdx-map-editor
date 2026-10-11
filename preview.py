@@ -30,6 +30,11 @@ ROOT = Path(__file__).resolve().parent
 
 NO_TITLE = 65535
 WATER = np.array([24, 34, 46], dtype=np.uint8)
+#: **无主地**：跟 app 那边**同一个颜色** ✗ —— 着色器里是
+#: `if (tid == NONE) return vec4(150,150,150,1)`（`gl.js` ✓）
+#: ⚠ 以前这里把 NO_TITLE 跟海画成同一个深蓝 ✗ 于是「空白剧本」那一层
+#:   （整片陆地全是无主）预览出来像一整片海 ✓ 跟 app 里看到的完全是两回事 ✗
+NONE_LAND = np.array([150, 150, 150], dtype=np.uint8)
 BORDER = np.array([8, 10, 14], dtype=np.uint8)
 
 
@@ -57,17 +62,17 @@ def render_tier(ids, tm_row, colors, scale: int) -> Image.Image:
         y1 = min(y0 + chunk, h)
         block = ids[y0:y1]
         tid = tm_row[block]                       # (bh, w) 头衔序号
-        water = tid == NO_TITLE
-        safe = np.where(water, 0, tid)
+        none = tid == NO_TITLE
+        safe = np.where(none, 0, tid)
 
         rgb = colors[safe]                        # (bh, w, 3)
-        rgb[water] = WATER
+        rgb[none] = NONE_LAND                     # 无主地 = 那块灰（跟 app 一致 ✓）
 
         # 头衔边界，块内做（块与块之间那条缝本来就在图上）
         edge = np.zeros(block.shape, dtype=bool)
         edge[:, :-1] |= tid[:, :-1] != tid[:, 1:]
         edge[:-1, :] |= tid[:-1, :] != tid[1:, :]
-        edge &= ~water
+        edge &= ~none
         rgb[edge] = BORDER
 
         out[y0:y1] = rgb

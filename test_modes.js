@@ -1853,124 +1853,117 @@ const factory = new Function(
   }
 
   // ==== 空白剧本：一层**全无主**（不上色、没标记），别的规矩一条不少 ====
-  //   ⚠ CK3 现在**也有剧本层了**（1066 ✓ 见 build_data 的 eraDates 那段）——
-  //     它跟别的模式一个结构：剧本层 + 地区层 ✓（用户点名的：取消特立独行 ✓）
-  //     但它**没补「空白剧本」**那一层（patch_blank_era 没给它跑 ✓ 用户没要 ✓）
-  if (WHICH === 'CK3') {
-    ok('CK3 也有剧本层了（1066 那一层 ✓）· 但没加空白剧本',
-       N_ERA === 1 && BLANK_T < 0,
-       `eraDates=${N_ERA} blank=${BLANK_T}`
-       + ` · 第 0 层「${(st.meta.tierNames || [])[0]}」`);
-  } else {
-    ok('非 CK3 都有空白剧本这一层', BLANK_T >= 0 && BLANK_T < N_ERA,
-       `第 ${BLANK_T} 层 / 共 ${N_ERA} 个剧本层 · 名字「${(st.meta.tierNames || [])[BLANK_T]}」`);
-    if (BLANK_T >= 0) {
-      // 空白层 = **最细那层**，只是"真头衔一律换成无主"；
-      // 海 / 湖 / 荒地那些**背景地形**（含 EU5 那种序号在真头衔里的小岛 ✓）逐格照抄 ✓
-      let bOwned = 0, bNoneLand = 0, bBg = 0;
-      for (let p = 1; p < st.meta.numProvinces; p++) {
-        const t = ex.titleAt(p, BLANK_T);
-        const isLand = st.provPos[p * 3 + 2] > 0;
-        if (t == null || t === st.meta.noTitle) { if (isLand) bNoneLand++; continue; }
-        if (isBgTid(t)) bBg++;
-        else bOwned++;                      // 既不是背景、又不是无主 → 空白层不该有 ✗
-      }
-      ok('空白剧本：除了海/湖/荒地，别的格子全是无主（不上色、没标记 ✓）',
-         bOwned === 0 && bNoneLand > 500,
-         `还有归属的格子 ${bOwned} 个 · 无主陆地 ${bNoneLand} 块 · 背景地形 ${bBg} 格`);
-      {
-        const fineT = st.meta.tierNames.length - 1;
-        let offB = 0, nBgB = 0, notCleared = 0;
-        for (let p = 1; p < st.meta.numProvinces; p++) {
-          const tb = ex.titleAt(p, BLANK_T);
-          const tf = ex.titleAt(p, fineT);
-          if (isBgTid(tb)) { nBgB++; if (tb !== tf) offB++; }
-          else if (tb != null && tb !== st.meta.noTitle) notCleared++;   // 别的真头衔没清掉 ✗
-        }
-        ok('空白剧本：海 / 湖 / 荒地那些背景地形跟最细那层逐格一致（不然整片海会变成大陆灰 ✗）',
-           offB === 0 && notCleared === 0 && nBgB > 0,
-           `背景地形 ${nBgB} 格 · 对不上的 ${offB} 格 · 没清干净的真头衔 ${notCleared} 个`);
-      }
-
-      const svB = { tier: st.tier, grain: st.grain, tool: st.tool, label: st.brushLabel,
-                    brush: st.brush.slice(), lp: st.showLabelsPaint,
-                    all: st._blocksAll, bt: st._blocksTier };
-      // 按按钮切过去：跟别的剧本一个规矩（细层按年份 = 配成"那年配色 + 细层粒度" ✓）
-      {
-        const _svT = st.tier;
-        ex.setGrain(null);
-        ex.setTier(tierOf('省份') >= 0 ? tierOf('省份') : st.meta.tierNames.length - 1);
-        ex.pressTier(BLANK_T);
-        ok('从细层按「空白剧本」= 切到那一层（跟别的剧本一个规矩 ✓）',
-           st.tier === BLANK_T, `tier=${st.tier} grain=${st.grain}`);
-        ex.setGrain(null);
-        st.tier = _svT;
-      }
-      // ① 进去看一眼：一个势力名都不该有（没标记 ✓）
-      st.tier = BLANK_T; st.grain = null; st.showLabelsPaint = true;
-      st._blocksAll = null; st._blocksTier = null; st._layerSig = null;
-      ex.syncLayerSwitches();
-      ex.rebuildPaintBlocks(true, false);
-      ok('空白剧本：一个势力名都没有 ✓',
-         (st.paintBlocks || []).length === 0,
-         `${(st.paintBlocks || []).length} 个色块`);
-      // ② 找到一块**无主**的陆地，走完整的点击流程落笔
-      const fineB = st.meta.tierNames.length - 1;
-      let pidB = 0;
-      for (let p = 1; p < st.meta.numProvinces && !pidB; p++) {
-        if (!(st.provPos[p * 3 + 2] > 0)) continue;
-        const tb = ex.titleAt(p, BLANK_T);
-        if (tb != null && tb !== st.meta.noTitle) continue;      // 只要无主的 ✓
-        const tf = ex.titleAt(p, fineB);
-        if (tf == null || tf === st.meta.noTitle || ex.isLocked(tf)) continue;
-        pidB = p;
-      }
-      ok('空白剧本里找得到一块无主陆地（下面要用）', pidB > 0, `#${pidB}`);
-      if (pidB) {
-        const WB = st.meta.mapWidth, HB = st.meta.mapHeight;
-        let pxB = null;
-        for (let y = 0; y < HB && !pxB; y += 2) {
-          for (let x = 0; x < WB; x += 2) {
-            if (st.provinceIds[y * WB + x] === pidB) { pxB = [x, y]; break; }
-          }
-        }
-        const stgB = get('stage');
-        const vwB = stgB.clientWidth / st.cam.scale, vhB = stgB.clientHeight / st.cam.scale;
-        const vxB = st.cam.cx - vwB / 2, vyB = st.cam.cy - vhB / 2;
-        const toClientB = (mx, my) => [(mx + 0.5 - vxB) / vwB * stgB.clientWidth,
-                                       (my + 0.5 - vyB) / vhB * stgB.clientHeight];
-        if (pxB) {
-          ex.setTool('paint');
-          st.brush = [30, 150, 90]; st.brushLabel = '我的国';
-          ex.actAt(...toClientB(pxB[0], pxB[1]));
-          const p4B = pidB * 4;
-          ok('空白剧本里点一下就能落笔（无主地照样涂得上 ✓）',
-             ex.renderer.paintData[p4B + 3] > 0 && ex.renderer.paintData[p4B] === 30
-             && ex.renderer.paintData[p4B + 1] === 150,
-             [...ex.renderer.paintData.slice(p4B, p4B + 4)].join(','));
-          // ③ 涂完就有色块名（分组那套照旧认无主地上涂出来的色块 ✓）
-          st._blocksAll = null; st._blocksTier = null;
-          ex.rebuildPaintBlocks(true, false);
-          const blkB = (st.paintBlocks || []).find((b) => b.name === '我的国');
-          ok('空白剧本里涂出来的色块有名字 ✓', !!blkB,
-             blkB ? `落点(${blkB.x.toFixed(0)},${blkB.y.toFixed(0)})` : '没找到这块');
-          // ④ 还原工具也能擦掉（别修成"涂得上擦不掉" ✗）
-          ex.setTool('erase');
-          ex.actAt(...toClientB(pxB[0], pxB[1]));
-          ok('空白剧本里点「还原」也能擦掉 ✓', ex.renderer.paintData[p4B + 3] === 0,
-             [...ex.renderer.paintData.slice(p4B, p4B + 4)].join(','));
-        }
-        // 收尾：万一还有残留，按最细那层清掉
-        const tfB = ex.titleAt(pidB, fineB);
-        if (tfB != null && tfB !== st.meta.noTitle) ex.restoreTitle(tfB);
-      }
-      st.tier = svB.tier; st.grain = svB.grain; st.brushLabel = svB.label;
-      st.brush = svB.brush; st.showLabelsPaint = svB.lp;
-      st._blocksAll = svB.all; st._blocksTier = svB.bt; st._layerSig = null;
-      ex.setTool(svB.tool);
-      ex.syncLayerSwitches();
+  //   CK3 从 2026-10-11 起也照搬了这一层（1066 是剧本 ✓ 空白剧本也是剧本 ✓
+  //   见 build_data 末尾那句 patch_blank_era ✓）—— 所以这里**不再分模式** ✓
+  ok('每一套都有空白剧本这一层（剧本块的最后一格 ✓）',
+     BLANK_T >= 0 && BLANK_T < N_ERA,
+     `第 ${BLANK_T} 层 / 共 ${N_ERA} 个剧本层 · 名字「${(st.meta.tierNames || [])[BLANK_T]}」`);
+  if (BLANK_T >= 0) {
+    // 空白层 = **最细那层**，只是"真头衔一律换成无主"；
+    // 海 / 湖 / 荒地那些**背景地形**（含 EU5 那种序号在真头衔里的小岛 ✓）逐格照抄 ✓
+    let bOwned = 0, bNoneLand = 0, bBg = 0;
+    for (let p = 1; p < st.meta.numProvinces; p++) {
+      const t = ex.titleAt(p, BLANK_T);
+      const isLand = st.provPos[p * 3 + 2] > 0;
+      if (t == null || t === st.meta.noTitle) { if (isLand) bNoneLand++; continue; }
+      if (isBgTid(t)) bBg++;
+      else bOwned++;                      // 既不是背景、又不是无主 → 空白层不该有 ✗
     }
-  }
+    ok('空白剧本：除了海/湖/荒地，别的格子全是无主（不上色、没标记 ✓）',
+       bOwned === 0 && bNoneLand > 500,
+       `还有归属的格子 ${bOwned} 个 · 无主陆地 ${bNoneLand} 块 · 背景地形 ${bBg} 格`);
+    {
+      const fineT = st.meta.tierNames.length - 1;
+      let offB = 0, nBgB = 0, notCleared = 0;
+      for (let p = 1; p < st.meta.numProvinces; p++) {
+        const tb = ex.titleAt(p, BLANK_T);
+        const tf = ex.titleAt(p, fineT);
+        if (isBgTid(tb)) { nBgB++; if (tb !== tf) offB++; }
+        else if (tb != null && tb !== st.meta.noTitle) notCleared++;   // 别的真头衔没清掉 ✗
+      }
+      ok('空白剧本：海 / 湖 / 荒地那些背景地形跟最细那层逐格一致（不然整片海会变成大陆灰 ✗）',
+         offB === 0 && notCleared === 0 && nBgB > 0,
+         `背景地形 ${nBgB} 格 · 对不上的 ${offB} 格 · 没清干净的真头衔 ${notCleared} 个`);
+    }
+
+    const svB = { tier: st.tier, grain: st.grain, tool: st.tool, label: st.brushLabel,
+                  brush: st.brush.slice(), lp: st.showLabelsPaint,
+                  all: st._blocksAll, bt: st._blocksTier };
+    // 按按钮切过去：跟别的剧本一个规矩（细层按年份 = 配成"那年配色 + 细层粒度" ✓）
+    {
+      const _svT = st.tier;
+      ex.setGrain(null);
+      ex.setTier(tierOf('省份') >= 0 ? tierOf('省份') : st.meta.tierNames.length - 1);
+      ex.pressTier(BLANK_T);
+      ok('从细层按「空白剧本」= 切到那一层（跟别的剧本一个规矩 ✓）',
+         st.tier === BLANK_T, `tier=${st.tier} grain=${st.grain}`);
+      ex.setGrain(null);
+      st.tier = _svT;
+    }
+    // ① 进去看一眼：一个势力名都不该有（没标记 ✓）
+    st.tier = BLANK_T; st.grain = null; st.showLabelsPaint = true;
+    st._blocksAll = null; st._blocksTier = null; st._layerSig = null;
+    ex.syncLayerSwitches();
+    ex.rebuildPaintBlocks(true, false);
+    ok('空白剧本：一个势力名都没有 ✓',
+       (st.paintBlocks || []).length === 0,
+       `${(st.paintBlocks || []).length} 个色块`);
+    // ② 找到一块**无主**的陆地，走完整的点击流程落笔
+    const fineB = st.meta.tierNames.length - 1;
+    let pidB = 0;
+    for (let p = 1; p < st.meta.numProvinces && !pidB; p++) {
+      if (!(st.provPos[p * 3 + 2] > 0)) continue;
+      const tb = ex.titleAt(p, BLANK_T);
+      if (tb != null && tb !== st.meta.noTitle) continue;      // 只要无主的 ✓
+      const tf = ex.titleAt(p, fineB);
+      if (tf == null || tf === st.meta.noTitle || ex.isLocked(tf)) continue;
+      pidB = p;
+    }
+    ok('空白剧本里找得到一块无主陆地（下面要用）', pidB > 0, `#${pidB}`);
+    if (pidB) {
+      const WB = st.meta.mapWidth, HB = st.meta.mapHeight;
+      let pxB = null;
+      for (let y = 0; y < HB && !pxB; y += 2) {
+        for (let x = 0; x < WB; x += 2) {
+          if (st.provinceIds[y * WB + x] === pidB) { pxB = [x, y]; break; }
+        }
+      }
+      const stgB = get('stage');
+      const vwB = stgB.clientWidth / st.cam.scale, vhB = stgB.clientHeight / st.cam.scale;
+      const vxB = st.cam.cx - vwB / 2, vyB = st.cam.cy - vhB / 2;
+      const toClientB = (mx, my) => [(mx + 0.5 - vxB) / vwB * stgB.clientWidth,
+                                     (my + 0.5 - vyB) / vhB * stgB.clientHeight];
+      if (pxB) {
+        ex.setTool('paint');
+        st.brush = [30, 150, 90]; st.brushLabel = '我的国';
+        ex.actAt(...toClientB(pxB[0], pxB[1]));
+        const p4B = pidB * 4;
+        ok('空白剧本里点一下就能落笔（无主地照样涂得上 ✓）',
+           ex.renderer.paintData[p4B + 3] > 0 && ex.renderer.paintData[p4B] === 30
+           && ex.renderer.paintData[p4B + 1] === 150,
+           [...ex.renderer.paintData.slice(p4B, p4B + 4)].join(','));
+        // ③ 涂完就有色块名（分组那套照旧认无主地上涂出来的色块 ✓）
+        st._blocksAll = null; st._blocksTier = null;
+        ex.rebuildPaintBlocks(true, false);
+        const blkB = (st.paintBlocks || []).find((b) => b.name === '我的国');
+        ok('空白剧本里涂出来的色块有名字 ✓', !!blkB,
+           blkB ? `落点(${blkB.x.toFixed(0)},${blkB.y.toFixed(0)})` : '没找到这块');
+        // ④ 还原工具也能擦掉（别修成"涂得上擦不掉" ✗）
+        ex.setTool('erase');
+        ex.actAt(...toClientB(pxB[0], pxB[1]));
+        ok('空白剧本里点「还原」也能擦掉 ✓', ex.renderer.paintData[p4B + 3] === 0,
+           [...ex.renderer.paintData.slice(p4B, p4B + 4)].join(','));
+      }
+      // 收尾：万一还有残留，按最细那层清掉
+      const tfB = ex.titleAt(pidB, fineB);
+      if (tfB != null && tfB !== st.meta.noTitle) ex.restoreTitle(tfB);
+    }
+    st.tier = svB.tier; st.grain = svB.grain; st.brushLabel = svB.label;
+    st.brush = svB.brush; st.showLabelsPaint = svB.lp;
+    st._blocksAll = svB.all; st._blocksTier = svB.bt; st._layerSig = null;
+    ex.setTool(svB.tool);
+    ex.syncLayerSwitches();
+    }
 
   // 换层时"跟层级绑的那几个开关"必须**当场**同步 ✓
   //   以前 syncLayerSwitches() 排在 renderer.render() 之后 ✗ → 换层后第一帧是
@@ -2253,11 +2246,10 @@ const factory = new Function(
     ? { id: 'eu5', key: 'eu5-map-editor/v1', tier: 4, entity: '地点',
         badges: ['国家', '空白剧本', '区域', '地区', '省', '地点'],
         names: ['1337', '空白剧本', '区域', '地区', '省份', '地点'], brand: 'EU' }
-    : { id: 'ck3', key: 'ck3-map-editor/v1', tier: 4, entity: '头衔',
-        // CK3 多了一层「1066 剧本地图」（build_data 的 ERA_TIER ✓）：
-        // 显示的是"这块地 1066 年归哪个**非封臣**政权"，比帝国还上面一层 ✓
-        badges: ['1066', 'e_', 'k_', 'd_', 'c_', 'b_'],
-        names: ['1066', '帝国', '王国', '公爵领', '伯爵领', '男爵领'], brand: 'CK' };
+    : { id: 'ck3', key: 'ck3-map-editor/v1', tier: 5, entity: '头衔',
+        // CK3 现在是"剧本层 + 地区层"：1066（剧本）· 空白剧本 · 帝国…男爵领（地区）✓
+        badges: ['1066', '空白剧本', 'e_', 'k_', 'd_', 'c_', 'b_'],
+        names: ['1066', '空白剧本', '帝国', '王国', '公爵领', '伯爵领', '男爵领'], brand: 'CK' };
 
   // 「定都」工具连同首都/本土那一整套已经拿掉（用户要求 ✓）——
   // 现在名字落点是"一个连通域一个"，不再有任何"哪片才算老家"的规矩 ✓
@@ -2833,8 +2825,11 @@ const factory = new Function(
     // 留空的格子 = "别的层也没头衔的" + "那会儿没人占的" ✓
     // （这一版数据里后者是 0 ✓ 萨米、撒哈拉也各有酋长/部落 ✓）
     {
+      // ⚠ 对照的那一行要**现查** ✗（剧本块里现在有两层：1066 + 空白剧本 ✓
+      //   写死 `NP + p` 就撞上空白剧本那一行了 —— 那行本来就全无主 ✓）
+      const _eRow = st.meta.tiers.indexOf('e');
       let refHoles = 0;
-      for (let p = 1; p < NP; p++) if (st.titlemap[NP + p] === noT) refHoles++;   // 帝国那一行
+      for (let p = 1; p < NP; p++) if (st.titlemap[_eRow * NP + p] === noT) refHoles++;
       ok('1066 层：留空的格子 = 没头衔的格子 + 那会儿没人占的格子',
          holes >= refHoles,
          `1066 层 ${holes} · 帝国层 ${refHoles}`
@@ -5657,17 +5652,18 @@ const factory = new Function(
       ok('公爵领以上的名字都落在自家地盘范围内（不再钉在法理首都 ✓）',
          out === 0 && tot > 1000, `${tot} 个里头，出界的 ${out} 个${worst ? `：${worst}` : ''}`);
     }
-    /* CK3 现在**也有剧本层了** ✓（1066 ✓ 见 build_data 的 eraDates 那段）——
+    /* CK3 现在**也有剧本层了** ✓（1066 + 空白剧本 ✓ 见 build_data 的 eraDates 那段）——
      * 用户点名的"取消 CK3 的特立独行、和其他模式一样"：
-     * 帝国/王国/…/男爵领全是**地区级**，1066 是**剧本** ✓ */
-    ok('CK3 有剧本层：一层 1066（eraDates 一条，层级名就是「1066」）',
-       (ckM.eraDates || []).length === 1 && ckM.eraDates[0] === '1066.9.15'
-       && ckM.tiers[0] === '1066' && ckM.tierNames[0] === '1066',
-       `eraDates=${JSON.stringify(ckM.eraDates || [])} · tiers[0]=${ckM.tiers[0]}`);
-    ok('CK3 的剧本层有自己的节点（1066_<原头衔> ✓ 不是借法理头衔的）',
+     * 帝国/王国/…/男爵领全是**地区级**，1066 与空白剧本是**剧本** ✓ */
+    ok('CK3 有剧本层：1066 + 空白剧本（eraDates 两条，第一层就叫「1066」）',
+       (ckM.eraDates || []).length === 2 && ckM.eraDates[0] === '1066.9.15'
+       && ckM.tiers[0] === '1066' && ckM.tierNames[0] === '1066'
+       && ckM.tiers[1] === 'blank' && ckM.tierNames[1] === '空白剧本',
+       `eraDates=${JSON.stringify(ckM.eraDates || [])} · tiers[0..1]=${ckM.tiers.slice(0, 2)}`);
+    ok('CK3 的 1066 层有自己的节点（1066_<原头衔> ✓ 不是借法理头衔的）',
        ckT.keys.filter((k) => k.startsWith('1066_')).length > 500
        && ckT.tiers.filter((x) => x === 0).length > 500,
-       `${ckT.keys.filter((k) => k.startsWith('1066_')).length} 个剧本节点`);
+       `${ckT.keys.filter((k) => k.startsWith('1066_')).length} 个 1066 节点`);
     const _fineTier = ckM.tiers.length - 1;      // 男爵领那一层（别写死 4 ✗）
     const baronies = ckT.tiers.filter((x) => x === _fineTier).length;
     ok('男爵领比 MAX_LABELS 多得多（所以这条才要紧）', baronies > 1000, `${baronies} 个`);
