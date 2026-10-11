@@ -34,6 +34,8 @@ from parsers.ck3.parser import (
     parse_definition,
     parse_landed_titles,
     parse_localisation,
+    parse_title_history,
+    top_liege,
 )
 
 ROOT = Path(__file__).resolve().parent
@@ -46,11 +48,32 @@ NO_TITLE = 0xFFFF
 #: 省份图里用了 definition.csv 未登记颜色的像素，构建期间临时标这个
 UNKNOWN_COLOR = 0xFFFE
 
+#: **1066 剧本地图**那一层的名字 —— 放在层级栈**最上面**（比帝国还粗）✓
+#: 它显示的不是法理，而是"这块地 1066 年归哪个**非封臣**政权"（见 build_realm_layer ✓）
+#: ⚠ 它**不是** landed_titles 的一级 ✗，所以 TIER_ORDER（法理那五级）不动，
+#:   只有"地图上有几层"这件事变多了一层 ✓ 想关掉就 --no-bookmark ✓
+ERA_TIER = "1066"
+#: 地图从上到下的层级：1066 剧本 → 帝国 → 王国 → 公爵领 → 伯爵领 → 男爵领
+#: （跑 --no-bookmark 时 main() 会把 1066 那一项摘掉 ✓ 一切下标都现查 ✓）
+MAP_ORDER: list[str] = [ERA_TIER, *TIER_ORDER]
+#: 那一层在层级按钮上写的字
+ERA_LABEL = "1066"
+#: 1066 的开局日期（common/bookmarks 里那批 bm_1066_* 都是这一天 ✓）
+BOOKMARK_DATE = (1066, 9, 15)
+#: 「1066 年无主」那些地块的颜色 —— 跟无归属荒地同一个灰 ✓（用户定的：荒地那套灰 ✓）
+UNOWNED_GREY = (150, 150, 150)
+
 _T0 = time.time()
 
 
 def log(msg: str) -> None:
     print(f"[{time.time() - _T0:6.1f}s] {msg}", flush=True)
+
+
+def _parse_date(s: str) -> tuple[int, int, int]:
+    """``"1066.9.15"`` → ``(1066, 9, 15)``（缺的按月日补 1 ✓）"""
+    parts = (str(s).split(".") + ["1", "1", "1"])[:3]
+    return (int(parts[0]), int(parts[1]), int(parts[2]))
 
 
 # ------------------------------------------------------------------ 省份图
@@ -263,11 +286,11 @@ def build_special_titles(
 
 def rank_titles(titles: dict[str, Title]) -> list[Title]:
     """排个稳定顺序，顺便把父子关系固化。父永远排在子前面。"""
-    by_tier: dict[str, list[Title]] = {t: [] for t in TIER_ORDER}
+    by_tier: dict[str, list[Title]] = {t: [] for t in MAP_ORDER}
     for t in titles.values():
         by_tier[t.tier].append(t)
     out: list[Title] = []
-    for tier in TIER_ORDER:  # e → k → d → c → b
+    for tier in MAP_ORDER:  # （1066 那一层没有真头衔，是空的）e → k → d → c → b
         out.extend(sorted(by_tier[tier], key=lambda x: x.key))
     return out
 
@@ -291,12 +314,15 @@ def build_titlemap(
     owned: dict[str, list[int]],
     n_prov: int,
 ) -> np.ndarray:
-    """给每个省份、每个层级找出它归属的头衔，做成 5×n_prov 的表。
+    """给每个省份、每个层级找出它归属的头衔，做成 len(MAP_ORDER)×n_prov 的表。
 
     这一张表就是前端着色的全部依据：查到 province id，再去对应层级取头衔，
     最后取头衔的颜色。
+
+    ⚠ 第 0 行（**1066 剧本**那一层）不在这里填 ✗ —— 它要等伪头衔建好
+      （"无主"要挂到无归属荒地上 ✓），由 build_realm_layer 收尾 ✓
     """
-    table = np.full((len(TIER_ORDER), n_prov), NO_TITLE, dtype=np.uint16)
+    table = np.full((len(MAP_ORDER), n_prov), NO_TITLE, dtype=np.uint16)
     per_pid: dict[int, dict[str, int]] = {}
     for t in ordered:
         ti = index_of[t.key]
@@ -307,10 +333,64 @@ def build_titlemap(
     filled = 0
     for pid, tiers in per_pid.items():
         for tier, ti in tiers.items():
-            table[TIER_ORDER.index(tier), pid] = ti
+            table[MAP_ORDER.index(tier), pid] = ti
             filled += 1
     log(f"头衔归属表完成：{filled} 个 (省份, 层级) 对")
     return table
+
+
+def build_realm_layer(
+    ordered: list[Title],
+    index_of: dict[str, int],
+    titles: dict[str, Title],
+    titlemap: np.ndarray,
+    n_prov: int,
+    holders: dict[str, int | str],
+    lieges: dict[str, str | None],
+) -> tuple[int, int, int, list[int]]:
+    """写**1066 剧本**那一层：每块地归到它的**非封臣**（独立政权）✓
+
+    用户要的那张地图就是这一层：**封臣的地盘算进宗主那一块**（CK3 的领地地图 ✓），
+    所以先把每块地判给"最细那一级有持有者的头衔"，再顺 liege 一路往上 ✓
+
+    ① 法理链从最细往上找**第一层有持有者**的头衔 ✓
+       （男爵领常年没人持 —— 那就是伯爵自己拿着 ✓）
+       ⚠ 男爵领缺、拿伯爵领顶替过的那些地（degraded），b 那一行填的就是 c 的头衔 ✓
+         所以从 b 往上扫一遍就够了 ✓
+    ② 拿到人以后顺着 ``liege`` 往上，走到没有封君的那一级 = **非封臣** ✓
+    ③ 整条链**都没人持** → 1066 年确实没人占（萨米、撒哈拉那种 ✓）
+       → 收进返回值，由调用方挂到"无主"那个伪头衔上（荒地那套灰 ✓）
+
+    ⚠ 只动**真有头衔的陆地** ✗ —— 海/湖/山/逐块荒地在各层都是伪头衔，
+      第 0 行早就在地形那一步填好了，别覆盖 ✓
+
+    :returns: (判出归属的省份数, 无主的省份数, 有几个独立政权, 无主的省份号列表)
+    """
+    keys = [t.key for t in ordered]
+    n_own = 0
+    n_none = 0
+    realms: set[str] = set()
+    unowned: list[int] = []
+    rows = {tier: MAP_ORDER.index(tier) for tier in TIER_ORDER}
+    fine_first = [rows[tier] for tier in reversed(TIER_ORDER)]   # b → e
+    for pid in range(1, n_prov):
+        start = -1
+        for r in fine_first:
+            tid = int(titlemap[r, pid])
+            if 0 < tid < len(ordered):
+                start = tid
+                break
+        if start < 0:
+            continue                       # 背景地形：这一层照地形那套走 ✓
+        top = top_liege(keys[start], titles, holders, lieges)
+        if top is None:
+            unowned.append(pid)
+            n_none += 1
+        else:
+            titlemap[0, pid] = index_of[top]
+            realms.add(top)
+            n_own += 1
+    return n_own, n_none, len(realms), unowned
 
 
 def centroids_for_titles(
@@ -388,7 +468,13 @@ def main() -> int:
                     help="法理按哪一年算，默认 1066（用 history/titles 里的改动覆盖骨架）")
     ap.add_argument("--no-dejure-history", action="store_true",
                     help="只用地 landed_titles 的骨架，不盖 history 的改动")
+    ap.add_argument("--bookmark", default="1066.9.15",
+                    help="剧本地图那一层的日期，默认 1066.9.15（CK3 那批 bm_1066_* 的开局）")
+    ap.add_argument("--no-bookmark", action="store_true",
+                    help="不生成 1066 剧本地图那一层（只剩法理那五层）")
     args = ap.parse_args()
+    if args.no_bookmark and ERA_TIER in MAP_ORDER:
+        MAP_ORDER.remove(ERA_TIER)      # 先摘掉，后面所有下标都按这版现查 ✓
 
     root = locator.find_ck3([args.ck3] if args.ck3 else None)
     game = root / "game"
@@ -421,6 +507,18 @@ def main() -> int:
         log(f"法理按 {dejure_year} 年对齐：{moved} 个头衔的父级跟骨架不一样，已改")
     else:
         log("法理用 landed_titles 的骨架（没盖 history 的改动）")
+
+    # 2c. 1066 剧本：**谁占着哪块地**（holder）和**谁是封臣**（liege）
+    #     两个都写在 history/titles 里、都带日期 ✓ 见 parse_title_history ✓
+    bookmark_date: tuple[int, int, int] | None = None
+    holders: dict[str, int | str] = {}
+    lieges: dict[str, str | None] = {}
+    if not args.no_bookmark:
+        bookmark_date = _parse_date(args.bookmark)
+        holders, lieges = parse_title_history(
+            game / "history" / "titles", titles, bookmark_date)
+        log(f"剧本 {'.'.join(str(x) for x in bookmark_date)}："
+            f"{len(holders)} 个头衔有持有者、{len(lieges)} 个写了封君")
 
     ordered = rank_titles(titles)
     index_of = {t.key: i for i, t in enumerate(ordered)}
@@ -458,10 +556,11 @@ def main() -> int:
     # 在男爵领视图下露个灰洞没意义。
     # 注意要排掉海/湖/河/山 —— 它们这会儿还没归入地形类别，但本来就不该有男爵领。
     # 而且这是**降级显示**，得记下来，悬停时要跟玩家说清楚。
-    gap_b = (titlemap[4] == NO_TITLE) & present & (titlemap[3] != NO_TITLE)
+    gap_b = (titlemap[MAP_ORDER.index("b")] == NO_TITLE) & present \
+        & (titlemap[MAP_ORDER.index("c")] != NO_TITLE)
     degraded = np.nonzero(gap_b)[0]
     if degraded.size:
-        titlemap[4, degraded] = titlemap[3, degraded]
+        titlemap[MAP_ORDER.index("b"), degraded] = titlemap[MAP_ORDER.index("c"), degraded]
         shown = "、".join(str(int(p)) for p in degraded[:8])
         log(f"男爵领层空缺 {degraded.size} 个省份（{shown}），已用所属伯爵领的色块顶替")
     else:
@@ -480,15 +579,34 @@ def main() -> int:
     sel = assign >= 0
     if sel.any():
         vals = assign[sel].astype(np.uint16)
-        for r in range(len(TIER_ORDER)):
+        for r in range(len(MAP_ORDER)):
             titlemap[r, sel] = vals
 
     # 逐块荒地**只盖最细那层** —— 粗层照旧是那块共享的灰（跟 EU5 一个口径）
     sel2 = fine_assign >= 0
     if sel2.any():
-        titlemap[len(TIER_ORDER) - 1, sel2] = fine_assign[sel2].astype(np.uint16)
-    left = int(np.count_nonzero(titlemap[0] == NO_TITLE))
+        titlemap[MAP_ORDER.index(TIER_ORDER[-1]), sel2] = fine_assign[sel2].astype(np.uint16)
+    left = int(np.count_nonzero(titlemap[MAP_ORDER.index(TIER_ORDER[-1])] == NO_TITLE))
     log(f"仍是空白的格子：{left}")
+
+    # 6b. **1066 剧本地图**那一层（层级栈最上面那层 ✓ 见 build_realm_layer ✓）
+    #     放在地形之后：它只动"真有头衔的陆地"，海/湖/山/逐块荒地那一行不碰 ✓
+    if bookmark_date is not None:
+        _n_own, _n_none, _n_realm, _unowned = build_realm_layer(
+            ordered, index_of, titles, titlemap, n_prov, holders, lieges)
+        if _unowned:
+            # 1066 年没人占的地：给它们一个自己的伪头衔（"无主"）
+            # ⚠ 只在这儿建 ✗ —— 不放进 SPECIAL_CATEGORIES：那一套是"没有头衔的地块"，
+            #   而这些地块**有**男爵领/伯爵领，只是那会儿没人持有 ✓ 两码事 ✓
+            #   也不进 SETTABLE_CATEGORIES：那样会被 meta.wasteland 收进去，
+            #   前端就会按"荒地"去自动上色它们 ✗（它们该一直是那块灰 ✓）
+            _ut = Title("#unowned", tier="@")
+            _ut.color = UNOWNED_GREY
+            special.append(_ut)
+            _special_names["#unowned"] = "无主"
+            titlemap[0, np.array(_unowned, dtype=np.int64)] = len(ordered) + len(special) - 1
+        log(f"1066 剧本层：{_n_realm} 个非封臣政权 · {_n_own} 个省份有归属 · "
+            f"{_n_none} 个无主（挂到「无主」那个伪头衔上）")
 
     # 逐块荒地的节点序号（meta 里要报给前端：荒漠涂色开关靠它判"这块是不是荒地"）
     #: 哪些伪头衔是**水**（算荒地边长时不算；荒地/无主地要算）
@@ -534,7 +652,10 @@ def main() -> int:
         edge_tot: dict[int, int] = {}          # 这块荒地的**整条陆地周长**
         for k_, c_ in pair_cnt.items():
             wp, nb = k_ >> 16, k_ & 0xFFFF
-            t_nb = int(titlemap[0, nb])
+            # ⚠ 这里取的是**帝国那一行**（法理），不是第 0 行 ✗
+            #   第 0 行现在是 1066 剧本（无主的一大片 ✓），拿它当"周边国家"会变味：
+            #   荒地自动上色一直按"法理上的归属"算 ✓ 换行等于偷偷改了这个功能 ✓
+            t_nb = int(titlemap[MAP_ORDER.index("e"), nb])
             if t_nb in water_tids:             # 水不算边长
                 continue
             edge_tot[wp] = edge_tot.get(wp, 0) + c_
@@ -604,16 +725,19 @@ def main() -> int:
         "numProvinces": n_prov,
         "numTitles": n_all,
         "numRealTitles": len(ordered),
-        "tiers": list(TIER_ORDER),
-        "tierNames": [TIER_NAME[t] for t in TIER_ORDER],
-        # 悬停卡片左边那个小徽章，CK3 就是 key 的前缀
-        "tierKeys": [f"{t}_" for t in TIER_ORDER],
+        "tiers": list(MAP_ORDER),
+        "tierNames": [ERA_LABEL if t == ERA_TIER else TIER_NAME[t] for t in MAP_ORDER],
+        # 悬停卡片左边那个小徽章，CK3 就是 key 的前缀；1066 那一层写年份 ✓
+        "tierKeys": [t if t == ERA_TIER else f"{t}_" for t in MAP_ORDER],
         "entity": "头衔",
-        "defaultTier": 3,            # 打开就是伯爵领视图
+        "defaultTier": MAP_ORDER.index("c"),
         # 法理按哪一年算的（history/titles 的 de_jure_liege 盖到 landed_titles 骨架上）
         "deJureYear": dejure_year or 0,
-        # 每一层从百分之多少的缩放开始上地名
-        "labelZoom": [8, 30, 60, 120, 250],
+        # 1066 剧本地图那一层：日期（前端/文档/排查都用得上 ✓）
+        "bookmarkDate": ".".join(str(x) for x in bookmark_date) if bookmark_date else "",
+        "eraTier": ERA_TIER if ERA_TIER in MAP_ORDER else "",
+        # 每一层从百分之多少的缩放开始上地名（1066 那一层跟帝国层一样，早点出名字 ✓）
+        "labelZoom": ([8] if ERA_TIER in MAP_ORDER else []) + [8, 30, 60, 120, 250],
         "noTitle": NO_TITLE,
         "specialPrefix": "#",
         "degradedBaronies": [int(x) for x in degraded],   # 没有男爵领、用伯爵领顶替的省份
@@ -672,7 +796,9 @@ def main() -> int:
     special_names.update(_special_names)
     payload = {
         "keys": [t.key for t in ordered_all],
-        "tiers": [TIER_ORDER.index(t.tier) if t.tier in TIER_ORDER else len(TIER_ORDER)
+        # ⚠ 这里是**地图层级**下标（前端拿它查 TIER_BADGE / 跳层 ✓）✗
+        #   不是法理那五级的序号 —— 1066 那一层占据 0，所以 e_ 是 1 ✓
+        "tiers": [MAP_ORDER.index(t.tier) if t.tier in MAP_ORDER else len(MAP_ORDER)
                   for t in ordered_all],
         "parents": [index_of.get(t.parent, -1) if t.parent else -1 for t in ordered_all],
         "names": [names.get(t.key) or special_names.get(t.key) or t.key for t in ordered_all],

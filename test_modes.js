@@ -2248,9 +2248,11 @@ const factory = new Function(
     ? { id: 'eu5', key: 'eu5-map-editor/v1', tier: 4, entity: '地点',
         badges: ['国家', '空白剧本', '区域', '地区', '省', '地点'],
         names: ['1337', '空白剧本', '区域', '地区', '省份', '地点'], brand: 'EU' }
-    : { id: 'ck3', key: 'ck3-map-editor/v1', tier: 3, entity: '头衔',
-        badges: ['e_', 'k_', 'd_', 'c_', 'b_'],
-        names: ['帝国', '王国', '公爵领', '伯爵领', '男爵领'], brand: 'CK' };
+    : { id: 'ck3', key: 'ck3-map-editor/v1', tier: 4, entity: '头衔',
+        // CK3 多了一层「1066 剧本地图」（build_data 的 ERA_TIER ✓）：
+        // 显示的是"这块地 1066 年归哪个**非封臣**政权"，比帝国还上面一层 ✓
+        badges: ['1066', 'e_', 'k_', 'd_', 'c_', 'b_'],
+        names: ['1066', '帝国', '王国', '公爵领', '伯爵领', '男爵领'], brand: 'CK' };
 
   // 「定都」工具连同首都/本土那一整套已经拿掉（用户要求 ✓）——
   // 现在名字落点是"一个连通域一个"，不再有任何"哪片才算老家"的规矩 ✓
@@ -2773,6 +2775,114 @@ const factory = new Function(
     const boxes = (documentStub.body.children || []).filter((c) => c && c.id === 'fatal-box');
     ok('正常启动不弹红框', boxes.length === 0,
        boxes.length ? String(boxes[0].textContent).slice(0, 120) : '没有红框');
+  }
+
+  // === 1a2. CK3 的「1066 剧本地图」那一层 ================================
+  //   build_data 的 ERA_TIER：显示"这块地 1066 年归哪个**非封臣**政权" ✓
+  //   封臣的地盘算进宗主那一块（CK3 的领地地图 ✓）· 那会儿没人占的算「无主」✓
+  if (ex.GAME.id === 'ck3' && st.meta.tierNames[0] === '1066') {
+    console.log('\n=== 1a2. 1066 剧本地图那一层 ===');
+    const NP = st.meta.numProvinces;
+    const TN = st.titles;
+    const noT = st.meta.noTitle;
+    const realN = st.meta.numRealTitles || st.meta.numTitles;
+    const unownedTid = TN.keys.indexOf('#unowned');
+    let holes = 0, realCnt = 0, unownedCnt = 0;
+    const realms = new Map();
+    for (let p = 1; p < NP; p++) {
+      const t = st.titlemap[p];                 // 第 0 行就是 1066 那一层 ✓
+      if (t === noT) { holes++; continue; }
+      if (t === unownedTid) { unownedCnt++; continue; }
+      if (t > 0 && t < realN) {
+        realCnt++;
+        realms.set(t, (realms.get(t) || 0) + 1);
+      }
+    }
+    ok('1066 层：有主的地都挂在一个真头衔上', realCnt > 0, `${realCnt} 个省份`);
+    // 「无主」那个伪头衔：**这份数据里可能一个都没有** ✓（holder 收全了的话，
+    //   1066 年每块地都有人占 —— 这版游戏里萨米/撒哈拉也各有酋长/部落 ✓）
+    //   规则是"有才建、建了就得是荒地那个灰" ✓ 所以两种都算过 ✓
+    ok('1066 层：无主的地（如果有）挂在「无主」伪头衔上、颜色是荒地那个灰（150,150,150）✓',
+       unownedCnt === 0
+       || (unownedTid > 0
+           && JSON.stringify(TN.colors[unownedTid]) === JSON.stringify([150, 150, 150])),
+       unownedCnt === 0
+         ? '这份数据里没有无主的地（每块都有人占 ✓）'
+         : `${TN.keys[unownedTid]} · ${unownedCnt} 个省份 · ${JSON.stringify(TN.colors[unownedTid])}`);
+    ok('1066 层：非封臣政权数是几百个（不是把封臣也各算一块 ✗）',
+       realms.size > 100 && realms.size < 2000, `${realms.size} 个政权`);
+    {
+      const big = Math.max(...realms.values());
+      ok('1066 层：最大的政权地盘够大（说明它整个帝国算了一块 ✓）', big >= 100,
+         `最大 ${big} 个省份 · 共 ${realms.size} 个政权`);
+    }
+    // 空洞只许出现在"别的层也空"的那些格子上（数据里本来就有 519 个没头衔的像素 ✓）
+    {
+      let refHoles = 0;
+      for (let p = 1; p < NP; p++) if (st.titlemap[NP + p] === noT) refHoles++;   // 帝国那一行
+      ok('1066 层：空洞跟别的层一样多（没有多出来的洞）', holes === refHoles,
+         `1066 层 ${holes} · 帝国层 ${refHoles}`);
+    }
+    // 真有头衔的陆地，1066 那一格只许是「真头衔」或「无主」——
+    // 不许出现海/湖/山的节点（那就是"把陆地当水画了" ✗）
+    {
+      let wrong = 0, sample2 = '';
+      for (let p = 1; p < NP; p++) {
+        let native = -1;
+        for (let r = LAST_TIER; r >= 1; r--) {
+          const v = st.titlemap[r * NP + p];
+          if (v > 0 && v < realN) { native = v; break; }
+        }
+        if (native < 0) continue;                  // 本身就是水/山/荒地：不算 ✓
+        const t = st.titlemap[p];
+        if (t === unownedTid) continue;             // 无主：合法 ✓
+        if (t > 0 && t < realN) continue;
+        wrong++;
+        if (!sample2) sample2 = `#${p}: ${TN.keys[t]}`;
+      }
+      ok('1066 层：有头衔的陆地不会挂到海/湖/山那些伪头衔上',
+         wrong === 0, wrong ? `${wrong} 格，例如 ${sample2}` : '干净');
+    }
+    /* **归属关系**：1066 的归属，绝大多数是这块地法理链上的祖辈 ✓
+     *   —— 因为封君关系（liege）可以跨法理：爱沙尼亚的萨雷马伯爵（c_osel）在 1066
+     *      是利沃尼亚公爵（d_livonia）的封臣 ✗ 法理上却不属于它 ✓
+     *   这种"跨法理"在本数据里约占两成（实测 2376 / 11297 ✓），**是历史事实** ✓
+     *   所以这里卡一个下限：祖辈占比 ≥ 70% ✓ —— 真把 holder/liege 解析错了，
+     *   比例会掉到很低（大家各回各家 / 全判无主），这一条就能抓住 ✓ */
+    const upTo = (node, want2) => {
+      let cur = node;
+      for (let g = 0; g < 10 && cur > 0; g++) {
+        if (cur === want2) return true;
+        cur = TN.parents[cur];
+        if (!(cur > 0)) break;
+      }
+      return false;
+    };
+    let anc = 0, tot = 0, finer = 0, sample3 = '';
+    for (let p = 1; p < NP; p++) {
+      const t = st.titlemap[p];
+      if (!(t > 0) || t >= realN) continue;      // 无主 / 地形：不算 ✓
+      let native = -1;
+      for (let r = LAST_TIER; r >= 1; r--) {     // 这块地法理上最细那个真头衔
+        const v = st.titlemap[r * NP + p];
+        if (v > 0 && v < realN) { native = v; break; }
+      }
+      if (native < 0) continue;
+      tot++;
+      if (upTo(native, t)) anc++;
+      // 归属不能比这块地自己**更细**（法理链只往上走 ✓）
+      if (TN.tiers[t] > TN.tiers[native]) {
+        finer++;
+        if (!sample3) sample3 = `#${p}: ${TN.keys[t]} 管着 ${TN.keys[native]}`;
+      }
+    }
+    ok('1066 层：归属的层级不比这块地自己更细（法理链只往上 ✓）',
+       finer === 0, finer ? `${finer} 格，例如 ${sample3}` : '全对');
+    {
+      const r = tot ? anc / tot : 0;
+      ok('1066 层：七成以上的归属是法理祖辈（其余是跨法理的封君关系 ✓）',
+         r >= 0.7, `${(r * 100).toFixed(1)}% 是祖辈（${anc}/${tot}）`);
+    }
   }
 
   console.log('\n=== 1b. 地名字号对缩放是线性的 ===');
@@ -3460,7 +3570,13 @@ const factory = new Function(
         // **年份层（国名）不查** ✓ —— 那是"国家"（V3 的 1836 / EU4 的三个年份 /
         // EU5 的 1337 / HOI4 的 1936·1939），名字有它自己那套规矩。
         // CK3 没有年份层：五层全是法理地区（含帝国/王国 ✓）都要按这个规矩来 ✓
+        // ⚠ 但 CK3 现在最上面是「1066 剧本地图」✗ —— 那一层**借的是法理头衔的节点** ✓
+        //   （一个独立君主就显示成他那个头衔 ✓）所以同一个节点会在两层出现 ✗
+        //   而标注位置是**一个节点一个位置**、按它"自己那一层"的地盘算的 ✓
+        //   → 这里只查**这个节点自己那一层**（titles.tiers[tid]）✓
+        //     不然会拿"1066 年的地盘"去要求"按法理算出来的位置" ✗ 冤枉它 ✓
         const _nCountry = (st.meta.eraDates || []).length;
+        const Tn = st.titles;
         let checked = 0, miss = 0, worst = 0, worstName = '';
         for (let tier = _nCountry; tier < st.meta.tiers.length; tier++) {
           const row = tier * NP;
@@ -3468,6 +3584,7 @@ const factory = new Function(
           for (let p = 1; p < NP; p++) {
             const t = st.titlemap[row + p];
             if (t <= 0 || t >= real) continue;
+            if (Tn.tiers[t] !== tier) continue;      // 不是它自己那一层 → 跳过 ✓
             let a = byTitle.get(t);
             if (!a) { a = []; byTitle.set(t, a); }
             a.push(p);
@@ -4047,13 +4164,22 @@ const factory = new Function(
         st.tier = 0; st.showTitles = true; st.showPaint = true;
         ex.wasteClear();
         ex.wasteApply();
-        // 允许出现的颜色：荒地灰 + 剧本层"真国家"的颜色 + 玩家涂过的色
+        // 允许出现的颜色：荒地灰 + **第 0 层上真出现的那些头衔**的颜色 + 玩家涂过的色
+        // ⚠ 别按 `tiers[i] === 0` 找 ✗ —— CK3 的第 0 层是「1066 剧本地图」，
+        //   它借的是法理头衔的节点（帝国/王国/伯爵…都有 ✓）→ 按"谁在这一层出现"才准 ✓
         const allow = new Set([wasteGreyOf().join(',')]);
-        for (let i = 0; i < T3.keys.length; i++) {
-          if (st.meta.wasteland.indexOf(i) >= 0) continue;
-          if (T3.tiers[i] !== 0) continue;
-          const c = T3.colors[i];
-          if (c) allow.add(c.join(','));
+        {
+          const inRow0 = new Set();
+          const NPw = st.meta.numProvinces;
+          for (let p = 1; p < NPw; p++) {
+            const t = st.titlemap[p];                     // 第 0 行 = 那一年/那一层 ✓
+            if (t > 0 && t < T3.keys.length) inRow0.add(t);
+          }
+          for (const i of inRow0) {
+            if (st.meta.wasteland.indexOf(i) >= 0) continue;
+            const c = T3.colors[i];
+            if (c) allow.add(c.join(','));
+          }
         }
         {
           const pd = ex.renderer.paintData;

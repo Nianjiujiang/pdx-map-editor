@@ -453,6 +453,118 @@ def parse_de_jure_history(history_dir, titles: dict[str, Title],
     return changed
 
 
+# ---------------------------------------------------------------- 持有者 / 封君
+
+#: 「谁占着这块地」用的两个键
+_HOLDER_KEY = "holder"
+_LIEGE_KEY = "liege"
+
+
+def parse_title_history(history_dir,
+                        titles: dict[str, "Title"],
+                        until: tuple[int, int, int] = (1066, 9, 15),
+                        ) -> tuple[dict[str, int | str], dict[str, str | None]]:
+    """``history/titles`` 里 **<= until** 的最后一条 ``holder`` / ``liege``（按头衔）。
+
+    CK3 的封臣关系写在**头衔**上 ✗ 不是角色上 ✓：``liege = k_mesopotamia``
+    的意思是"这个头衔的持有者是 k_mesopotamia 持有者的封臣" ✓
+    所以"**谁不是封臣**"= 从这个头衔顺着 liege 一路往上，走到没有 liege 的那一级 ✓
+
+    ⚠ 同一份数据里同一个头衔会有很多条日期段 ✗（867 一条、1066 一条…）
+      这里要的是"那一刻的状态"，所以**按日期比大小**取最新那条 ✓
+      （只按文件顺序覆盖会串：后读到的文件里那条更早的日期会把晚的盖掉 ✓）
+
+    ⚠ **holder 有两种写法** ✗ 数字（``holder = 145292`` ✓）和**字符串 id**
+      （``holder = japanese_fujiwara_9`` / ``ce3_pope_bonifatius_vii`` ✓）。
+      后者有一万四千多条（日本 / 中国 / 教宗那些新加的行政头衔都用它 ✓）——
+      只认数字的话那些地方会整片判成"无主" ✗ 这里两种都收，字符串当**不透明 id** ✓
+      （只用来判"有没有人持"和"是不是同一个人" ✓ 不需要解析成数字 ✓）
+
+    :returns: ``(holders, lieges)``
+              ``holders[title] = 角色号 / 字符串 id``（**0 或 "none" = 空** ✓）
+              ``lieges[title] = 上级头衔 key``，``None`` = 独立（没有封君 ✓）
+    """
+    holders: dict[str, int | str] = {}
+    lieges: dict[str, str | None] = {}
+    h_at: dict[str, tuple[int, int, int]] = {}
+    l_at: dict[str, tuple[int, int, int]] = {}
+    if not history_dir.is_dir():
+        return holders, lieges
+
+    for fp in sorted(history_dir.glob("*.txt")):
+        try:
+            text = fp.read_text(encoding="utf-8-sig", errors="replace")
+        except OSError:
+            continue
+        for key, value in parse_script(text):
+            if key is None or not isinstance(value, list) or key not in titles:
+                continue
+            for dkey, dval in value:
+                if dkey is None or not isinstance(dval, list):
+                    continue
+                m = _DATE_KEY.match(dkey)
+                if m is None:
+                    continue
+                date = (int(m.group(1)), int(m.group(2)), int(m.group(3)))
+                if date > until:
+                    continue
+                h = block_get(dval, _HOLDER_KEY)
+                if h is not None:
+                    if isinstance(h, bool):
+                        h = None
+                    elif isinstance(h, (int, float)):
+                        h = int(h)
+                    elif isinstance(h, str):
+                        h = h.strip()
+                        h = 0 if h.lower() in ("0", "none") else h
+                    else:
+                        h = None          # holder = { ... } 这种块：不认识，跳过 ✓
+                    if h is not None and (key not in h_at or date >= h_at[key]):
+                        holders[key] = h
+                        h_at[key] = date
+                l = block_get(dval, _LIEGE_KEY)
+                if l is not None and (key not in l_at or date >= l_at[key]):
+                    s = str(l)
+                    lieges[key] = None if s.lower() in ("0", "none") else s
+                    l_at[key] = date
+    return holders, lieges
+
+
+def top_liege(key: str,
+              titles: dict[str, "Title"],
+              holders: dict[str, int | str],
+              lieges: dict[str, str | None]) -> str | None:
+    """这个头衔的持有者，一路往上找到**那个不是封臣的**头衔 ✓
+
+    规则（跟游戏里一致）：
+      · 从最细的那一级开始，**第一层有持有者的头衔**才是"谁占着这块地" ✓
+        （男爵领常年没有 holder —— 那就是伯爵自己拿着 ✓）
+      · 拿到人以后顺着 ``liege`` 往上；上级头衔要是也没人持（历史里没写），
+        就停在他这儿 ✓（总比把这块地判成无主强）
+      · ``holder = 0`` 那一段是空的 → 继续往上找 ✓
+
+    :returns: 顶层头衔 key；整条链都没人持 → ``None``（**无主**）
+    """
+    seen: set[str] = set()
+    cur: str | None = key
+    while cur and cur not in seen:
+        seen.add(cur)
+        if not holders.get(cur):                     # 这一层没人 → 往上一级
+            t = titles.get(cur)
+            cur = t.parent if t is not None else None
+            continue
+        top = cur
+        lg = lieges.get(cur)
+        while lg and lg not in seen:
+            seen.add(lg)
+            if not holders.get(lg):
+                break                                # 上级头衔历史里没人持：到此为止
+            top = lg
+            lg = lieges.get(lg)
+        return top
+    return None
+
+
 # ---------------------------------------------------------------- localisation
 
 # 值里允许出现 \" 转义；行尾的 #注释 不锚定末尾，否则会把带注释的条目整条漏掉
