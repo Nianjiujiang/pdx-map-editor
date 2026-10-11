@@ -32,6 +32,7 @@ from parsers.ck3.parser import (
     Title,
     parse_de_jure_history,
     parse_definition,
+    parse_governments,
     parse_landed_titles,
     parse_localisation,
     parse_title_history,
@@ -353,6 +354,8 @@ def build_realm_layer(
     n_prov: int,
     holders: dict[str, int | str],
     lieges: dict[str, str | None],
+    governments: dict[str, str] | None = None,
+    obedient: set[str] | None = None,
     dejure_size: dict[str, int] | None = None,
 ) -> tuple[dict[str, list[int]], int]:
     """算出**1066 剧本**每一格归谁：每块地归到它的**非封臣**（独立政权）✓
@@ -392,7 +395,7 @@ def build_realm_layer(
                 break
         if start < 0:
             continue                       # 背景地形：这一层照地形那套走 ✓
-        top = top_liege(keys[start], titles, holders, lieges)
+        top = top_liege(keys[start], titles, holders, lieges, governments, obedient)
         if top is None:
             n_none += 1                    # 留空：什么都不写 ✓（那一格就是 NONE ✓）
         else:
@@ -548,12 +551,16 @@ def main() -> int:
     bookmark_date: tuple[int, int, int] | None = None
     holders: dict[str, int | str] = {}
     lieges: dict[str, str | None] = {}
+    governments: dict[str, str] = {}
+    obedient: set[str] = set()
     if not args.no_bookmark:
         bookmark_date = _parse_date(args.bookmark)
-        holders, lieges = parse_title_history(
+        holders, lieges, governments = parse_title_history(
             game / "history" / "titles", titles, bookmark_date)
+        obedient = parse_governments(game / "common" / "governments")
         log(f"剧本 {'.'.join(str(x) for x in bookmark_date)}："
-            f"{len(holders)} 个头衔有持有者、{len(lieges)} 个写了封君")
+            f"{len(holders)} 个头衔有持有者、{len(lieges)} 个写了封君、"
+            f"{len(obedient)} 种政府走 obedience（那些不算封臣 ✓）")
 
     ordered = rank_titles(titles)
     index_of = {t.key: i for i, t in enumerate(ordered)}
@@ -626,7 +633,7 @@ def main() -> int:
     realm_area: dict[str, int] = {}
     if bookmark_date is not None:
         realm_own, _n_none = build_realm_layer(
-            ordered, titles, titlemap, n_prov, holders, lieges,
+            ordered, titles, titlemap, n_prov, holders, lieges, governments, obedient,
             {t.key: len(owned.get(t.key, ())) for t in ordered})
 
         def _resolved_color(key: str):
@@ -963,3 +970,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

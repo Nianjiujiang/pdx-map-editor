@@ -471,7 +471,7 @@ _LIEGE_KEY = "liege"
 def parse_title_history(history_dir,
                         titles: dict[str, "Title"],
                         until: tuple[int, int, int] = (1066, 9, 15),
-                        ) -> tuple[dict[str, int | str], dict[str, str | None]]:
+                        ) -> tuple[dict[str, int | str], dict[str, str | None], dict[str, str]]:
     """``history/titles`` 里 **<= until** 的最后一条 ``holder`` / ``liege``（按头衔）。
 
     CK3 的封臣关系写在**头衔**上 ✗ 不是角色上 ✓：``liege = k_mesopotamia``
@@ -494,10 +494,12 @@ def parse_title_history(history_dir,
     """
     holders: dict[str, int | str] = {}
     lieges: dict[str, str | None] = {}
+    governments: dict[str, str] = {}
     h_at: dict[str, tuple[int, int, int]] = {}
     l_at: dict[str, tuple[int, int, int]] = {}
+    g_at: dict[str, tuple[int, int, int]] = {}
     if not history_dir.is_dir():
-        return holders, lieges
+        return holders, lieges, governments
 
     for fp in sorted(history_dir.glob("*.txt")):
         try:
@@ -535,26 +537,69 @@ def parse_title_history(history_dir,
                     s = str(l)
                     lieges[key] = None if s.lower() in ("0", "none") else s
                     l_at[key] = date
-    return holders, lieges
+                g = block_get(dval, "government")
+                if isinstance(g, str) and (key not in g_at or date >= g_at[key]):
+                    governments[key] = g
+                    g_at[key] = date
+    return holders, lieges, governments
+
+
+def _has_obedience(block) -> bool:
+    """块里（含嵌套，`government_rules = { obedience = yes }` 那种 ✓）有没有 obedience ✓"""
+    for k, v in block:
+        if k == "obedience" and str(v).lower() in ("yes", "true", "1"):
+            return True
+        if isinstance(v, list) and _has_obedience(v):
+            return True
+    return False
+
+
+def parse_governments(gov_dir) -> set[str]:
+    """哪些政府用 `obedience`（"效忠"而不是封建契约 ✓）
+
+    ⚠ 用户点名的：**obedience 不算封臣** ✗ ——
+      游牧（`nomad_government`）/ 草原行政（`steppe_admin_government`）这些
+      新玩法用的是 obedience 那一套 ✓ 它们之间不构成"封君—封臣" ✓
+      而 `history/titles` 里那些 `liege = e_great_liao` 是**没开 DLC** 那套旧写法 ✗
+      （乃蛮那份文件里 1040 那条上面自己写着注释 `# Liao Dynasty` ✓）
+      照它算的话，整个草原都会被并进辽 ✓（用户报的"辽在乃蛮王国有领土" ✓）
+
+    :returns: 用了 obedience 的政府 key 集合（如 {"nomad_government", ...}）
+    """
+    out: set[str] = set()
+    if gov_dir is None or not Path(gov_dir).is_dir():
+        return out
+    for fp in sorted(Path(gov_dir).glob("*.txt")):
+        try:
+            text = fp.read_text(encoding="utf-8-sig", errors="replace")
+        except OSError:
+            continue
+        for key, value in parse_script(text):
+            if key is None or not isinstance(value, list):
+                continue
+            if _has_obedience(value):
+                out.add(key)
+    return out
 
 
 def liege_of(key: str,
              titles: dict[str, "Title"],
-             lieges: dict[str, str | None]) -> str | None:
+             lieges: dict[str, str | None],
+             governments: dict[str, str] | None = None,
+             obedient: set[str] | None = None) -> str | None:
     """这个头衔的封君是谁（头衔 key）—— **只看历史里写没写** ✓
 
     ⚠ **不能拿"法理父级"当默认封君** ✗（我试过，用户当场抓到"大辽吃掉了
       蒙古帝国法理下一堆独立部落" ✓）：
-      · CK3 的 `history/titles` **把封臣关系写全了**（本数据里 4351 条 `liege` ✓
-        而 1066 有持有者的头衔 5134 个 ✓）→ **没写 = 独立** ✓ 就是这么读的 ✓
-      · 法理父级 ≠ 封君：大辽法理上管着一大片草原，可 1066 那些部落是**各自独立**的 ✓
-        拿法理当默认封君 → 整片草原被吞进大辽 ✗
-      · "同一个人的两块地"（西夏那位同时拿着 k_xia 和 k_hexi ✓）**不归这里管** ✗
-        → 那是 build_data 里"按持有者归并"那一步的事 ✓（见 build_realm_layer ✓）
-
-    ⚠ `lieges[key] = None` 是"历史里明确写了 liege = 0 / none"（**明确独立** ✓）
-      跟"没写过"其实是一回事（都算独立 ✓）—— 这里统一返回 None ✓
+      · CK3 的 `history/titles` **把封臣关系写全了** ✓ → **没写 = 独立** ✓
+      · 法理父级 ≠ 封君：大辽法理上管着一大片草原，可 1066 那些部落是各自独立的 ✓
+    ⚠ **用了 obedience 的政府不算封臣** ✗（用户点名的 ✓ 见 parse_governments ✓）：
+      那些头衔历史上写着 liege ✗ 但游戏里走的是"效忠"那一套 ✓ 不当封臣算 ✓
     """
+    if obedient and governments:
+        g = governments.get(key)
+        if g and g in obedient:
+            return None                       # 效忠那一套：不算封臣 ✓
     if key in lieges:
         return lieges[key]                    # 写过：写了谁就是谁（None = 独立 ✓）
     return None
@@ -563,7 +608,9 @@ def liege_of(key: str,
 def top_liege(key: str,
               titles: dict[str, "Title"],
               holders: dict[str, int | str],
-              lieges: dict[str, str | None]) -> str | None:
+              lieges: dict[str, str | None],
+              governments: dict[str, str] | None = None,
+              obedient: set[str] | None = None) -> str | None:
     """这个头衔的持有者，一路往上找到**那个不是封臣的**头衔 ✓
 
     规则（跟游戏里一致）：
@@ -585,13 +632,13 @@ def top_liege(key: str,
             cur = t.parent if t is not None else None
             continue
         top = cur
-        lg = liege_of(cur, titles, lieges)
+        lg = liege_of(cur, titles, lieges, governments, obedient)
         while lg and lg not in seen:
             seen.add(lg)
             if not holders.get(lg):
                 break                                # 上级头衔历史里没人持：到此为止
             top = lg
-            lg = liege_of(lg, titles, lieges)
+            lg = liege_of(lg, titles, lieges, governments, obedient)
         return top
     return None
 
@@ -666,3 +713,4 @@ def parse_localisation(lang_dir: Path, keys: Iterable[str] | None = None) -> dic
         if cleaned:
             out[key] = cleaned
     return out
+
