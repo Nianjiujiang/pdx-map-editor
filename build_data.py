@@ -401,7 +401,11 @@ def build_realm_layer(
     n_none = 0
     raw: dict[str, list[int]] = {}
     rows = {tier: MAP_ORDER.index(tier) for tier in TIER_ORDER}
-    fine_first = [rows[tier] for tier in reversed(TIER_ORDER)]   # b → e
+    # ⚠ **从伯爵领（c）开始往上找，不看男爵领** ✗ ——
+    #   用户点名的："男爵领本来就没法在 CK3 进行细分，全都应该属于伯爵领才对" ✓
+    #   男爵领只是伯爵领**里面的地产** ✓ 它自己那条 liege / holder 不该决定
+    #   "这块地归谁政权" ✗（辽东范围不对就是这个：那几块地的男爵领挂着别的 liege ✓）
+    fine_first = [rows[tier] for tier in reversed(TIER_ORDER) if tier != "b"]   # c → e
     for pid in range(1, n_prov):
         start = -1
         for r in fine_first:
