@@ -356,6 +356,7 @@ def build_realm_layer(
     lieges: dict[str, str | None],
     governments: dict[str, str] | None = None,
     obedient: set[str] | None = None,
+    tributaries: set[str] | None = None,
     dejure_size: dict[str, int] | None = None,
 ) -> tuple[dict[str, list[int]], int]:
     """算出**1066 剧本**每一格归谁：每块地归到它的**非封臣**（独立政权）✓
@@ -395,7 +396,8 @@ def build_realm_layer(
                 break
         if start < 0:
             continue                       # 背景地形：这一层照地形那套走 ✓
-        top = top_liege(keys[start], titles, holders, lieges, governments, obedient)
+        top = top_liege(keys[start], titles, holders, lieges, governments, obedient,
+                        tributaries)
         if top is None:
             n_none += 1                    # 留空：什么都不写 ✓（那一格就是 NONE ✓）
         else:
@@ -563,9 +565,10 @@ def main() -> int:
     lieges: dict[str, str | None] = {}
     governments: dict[str, str] = {}
     obedient: set[str] = set()
+    tributaries: set[str] = set()
     if not args.no_bookmark:
         bookmark_date = _parse_date(args.bookmark)
-        holders, lieges, governments = parse_title_history(
+        holders, lieges, governments, tributaries = parse_title_history(
             game / "history" / "titles", titles, bookmark_date)
         obedient = parse_governments(game / "common" / "governments")
         # ⚠ 这套不用收窄成"只有游牧" ✗ —— 判据在 `liege_of` 里是**两边政府一样不一样** ✓
@@ -574,7 +577,8 @@ def main() -> int:
         #   （先收窄过一次、又反过来全拆过一次，都被用户当场抓到 ✓ 见 liege_of 的说明 ✓）
         log(f"剧本 {'.'.join(str(x) for x in bookmark_date)}："
             f"{len(holders)} 个头衔有持有者、{len(lieges)} 个写了封君、"
-            f"{len(obedient)} 种政府走 obedience（那些不算封臣 ✓）")
+            f"{len(obedient)} 种政府走 obedience（那些不算封臣 ✓）、"
+            f"{len(tributaries)} 个头衔是**朝贡者**（也不是封臣 ✓）")
 
     ordered = rank_titles(titles)
     index_of = {t.key: i for i, t in enumerate(ordered)}
@@ -648,6 +652,7 @@ def main() -> int:
     if bookmark_date is not None:
         realm_own, _n_none = build_realm_layer(
             ordered, titles, titlemap, n_prov, holders, lieges, governments, obedient,
+            tributaries,
             {t.key: len(owned.get(t.key, ())) for t in ordered})
 
         def _resolved_color(key: str):

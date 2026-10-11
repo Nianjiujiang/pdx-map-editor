@@ -467,11 +467,15 @@ def parse_de_jure_history(history_dir, titles: dict[str, Title],
 _HOLDER_KEY = "holder"
 _LIEGE_KEY = "liege"
 
+#: 「朝贡者」那个块（`tributary_of = { suzerain = X  contract_group = ... }` ✓）
+TRIBUTARY_KEY = "tributary_of"
+
 
 def parse_title_history(history_dir,
                         titles: dict[str, "Title"],
                         until: tuple[int, int, int] = (1066, 9, 15),
-                        ) -> tuple[dict[str, int | str], dict[str, str | None], dict[str, str]]:
+                        ) -> tuple[dict[str, int | str], dict[str, str | None],
+                                   dict[str, str], set[str]]:
     """``history/titles`` 里 **<= until** 的最后一条 ``holder`` / ``liege``（按头衔）。
 
     CK3 的封臣关系写在**头衔**上 ✗ 不是角色上 ✓：``liege = k_mesopotamia``
@@ -495,11 +499,12 @@ def parse_title_history(history_dir,
     holders: dict[str, int | str] = {}
     lieges: dict[str, str | None] = {}
     governments: dict[str, str] = {}
+    tributaries: set[str] = set()      # **朝贡者**（tributary_of ✓ 不是封臣 ✓）
     h_at: dict[str, tuple[int, int, int]] = {}
     l_at: dict[str, tuple[int, int, int]] = {}
     g_at: dict[str, tuple[int, int, int]] = {}
     if not history_dir.is_dir():
-        return holders, lieges, governments
+        return holders, lieges, governments, tributaries
 
     for fp in sorted(history_dir.glob("*.txt")):
         try:
@@ -541,7 +546,10 @@ def parse_title_history(history_dir,
                 if isinstance(g, str) and (key not in g_at or date >= g_at[key]):
                     governments[key] = g
                     g_at[key] = date
-    return holders, lieges, governments
+                tb = block_get(dval, TRIBUTARY_KEY)
+                if isinstance(tb, list) and isinstance(block_get(tb, "suzerain"), str):
+                    tributaries.add(key)     # 朝贡者 ✓（给谁上贡不影响它是"自己一块地"✓）
+    return holders, lieges, governments, tributaries
 
 
 def _has_obedience(block) -> bool:
@@ -586,7 +594,8 @@ def liege_of(key: str,
              titles: dict[str, "Title"],
              lieges: dict[str, str | None],
              governments: dict[str, str] | None = None,
-             obedient: set[str] | None = None) -> str | None:
+             obedient: set[str] | None = None,
+             tributaries: set[str] | None = None) -> str | None:
     """这个头衔的封君是谁（头衔 key）—— **只看历史里写没写** ✓
 
     ⚠ **不能拿"法理父级"当默认封君** ✗（我试过，用户当场抓到"大辽吃掉了
@@ -606,6 +615,12 @@ def liege_of(key: str,
       · 封君那头没记政府（`None`）→ **当同一种**，照旧算封臣 ✓
         （宁可留着，也别因为"查不到"就把一整片拆散 ✗）
     """
+    if tributaries and key in tributaries:
+        # **朝贡者不是封臣** ✓（用户点名的 ✓）
+        #   `1066.1.1 = { holder = X  tributary_of = { suzerain = d_angkor ... } }`
+        #   全库 262 条 / 5 个文件（曼陀罗那套为主 ✓）：
+        #   它是**自己一块独立领地**，只是给宗主上贡 ✓ 不该并进宗主 ✗
+        return None
     lg = lieges[key] if key in lieges else None
     if lg:
         g_self = (governments or {}).get(key)
@@ -630,7 +645,8 @@ def top_liege(key: str,
               holders: dict[str, int | str],
               lieges: dict[str, str | None],
               governments: dict[str, str] | None = None,
-              obedient: set[str] | None = None) -> str | None:
+              obedient: set[str] | None = None,
+              tributaries: set[str] | None = None) -> str | None:
     """这个头衔的持有者，一路往上找到**那个不是封臣的**头衔 ✓
 
     规则（跟游戏里一致）：
@@ -652,13 +668,13 @@ def top_liege(key: str,
             cur = t.parent if t is not None else None
             continue
         top = cur
-        lg = liege_of(cur, titles, lieges, governments, obedient)
+        lg = liege_of(cur, titles, lieges, governments, obedient, tributaries)
         while lg and lg not in seen:
             seen.add(lg)
             if not holders.get(lg):
                 break                                # 上级头衔历史里没人持：到此为止
             top = lg
-            lg = liege_of(lg, titles, lieges, governments, obedient)
+            lg = liege_of(lg, titles, lieges, governments, obedient, tributaries)
         return top
     return None
 
@@ -733,4 +749,5 @@ def parse_localisation(lang_dir: Path, keys: Iterable[str] | None = None) -> dic
         if cleaned:
             out[key] = cleaned
     return out
+
 
