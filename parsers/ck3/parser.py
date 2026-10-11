@@ -273,7 +273,15 @@ TIER_NAME = {"e": "帝国", "k": "王国", "d": "公爵领", "c": "伯爵领", "
 
 # 头衔 key 除了字母数字下划线，还可能夹着连字符（e_caspian-pontic_steppe 就是）。
 # 漏掉这个字符会让整个帝国连同它下面所有王国一起掉到顶层。
-_TITLE_RE = re.compile(r"^([ekdcb])_([A-Za-z0-9_\-]+)$")
+#
+# ⚠ **`h_` 也必须认** ✗（霸权 / hegemony —— 2026 那版 CK3 新加的顶层层级 ✓）：
+#   `h_china` / `h_japan`? / `h_india` / `h_roman_empire` / `h_eastern_roman_empire` /
+#   `h_dar_al_islam` / `h_kingdom_of_heaven` 一共 6 个 ✓
+#   它们不在编辑器那五级里（`TIER_ORDER` 不动 ✓ 地图的层级栈也不动 ✓），
+#   但是**封君链会经过它们**：`history/titles` 里 `liege = h_china` 有 885 条 ✓
+#   不认 `h_` 的话这些头衔根本进不了 `titles` → 历史解析时整条被丢掉 ✗
+#   → 那些封臣的链断在半路 → **全被判成独立** ✓（用户看到的"东亚碎成一片" ✓）
+_TITLE_RE = re.compile(r"^([ekdcbh])_([A-Za-z0-9_\-]+)$")
 
 
 class Title:

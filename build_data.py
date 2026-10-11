@@ -283,9 +283,18 @@ def build_special_titles(
 
 
 def rank_titles(titles: dict[str, Title]) -> list[Title]:
-    """排个稳定顺序，顺便把父子关系固化。父永远排在子前面。"""
+    """排个稳定顺序，顺便把父子关系固化。父永远排在子前面。
+
+    ⚠ **`h_`（霸权）那种不进这一栈** ✗ —— 它是 2026 那版 CK3 新加的顶层层级
+      （`h_china` / `h_india` / `h_roman_empire` … 一共 6 个 ✓ 见 parser 里的说明 ✓），
+      编辑器只画法理那五级（帝国~男爵领 ✓ 层级栈不动 ✓）。
+      但它们在 `titles` 里**要留着** ✓ —— 1066 那条封君链会经过它们
+      （885 条 `liege = h_china` 那种 ✓）要是这里把它们丢掉，链就断了 ✓
+    """
     by_tier: dict[str, list[Title]] = {t: [] for t in MAP_ORDER}
     for t in titles.values():
+        if t.tier not in by_tier:
+            continue                    # h_ 之类：不进层级栈，但仍在 titles 里给链用 ✓
         by_tier[t.tier].append(t)
     out: list[Title] = []
     for tier in MAP_ORDER:  # （1066 那一层没有真头衔，是空的）e → k → d → c → b

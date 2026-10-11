@@ -2891,8 +2891,12 @@ const factory = new Function(
         if (v > 0 && v < realN) { native = v; break; }
       }
       if (native < 0) continue;
-      tot++;
       const base = baseOfRealm(t);               // 剧本节点 → 原头衔 ✓
+      // ⚠ 有些政权的顶层是 `h_`（霸权：h_china / h_india / h_roman_empire…）——
+      //   它们**不在**编辑器那五级里（tiers.json 里没有 ✗ 只参与封君链 ✓）
+      //   → 这种比不了"祖辈"，从分母里去掉（不然比例会被它们拖到 70% 以下 ✓）
+      if (base < 0) continue;
+      tot++;
       if (base > 0 && upTo(native, base)) anc++;
       // 归属不能比这块地自己**更细**（法理链只往上走 ✓）
       const bt = base > 0 ? TN.tiers[base] : TN.tiers[t];
