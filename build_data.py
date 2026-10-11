@@ -59,6 +59,21 @@ ERA_TIER = "1066"
 MAP_ORDER: list[str] = [ERA_TIER, *TIER_ORDER]
 #: 那一层在层级按钮上写的字
 ERA_LABEL = "1066"
+
+#: **剧本地图上那几个要"点名改"的政权**（用户指定的值 ✓ 不是自动推的 ✓）
+#: key = (借的那个头衔 key, 剧本层名) → 新名字 / 新颜色
+#: ⚠ 名字为什么要写死：游戏里那套是**动态国名**（按朝代/家族 ✓ 见
+#:   `government_rules` 的 `uses_culture_and_house_head_named_realms` ✓），
+#:   编辑器还没做动态国名 ✗ 只好按用户点名的值来 ✓
+#: ⚠ 颜色为什么是这个：中华霸权的五行色在
+#:   `common/situation/situations/tgp_dynastic_cycle.txt` 的 `map_color` 里
+#:   （木 128,255,128 · **火 220,20,0** · 土 255,234,64 · 金 240,240,240 · 水 50,120,255 ✓）。
+#:   1066 是**宋**，宋为**火德** → 红 220,20,0 ✓
+REALM_OVERRIDE: dict[tuple[str, str], dict] = {
+    ("h_china", "1066"): {"name": "宋", "color": (220, 20, 0)},
+}
+
+
 #: 1066 的开局日期（common/bookmarks 里那批 bm_1066_* 都是这一天 ✓）
 BOOKMARK_DATE = (1066, 9, 15)
 
@@ -704,6 +719,13 @@ def main() -> int:
             _t.color = _resolved_color(_key)
             realm_nodes.append(_t)
             realm_names[_t.key] = names.get(_key) or _key   # 名字照搬那个头衔的 ✓
+            _ov = REALM_OVERRIDE.get((_key, ERA_TIER))
+            if _ov:
+                # 用户点名的覆盖（名字 / 颜色 ✓ 见 REALM_OVERRIDE 的说明 ✓）
+                if _ov.get("name"):
+                    realm_names[_t.key] = _ov["name"]
+                if _ov.get("color"):
+                    _t.color = tuple(_ov["color"])
             _idx = len(ordered) + len(realm_nodes) - 1
             _pids = realm_own[_key]
             for _pid in _pids:
