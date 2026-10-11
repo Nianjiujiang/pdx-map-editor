@@ -1853,9 +1853,14 @@ const factory = new Function(
   }
 
   // ==== 空白剧本：一层**全无主**（不上色、没标记），别的规矩一条不少 ====
+  //   ⚠ CK3 现在**也有剧本层了**（1066 ✓ 见 build_data 的 eraDates 那段）——
+  //     它跟别的模式一个结构：剧本层 + 地区层 ✓（用户点名的：取消特立独行 ✓）
+  //     但它**没补「空白剧本」**那一层（patch_blank_era 没给它跑 ✓ 用户没要 ✓）
   if (WHICH === 'CK3') {
-    ok('CK3 不加空白剧本（它本来就没有剧本层 ✓）', N_ERA === 0 && BLANK_T < 0,
-       `eraDates=${N_ERA} blank=${BLANK_T}`);
+    ok('CK3 也有剧本层了（1066 那一层 ✓）· 但没加空白剧本',
+       N_ERA === 1 && BLANK_T < 0,
+       `eraDates=${N_ERA} blank=${BLANK_T}`
+       + ` · 第 0 层「${(st.meta.tierNames || [])[0]}」`);
   } else {
     ok('非 CK3 都有空白剧本这一层', BLANK_T >= 0 && BLANK_T < N_ERA,
        `第 ${BLANK_T} 层 / 共 ${N_ERA} 个剧本层 · 名字「${(st.meta.tierNames || [])[BLANK_T]}」`);
@@ -2742,20 +2747,33 @@ const factory = new Function(
     }
   }
 
-  // 颜色 → 头衔 的匹配表：非 CK3 只认国家（tag）层，细层不许进 ✗
+  // 颜色 → 头衔 的匹配表：只认**剧本层上的头衔**（国家 / 1066 政权），地区层不许进 ✗
   {
     const nE = (st.meta.eraDates || []).length;
+    // ⚠ "剧本层上的头衔"不能只看 titles.tiers ✗ ——
+    //   EU4 那种剧本层有**自己的节点**（tiers = 0 ✓），
+    //   而 CK3 的 1066 层**借的是法理头衔的节点**（tiers 还是 1~5 ✓）
+    //   → 扫一遍剧本层那几行，谁在上面出现过就算 ✓（跟 app 里 buildColorIndex 同一套 ✓）
+    const onEra = new Set();
+    if (nE > 0 && st.titlemap) {
+      const NPc = st.meta.numProvinces;
+      for (let r = 0; r < nE; r++) {
+        for (let p = 1; p < NPc; p++) {
+          const v = st.titlemap[r * NPc + p];
+          if (v > 0 && v !== st.meta.noTitle) onEra.add(v);
+        }
+      }
+    }
     let bad = 0, total = 0;
     for (const list of st.colorIndex.values()) {
       for (const tid of list) {
         total++;
-        if (nE > 0 && st.titles.tiers[tid] >= nE) bad++;
+        if (nE > 0 && st.titles.tiers[tid] >= nE && !onEra.has(tid)) bad++;
       }
     }
-    ok(nE > 0 ? '取色匹配表里只有国家（tag）层，没有地区/省份'
-              : 'CK3：取色匹配表里所有头衔都在（没有年代层）',
-       nE > 0 ? bad === 0 : total > 0,
-       '共 ' + total + ' 条，细层混进来 ' + bad + ' 条');
+    ok('取色匹配表里只有剧本层上的头衔（国家 / 1066 政权），没有地区层',
+       total > 0 && bad === 0,
+       `共 ${total} 条，不是剧本层的混进来 ${bad} 条`);
   }
   ok('meta 装上了', !!st.meta, `numTitles=${st.meta && st.meta.numTitles}`);
   ok(`${isEU4 ? '切到 EU4 的术语' : 'CK3 术语保持原样'}`, ex.GAME.id === want.id, ex.GAME.id);
@@ -2845,9 +2863,11 @@ const factory = new Function(
     /* **归属关系**：1066 的归属，绝大多数是这块地法理链上的祖辈 ✓
      *   —— 因为封君关系（liege）可以跨法理：爱沙尼亚的萨雷马伯爵（c_osel）在 1066
      *      是利沃尼亚公爵（d_livonia）的封臣 ✗ 法理上却不属于它 ✓
-     *   这种"跨法理"在本数据里约占两成（实测 2376 / 11297 ✓），**是历史事实** ✓
+     *   这种"跨法理"在本数据里约占两成，**是历史事实** ✓
      *   所以这里卡一个下限：祖辈占比 ≥ 70% ✓ —— 真把 holder/liege 解析错了，
-     *   比例会掉到很低（大家各回各家 / 全判无主），这一条就能抓住 ✓ */
+     *   比例会掉到很低（大家各回各家 / 全判无主），这一条就能抓住 ✓
+     *   ⚠ 剧本层的节点是 `1066_<原头衔 key>`（它自己一个新节点 ✓ 见 build_data 5b）——
+     *     比的时候要拿**它那个原头衔**去比 ✗ 别拿节点号（那样永远不是祖辈 ✓）*/
     const upTo = (node, want2) => {
       let cur = node;
       for (let g = 0; g < 10 && cur > 0; g++) {
@@ -2856,6 +2876,15 @@ const factory = new Function(
         if (!(cur > 0)) break;
       }
       return false;
+    };
+    const keyIdx = new Map();
+    for (let i = 0; i < TN.keys.length; i++) keyIdx.set(TN.keys[i], i);
+    /** 剧本节点 → 它借的那个真头衔（key 形如 `1066_k_england` ✓）*/
+    const baseOfRealm = (tid) => {
+      const k = String(TN.keys[tid] || '');
+      if (!k.startsWith('1066_')) return tid;
+      const b = keyIdx.get(k.slice(5));
+      return b === undefined ? -1 : b;
     };
     let anc = 0, tot = 0, finer = 0, sample3 = '';
     for (let p = 1; p < NP; p++) {
@@ -2868,9 +2897,11 @@ const factory = new Function(
       }
       if (native < 0) continue;
       tot++;
-      if (upTo(native, t)) anc++;
+      const base = baseOfRealm(t);               // 剧本节点 → 原头衔 ✓
+      if (base > 0 && upTo(native, base)) anc++;
       // 归属不能比这块地自己**更细**（法理链只往上走 ✓）
-      if (TN.tiers[t] > TN.tiers[native]) {
+      const bt = base > 0 ? TN.tiers[base] : TN.tiers[t];
+      if (bt > TN.tiers[native]) {
         finer++;
         if (!sample3) sample3 = `#${p}: ${TN.keys[t]} 管着 ${TN.keys[native]}`;
       }
@@ -5626,9 +5657,19 @@ const factory = new Function(
       ok('公爵领以上的名字都落在自家地盘范围内（不再钉在法理首都 ✓）',
          out === 0 && tot > 1000, `${tot} 个里头，出界的 ${out} 个${worst ? `：${worst}` : ''}`);
     }
-    ok('CK3 没有年份视图', !(ckM.eraDates && ckM.eraDates.length),
-       JSON.stringify(ckM.eraDates || []));
-    const baronies = ckT.tiers.filter((x) => x === 4).length;
+    /* CK3 现在**也有剧本层了** ✓（1066 ✓ 见 build_data 的 eraDates 那段）——
+     * 用户点名的"取消 CK3 的特立独行、和其他模式一样"：
+     * 帝国/王国/…/男爵领全是**地区级**，1066 是**剧本** ✓ */
+    ok('CK3 有剧本层：一层 1066（eraDates 一条，层级名就是「1066」）',
+       (ckM.eraDates || []).length === 1 && ckM.eraDates[0] === '1066.9.15'
+       && ckM.tiers[0] === '1066' && ckM.tierNames[0] === '1066',
+       `eraDates=${JSON.stringify(ckM.eraDates || [])} · tiers[0]=${ckM.tiers[0]}`);
+    ok('CK3 的剧本层有自己的节点（1066_<原头衔> ✓ 不是借法理头衔的）',
+       ckT.keys.filter((k) => k.startsWith('1066_')).length > 500
+       && ckT.tiers.filter((x) => x === 0).length > 500,
+       `${ckT.keys.filter((k) => k.startsWith('1066_')).length} 个剧本节点`);
+    const _fineTier = ckM.tiers.length - 1;      // 男爵领那一层（别写死 4 ✗）
+    const baronies = ckT.tiers.filter((x) => x === _fineTier).length;
     ok('男爵领比 MAX_LABELS 多得多（所以这条才要紧）', baronies > 1000, `${baronies} 个`);
   }
 

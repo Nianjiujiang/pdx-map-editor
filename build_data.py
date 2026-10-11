@@ -339,14 +339,13 @@ def build_titlemap(
 
 def build_realm_layer(
     ordered: list[Title],
-    index_of: dict[str, int],
     titles: dict[str, Title],
     titlemap: np.ndarray,
     n_prov: int,
     holders: dict[str, int | str],
     lieges: dict[str, str | None],
-) -> tuple[int, int, int]:
-    """写**1066 剧本**那一层：每块地归到它的**非封臣**（独立政权）✓
+) -> tuple[dict[str, list[int]], int]:
+    """算出**1066 剧本**每一格归谁：每块地归到它的**非封臣**（独立政权）✓
 
     用户要的那张地图就是这一层：**封臣的地盘算进宗主那一块**（CK3 的领地地图 ✓），
     所以先把每块地判给"最细那一级有持有者的头衔"，再顺 liege 一路往上 ✓
@@ -356,6 +355,7 @@ def build_realm_layer(
        ⚠ 男爵领缺、拿伯爵领顶替过的那些地（degraded），b 那一行填的就是 c 的头衔 ✓
          所以从 b 往上扫一遍就够了 ✓
     ② 拿到人以后顺着 ``liege`` 往上，走到没有封君的那一级 = **非封臣** ✓
+       那个顶层头衔的 key 就是"这一块 1066 归谁"的答案 ✓
     ③ 整条链**都没人持** → 1066 年那会儿没人占 → **这一层就留空**（NO_TITLE ✓）
        ⚠ 别给它造伪头衔、别起名字 ✗（用户点名的：跟 EU4 的无主地一个待遇 ✓
          着色器里 NONE 本来就画成那块灰（150,150,150 ✓）· 悬停不列它 ·
@@ -363,15 +363,14 @@ def build_realm_layer(
        ⚠ 这一版游戏数据里其实**一块都没有**（萨米、撒哈拉也各有酋长 / 部落 ✓），
          别的版本 / 别的剧本才可能出现 ✓ 所以这条路要留着、但要**安静** ✓
 
-    ⚠ 只动**真有头衔的陆地** ✗ —— 海/湖/山/逐块荒地在各层都是伪头衔，
+    ⚠ 只碰**真有头衔的陆地** ✗ —— 海/湖/山/逐块荒地在各层都是伪头衔，
       第 0 行早就在地形那一步填好了，别覆盖 ✓
 
-    :returns: (判出归属的省份数, 无主（留空）的省份数, 有几个独立政权)
+    :returns: (``{顶层头衔 key: [省份号]}``, 无主（留空）的省份数)
     """
     keys = [t.key for t in ordered]
-    n_own = 0
     n_none = 0
-    realms: set[str] = set()
+    out: dict[str, list[int]] = {}
     rows = {tier: MAP_ORDER.index(tier) for tier in TIER_ORDER}
     fine_first = [rows[tier] for tier in reversed(TIER_ORDER)]   # b → e
     for pid in range(1, n_prov):
@@ -387,10 +386,8 @@ def build_realm_layer(
         if top is None:
             n_none += 1                    # 留空：什么都不写 ✓（那一格就是 NONE ✓）
         else:
-            titlemap[0, pid] = index_of[top]
-            realms.add(top)
-            n_own += 1
-    return n_own, n_none, len(realms)
+            out.setdefault(top, []).append(pid)
+    return out, n_none
 
 
 def centroids_for_titles(
@@ -572,8 +569,74 @@ def main() -> int:
     log(f"完全没有头衔的地块：{int(blank.sum())} 个")
 
     _special_names: dict[str, str] = {}
+
+    # 5b. **1066 剧本地图**那一层（层级栈最上面那层 ✓ 见 build_realm_layer ✓）
+    #     ⚠ 顺序要紧：它必须在 `build_special_titles` **之前**建 ✗ ——
+    #       伪头衔（海/湖/河/每一块荒地）的编号是从"真头衔 + 剧本节点"之后开始的 ✓
+    #       放在后面就会跟剧本节点**撞号**（我那版就是这样：荒地全挤进了真头衔范围 ✗）
+    #
+    #     ⚠ **每个非封臣政权要建自己的节点** ✗（key = `1066_<原头衔 key>` ✓
+    #       跟 EU4 那边 `1444_FRA` 一个写法 ✓）—— 用户点名的"照搬代码"就是这个意思：
+    #       · 剧本层的节点 tier 必须是 ERA_TIER（0 ✓），前端拿它当「势力」那一层认 ✓
+    #       · 取色匹配表、pidsOf、名字落点、悬停那些**全按"节点自己那一层"走** ✓
+    #         借用法理头衔的节点（我第一版那样）会到处打结：取色表收不进、站在
+    #         地区层按 1066 的头衔涂会涂不动（pidsOf 按节点自己的 tier 找行 ✓）✗
+    realm_nodes: list[Title] = []
+    realm_names: dict[str, str] = {}
+    realm_own: dict[str, list[int]] = {}
+    realm_pos: dict[str, tuple[float, float]] = {}      # 剧本节点：名字落点（最大连通域重心 ✓）
+    realm_area: dict[str, int] = {}
+    if bookmark_date is not None:
+        realm_own, _n_none = build_realm_layer(
+            ordered, titles, titlemap, n_prov, holders, lieges)
+
+        def _resolved_color(key: str):
+            """自己没色就往上继承 —— 跟真头衔第 8 步同一套规矩 ✓"""
+            cur = titles.get(key)
+            c = cur.color if cur is not None else None
+            guard = 0
+            while c is None and cur is not None and cur.parent and guard < 8:
+                cur = titles.get(cur.parent)
+                if cur is None:
+                    break
+                c = cur.color
+                guard += 1
+            return c
+
+        # 名字落点：跟 `patch_wasteland.fix_label_positions` **同一套规矩** ——
+        #   "像素最多的那块连通域的重心" ✓（照搬那个函数用的那把尺 ✓）
+        #   ⚠ 不能直接沿用那个顶层头衔的落点 ✗：1066 的地盘跟法理地盘常常不一样，
+        #     借来的落点会跑到自家地界外（自检里那条"名字落在自家地盘上"当场抓住 ✓）
+        from build_eu4 import largest_block_centre as _lbc     # noqa: PLC0415
+        _adj = build_adjacency(ids, n_prov)
+        _off = np.frombuffer(_adj, dtype=np.uint32, count=n_prov + 1)
+        _ngb = np.frombuffer(_adj, dtype=np.uint16, offset=(n_prov + 1) * 4)
+
+        for _key in sorted(realm_own):
+            _t = Title(f"{ERA_TIER}_{_key}", tier=ERA_TIER)
+            _t.color = _resolved_color(_key)
+            realm_nodes.append(_t)
+            realm_names[_t.key] = names.get(_key) or _key   # 名字照搬那个头衔的 ✓
+            _idx = len(ordered) + len(realm_nodes) - 1
+            _pids = realm_own[_key]
+            for _pid in _pids:
+                titlemap[0, _pid] = _idx
+            _arr = np.fromiter((p for p in _pids if 0 < p < n_prov), dtype=np.int64)
+            if _arr.size:
+                realm_area[_t.key] = int(counts[_arr].sum())
+                _cc = _lbc(_pids, _off, _ngb, counts, pcx, pcy)
+                if _cc is not None:
+                    realm_pos[_t.key] = (float(_cc[0]), float(_cc[1]))
+                    realm_area[_t.key] = int(_cc[2])
+        _n_own = sum(len(v) for v in realm_own.values())
+        log(f"1066 剧本层：{len(realm_nodes)} 个非封臣政权 · {_n_own} 个省份有归属 · "
+            f"{_n_none} 个留空（跟 EU4 的无主地一样：没标记、没名字 ✓）")
+
+    #: 伪头衔的起始序号 = 真头衔 + 1066 剧本节点（后面一律用这个 ✓ 别再写 len(ordered) ✗）
+    SPECIAL_BASE = len(ordered) + len(realm_nodes)
+
     special, assign, stats, fine_assign, waste_pids, waste_tids = build_special_titles(
-        terrain, n_prov, blank, len(ordered), _special_names)
+        terrain, n_prov, blank, SPECIAL_BASE, _special_names)
     log("地形类别：" + "，".join(stats) if stats else "地形类别：无")
 
     sel = assign >= 0
@@ -589,23 +652,13 @@ def main() -> int:
     left = int(np.count_nonzero(titlemap[MAP_ORDER.index(TIER_ORDER[-1])] == NO_TITLE))
     log(f"仍是空白的格子：{left}")
 
-    # 6b. **1066 剧本地图**那一层（层级栈最上面那层 ✓ 见 build_realm_layer ✓）
-    #     放在地形之后：它只动"真有头衔的陆地"，海/湖/山/逐块荒地那一行不碰 ✓
-    #     ⚠ 那会儿没人占的地**什么都不写**（留 NONE ✓）—— 跟 EU4 的无主地一个待遇 ✓
-    #       着色器里 NONE 就是那块灰 ✓ 别给它造伪头衔 / 起名字 ✓（用户点名的 ✓）
-    if bookmark_date is not None:
-        _n_own, _n_none, _n_realm = build_realm_layer(
-            ordered, index_of, titles, titlemap, n_prov, holders, lieges)
-        log(f"1066 剧本层：{_n_realm} 个非封臣政权 · {_n_own} 个省份有归属 · "
-            f"{_n_none} 个留空（跟 EU4 的无主地一样：没标记、没名字 ✓）")
-
     # 逐块荒地的节点序号（meta 里要报给前端：荒漠涂色开关靠它判"这块是不是荒地"）
     #: 哪些伪头衔是**水**（算荒地边长时不算；荒地/无主地要算）
     WATER_KEYS = ("#river", "#lake", "#sea", "#impassable_sea")
 
     def _is_water_key(k: str) -> bool:
         return k in WATER_KEYS
-    water_tids = {len(ordered) + k for k, sp in enumerate(special) if _is_water_key(sp.key)}
+    water_tids = {SPECIAL_BASE + k for k, sp in enumerate(special) if _is_water_key(sp.key)}
     # 逐块荒地的**真实节点号**直接来自 build_special_titles（建节点时记的）。
     # 以前在这里拿"special 尾部恰好连续 len(waste_pids) 个"反推 waste_base，
     # 可 #wasteland 的共享粗层节点插在两组逐块节点中间 —— 一差就差一位：
@@ -614,7 +667,7 @@ def main() -> int:
     # 粗层那两个共享伪头衔也算"荒地"（荒漠涂色关着时它们要显示灰）
     for k, sp in enumerate(special):
         if sp.key in SETTABLE_CATEGORIES:
-            waste_tids.append(len(ordered) + k)
+            waste_tids.append(SPECIAL_BASE + k)
 
     # ---- 荒地自动上色：按"跟周边国家接壤的边界像素占比"，严格过半 ----
     waste_auto: list[list[int]] = []
@@ -674,7 +727,8 @@ def main() -> int:
     lx = gx.copy()
     ly = gy.copy()
 
-    ordered_all = ordered + special
+    # ⚠ 顺序：真头衔 → 1066 剧本节点 → 伪头衔（海/湖/荒地）✓
+    ordered_all = ordered + realm_nodes + special
     n_all = len(ordered_all)
 
     # 8. 颜色：优先自己的，没有就往上继承（男爵领常年没有自己的颜色）
@@ -715,13 +769,26 @@ def main() -> int:
         "mapHeight": h,
         "numProvinces": n_prov,
         "numTitles": n_all,
-        "numRealTitles": len(ordered),
+        "numRealTitles": len(ordered) + len(realm_nodes),   # 剧本节点也算"真"（不是伪头衔 ✓）
         "tiers": list(MAP_ORDER),
         "tierNames": [ERA_LABEL if t == ERA_TIER else TIER_NAME[t] for t in MAP_ORDER],
         # 悬停卡片左边那个小徽章，CK3 就是 key 的前缀；1066 那一层写年份 ✓
         "tierKeys": [t if t == ERA_TIER else f"{t}_" for t in MAP_ORDER],
         "entity": "头衔",
         "defaultTier": MAP_ORDER.index("c"),
+        # 🔴 **1066 那一层就是"剧本层"** ✓（跟 EU4 的 1444/1618/1789 一个身份 ✓）
+        #   前端整套「年代层」的玩法**全靠这一个字段**认（`eraDates.length` ✓）：
+        #     · 第 0 层归「势力」那一组开关，其余几层归「地区」那一组 ✓
+        #     · 细层视图下"这块地属于哪个国家" = 最近的剧本层（1066 ✓）
+        #     · 「粒度」玩法、取色/图例认族、剧本层才画那一圈边界 ✓
+        #   ⚠ 以前 CK3 是**特立独行**的：没有年代层、界面上是「头衔」那一组 ✗
+        #     用户点名的："取消 CK3 的特立独行，和其他模式一样" ✓
+        #     所以：帝国/王国/…/男爵领**全是地区级**，1066 是剧本 ✓ 照搬现成代码 ✓
+        #   ⚠ 顺带把 patch_wasteland 的 `_detect` 改了顺序 ✗ —— 它原来拿
+        #     `"eraDates" in M` 认 EU5 ✓ 这一加 CK3 会被误认成 EU5 ✓（见那个函数 ✓）
+        #   ⚠ patch_blank_era 见到 eraDates 就会想补一层「空白剧本」✗
+        #     这里**没给它补**（用户没要 ✓）；要补就 `py patch_blank_era.py data` ✓
+        "eraDates": [".".join(str(x) for x in bookmark_date)] if bookmark_date else [],
         # 法理按哪一年算的（history/titles 的 de_jure_liege 盖到 landed_titles 骨架上）
         "deJureYear": dejure_year or 0,
         # 每一层从百分之多少的缩放开始上地名（1066 那一层跟帝国层一样，早点出名字 ✓）
@@ -736,10 +803,12 @@ def main() -> int:
     }
     (DATA / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    # 每个真头衔的地盘数；伪头衔按它实际分到的地块算
+    # 每个真头衔的地盘数；**1066 剧本节点**按它自己那一层的省份算；伪头衔按分到的地块算
     prov_count = [len(owned[t.key]) for t in ordered]
+    for t in realm_nodes:
+        prov_count.append(len(realm_own.get(t.key[len(ERA_TIER) + 1:], ())))
     for k in range(len(special)):
-        prov_count.append(int(np.count_nonzero(assign == len(ordered) + k)))
+        prov_count.append(int(np.count_nonzero(assign == SPECIAL_BASE + k)))
 
     # 每个头衔在地图上占的真实像素数。地名标注靠它判断"这块够不够大、放得下字吗"
     # —— 拿省份个数当面积代理是不准的，同一个伯爵领的省份大小能差上百倍。
@@ -748,8 +817,11 @@ def main() -> int:
         pids = np.fromiter((p for p in owned[t.key] if 0 < p < n_prov), dtype=np.int64)
         if pids.size:
             area[i] = int(counts[pids].sum())
+    # 1066 剧本节点：面积按它**这个剧本里**那个最大连通域算（跟真头衔同一把尺 ✓）
+    for j, t in enumerate(realm_nodes):
+        area[len(ordered) + j] = realm_area.get(t.key, 0)
     for k in range(len(special)):
-        idx = len(ordered) + k
+        idx = SPECIAL_BASE + k
         area[idx] = int(counts[assign == idx].sum())
     # 逐块荒地节点：它只管自己那一块地，面积和位置就取那一块的
     # （以前没给，于是 area=0、lx=null —— 标签层按面积排序时它们全挤在 (0,0)，
@@ -771,11 +843,17 @@ def main() -> int:
             _waste_pos[waste_tid_of[pid]] = (float(pcx[pid]), float(pcy[pid]))
 
     def _pad_pos(arr, which: int):
+        """真头衔的位置数组 + **1066 剧本节点那一段** + 伪头衔那一段 ✓
+        剧本节点的落点是它自己那一层算出来的（最大连通域重心 ✓ 见上面 5b 那段 ✓）"""
+        mid = []
+        for t in realm_nodes:
+            p = realm_pos.get(t.key)
+            mid.append(round(p[which], 1) if p else None)
         tail = []
         for k in range(len(special)):
-            p = _waste_pos.get(len(ordered) + k)
+            p = _waste_pos.get(SPECIAL_BASE + k)
             tail.append(round(p[which], 1) if p else None)
-        return [None if np.isnan(v) else round(float(v), 1) for v in arr] + tail
+        return ([None if np.isnan(v) else round(float(v), 1) for v in arr] + mid + tail)
 
     # 头衔表：用并行的数组，比对象数组省一半体积
     # 伪头衔在本地化表里当然查不到，用 SPECIAL_CATEGORIES 里写好的中文名
@@ -789,7 +867,8 @@ def main() -> int:
         "tiers": [MAP_ORDER.index(t.tier) if t.tier in MAP_ORDER else len(MAP_ORDER)
                   for t in ordered_all],
         "parents": [index_of.get(t.parent, -1) if t.parent else -1 for t in ordered_all],
-        "names": [names.get(t.key) or special_names.get(t.key) or t.key for t in ordered_all],
+        "names": [names.get(t.key) or realm_names.get(t.key)
+                  or special_names.get(t.key) or t.key for t in ordered_all],
         "colors": [[int(c[0]), int(c[1]), int(c[2])] for c in colors],
         "provCount": prov_count,
         "area": area.tolist(),

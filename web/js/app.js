@@ -189,9 +189,9 @@ const MAP_CHOICES = [
   { key: 'hoi4alt', emb: 'hoi4alt', dir: '/data_hoi4_alt', game: 'hoi4', label: 'HOI4 修改边界', note: '5632 × 2048' },
 ];
 
-// 层级数由数据 meta.tiers 决定 —— CK3/EU4/HOI4 是 5 层，维多利亚3 是 4 层
-// （1836 / 战略 / 地区 / 省份），所以这几个都别写死，boot 时按 meta 填
-// TIER_KEYS 只有 CK3 的 mod 用得到，meta.tiers 里就是那几个字母
+// 层级数由数据 meta.tiers 决定 —— CK3 是 6 层（1066 + 法理那五级）、
+// EU4/HOI4 是 6~7 层，维多利亚3 是 5 层，所以这几个都别写死，boot 时按 meta 填
+// TIER_KEYS 只有 CK3 的 mod 用得到，meta.tiers 里就是那几个字母 + 剧本那一格
 let TIER_KEYS = ['e', 'k', 'd', 'c', 'b'];
 let TIER_COUNT = TIER_KEYS.length;
 let TIER_HOTKEY = ['1', '2', '3', '4', '5'];
@@ -503,17 +503,16 @@ function buildColorIndex() {
   state.colorIndex = new Map();
   state.tagColorIndex = new Map();     // 颜色 → tag（含没地盘的 ✓）
   const t = state.titles;
-  // 年代层数：非 CK3 只把国家（tag）收进"颜色 → 头衔"表 ✓
+  // 剧本层数：有剧本层的模式（现在**每一套都有** ✓ 见 build_data 的 eraDates 那段）
+  // 只把**剧本层那些头衔**（国家 / 1066 政权）收进"颜色 → 头衔"表 ✓
+  // 地区层（帝国/王国/…）的颜色取色时匹配到它们没意义（一堆同色杂项 ✗）
   const _nEra = (state.meta && state.meta.eraDates && state.meta.eraDates.length) || 0;
   for (let i = 0; i < t.keys.length; i++) {
-    if (t.tiers[i] >= TIER_COUNT) continue;
+    if (t.tiers[i] >= TIER_COUNT) continue;       // 海/湖/荒地那些伪头衔：不算 ✓
+    if (_nEra > 0 && t.tiers[i] >= _nEra) continue;
     const o = t.colors[i];
     const key = (o[0] << 16) | (o[1] << 8) | o[2];
     let list = state.colorIndex.get(key);
-    // **非 CK3 只收年代层（国家/tag）**：地区、省份那些颜色是自动生成的，
-    // 取色时匹配到它们没意义（而且会挑出一堆同色的杂项 ✗）。
-    // CK3 没有年代层，全都收 ✓。
-    if (_nEra > 0 && t.tiers[i] >= _nEra) continue;
     if (!list) { list = []; state.colorIndex.set(key, list); }
     list.push(i);
   }
@@ -1108,7 +1107,7 @@ function recomputePainted() {
 function syncLayerSwitches() {
   const n = (state.meta && state.meta.eraDates && state.meta.eraDates.length) || 0;
   // 边界各听各的：势力·边界 → 原版地界；填色·边界 → 按**当前显示颜色**画的分界 ✓
-  // （放在早退之前：CK3 没有年代层，也要同步这条 ✓）
+  // （放在早退之前：没有剧本层的数据也要同步这条 ✓）
   // 这条边界要一直跑（剧本/头衔本来就有的颜色也算 ✓），不再看手绘层空不空 ✗
   // **哪一层都画** ✓ —— 细层（地区/省份/地点视图）也要，跟剧本层**同一套规矩**：
   //   浓度 = 势力边界浓度（设置页那一档，内部字段仍叫 ca；实心），粗细 = 链上最粗那一档（见下面 _pw）✓
@@ -1140,16 +1139,15 @@ function syncLayerSwitches() {
   {
     /* **当前模式里能关的那几个边界**全关了，才连水域 + 荒地一起藏 ✓
      *
-     * 有年代层的模式（EU4 / HOI4 / V3 / EU5）：界面上的三组是
-     *   · 势力 · 边界（showPowerBorder）
-     *   · 地区 · 边界（showRegionBorder）
+     * 界面上的三组是
+     *   · 势力 · 边界（showPowerBorder）—— 剧本层（国家 / 1066 政权）
+     *   · 地区 · 边界（showRegionBorder）—— 帝国 / 王国 / 地区 / 省份那些
      *   · 填色 · 边界（showBorderPaint）
-     * CK3：那两组是**隐藏的**（它没有国家层，只有「头衔」那一组），
-     *   能关的是 头衔 · 边界（showBorderTitle）+ 填色 · 边界 ✓
+     * （八套地图现在都有剧本层了 ✓ 所以这三组**每套都在** ✓
+     *   没有剧本层的数据（留着兜底）走 `else` 那条：头衔 · 边界 + 填色 · 边界 ✓）
      *
-     * ⚠ 所以**不能写死那三个名字** ✗ —— 以前就是写死的，于是 CK3 里把
-     *   「头衔·边界」和「填色·边界」都关了，水域和荒地那两条线照样画 ✓
-     *   （隐藏的 `showRegionBorder` 默认还是 true，把判断顶上去了 ✓）
+     * ⚠ 所以**不能写死那三个名字** ✗ —— 以前就是写死的，于是没有剧本层的数据里
+     *   把能关的都关了，水域和荒地那两条线照样画 ✓
      * 父级边界不算在里头 ✓（它是地区那一组的子选项 ✓）
      */
     const _hasSw = !!$('show-power-border') && n > 0;    // 跟 syncParentBorder 里同一个判法 ✓
@@ -1214,15 +1212,16 @@ function syncLayerSwitches() {
     }
   }
   if (!n) {
-    // CK3（没有年代层）：界面上「头衔」那一组的勾选**直接说了算**。
-    // 以前这里什么都不做，state.showBorderTitle 就一直是旧值（默认 false），
-    // 而父级链又去听了隐藏的「地区·边界」→ 表现就是"边界关了，父级线还在" ✗
+    /* **没有年代层的数据**（八套地图现在都有剧本层了 ✓ 这条留着兜底）：
+     * 界面上「头衔」那一组的勾选**直接说了算**。
+     * 以前这里什么都不做，state.showBorderTitle 就一直是旧值（默认 false），
+     * 而父级链又去听了隐藏的「地区·边界」→ 表现就是"边界关了，父级线还在" ✗ */
     const _bt = $('show-border-title');
     const _tt = $('show-titles');
     if (_bt && state.showBorderTitle !== _bt.checked) state.showBorderTitle = _bt.checked;
     if (_tt) state.showTitles = _tt.checked;
   }
-  if (!n || !$('show-power-color')) return;          // CK3 / 没有年代层的：不动
+  if (!n || !$('show-power-color')) return;   // 没有年代层 / 页面上没有那组开关：不动 ✓
   const isPower = state.tier < n;
   // 边界是照**编辑层**画的（开粒度时就是粒度那一层）→ 听**那一类**的开关
   const _editIsPower = editTier() < n;
@@ -1256,10 +1255,9 @@ function syncParentBorder() {
   if (state._borderWidthBase == null) state._borderWidthBase = renderer.borderWidth || 1;
   const _setW = state.set && state.set.w;
   const baseW = _setW ? _setW : state._borderWidthBase;   // 设置页改过就用它的 ✓
-  // 「势力/地区」那两套分开关只在**有年代层的模式**里才有意义；
-  // CK3 界面里这些元素虽然存在（只是隐藏），但不能拿它们当依据 ✗
+  // 「势力/地区」那两套分开关只在**有剧本层的模式**里才有意义（现在每套都有 ✓）
   const hasSwitches = !!$('show-power-border') && nEra > 0;
-  // 某一层听哪个开关：年份层（国家/剧本）归「势力」，其余归「地区」；CK3 还是那一组
+  // 某一层听哪个开关：剧本层（国家 / 1066 政权）归「势力」，其余（帝国/王国/…）归「地区」✓
   const showOf = (tier) => (hasSwitches
     ? ((nEra > 0 && tier < nEra) ? state.showPowerBorder : state.showRegionBorder)
     : state.showBorderTitle);
@@ -1307,7 +1305,7 @@ function syncParentBorder() {
     list.push({ tier: Math.max(0, state.tier),
                 width: _pwW, show: showOf(state.tier) });
   } else if (state.grain != null) {
-    // CK3（没有年代层）：只描**地理上的上一层**（父级）✓
+    // 没有剧本层的数据（兜底）：只描**地理上的上一层**（父级）✓
     // 注意："爷爷级"不是更高的地理单位，而是**玩家填色的那条线**（见下面的 _paintIsTop）
     const pt = Math.max(0, state.grain - 1);
     list.push({ tier: pt, width: W_PARENT, show: showOf(pt) });
@@ -1384,8 +1382,8 @@ function syncParentBorder() {
   }
 
   // **填色边界**：它就是链上的**爷爷那一级** —— 粗细按"爷爷档"（基准×0.75 再加 0.5）+ 实心 ✓
-  // 注意不能只取"链上最粗那条"：CK3 的链只有父级一级，那样拿到的是**父级档** ✗
-  // 所以以"爷爷档"为下限 —— 链本身更粗就跟着链（年代模式不变），CK3 则从父级提到爷爷 ✓
+  // 注意不能只取"链上最粗那条"：链短的时候（只有父级一级）那样拿到的是**父级档** ✗
+  // 所以以"爷爷档"为下限 —— 链本身更粗就跟着链（剧本模式不变）✓
   const _pw = _pwW;             // 填色线：跟势力线**同粗** ✓（同一个设置值 ✓）
   if (Math.abs(renderer.paintWidth - _pw) > 0.01) {
     renderer.paintWidth = _pw;
@@ -2713,7 +2711,7 @@ function updateHistoryUI() {
 // 于是可以"看着 1444 的归属，按省份一块一块改"。地图配色不跟着变，
 // 不然一勾省份整张图就翻成省份配色了，等于把底图弄丢
 
-/** 顶部有几层是年份视图（没有年份视图就返回 0，CK3 就是这种）*/
+/** 顶部有几层是剧本层（数据里没有剧本层就返回 0 —— 现在每套都有 ✓ 这条留着兜底）*/
 function eraTierCount() {
   const m = state.meta;
   return (m && m.eraDates && m.eraDates.length) || 0;
@@ -2918,12 +2916,14 @@ function applyGameText() {
   $('boot-title').textContent = g.title;
   $('title-group-label').textContent = g.entity;
 
-  // 各模式的默认开关（**CK3 除外**，它保持原样：头衔颜色/边界都开）：
-  //   头衔：颜色 ✗ 边界 ✓ 地名 ✓ 势力名 ✓
-  //   填色：颜色 ✓ 边界 ✗ 地名 ✗
-  if (g.id !== 'ck3') {
-    // 约定（非 CK3）：**势力只留上色**；**填色：开边界 + 开地名**（颜色本来就开）✓
-    // 注意要改"来源"开关 —— 那几个派生值由 syncLayerSwitches 每帧按来源重算 ✓
+  /* 各模式的默认开关（**八套地图都一样** ✓ —— CK3 原来是个例外（只有「头衔」那一组、
+   * 颜色边界全开 ✗），用户点名的"取消 CK3 的特立独行、和其他模式一样" ✓ 见 build_data
+   * 里 eraDates 那段：CK3 现在也是"剧本层 + 地区层"的结构 ✓）：
+   *   势力：只留上色 ✓
+   *   地区：默认**显示地名**（颜色按需自己开 ✓ 画面干净 ✓）
+   *   填色：开边界 + 开地名（颜色本来就开）✓
+   * 注意要改"来源"开关 —— 那几个派生值由 syncLayerSwitches 每帧按来源重算 ✓ */
+  {
     state.showPowerColor = true;       // 势力·上色：默认开 ✓
     state.showRegionName = true;       // 地区·名称：默认**开**（用户要求：默认显示地名 ✓）
     state.showPowerBorder = false;

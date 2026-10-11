@@ -223,12 +223,20 @@ def split_blobs(D: Path, M: dict, T: dict, ids: "np.ndarray", tm: "np.ndarray",
 
 def _detect(M: dict, T: dict) -> str:
     """**先认清 EU4/EU5，最后才轮到 CK3** —— specialPrefix 这类字段 EU4/EU5 也有，
-    放在最前面会把它们误认成 CK3，然后拿"不可通行"去刷掉它们的真名 ✗。"""
+    放在最前面会把它们误认成 CK3，然后拿"不可通行"去刷掉它们的真名 ✗。
+
+    ⚠ 顺序还得再小心一层 ✗：**CK3 现在也有 `eraDates` 了**（1066 那一层就是剧本层 ✓
+      见 build_data 的 ERA_TIER ✓）所以不能拿 `eraDates` 认 EU5 ——
+      它一加，CK3 就会被误认成 EU5、整份数据按 EU5 的规矩去刷名字 ✓
+      `deJureYear` 是 CK3 独有的（"法理按哪一年对齐"那个参数 ✓）→ 拿它认 CK3 最稳 ✓
+    """
     if "provinceColors" in T:          # EU4 独有：省份原版颜色
         return "eu4"
+    if "deJureYear" in M:              # CK3 独有：法理对齐到哪一年（它也有剧本层了 ✗）
+        return "ck3"
     if "eraDates" in M:                # EU5 独有：剧本年份
         return "eu5"
-    if "deJureYear" in M or "specialPrefix" in M:
+    if "specialPrefix" in M:
         return "ck3"
     return "other"
 
