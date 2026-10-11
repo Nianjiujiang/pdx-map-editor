@@ -541,23 +541,23 @@ def parse_title_history(history_dir,
 def liege_of(key: str,
              titles: dict[str, "Title"],
              lieges: dict[str, str | None]) -> str | None:
-    """这个头衔的封君是谁（头衔 key）—— **显式 liege 优先，否则认法理父级** ✓
+    """这个头衔的封君是谁（头衔 key）—— **只看历史里写没写** ✓
 
-    ⚠ 两条都要认 ✗（我第一版只认显式那一条，用户当场抓到"西夏的河西变成独立领地" ✓）：
-      · **历史里写的 `liege = X`** 是**特例覆盖** —— 跨法理的封臣用这个
-        （爱沙尼亚的萨雷马伯爵在 1066 是利沃尼亚公爵的封臣 ✓ 法理上却不属于它 ✓）
-      · **没写就是法理父级** ✓ —— CK3 开局的封臣关系就是照**法理**铺的
-        （"de jure vassal" 那一套 ✓）：河西（k_hexi）自己那条历史里只有 holder、
-        没有 liege ✗ 但它法理上属于西夏 → 它就该跟着西夏走 ✓
-        只认显式 liege 的话，河西这种会**一整片判成独立** ✓
+    ⚠ **不能拿"法理父级"当默认封君** ✗（我试过，用户当场抓到"大辽吃掉了
+      蒙古帝国法理下一堆独立部落" ✓）：
+      · CK3 的 `history/titles` **把封臣关系写全了**（本数据里 4351 条 `liege` ✓
+        而 1066 有持有者的头衔 5134 个 ✓）→ **没写 = 独立** ✓ 就是这么读的 ✓
+      · 法理父级 ≠ 封君：大辽法理上管着一大片草原，可 1066 那些部落是**各自独立**的 ✓
+        拿法理当默认封君 → 整片草原被吞进大辽 ✗
+      · "同一个人的两块地"（西夏那位同时拿着 k_xia 和 k_hexi ✓）**不归这里管** ✗
+        → 那是 build_data 里"按持有者归并"那一步的事 ✓（见 build_realm_layer ✓）
 
     ⚠ `lieges[key] = None` 是"历史里明确写了 liege = 0 / none"（**明确独立** ✓）
-      跟"没写过"要分开 ✗ 所以这里用 `key in lieges` 判"写过没有" ✓
+      跟"没写过"其实是一回事（都算独立 ✓）—— 这里统一返回 None ✓
     """
     if key in lieges:
-        return lieges[key]                    # 写过：写了谁就是谁（None = 明确独立 ✓）
-    t = titles.get(key)
-    return t.parent if t is not None else None
+        return lieges[key]                    # 写过：写了谁就是谁（None = 独立 ✓）
+    return None
 
 
 def top_liege(key: str,

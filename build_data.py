@@ -353,6 +353,7 @@ def build_realm_layer(
     n_prov: int,
     holders: dict[str, int | str],
     lieges: dict[str, str | None],
+    dejure_size: dict[str, int] | None = None,
 ) -> tuple[dict[str, list[int]], int]:
     """算出**1066 剧本**每一格归谁：每块地归到它的**非封臣**（独立政权）✓
 
@@ -400,11 +401,15 @@ def build_realm_layer(
     # 🔴 **同一个人手里的头衔算一个政权** ✗ —— 用户报的"西夏的河西变成独立领地"
     #   就是这么来的：西夏那位（角色 206651）**同时**拿着 `k_xia` 和 `k_hexi` ✓
     #   而他俩法理上的共同上级 `e_yongliang` 在 1066 **没人持** ✗
-    #   → 链爬到那儿就断了 ✓ 于是"河西"和"夏"各自成了一个政权 ✗（同一个人的两块地 ✓）
+    #   → 两个头衔就各自成了一个政权 ✗（同一个人的两块地 ✓）
     #   所以第二步：按**持有者**把顶层头衔归并 ✓
-    #   国号取"层级最粗、地盘最大"的那个（同层比省份数，再比 key ✓ 结果稳定 ✓）
-    #   → 西夏 = k_xia（87 省）比 k_hexi（42 省）大 ✓ 国号就是「夏」✓ 河西并进去 ✓
+    #   国号取"层级最粗 → **法理地盘最大** → key"（三级都比一遍，结果稳定 ✓）
+    #   → 西夏 = `k_xia`（法理 70 省）胜过 `k_hexi`（59 省）✓ 国号就是「夏」✓
+    #     （他那 6 个直辖县也全在 `k_xia` 法理下 ✓ 两点指向同一个 ✓）
+    #   ⚠ 别拿"1066 那层的省份数"当尺 ✗ —— 那是自己刚算出来的结果，
+    #     自我指涉（河西那层算出来反而更大 ✗ 会把国号叫成「河西」✓ 踩过 ✓）
     holders_of_top = {k2: holders.get(k2) for k2 in raw}
+    _ds = dejure_size or {}
     by_holder: dict[object, list[str]] = {}
     for k2 in raw:
         by_holder.setdefault(holders_of_top[k2], []).append(k2)
@@ -415,7 +420,7 @@ def build_realm_layer(
                 out[k2] = raw[k2]
             continue
         _rank = {"h": 0, "e": 1, "k": 2, "d": 3, "c": 4, "b": 5}
-        best = min(group, key=lambda k2: (_rank.get(k2[0], 9), -len(raw[k2]), k2))
+        best = min(group, key=lambda k2: (_rank.get(k2[0], 9), -_ds.get(k2, 0), k2))
         pids: list[int] = []
         for k2 in group:
             pids.extend(raw[k2])
@@ -621,7 +626,8 @@ def main() -> int:
     realm_area: dict[str, int] = {}
     if bookmark_date is not None:
         realm_own, _n_none = build_realm_layer(
-            ordered, titles, titlemap, n_prov, holders, lieges)
+            ordered, titles, titlemap, n_prov, holders, lieges,
+            {t.key: len(owned.get(t.key, ())) for t in ordered})
 
         def _resolved_color(key: str):
             """自己没色就往上继承 —— 跟真头衔第 8 步同一套规矩 ✓"""
