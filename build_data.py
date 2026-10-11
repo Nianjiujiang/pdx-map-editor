@@ -454,7 +454,30 @@ def build_realm_layer(
             continue
         _rank = {"h": 0, "e": 1, "k": 2, "d": 3, "c": 4, "b": 5}
         _cands = [k2 for k2 in mine_of.get(str(_h), []) if k2 in titles] or group
-        best = min(_cands, key=lambda k2: (_rank.get(k2[0], 9), -_ds.get(k2, 0), k2))
+
+        def _cap_ok(k2: str) -> int:
+            """他手里**拿着那个头衔的首都**吗 —— 拿着 = 0（优先 ✓）
+
+            主头衔就是这么认的 ✓（用户点名的 ✓）：
+            · 教宗：`k_papal_state` 的 capital = `c_roma` ✓ 他拿着 ✓ → 教宗国 ✓
+              （`k_romagna` 不占他的首都 ✓ → 排序输 ✓）
+            · 西夏：`k_xia` 的 capital = `c_lingzhou` ✓ 他拿着 ✓ → 西夏 ✓
+              （`k_hexi` 没写 capital ✗ → 输 ✓）
+            """
+            _t = titles.get(k2)
+            _cap = _t.capital if _t is not None else None
+            if _cap and holders.get(_cap) and str(holders.get(_cap)) == str(_h):
+                return 0
+            return 1
+
+        # 层级最粗 → **拿着首都的那个** → **不占法理地的（无地名誉头衔 ✓）优先**
+        # → 法理地盘最大 → key（五级都比一遍 ✓ 稳定 ✓）
+        # ⚠ 为什么要"无地优先"：教宗手里 `k_papal_state`（landless ✓ 法理 0 省 ✓）
+        #   和 `k_romagna`（正经王国 ✓ 21 省 ✓）**capital 都写着 c_roma** ✓ 都拿着 ✓
+        #   光比 capital 分不出来 ✗ → 加了这条才挑到「教宗国」✓（用户点名的 ✓）
+        best = min(_cands, key=lambda k2: (_rank.get(k2[0], 9), _cap_ok(k2),
+                                           0 if _ds.get(k2, 0) == 0 else 1,
+                                           -_ds.get(k2, 0), k2))
         # ⚠ 国号那个头衔**自己还有封君**的话，这个政权其实挂在别人名下 ✓（实控 ✓）
         #   例：西夏那位公爵（拿着 d_xiasui + 几个县 ✓）→ d_xiasui 的 liege = k_xia ✓
         #   → 那些县并进他的同时，整个政权算进 k_xia 的势力 ✓（= 西夏 ✓）
