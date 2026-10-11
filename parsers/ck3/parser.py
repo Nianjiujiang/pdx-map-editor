@@ -550,19 +550,36 @@ def parse_title_history(history_dir,
                 if isinstance(tb, list) and isinstance(block_get(tb, "suzerain"), str):
                     tributaries.add(key)     # 朝贡者 ✓（给谁上贡不影响它是"自己一块地"✓）
 
-    # 🔴 **holder 换人之后，早于那条块的 liege 一律作废** ✗（用户点名的 ✓）
-    #   `liege` 是**持有人**跟别人的关系 ✓ 换人 = 那条关系作废 ✓
-    #   而 `government` 是**头衔自己**的性质 ✓ 换人也留着 ✓（两回事 ✗）
-    #   证据：`c_LIAO_yinzhou` 867 那条写着 liege = d_LIAO_dongjing（持有者 balhae_baek_1 ✓）
-    #        1066 那条只换了 holder = nn_yelu_alian ✗
-    #        → 那条 liege 属于**上一个人** ✓ 带下来就成了"渤海国王当辽东公爵的封臣" ✗
+    # 🔴 **品级不可能的 liege 作废** ✗（用户两条反馈合起来就是这个 ✓）
+    #   规则：某个头衔的持有者，**手里另有一个比"封君头衔"更粗的头衔** →
+    #         那条 liege 不可能 ✓ 作废 ✓
+    #   （例：`c_LIAO_yinzhou` 的持有者 `nn_yelu_alian` 手里有 `k_balhae`
+    #     **王国** ✓ 而那条 liege 指向 `d_LIAO_dongjing`（**公爵领**）✗
+    #     一个国王不可能是公爵的封臣 ✓ → 作废 ✓）
+    #   ⚠ 我上一版按"日期"一刀切（换人前的 liege 全删 ✗）—— 太狠了 ✗
+    #     西夏那些封臣的 liege 也写在换人之前 ✓ 被误删 → 居延/镇藩/兀剌海
+    #     就被拆出来了 ✓（用户点名的 ✓）
+    _rank = {"h": 0, "e": 1, "k": 2, "d": 3, "c": 4, "b": 5}
+    _mine: dict[str, list[str]] = {}
+    for _k, _v in holders.items():
+        if _v:
+            _mine.setdefault(str(_v), []).append(_k)
     stale = 0
     for _k in list(lieges):
-        if _k in h_at and _k in l_at and l_at[_k] < h_at[_k]:
-            del lieges[_k]
-            stale += 1
+        _lg = lieges[_k]
+        if not _lg:
+            continue
+        _r_lg = _rank.get(str(_lg)[:1], 9)
+        _v = holders.get(_k)
+        if not _v:
+            continue
+        for _other in _mine.get(str(_v), []):
+            if _other != _k and _rank.get(_other[:1], 9) < _r_lg:
+                del lieges[_k]          # 他手里有比封君更粗的头衔 → 那条不可能 ✓
+                stale += 1
+                break
     if stale:
-        print(f"  [剧本] 换人前的旧 liege 作废 {stale} 条 ✓")
+        print(f"  [剧本] 品级不可能的旧 liege 作废 {stale} 条 ✓")
     return holders, lieges, governments, tributaries
 
 
