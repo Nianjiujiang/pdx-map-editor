@@ -553,9 +553,18 @@ def parse_title_history(history_dir,
 
 
 def _has_obedience(block) -> bool:
-    """块里（含嵌套，`government_rules = { obedience = yes }` 那种 ✓）有没有 obedience ✓"""
+    """**"新那套草原玩法"的政府**吗 ✓ —— 两个判据，命中一个就算 ✓
+
+    ① `obedience = yes`（`nomad_government` / `steppe_admin_government` ✓）
+    ② `uses_county_fertility = yes`（`herder_government` 牧民 ✓ 就这个标记 ✓
+       它没有 obedience ✗ 但一样是"新那套"、一样不该当别人的封臣 ✓）
+    ⚠ 用户抓到的："肯特伯爵领的主人好像不是大辽" ✓
+      那个是蒙古的 `c_khentii`（herder_government ✗ 不是英格兰那个肯特 ✓）
+      只认 obedience 的话，它就被 `liege = e_great_liao` 带进辽了 ✗
+    ⚠ 这两个标记只在草原那套政府上出现 ✓ 封建/行政/部落/神权都没有 ✓
+    """
     for k, v in block:
-        if k == "obedience" and str(v).lower() in ("yes", "true", "1"):
+        if k in ("obedience", "uses_county_fertility") and str(v).lower() in ("yes", "true", "1"):
             return True
         if isinstance(v, list) and _has_obedience(v):
             return True
