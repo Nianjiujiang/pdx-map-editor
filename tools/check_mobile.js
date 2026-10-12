@@ -149,7 +149,10 @@ function readScript(htmlPath) {
   {
     const cv2 = env.get('map');
     const r2 = ex.renderer;
-    r2.setPaint(11, 200, 30, 40, 255);
+    /* ⚠ 地块号**从数据里现取** ✗ —— 测试包换一张（省份数不同）就换个号：
+       写死 11 的话，只有 9 个省份的小包一测就是越界 → rgba 全 undefined 误报 ✗ */
+    const paintPid = Math.max(1, Math.min(11, (ex.state.meta.numProvinces || 2) - 2));
+    r2.setPaint(paintPid, 200, 30, 40, 255);
     cv2.dispatchEvent({ type: 'webglcontextlost', preventDefault() {} });
     const stopped = r2.ctxLost === true && r2.dirty === false;
     ok('丢上下文时停画（不然那几帧全是白费 + 搅浑 GL 错误）', stopped);
@@ -158,9 +161,9 @@ function readScript(htmlPath) {
     ok('回来：地图数据重新喂进去了', !!(r2.provTex && r2.titleTex && r2.paintTex),
        `prov=${!!r2.provTex} paint=${!!r2.paintTex}`);
     ok('**笔迹没丢**（颜色 + alpha 都在）',
-       r2.paintData[11 * 4] === 200 && r2.paintData[11 * 4 + 3] === 255,
-       `rgba=${r2.paintData[11 * 4]},${r2.paintData[11 * 4 + 1]},`
-       + `${r2.paintData[11 * 4 + 2]},${r2.paintData[11 * 4 + 3]}`);
+       r2.paintData[paintPid * 4] === 200 && r2.paintData[paintPid * 4 + 3] === 255,
+       `rgba=${r2.paintData[paintPid * 4]},${r2.paintData[paintPid * 4 + 1]},`
+       + `${r2.paintData[paintPid * 4 + 2]},${r2.paintData[paintPid * 4 + 3]}`);
     r2.dirty = false;
     env.documentStub.hidden = false;
     env.dispatchDocument('visibilitychange');
