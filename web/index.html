@@ -286,6 +286,16 @@ if (location.protocol === 'file:') {
             <div class="boot-bar"><i id="boot-bar"></i></div>
           </div>
 
+          <!-- 静态兜底提示：**脚本没跑起来**时（老设备太慢、或"文件"App 的预览窗口
+               压根不执行 JS —— 用户报的 iPad「一直等待」就是这种 ✓）这一屏会一直
+               停在"正在准备…"，别让玩家干等：这段话就是给那种情况看的 ✓
+               JS 一旦跑起来，boot() 第一件事就是把它删掉 —— 正常打开根本看不见 ✓ -->
+          <div class="boot-hint" id="boot-hint">
+            一直停在这一屏？说明脚本没跑起来（比如在「文件」App 的预览里打开的）。
+            请改用浏览器直接打开这个文件 —— iPhone / iPad：<b>分享 → 在 Safari 中打开</b>；
+            电脑：<b>用 Chrome / Edge / Firefox 直接打开</b>。
+          </div>
+
           <!-- 署名：谁做的、去哪找人。href 由 app.js 按 AUTHOR 填（换主页只改那一处 ✓） -->
           <div class="boot-author">
             <span>永夜廿九 制作</span>

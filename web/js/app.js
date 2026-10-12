@@ -6072,6 +6072,9 @@ function onEnterForeground() {
 
 async function boot() {
   try {
+    // 启动屏那条**静态兜底提示**：脚本跑起来了就摘掉（它只在"脚本没跑"时才有意义 ✓）
+    const _bh = document.getElementById('boot-hint');
+    if (_bh) _bh.remove();
     LOG.event('启动');
     setBoot('看看有哪些地图', 3);
     const maps = await availableMaps();

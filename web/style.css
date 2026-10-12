@@ -498,6 +498,13 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin
   transition: width .2s;
 }
 .boot-step { font-size: 12px; color: var(--text-dim); margin-bottom: 11px; }
+/* 启动屏的静态兜底提示（脚本没跑起来才看得见 —— 跑起来了 boot() 会摘掉它）*/
+.boot-hint {
+  margin: 14px 2px 0; padding-top: 12px; text-align: left;
+  border-top: 1px dashed var(--line-soft);
+  font-size: 11.5px; line-height: 1.75; color: var(--text-faint);
+}
+.boot-hint b { color: var(--text-dim); font-weight: 600; }
 .boot-bar { height: 3px; background: #1c242e; border-radius: 2px; overflow: hidden; }
 .boot-bar i {
   display: block; height: 100%; width: 0%;
