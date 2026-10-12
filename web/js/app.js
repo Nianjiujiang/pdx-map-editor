@@ -1563,6 +1563,10 @@ function wasteClearPlayerPaint() {
     pids.push(pid);
   }
   paintPids(pids, null);       // 按地块清（清的还是这些荒地 ✓，只是不再绕头衔那一圈）
+  /* **账本要跟着重算** ✗ —— 不清的话 state.changed / painted 里还留着这些
+   * 荒地的"幽灵记录"：状态栏改动数不降、导出涂色多出几条、离开页面还提醒
+   * 你"有改动没存" ✓（跟「清除全部」那边同一个收尾 ✓） */
+  recomputePainted();
   return seen.length;
 }
 
