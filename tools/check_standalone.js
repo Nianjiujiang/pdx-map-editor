@@ -389,9 +389,12 @@ function findTestPack() {
   {
     const cv = env.get('map');
     const r = ex.renderer;
-    r.setPaint(11, 200, 30, 40, 255);
-    r.setPaintLabel(11, 7);
-    ok('（预备）渲染器在、笔迹写得进去', !!(r.provTex && r.paintData[11 * 4] === 200));
+    /* ⚠ 地块号从数据里现取（同 check_mobile）—— 测试包省份数不同，
+       写死 11 在小包上就是越界，断言全变 undefined 误报 ✗ */
+    const paintPid = Math.max(1, Math.min(11, (ex.state.meta.numProvinces || 2) - 2));
+    r.setPaint(paintPid, 200, 30, 40, 255);
+    r.setPaintLabel(paintPid, 7);
+    ok('（预备）渲染器在、笔迹写得进去', !!(r.provTex && r.paintData[paintPid * 4] === 200));
 
     cv.dispatchEvent({ type: 'webglcontextlost', preventDefault() {} });
     ok('丢上下文：接住了（preventDefault）+ 停画',
@@ -403,9 +406,10 @@ function findTestPack() {
        !!(r.provTex && r.titleTex && r.colorTex && r.paintTex && r.paintLabelTex),
        `prov=${!!r.provTex} title=${!!r.titleTex} color=${!!r.colorTex} paint=${!!r.paintTex}`);
     ok('**笔迹没被重喂擦掉**（颜色 + 标记都还在）',
-       r.paintData[11 * 4] === 200 && r.paintData[11 * 4 + 3] === 255 && r.paintLabelData[11] === 7,
-       `rgba=${r.paintData[11 * 4]},${r.paintData[11 * 4 + 1]},${r.paintData[11 * 4 + 2]},`
-       + `${r.paintData[11 * 4 + 3]} · label=${r.paintLabelData[11]}`);
+       r.paintData[paintPid * 4] === 200 && r.paintData[paintPid * 4 + 3] === 255
+       && r.paintLabelData[paintPid] === 7,
+       `rgba=${r.paintData[paintPid * 4]},${r.paintData[paintPid * 4 + 1]},${r.paintData[paintPid * 4 + 2]},`
+       + `${r.paintData[paintPid * 4 + 3]} · label=${r.paintLabelData[paintPid]}`);
     ok('回来之后会自动重画一帧（dirty = true）', r.dirty === true && r.ctxLost === false);
     ok('恢复这件事进了日志（出事能发出来）',
        /上下文/.test((log && typeof log.text === 'function' && log.text()) || ''));
