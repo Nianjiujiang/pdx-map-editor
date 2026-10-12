@@ -3300,6 +3300,17 @@ async function exportFullPNG(scale = 1) {
   const meta = state.meta;
   const W = meta.mapWidth;
   const H = meta.mapHeight;
+  const OW = W * scale;
+  const OH = H * scale;
+  /* **浏览器画布上限护栏** ✗ —— 面积上限约 2.68 亿像素、边长常见 32767。
+   *   EU5 原尺寸（16384×8192）点「导出高清地图」要 32768×16384 = 5.4 亿像素，
+   *   必超 —— 以前是**闷头渲染好几分钟**，到 toBlob 那一步才告诉你"可能图太大" ✗。
+   *   在这儿直接拦：说清楚要多大、怎么导才成 ✓ */
+  if (OW > 32767 || OH > 32767 || OW * OH > 268435456) {
+    LOG.event('导出整图被拦', `${OW}×${OH} 超过浏览器画布上限`);
+    return toast(`这张图 ${scale}× 要 ${OW}×${OH}，超过浏览器能画的画布上限——`
+      + (scale > 1 ? '请改用普通的「导出整图」（1×）。' : '这张图太大了，导不出来。'), true);
+  }
   const glCanvas = $('map');
   // 输出块 = TILE × scale ≤ 2048 ✓（1× 时 2048、2× 时 1024 地图像素）
   const TILE = Math.max(512, Math.floor(2048 / scale));
@@ -3363,8 +3374,6 @@ async function exportFullPNG(scale = 1) {
     invalidate();
   }
 
-  const OW = W * scale;
-  const OH = H * scale;
   const _tag = scale > 1 ? `_整图${scale}x` : '_整图';
   out.toBlob((b) => {
     if (!b) return toast('导出失败，可能图太大', true);
@@ -6072,9 +6081,10 @@ function onEnterForeground() {
 
 async function boot() {
   try {
-    // 启动屏那条**静态兜底提示**：脚本跑起来了就摘掉（它只在"脚本没跑"时才有意义 ✓）
+    // 启动屏那条**静态兜底提示**：脚本跑起来了就藏掉（它只在"脚本没跑"时才有意义 ✓）
+    // 用 hidden 不用 remove() —— 测试用的假 DOM（tools/lib/browser_stub.js）没实现 remove ✓
     const _bh = document.getElementById('boot-hint');
-    if (_bh) _bh.remove();
+    if (_bh) _bh.hidden = true;
     LOG.event('启动');
     setBoot('看看有哪些地图', 3);
     const maps = await availableMaps();
