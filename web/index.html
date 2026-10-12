@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
@@ -105,26 +105,6 @@ if (location.protocol === 'file:') {
       <section class="panel" id="display-panel">
         <div class="panel-head"><h2>显示</h2></div>
         <div class="tool-group actions stack">
-    <div class="tool-group" id="titles-group">
-      <span class="group-label" id="title-group-label">头衔</span>
-      <label class="switch" id="sw-titles">
-        <input type="checkbox" id="show-titles" checked>
-        <span>颜色</span>
-      </label>
-      <label class="switch" id="sw-border-title">
-        <input type="checkbox" id="show-border-title" checked>
-        <span>边界</span>
-      </label>
-      <label class="switch" id="sw-labels">
-        <input type="checkbox" id="show-labels" checked>
-        <span>名称</span>
-      </label>
-      <label class="switch" id="parent-border-row-ck3">
-        <input type="checkbox" id="show-parent-border-ck3">
-        <span>父级边界</span>
-      </label>
-    </div>
-
     <div class="tool-group" id="power-group">
       <span class="group-label">势力</span>
       <label class="switch">
@@ -280,13 +260,26 @@ if (location.protocol === 'file:') {
       <div class="toast" id="toast" hidden></div>
 
       <div class="boot" id="boot">
-        <div class="boot-inner">
+        <!-- ⚠ 这个 id 是给"卡片一多就放宽面板"用的 ✗（app.js 的 setPickWide ✓
+             桩里解析出来的节点没有 parentNode，所以别靠 parentNode 往上找 ✓ 2026-10-12） -->
+        <div class="boot-inner" id="boot-inner">
           <div class="boot-title" id="boot-title">地图编辑器</div>
 
           <div class="map-pick" id="map-pick" hidden>
             <div class="map-pick-hint">选一张地图</div>
+            <!-- 一张图都没有的时候（轻量版第一次打开就是这样）那句引导
+                 **搬到下面 `#map-msg` 那个框里**了 ✓（2026-10-12 用户要求：
+                 原来它在这儿单独占一整块，白花一块地方 ✗ —— 见 app.js 的 render ✓）-->
             <div class="map-pick-list" id="map-pick-list"></div>
+            <button class="map-import" id="map-import">＋ 导入地图包…</button>
+            <!-- 这行平时**是空的** ✗ —— 只有"这台浏览器存不下东西"的时候才跳出来警示
+                 （"刷新就没了"那句必须让玩家看见，所以位置留着 ✓） -->
+            <div class="map-import-hint" id="map-import-hint" hidden></div>
+            <div class="map-msg" id="map-msg" hidden></div>
           </div>
+
+          <!-- 导入得到的地图：**「导出备份 / 删除」两个动作现在直接长在卡片上** ✓
+               （这儿原来有个「⋯」小面板，2026-10-12 用户要求提到第一层 ✓）-->
 
           <div id="boot-progress">
             <div class="boot-step" id="boot-step">正在准备…</div>
@@ -304,6 +297,15 @@ if (location.protocol === 'file:') {
     </main>
 
   </div>
+
+  <!-- 选文件只认 .pdxmap / .zip（别的一律拒，见 pack.js 的校验器）
+       **可以一次选好几个** ✓（2026-10-12 用户要求：挨个导，一个不成不影响后面的 ✓）
+       ⚠ `application/octet-stream` **必须留着** ✗（2026-10-12 用户报的"手机上选不了 pdxmap"）：
+         `.pdxmap` 是自定义扩展名，系统不认 → 类型就是 `application/octet-stream` ✗
+         安卓的文件选择器**按 MIME 过滤**，不列它就把 `.pdxmap` 灰掉、根本点不动 ✓
+         （手机版还会在 bindMobile 里把过滤整个放开，见 mobile/mobile_js.txt ✓） -->
+  <input type="file" id="pack-file"
+         accept=".pdxmap,.zip,application/zip,application/octet-stream" multiple hidden>
 
   <footer class="statusbar">
     <span id="status-meta">—</span>

@@ -267,10 +267,13 @@
 .set-row { min-height: 44px; }
 .legend-row { min-height: 44px; }
 
-/* 启动页：单列大按钮 */
+/* 启动页：单列大按钮（⚠ 卡片多的时候电脑版会排两列 + 面板放宽 ✗
+   手机上两条都要钉回去：列数 1、面板不许超宽 ✓ 2026-10-12）*/
 .boot-inner { width: 100%; padding: 16px 14px; }
+.boot-inner.wide-pick { width: 100% !important; }
 .boot-title { font-size: 24px; }
 .map-pick-list { grid-template-columns: 1fr !important; gap: 10px; }
+.map-pick-list.two-col { grid-template-columns: 1fr !important; }
 .map-pick-list > * { min-height: 56px; }
 .boot-author { font-size: 12px; flex-wrap: wrap; gap: 6px; }
 
@@ -716,3 +719,21 @@
 }
 /* 面板头里那个「▾」按钮：贴右边 ✓ */
 #mob-sheet .panel-head .mob-tallbtn { margin-left: auto; flex: none; }
+
+/* ===========================================================================
+   滚动条统一成**暗色** ✓
+   （用户 2026-10-12："手机版剧本太多导致的那个滑块改成符合背景颜色，不要白色" ✓）
+
+   **只管颜色，不管"露不露"** ✗：
+     · 上面那些 `scrollbar-width: none !important` 和 id/类级 `::-webkit-scrollbar`
+       选择器照样优先 —— 该藏的还藏着 ✓
+     · 只把**没人管过的**那些（= 浏览器默认那根白条）染成跟电脑版侧栏同色的暗灰 ✓
+
+   `#2b3542` 就是电脑版 `.sidebar::-webkit-scrollbar-thumb` 用色 ✓（同一套视觉）
+   =========================================================================== */
+* { scrollbar-color: #2b3542 transparent; }            /* Firefox ✓ */
+*::-webkit-scrollbar { width: 9px; height: 9px; }      /* Chromium / Safari；横向那条靠 height ✓ */
+*::-webkit-scrollbar-thumb { background: #2b3542; border-radius: 5px; }
+*::-webkit-scrollbar-thumb:hover { background: #3a4757; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-corner { background: transparent; }

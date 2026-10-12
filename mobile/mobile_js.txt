@@ -46,6 +46,18 @@ function bindMobile() {
   const titleEl = $('mob-sheet-title');
   const wait = (fn) => { try { fn(); } catch (e) { if (window.console) console.warn('[手机版]', e && e.message); } };
 
+  /* ============================================================ 选文件：过滤整个放开
+   * ⚠ 用户报的"手机上没法把 pdxmap 识别为可导入文件"（2026-10-12）✗：
+   *   `.pdxmap` 是自定义扩展名，系统不认 → 报给选择器的类型是 `application/octet-stream` ✓
+   *   而安卓 / iOS 的文件选择器**按 MIME 过滤** ✗ → 文件灰着，点都点不动 ✓
+   *   （源头那份 accept 已经补了 octet-stream，这里再兜一道：手机上一律不过滤 ✓
+   *    反正选错了也进不来 —— pack.js 的校验器会说清楚哪个文件、哪儿不对 ✓）
+   */
+  wait(() => {
+    const pf = $('pack-file');
+    if (pf && pf.accept !== '*/*') pf.accept = '*/*';
+  });
+
   /* ============================================================ 面板骨架（先造好）
    * **顺序很重要** ✓：先把骨架和按钮的监听接上，再去搬节点 ✓
    * 这样就算某一步搬失败，点入口也照样出面板 ✓

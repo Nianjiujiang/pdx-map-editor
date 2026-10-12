@@ -127,18 +127,25 @@ function ok(name, cond, extra = '') {
     }
 
 
-  // **单文件要嵌的地图清单必须跟 app.js 的 MAP_CHOICES 一致** ——
+  // **"能内嵌的地图清单"必须跟 app.js 的 MAP_CHOICES 一致** ——
   // 这两份名单以前是各写各的，加了新地图只改一处，单文件里就看不到它（EU4 1616 就是这么漏的）。
+  // 2026-10-12：清单搬进了 `MAPS` 常量（`build_packs.py` 也用这一份 ✓），
+  // 而**单文件默认出轻量版、一张都不嵌** —— 所以这里只比"表里有哪几张"，
+  // 不再要求产物真嵌了它们 ✓（产物那一份到底嵌没嵌，由 check_standalone 按形态验 ✓）
   {
     const fs2 = require('fs');
     const app = fs2.readFileSync('web/js/app.js', 'utf8');
     const bs = fs2.readFileSync('build_standalone.py', 'utf8');
     const choiceKeys = [...app.matchAll(/\{ key: '([a-z0-9]+)',\s*emb: '([a-z0-9]+)'/g)].map((m) => m[2]);
-    const embedKeys = [...bs.matchAll(/\(\"([a-z0-9]+)\", ROOT \/ \"data/g)].map((m) => m[1]);
-    const missing = choiceKeys.filter((k) => !embedKeys.includes(k));
-    ok('单文件嵌入清单与地图清单一致（新增地图别只改一处）',
+    const tableKeys = [...bs.matchAll(/\(\"([a-z0-9]+)\", \"pdx-/g)].map((m) => m[1]);
+    const missing = choiceKeys.filter((k) => !tableKeys.includes(k));
+    ok('地图表（MAPS）跟 app.js 的地图清单一致（新增地图别只改一处）',
        missing.length === 0,
-       missing.length ? ('漏嵌: ' + missing.join(',')) : (choiceKeys.length + ' 张都在'));
+       missing.length ? ('表里少了: ' + missing.join(',')) : (choiceKeys.length + ' 张都在表里'));
+    /* 反过来也看一眼：表里多出来的键 = 多半写错了，或者忘了在 app.js 里登记 ✓ */
+    const extra = tableKeys.filter((k) => !choiceKeys.includes(k));
+    ok('地图表里没有多余的东西（键名别写错）', extra.length === 0,
+       extra.length ? ('多出来: ' + extra.join(',')) : '不多不少');
   }
 
   // **代码里取的元素必须真的在页面上** —— 删 UI 忘了删引用会直接崩 ✗（今天三次）
@@ -742,7 +749,11 @@ function stripModule(src) {
   }).join('\n');
 }
 
-const MODULES = ['data.js', 'zip.js', 'bmp.js', 'gl.js', 'labels.js', 'tilemap.js', 'app.js'];
+/* ⚠ 这份清单**必须和 build_standalone.py 的 MODULES 一致**（顺序也要对）——
+   少一个模块的表现是"某个功能悄悄没了"，不是报错隔壁那行，特别难查 ✗
+   pack.js / packstore.js 是导入式地图那套（见 docs/导入式地图-策划.md）；
+   它们要排在 data.js 前面：data.js 的第三数据源会调 packstore 的 getFile ✓ */
+const MODULES = ['pack.js', 'zip.js', 'packstore.js', 'data.js', 'bmp.js', 'gl.js', 'labels.js', 'tilemap.js', 'app.js'];
 let js = MODULES.map((n) => `// ==== ${n} ====\n` + stripModule(fs.readFileSync(path.join(ROOT, 'web', 'js', n), 'utf8'))).join('\n\n');
 
 // 把结尾那次 boot() 摘掉，改由测试自己触发，并开几个探针出去
@@ -1218,8 +1229,8 @@ const factory = new Function(
       }
 
       /* **设置 + 最近颜色是存下来的** ✓（用户要求：刷新 / 回主菜单都不丢 ✓；
-       *   而且**每张图各存各的** ✓ —— 跟"涂色暂存"那份是**两回事** ✓
-       *   涂色：回主菜单才存、F5 就清 ✓   设置：两边都活 ✓）*/
+       *   而且按**游戏类型**存 ✓ —— 同款游戏的图共用一套 ✓
+       *   跟"涂色暂存"那份是**两回事**：涂色回主菜单才存、F5 就清，而且按**哪一张图**分 ✓）*/
       {
         const _svW = st.set.w, _svPa = st.set.pa, _svWw = st.set.waterW;
         const _svRecent = (st.recent || []).slice();
@@ -1244,12 +1255,17 @@ const factory = new Function(
            !!_back && _back.recent && _back.recent.length === 1
            && _back.recent[0].rgb != null && _back.recent[0].label === undefined,
            '字段：' + (_back && _back.recent ? Object.keys(_back.recent[0]).join(',') : '?'));
-        // **按地图分**：换一张图（换 stashKey ✓）读不到这张图的设置 ✓
+        // **按游戏类型分**：同款游戏换一张图（换 stashKey）照样读得到这一份 ✓
         const _other = Object.assign({}, st.meta, { stashKey: 'OTHER_MAP_FOR_TEST' });
         const _ob = ex.loadMapPrefs(_other);
-        ok('换一张图读不到这张图的设置（按地图分 ✓）',
-           !_ob || !_ob.set || Number(_ob.set.w) !== 2.5,
-           _ob && _ob.set ? 'w=' + _ob.set.w : '空 ✓');
+        ok('同款游戏换一张图，照样读得到这份设置（按游戏分 ✓ 不按图分 ✓）',
+           !!_ob && !!_ob.set && Number(_ob.set.w) === 2.5,
+           _ob && _ob.set ? 'w=' + _ob.set.w : '空 ✗');
+        // 换成**别的游戏**才是那条边界 ✓
+        const _otherGame = Object.assign({}, st.meta,
+          { game: (st.meta.game === 'ck3' ? 'eu4' : 'ck3') });
+        ok('换成别的游戏就读不到（边界是"类型"✓）',
+           !ex.loadMapPrefs(_otherGame), JSON.stringify(ex.loadMapPrefs(_otherGame)));
         st.set.w = _svW; st.set.pa = _svPa; st.set.waterW = _svWw;
         st.recent = _svRecent;
         ex.saveMapPrefs();
@@ -2166,12 +2182,11 @@ const factory = new Function(
 
   // 出厂默认：**父级边界关**（要用再勾）✓
   // 本文件后面那些"父级链"的断言验的是链本身，所以在这之后显式打开它。
+  // （原来还有一个 CK3 专用的「父级边界」复选框 —— 那组删了，现在只有地区组这一个 ✓）
   ok('父级边界默认是关的',
      st.showParentBorderTitle === false
-     && (!get('show-parent-border') || get('show-parent-border').checked === false)
-     && (!get('show-parent-border-ck3') || get('show-parent-border-ck3').checked === false),
-     'state=' + st.showParentBorderTitle + ' ck3框=' + (get('show-parent-border-ck3') || {}).checked
-       + ' 年代框=' + (get('show-parent-border') || {}).checked);
+     && (!get('show-parent-border') || get('show-parent-border').checked === false),
+     'state=' + st.showParentBorderTitle + ' 勾选框=' + (get('show-parent-border') || {}).checked);
   // 用户报的 bug：A 色涂 B 国一小块 → 剧本层无粒度再点它 → **只该涂那一小块**，B 不许被牵连
   if (WHICH === 'EU4') {
     const fine2 = st.meta.tiers.length - 1;
@@ -2460,6 +2475,9 @@ const factory = new Function(
   }
 
   // CK3：头衔边界与填色边界**不互斥**，而且一起开时跟年代模式的「剧本+粒度」一个样子
+  // ⚠ 这一段跑的是"**没有年代层**的旧缓存"那条兜底路（八套地图现在都有剧本层了 ✓）——
+  //   原来它还会去点「头衔 · 边界」那个复选框，那个 2026-10-12 删了 ✓
+  //   （现在边界状态直接写 st，验的还是 state → 渲染器那一段 ✓）
   if (!(st.meta.eraDates || []).length && ex.renderer) {
     const svBT = st.showBorderTitle, svBP = st.showBorderPaint, svPB = st.showParentBorderTitle;
     const svTier = st.tier, svGrain = st.grain;
@@ -3442,6 +3460,40 @@ const factory = new Function(
        /MODULES\s*=\s*\([^)]*"tutorial\.js"/.test(buildSrc), 'MODULES');
   }
 
+  /* 三份"要拍平的模块清单"必须对得上 ------------------------------------------
+   * 它们是：build_standalone.py（烤单文件）· tools/lib/browser_stub.js（桩）
+   *         · 本文件（自己搭的沙箱）。
+   * **漏一个的表现是"某个功能悄悄没了"**，不是隔壁那行报错 ✗ ——
+   * 加"导入式地图"那回就踩了两遍：
+   *   ① 本文件这份漏了 packstore.js → 一启动就 `packStoreMode is not defined`
+   *   ② perf_compare 拿旧快照按新清单拍 → ENOENT
+   * 所以这条盯着"清单"本身，而不是盯着某个功能 ✓ */
+  {
+    const fs2 = require('fs');
+    const pickJs = (s) => [...s.matchAll(/'([A-Za-z0-9_]+\.js)'|"([A-Za-z0-9_]+\.js)"/g)]
+      .map((m) => m[1] || m[2]);
+    const grab = (src, re) => { const m = src.match(re); return m ? m[0] : ''; };
+    const stubList = pickJs(grab(fs2.readFileSync('tools/lib/browser_stub.js', 'utf8'),
+      /MODULES = \[[^\]]*\]/));
+    const buildList = pickJs(grab(fs2.readFileSync('build_standalone.py', 'utf8'),
+      /MODULES = \([\s\S]*?\)/));
+    const selfList = pickJs(grab(fs2.readFileSync('test_modes.js', 'utf8'),
+      /const MODULES = \[[^\]]*\]/));
+    const show = (a) => a.join(' ');
+
+    ok('烤单文件的清单和桩的清单完全一样（含顺序 ✓）',
+       buildList.length > 0 && JSON.stringify(buildList) === JSON.stringify(stubList),
+       `build_standalone ${buildList.length} 个 / 桩 ${stubList.length} 个`);
+    /* 本文件这份**故意**少 log.js（报错日志是普通脚本，由桩自己处理）和 tutorial.js
+       （引导是另一个 <script>）—— 除此之外必须一个不差、顺序也一样 ✓ */
+    const want = buildList.filter((n) => n !== 'log.js' && n !== 'tutorial.js');
+    ok('自测这份清单 = 单文件版清单去掉 log / tutorial（少一个都会"功能悄悄没了" ✗）',
+       selfList.length > 0 && JSON.stringify(selfList) === JSON.stringify(want),
+       JSON.stringify(selfList) === JSON.stringify(want)
+         ? `一致（${show(selfList)}）`
+         : `自测 ${selfList.length} 个：${show(selfList)} ｜ 应该是：${show(want)}`);
+  }
+
   // 剧本层的国名 = 「填色 · 名称」那份全图重分组 ✓
   // （原来还有个「势力 · 名称」开关，画的是**同一批点**，所以删了 ✓
   //   这里守两件事：① 没涂色也得给每个国家一个点 ② 点的位置/字号就是那份分组给的 ✓）
@@ -4290,16 +4342,27 @@ const factory = new Function(
     }
   }
 
-  // 收放：有年代层的模式显示 势力/地区、收掉「头衔」；CK3 反过来
+  /* 显示面板的收放：八套地图**现在都一样**了 —— 有年代层就显示「势力/地区」，
+     没有的（旧缓存）才收起来 ✓
+     ⚠ 原来这里还验过「头衔」那一组（非 CK3 收掉、CK3 显示）——
+     那一组 2026-10-12 删掉了：CK3 后来也有剧本层，`_hasEra` 在**每一个**模式里都成立，
+     那组开关永远是藏着的 = 纯死 UI ✗ 见 app.js 里 syncLayerSwitches 上面那段注释 */
   {
     const hasEra = !!((st.meta.eraDates || []).length);
     const vis = (id) => { const el = get(id); return el ? el.style.display !== 'none' : false; };
+    /* ⚠ 「元素还在不在」要扫**源码** ✗ —— 假 DOM 的 getElementById 找不到会现造一个，
+       所以"删掉了没"在桩里永远测不出（同一条防线见上面"代码里取的元素都在页面上" ✓） */
+    const gone = ['titles-group', 'show-titles', 'show-border-title', 'show-labels',
+      'show-parent-border-ck3'].filter((id) => new RegExp(`id="${id}"`)
+      .test(require('fs').readFileSync('web/index.html', 'utf8')));
+    ok('「头衔」那组显示开关已经删干净（index.html 里不该再有那几个 id）',
+       gone.length === 0, gone.length ? ('还留着：' + gone.join('、')) : '一个都不剩 ✓');
     if (get('power-group')) {
-      ok(hasEra ? '非 CK3：显示「势力/地区」、收掉「头衔」'
-                : 'CK3：显示「头衔」、收掉「势力/地区」',
-         hasEra ? (vis('power-group') && vis('region-group') && !vis('titles-group'))
-                : (!vis('power-group') && !vis('region-group') && vis('titles-group')),
-         `势力=${vis('power-group')} 地区=${vis('region-group')} 头衔=${vis('titles-group')}`);
+      ok(hasEra ? '有年代层：显示「势力 / 地区」两组'
+                : '没有年代层的旧缓存：这两组收起来',
+         hasEra ? (vis('power-group') && vis('region-group'))
+                : (!vis('power-group') && !vis('region-group')),
+         `势力=${vis('power-group')} 地区=${vis('region-group')} 有年代层=${hasEra}`);
     }
   }
 

@@ -4,10 +4,11 @@
 
 // 开发版是真 ES module（index.html 只加载本文件）——别的模块都得显式 import。
 // 单文件版由 build_standalone.py 剥掉这些行、按序拍平，两边的加载方式都兼容。
-import { DATA, api, decompress, embeddedMapKeys, isEmbedded, setDataDir, setEmbeddedMap } from './data.js';
+import { DATA, api, decompress, embeddedMapKeys, isEmbedded, setDataDir, setEmbeddedMap, setPackMap, isPackMap } from './data.js';
 import { MapRenderer } from './gl.js';
 import { LabelLayer, computeLabelZoom } from './labels.js';
 import { TileMap } from './tilemap.js';
+import { importPack, listPacks, getPack, removePack, exportPackBytes, packStoreMode } from './packstore.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -56,11 +57,14 @@ function bindAuthorLinks() {
 bindAuthorLinks();
 
 /**
- * 每个游戏的术语、存档键、导出方式
+ * 每个游戏的术语、存档键、叫法
  *
  * 渲染那一层两个游戏是**完全共用** —— EU4 的「省份/地区/区域/大洲」
- * 正好也是五级，一一对上 titlemap 那 5 行。不同的只有叫法、落盘位置和
- * "导出 mod"到底该导出什么
+ * 正好也是五级，一一对上 titlemap 那 5 行。不同的只有叫法
+ *
+ * ⚠ 这里只放**真被读的字段** ✗ —— 2026-10-12 删掉了 `modName` / `exportKind` /
+ *   `exportTip` / `brushTip` 四个：全仓库一个消费者都没有（"导出 mod"这条路
+ *   编辑器里压根没做 ✓），留着只会让人以为还有那功能 ✓
  */
 const GAMES = {
   ck3: {
@@ -71,13 +75,9 @@ const GAMES = {
     entity: '头衔',
     saveKey: 'ck3-map-editor/v1',
     filePrefix: 'ck3',
-    modName: 'CK3颜色编辑',
-    exportKind: 'ck3',
     searchHint: '支持中文名、英文名、c_/d_/k_/e_ 开头的 key',
     searchPlaceholder: '',
-    brushTip: '用吸管（W）在地图上取色，再用涂色（E）刷到别的头衔上',
     pickHint: '这个颜色在数据里归好几个头衔，挑一个当标记',
-    exportTip: '导出到 CK3 mod：把颜色写进 common/landed_titles',
     colorTip: '显示头衔自带的颜色',
     borderTip: '给头衔区域描边（和「填色·边界」二选一）',
     labelsTip: '在地图上标出头衔名字',
@@ -91,13 +91,9 @@ const GAMES = {
     entity: '省份',
     saveKey: 'eu4-map-editor/v1',
     filePrefix: 'eu4',
-    modName: 'EU4省份配色',
-    exportKind: 'eu4',
     searchHint: '支持 TAG 与势力名、区域名、地区名、省份名；key 形如 SWE / p_118 / brittany_area。',
     searchPlaceholder: '',
-    brushTip: '用吸管（W）在地图上取色，再用涂色（E）刷到别的省份或地区上',
     pickHint: '这个颜色在数据里归好几个省份，挑一个当标记',
-    exportTip: '导出到 EU4 mod：重写 map/provinces.bmp 和 definition.csv',
     colorTip: '显示省份 / 地区自带的颜',
     borderTip: '给省份区域描边（和「填色·边界」二选一）',
     labelsTip: '在地图上标出地名',
@@ -111,15 +107,9 @@ const GAMES = {
     entity: '省份',
     saveKey: 'hoi4-map-editor/v1',
     filePrefix: 'hoi4',
-    modName: 'HOI4省份配色',
-    // HOI4 的 provinces.bmp 里那个「省份 id」：那里的颜色是编号，不是显示用的地图
-    // 改了它游戏画面不会变，所以这个模式没有「导出 mod」这条路，按钮直接收起来
-    exportKind: 'none',
     searchHint: '支持 TAG 与势力名、州名、战略区名、城市名；key 形如 GER / STATE_118 / STRATEGICREGION_1。',
     searchPlaceholder: '',
-    brushTip: '用吸管（W）在地图上取色，再用涂色（E）刷到别的州或省份上',
     pickHint: '这个颜色在数据里归好几个省份，挑一个当标记',
-    exportTip: '',
     colorTip: '显示国家 / 州自带的颜色',
     borderTip: '给省份区域描边（和「填色·边界」二选一）',
     labelsTip: '在地图上标出地名',
@@ -133,15 +123,9 @@ const GAMES = {
     entity: '地点',
     saveKey: 'eu5-map-editor/v1',
     filePrefix: 'eu5',
-    modName: 'EU5地块配色',
-    // EU5 的地块图是"像素色 = 地块色"的索引图（跟 V3 一个道理），
-    // 改了它游戏画面不会变，所以这个模式也没有"导出 mod"这条路
-    exportKind: 'none',
     searchHint: '支持 TAG 与势力名，以及 国家 / 区域 / 地区 / 省份 / 地点的名字。',
     searchPlaceholder: '',
-    brushTip: '用吸管（W）在地图上取色，再用涂色（E）刷到别的地块上。',
     pickHint: '这个颜色在数据里归好几个地块，挑一个当标记：',
-    exportTip: '',
     colorTip: '显示地块自带的颜色',
     borderTip: '给地块描边（和「填色·边界」二选一）',
     labelsTip: '在地图上标出地名',
@@ -155,15 +139,9 @@ const GAMES = {
     entity: '省份',
     saveKey: 'vic3-map-editor/v1',
     filePrefix: 'vic3',
-    modName: 'V3省份配色',
-    // 跟 HOI4 一个道理：provinces.png 的像素是**省份 id**（xRRGGBB），不是显示地图
-    // 改了它游戏画面不会变 —— 这个模式也没有「导出 mod」这条路
-    exportKind: 'none',
     searchHint: '支持 TAG 与势力名、州名、战略区名；key 形如 SWE / STATE_SVEALAND / p_118。',
     searchPlaceholder: '',
-    brushTip: '用吸管（W）在地图上取色，再用涂色（E）刷到别的州或省份上',
     pickHint: '这个颜色在数据里归好几个省份，挑一个当标记',
-    exportTip: '',
     colorTip: '显示国家 / 州自带的颜色',
     borderTip: '给省份区域描边（和「填色·边界」二选一）',
     labelsTip: '在地图上标出地名',
@@ -252,6 +230,10 @@ const state = {
     legend: false, legendTitle: '', legendPos: 'tl',
   },
   showTitles: true,
+  /* 原版边界的开关原来挂在「头衔」那组的复选框上（state 里干脆没这个字段 ✗）——
+     那组删掉之后，这个值就由「势力/地区 · 边界」每帧算出来写进来 ✓
+     （这一条只是给"没有年代层的旧缓存"兜底：默认不画原版边界 ✓） */
+  showBorderTitle: false,
   // 地名拆两套：原有地名（头衔/地区名）和玩家地名（手绘色块名），互不影响
   // （原来还有第三套「势力名」——它算出来的东西跟玩家地名**完全是同一批点** ✓
   //   所以那个开关删了，剧本层的国名就由「填色 · 名称」统一负责 ✓）
@@ -1211,16 +1193,14 @@ function syncLayerSwitches() {
       blocksDirty = true;
     }
   }
-  if (!n) {
-    /* **没有年代层的数据**（八套地图现在都有剧本层了 ✓ 这条留着兜底）：
-     * 界面上「头衔」那一组的勾选**直接说了算**。
-     * 以前这里什么都不做，state.showBorderTitle 就一直是旧值（默认 false），
-     * 而父级链又去听了隐藏的「地区·边界」→ 表现就是"边界关了，父级线还在" ✗ */
-    const _bt = $('show-border-title');
-    const _tt = $('show-titles');
-    if (_bt && state.showBorderTitle !== _bt.checked) state.showBorderTitle = _bt.checked;
-    if (_tt) state.showTitles = _tt.checked;
-  }
+  /* ⚠ **「头衔」那组显示开关删了**（2026-10-12，廿九点的 ✓）
+   * 原来 CK3 走「头衔」一组、别的游戏走「势力 + 地区」两组；
+   * 可 CK3 后来也有剧本层了（1066 / 空白剧本 → `meta.eraDates` 有两条），
+   * 于是"有没有年代层"这个判据在**每一个模式**里都成立 →
+   * 势力/地区一直显示着，而「头衔」那一组**永远是藏着的** ✗（纯死 UI）
+   * 它控的三样（原版颜色 / 原版地名 / 原版边界）现在都由「势力 · 地区」那几组
+   * 每帧算出来写进 state（见下面 `state.showTitles = col` 那几行 ✓），
+   * 所以删掉界面 **运行时一点变化都没有** ✓ */
   if (!n || !$('show-power-color')) return;   // 没有年代层 / 页面上没有那组开关：不动 ✓
   const isPower = state.tier < n;
   // 边界是照**编辑层**画的（开粒度时就是粒度那一层）→ 听**那一类**的开关
@@ -2926,7 +2906,7 @@ function applyGameText() {
   document.title = g.title;
   $('brand-mark').innerHTML = `${g.brand}<small>${g.brandSmall}</small>`;
   $('boot-title').textContent = g.title;
-  $('title-group-label').textContent = g.entity;
+  // （原来这里还把「头衔」那组的标签改成 g.entity —— 那组删了 ✓ 标题那边用同一个值 ✓）
 
   /* 各模式的默认开关（**八套地图都一样** ✓ —— CK3 原来是个例外（只有「头衔」那一组、
    * 颜色边界全开 ✗），用户点名的"取消 CK3 的特立独行、和其他模式一样" ✓ 见 build_data
@@ -2950,16 +2930,13 @@ function applyGameText() {
   }
   // 状态 → 界面上的勾（HTML 里的 checked 只是初值，这里统一过来）
   // 注意：**别把 state 里不存在的字段塞进来** ✗ —— `el.checked = undefined`
-  // 等于把勾取消（边界那两个就存在复选框上，所以不在这张表里）。
+  // 等于把勾取消（另外，界面上没有的开关也别塞：`$()` 会返回 null ✓）
   const _sw = [
-    ['show-titles', state.showTitles],
     ['show-paint', state.showPaint],
-    ['show-labels', state.showLabelsTitle],
     ['show-labels-paint', state.showLabelsPaint],
     ['show-power-names', state.showLabelsPaint],   // 势力那组的镜像开关 ✓ 跟上面同一个状态 ✓
     ['show-border-paint', state.showBorderPaint],
     ['show-parent-border', state.showParentBorderTitle],
-    ['show-parent-border-ck3', state.showParentBorderTitle],
     ['show-waste', state.showWaste],
     ['show-power-color', state.showPowerColor],
     ['show-power-border', state.showPowerBorder],
@@ -2980,16 +2957,16 @@ function applyGameText() {
     // 同一处 bug 的另一个入口：程序化恢复状态（换图/导入）也会走到这里，
     // 无条件推 false 会把荒地涂色藏掉 —— 口径与下面的 change 处理器一致
     renderer.setShowWaste(state.showWaste || state.wasteAuto);
-    // 边界的状态存在**复选框**上（state 里没有 showBorderTitle 字段 ✗
-    // —— 传 undefined 会被 !! 变成 false，把边界关掉）
-    const _bt = $('show-border-title');
-    const _bp = $('show-border-paint');
-    if (_bt) renderer.setBorderTitle(_bt.checked);
+    /* 原版边界（原来是从「头衔 · 边界」那个复选框读的 ✗ 那组已经删了）——
+       现在从 state 读；有年代层的话，下一帧 `syncLayerSwitches` 会按
+       「势力/地区 · 边界」重算一遍 ✓ */
+    renderer.setBorderTitle(!!state.showBorderTitle);
 
-    // **把签名作废一次**：上面这几行是按**藏起来的**旧勾选框推的，
+    // **把签名作废一次**：上面这几行是照着旧勾选框推的，
     // 势力/地区那套带签名去重 —— 不这么做，它们后面不会再推，旧值就赖着 ✗
     state._layerSig = null;
     state._parentSig = null;
+    const _bp = $('show-border-paint');
     if (_bp) renderer.setBorderPaint(_bp.checked);
     renderer.setMix(1.0);
   }
@@ -3001,15 +2978,15 @@ function applyGameText() {
       if (_row) _row.style.display = _hasWaste ? '' : 'none';
     }
   }
-  // 「势力 / 地区」两组只在有年代层（非 CK3）的模式里出现；CK3 仍旧用「头衔」一组
+  /* 「势力 / 地区」两组要有年代层才出现 ✓
+     （原来这里还管过「头衔」那一组 —— 那组删了，见 syncLayerSwitches 上面那段注释 ✗；
+      现在八套地图都有剧本层，所以这两组一直显示着 ✓） */
   {
     const _hasEra = !!(state.meta && state.meta.eraDates && state.meta.eraDates.length);
     for (const _id of ['power-group', 'region-group']) {
       const _el2 = $(_id);
       if (_el2) _el2.style.display = _hasEra ? '' : 'none';
     }
-    const _tg = $('titles-group');
-    if (_tg) _tg.style.display = _hasEra ? 'none' : '';
   }  // 有年代层的模式（非 CK3）能查TAG，标题就别写死"省份"了 ✓
   $('hdr-search').textContent = ((state.meta.eraDates || []).length) ? '查找' : `查找${g.entity}`;
 
@@ -3408,24 +3385,48 @@ async function exportFullPNG(scale = 1) {
  *   · 涂色（`STASH_KEY`）：回主菜单才存、**F5 刷新就清** ✓（用户当年定的 ✓）
  *   · 设置 / 最近颜色（`SET_KEY`）：**刷新也在、回主菜单也在** ✓
  *
- * 两份都按**地图**分（`mapKeyOf`）✓ —— CK3 和 EU4 的省份编号是两套，
- * 混在一起会互相把对方涂花，设置也一样（各图的层数、颜色键根本不同 ✓）
+ * 🔴 **两份认的键不一样** ✗（2026-10-12 廿九定的）：
+ *   · 设置 / 最近颜色 → **游戏类型**（`prefsKeyOf` = `meta.game`）✓
+ *     同一个游戏的不同图**共用一套**（TNO 和钢铁雄心4原版共用 ✓ ——
+ *     它们说的本来就是一回事：界面上那几档线宽浓度、以及你记过的颜色 ✓）
+ *     删掉某一张图也**不许**把它们带走 ✓
+ *   · 涂色暂存 → **哪一张图**（`mapKeyOf`）✗ 这个绝不能共用：
+ *     CK3 和 EU4 的省份编号是两套，同一个游戏的不同 mod 省份数也可能不同，
+ *     混在一起会互相把对方涂花 ✓
  * ========================================================================== */
 const SET_KEY = 'pdx-map-editor/prefs/v1';
 
-/** 读**这张图**存下的设置 + 最近颜色 ✓（没有就返回 null → 用出厂值 ✓） */
+/** 设置 / 最近颜色认的键 = **游戏类型**（ck3 / eu4 / hoi4 / vic3 / eu5 ✓）
+ *  —— 跟"哪一张图"无关 ✓（用户定的：TNO 和原版共用一份 ✓）*/
+function prefsKeyOf(meta) {
+  return (meta && meta.game) ? String(meta.game) : '';
+}
+
+/** 读设置 + 最近颜色 ✓（没有就返回 null → 用出厂值 ✓） */
 function loadMapPrefs(meta) {
   try {
+    const k = prefsKeyOf(meta);
+    if (!k) return null;
     const box = JSON.parse(localStorage.getItem(SET_KEY) || '{}') || {};
-    const v = box[mapKeyOf(meta)];
+    let v = box[k];
+    /* 老版本是**按每张图**存的（键 = mapKeyOf）✗ —— 读不到就顺手认一次旧的，
+       认到就地搬到游戏键上 ✓ 不然升级之后老用户的设置会一夜回到出厂值 ✓ */
+    if (!v || typeof v !== 'object') {
+      const old = mapKeyOf(meta);
+      const legacy = old ? box[old] : null;
+      if (legacy && typeof legacy === 'object') {
+        v = legacy;
+        try { box[k] = legacy; localStorage.setItem(SET_KEY, JSON.stringify(box)); } catch (e) { /* ✓ */ }
+      }
+    }
     return (v && typeof v === 'object') ? v : null;
   } catch (e) { return null; }
 }
 
-/** 把设置 + 最近颜色按地图存下来 ✓（写不进去就返回 false，别让调用方以为成了 ✓） */
+/** 把设置 + 最近颜色按**游戏类型**存下来 ✓（写不进去就返回 false，别让调用方以为成了 ✓） */
 function saveMapPrefs() {
   try {
-    const k = mapKeyOf(state.meta);
+    const k = prefsKeyOf(state.meta);
     if (!k || !state.set) return false;
     const box = JSON.parse(localStorage.getItem(SET_KEY) || '{}') || {};
     box[k] = { set: Object.assign({}, state.set),
@@ -3435,10 +3436,6 @@ function saveMapPrefs() {
     return true;
   } catch (e) { return false; }
 }
-
-// 存档按游戏分开存：ck3-map-editor/v1、eu4-map-editor/v1
-// 两边的省份 id 完全是两套编号，混在一起会互相把对方涂花
-// （CK3 的键跟老版本一样，所以已有的存档不用迁移。）
 let saveTimer = 0;
 
 /** 涂完别马上写盘，等手停下来一会儿再存
@@ -3915,11 +3912,8 @@ function bindEvents() {
   });
 
   // 开关
-  $('show-titles').addEventListener('change', (e) => {
-    state.showTitles = e.target.checked;
-    renderer.setShowTitles(state.showTitles);
-    labelDirty = true;
-  });
+  /* 「头衔」那组（原版颜色 / 地名 / 边界）的监听器跟着界面一起删了 ——
+     它控的三样现在都由「势力 / 地区」那几组每帧算（见 syncLayerSwitches ✓）*/
   $('show-paint').addEventListener('change', (e) => {
     state.showPaint = e.target.checked;
     renderer.setShowPaint(state.showPaint);
@@ -3959,38 +3953,29 @@ function bindEvents() {
   }
 
   $('waste-auto').addEventListener('change', (e) => setWasteAuto(e.target.checked));
-  // 两条边界**不互斥**：可以只开一条，也可以一起开 ——
-  //   一起开时，头衔那边按体系往上数（本层 0.5 / 父级 0.75 / 爷爷及以上 1.0），
-  //   填色那边再叠一条实心的自家分界，跟年代模式的「剧本 + 粒度」是一个样子 ✓
-  const borderBoxes = [$('show-border-title'), $('show-border-paint')];
+  /* 边界：**原版那条现在没有开关了**（原来在「头衔」那组里 ✗）——
+     有年代层的模式由「势力 · 边界」/「地区 · 边界」算出来（那两个跟填色边界互斥 ✓）；
+     这里只剩「填色 · 边界」这个复选框要听 ✓
+     （原来两条边界的说明留在 git 历史里；填色那条按**当前显示的颜色**画 ✓） */
+  const borderBox = $('show-border-paint');
   const applyBorders = () => {
-    if (borderBoxes[0]) {
-      state.showBorderTitle = borderBoxes[0].checked;
-      renderer.setBorderTitle(state.showBorderTitle);
-    }
-    if (borderBoxes[1]) {
-      state.showBorderPaint = borderBoxes[1].checked;
+    if (borderBox) {
+      state.showBorderPaint = borderBox.checked;
       renderer.setBorderPaint(state.showBorderPaint);
     }
     state._parentSig = null;
     syncParentBorder();          // 本层/父级/爷爷的宽度与浓度立刻跟上
     renderer.dirty = true;
   };
-  for (const _box of borderBoxes) {
-    if (_box) _box.addEventListener('change', applyBorders);
-  }
-  // 地名两个开关（界面上一左一右：头衔组里的管头衔/地区名，填色组里的管玩家色块名）
-  $('show-labels').addEventListener('change', (e) => {
-    state.showLabelsTitle = e.target.checked;   // 解析层每帧会按势力/地区重写 ✓
-    labelDirty = true;
-  });  
-  // 「填色 · 边界」：这条边界按**当前显示的颜色**画 ✓（不再专门看涂了哪些 ✓）
-  // 「父级边界」：关了就只有本层一条线（多级链不画）✓
-  // 两个开关都能改这件事（势力那组 / 地区那组，CK3 那两个）→ 挂同一个处理器 ✓
-  // （原来这里还留了一个 `if (false) ...` 的死副本 ✗，挂的是同一件事，
-  //   什么时候被谁改坏的已经查不出来了 —— 删掉 ✓）
-  for (const _id of ['show-parent-border', 'show-parent-border-ck3']) {
-    const _el = $(_id);
+  if (borderBox) borderBox.addEventListener('change', applyBorders);
+  /* 地名：原来界面上一左一右两个开关（头衔组里那个管头衔/地区名）——
+     头衔组的那个删了 ✓ 现在只有「填色 · 名称」，
+     而普通地名（头衔/地区/省份名）由解析层按势力/地区每帧算 ✓ */
+  /* 「父级边界」：关了就只有本层一条线（多级链不画）✓
+     原来有两个开关（势力/地区那组一个、CK3「头衔」组一个），CK3 那个跟着删了 ✓
+     现在只剩「地区」组那个 —— 但没有年代层的老缓存上它也可能不在，所以照旧判空 ✓ */
+  {
+    const _el = $('show-parent-border');
     if (_el) _el.addEventListener('change', (e) => {
       state.showParentBorderTitle = e.target.checked;
       state._parentSig = null;
@@ -3998,12 +3983,8 @@ function bindEvents() {
       renderer.dirty = true;
     });
   }
-
-  $('show-border-paint').addEventListener('change', (e) => {
-    state.showBorderPaint = e.target.checked;
-    renderer.setBorderPaint(state.showBorderPaint);
-    renderer.dirty = true;
-  });
+  // （原来这里还有一个「填色 · 边界」的监听器 —— 跟上面 applyBorders 是同一件事的
+  //   死副本 ✗ 顺手删了 ✓）
 
   /* 「名称」有两个开关：填色那组的 #show-labels-paint（哪一代都有 ✓）
      和势力那组的 #show-power-names（只有有国家/年代层时才看得见 ✓）
@@ -5362,39 +5343,458 @@ function setBoot(step, pct) {
 
 const nextTick = () => new Promise((r) => setTimeout(r, 16));
 
-/** 哪些地图真的能用 —— 单文件版看内嵌清单，走服务时探一下各自的 meta.json */
+/** 哪些地图真的能用 —— 单文件版看内嵌清单，走服务时探一下各自的 meta.json，
+ *  最后再接上**玩家导入进来的地图包**（存在浏览器里那份，见 packstore.js）✓ */
 async function availableMaps() {
   const out = [];
   if (isEmbedded()) {
     const keys = embeddedMapKeys();
     for (const m of MAP_CHOICES) if (keys.includes(m.emb)) out.push(m);
-    return out;
+  } else {
+    for (const m of MAP_CHOICES) {
+      try {
+        const res = await fetch(`${m.dir}/meta.json`, { method: 'HEAD' });
+        if (res.ok) out.push(m);
+      } catch (e) { /* 没有这套就跳'*/ }
+    }
   }
-  for (const m of MAP_CHOICES) {
-    try {
-      const res = await fetch(`${m.dir}/meta.json`, { method: 'HEAD' });
-      if (res.ok) out.push(m);
-    } catch (e) { /* 没有这套就跳'*/ }
+  /* 导入的包：**读不出来不该挡住原版那几张** ✓
+     （存储被清了、隐私模式、库坏了 —— 都只该少几张图，不该让人打不开编辑器 ✗）
+     同一个作者 id 有多份时，第 2 份起在名字后面标「第 N 份」——
+     不然两张卡片长得一模一样，玩家根本分不清哪个是哪个 ✗ */
+  try {
+    const recs = await listPacks();
+    const nth = {};
+    for (const r of recs) {
+      const mid = r.manifestId || r.id;
+      nth[mid] = (nth[mid] || 0) + 1;
+      out.push(packEntry(r, nth[mid]));
+    }
+  } catch (e) {
+    LOG.error('读已导入的地图包失败（原版那几张不受影响）', e);
   }
   return out;
 }
 
-/** 让玩家挑一张。只有一套的话直接用，不弹界面 */
+/* ============================================================================
+ * 导入式地图：选图界面那一套（见 docs/导入式地图-策划.md 第 4 节）
+ *
+ * 三件事：① 导入入口（点一下 / 拖进来）② 导入过程的人话进度
+ *         ③ 已导入的图怎么管（导出备份 / 删除）
+ *
+ * 两条铁律：
+ *   · **进到界面上的字符串一律 textContent** ✗ —— label / note / author
+ *     全是陌生人写的，拼进 innerHTML 就是一个能在玩家机器上跑的脚本 ✓
+ *   · 失败**只说人话 + 出在哪个文件**，同时进报错日志（旁边给个"复制详情"）✓
+ *
+ * ⚠ **导入只增不改**（2026-10-11 按廿九的要求改的）：
+ *   同一个包导两次就是两张图，作者的 id 只用来展示和认重，**
+ *   任何已导入的图都不会被后来的导入改动** ✓
+ *   唯一会拦一下的是"逐文件 sha256 一模一样的那一份"——那多半是手滑重复导入，
+ *   问一句再决定（确认了也是新增一张，绝不替换）✓
+ * ========================================================================== */
+
+/** 正在导入（防手滑点两下 / 拖两次） */
+let _importing = false;
+
+/**
+ * 把库里的一条记录变成选图界面要的那张卡片。
+ *
+ * ⚠ `key` 用的是**实例键**（`rec.id`）而不是作者写的 id ✗ ——
+ * 导入是"只增不改"，同一个包导两次就是两条记录、两张卡片 ✓
+ * 所以卡片、涂色、删除、导出**全都认实例键**，作者 id 只用来展示和认重 ✓
+ *
+ * @param {object} rec   库里的记录（id = 实例键，manifest，size）
+ * @param {number} [nth] 同一个作者 id 的第几份（**从 1 数** ✓ 只有一份时界面上不标）
+ */
+function packEntry(rec, nth) {
+  const m = rec.manifest || {};
+  const size = rec.size || 0;
+  return {
+    key: 'pack:' + rec.id,
+    pack: rec.id,                     // boot 认这个字段：有它就走导入的包
+    game: GAMES[m.game] ? m.game : 'ck3',
+    /* ⚠ 名字就是名字，**不往里面塞"（第 2 份）"** ✗ ——
+       重复的那几份靠卡片左上角那个**小序号**区分 ✓（2026-10-12 用户改的 ✓
+       塞进名字里会把名字撑长，两张卡还是得逐个读字才分得出 ✓）*/
+    label: m.label || m.id || rec.id,
+    nth: nth || 0,                    // 同一张图的第几份（界面上只用它画那个小序号 ✓）
+    note: m.note || '',
+    author: m.author || '',
+    version: m.version || '',
+    size,
+    manifestId: m.id || rec.id,
+    imported: true,
+  };
+}
+
+/** 进度 / 结果那一条（**只吃字符串**，一律当文字显示） */
+function setPackMsg(kind, text, pct) {
+  const box = $('map-msg');
+  if (!box) return;
+  box.hidden = false;
+  /* 用 classList 而不是 className：这套界面别的地方也是这么写的，
+     而且桩（tools/lib/browser_stub.js）只同步 classList ✓ */
+  box.classList.remove('busy', 'bad', 'done');
+  if (kind) box.classList.add(kind);
+  box.textContent = String(text == null ? '' : text);   // 陌生人写的字符串 → 永远当文字 ✓
+  if (kind === 'busy' && pct !== undefined && pct !== null) {
+    const bar = document.createElement('div');
+    bar.className = 'map-msg-bar';
+    const i = document.createElement('i');
+    i.style.width = Math.max(0, Math.min(100, Number(pct) || 0)).toFixed(0) + '%';
+    bar.appendChild(i);
+    box.appendChild(bar);
+  }
+  if (kind === 'bad') {
+    // 报错详情早进日志了；这里给一条"复制详情"的路，玩家好发过来 ✓
+    const b = document.createElement('button');
+    b.className = 'btn tiny';
+    b.textContent = '复制详情';
+    b.onclick = () => {
+      try {
+        if (typeof navigator !== 'undefined' && navigator.clipboard) {
+          navigator.clipboard.writeText(LOG.text());
+          b.textContent = '复制好了 ✓';
+        } else {
+          b.textContent = '复制不了，走「导出 ▾ → 导出日志」';
+        }
+      } catch (e) {
+        b.textContent = '复制不了，走「导出 ▾ → 导出日志」';
+      }
+    };
+    box.appendChild(b);
+  }
+}
+
+function clearPackMsg() {
+  const box = $('map-msg');
+  if (box) { box.hidden = true; box.textContent = ''; }
+}
+
+/**
+ * 清掉某张图存的**涂色暂存**。
+ * 只在**删图**的时候问一句要不要顺手清 ✓
+ * （以前覆盖版本时也调它 —— 现在导入只增不改，那条路没了 ✓）
+ *
+ * 🔴 **只动 `STASH_KEY`，绝不许碰 `SET_KEY`** ✗（2026-10-12 廿九定的 ✓）
+ *   设置 / 最近颜色现在按**游戏类型**存（`prefsKeyOf`），不归任何一张图 ✓
+ *   在这儿顺手把 SET_KEY 里那条删掉的话，删一张图会把**同款游戏所有图**的
+ *   设置一起清空 ✗（而且现在那 key 就是游戏名，删的正好是整份 ✓）
+ */
+function forgetMapPaint(key) {
+  if (!key) return;
+  try {
+    const box = JSON.parse(localStorage.getItem(STASH_KEY) || '{}') || {};
+    if (box[key] !== undefined) {
+      delete box[key];
+      localStorage.setItem(STASH_KEY, JSON.stringify(box));
+    }
+  } catch (e) { /* 存不进去就算了 —— 清理失败不该挡住删除 */ }
+}
+
+/**
+ * 导入一个包（点选 / 拖拽 / 将来创意工坊下载完，都走这一个入口）✓
+ *
+ * **只增不改**：成功就是"又多了（或多了第一张）一张图" ——
+ * 之前导入的图一个字节都不动 ✓
+ * **一模一样的那一份也照导** ✗（2026-10-12 用户要求：不再弹窗问"要再导一份吗"）——
+ * 库里就多一张，旧的绝不替换 ✓ 哪份是哪份看卡片左上角那个小序号 ✓
+ *
+ * @param {Blob} blob
+ * @param {(r: {manifest: object, key: string, sameMap: number}) => void} [onDone] 成了就回调
+ * @returns {Promise<boolean>}
+ */
+async function importPackFlow(blob, onDone) {
+  if (_importing) return false;
+  _importing = true;
+  setPackMsg('busy', '正在导入…', 0);
+  const opt = {
+    onProgress: (msg, pct) => setPackMsg('busy', msg, pct),
+    onNote: (msg) => { LOG.event('地图包', msg); },
+  };
+  try {
+    let r;
+    try {
+      r = await importPack(blob, opt);
+    } catch (e) {
+      if (!e || e.code !== 'DUPLICATE') throw e;
+      /* 库里已经有一份一个字节都不差的了 —— **不再问，直接再导一份** ✗
+         （2026-10-12 用户要求：多一张就多一张，别为这个多按一次"确定" ✓
+          两张各自独立、涂色互不影响、原来那张一个字节不动 ✓
+          哪份是哪份，看卡片左上角那个小序号 ✓
+          ⚠ 库里那道 DUPLICATE 检查**留着** ✗ —— 它挡的是"同一次流程里被写两遍"
+            这种意外，不是要弹给玩家看的问句 ✓）*/
+      r = await importPack(blob, Object.assign({ allowDuplicate: true }, opt));
+    }
+    /* ⚠ 后面那截"（HOI4 · 20006 个地块 · 5120×2560）"**删了** ✗（2026-10-12 用户要求）
+       —— 提示只报"哪张图进去了"就够；尺寸和地块数卡片上那一栏本来就有 ✓ */
+    setPackMsg('done', `成功导入地图：${r.manifest.label}`
+      + (r.sameMap > 1
+          ? ` —— 这是这张图的第 ${r.sameMap} 份，之前那 ${r.sameMap - 1} 份都留着`
+          : ''));
+    LOG.event('导入地图包', `${r.key}（${r.sameMap > 1 ? '第 ' + r.sameMap + ' 份' : '新增'}）✓`);
+    if (onDone) await onDone(r);               // 等界面刷完再收工（不然调用方以为还没好）
+    return true;
+  } catch (e) {
+    setPackMsg('bad', '导入失败：' + (e && e.message ? e.message : e));
+    LOG.error('导入地图包失败', e);
+    return false;
+  } finally {
+    _importing = false;
+  }
+}
+
+/** 卡片数到这儿就**另起一列** ✓（用户 2026-10-12 要求："导入的地图太多就另起一列"）
+ *  —— 一列的话十几张得往下滚半天，两列并行直接短一半 ✓
+ *  想改就改这一个数：调大 = 更晚分列 ✓ */
+const TWO_COL_AT = 10;
+
+/** 让玩家挑一张。只有一套、而且没有导入入口时才直接进 */
 function pickMap(maps) {
   return new Promise((resolve) => {
-    if (maps.length <= 1) return resolve(maps[0]);
-
     const box = $('map-pick');
     const list = $('map-pick-list');
-    list.innerHTML = '';
-    for (const m of maps) {
-      const b = document.createElement('button');
-      b.className = 'map-card';
-      b.innerHTML = `<b>${m.label}</b><span>${m.note}</span>`;
-      b.onclick = () => { box.hidden = true; resolve(m); };
-      list.appendChild(b);
+    const fileInput = $('pack-file');
+    let current = maps.slice();
+
+    /** 卡片多的时候：**列表排两列 + 面板放宽** ✓（少的时候一切照旧一列 ✓）
+     *  ⚠ 离开选图界面必须**收回来** ✗ —— `.boot-inner` 放宽之后，
+     *    紧接着那条"读取元数据…"的进度条也会跟着被撑成 760px 宽 ✓
+     *  （手机上不分列也不放宽：mobile_css 里把这两条都按 !important 钉回去了 ✓）*/
+    const setPickWide = (wide) => {
+      if (list && list.classList) {
+        if (wide) list.classList.add('two-col'); else list.classList.remove('two-col');
+      }
+      const inner = $('boot-inner');       // 别用 parentNode —— 桩里解析出来的节点没有它 ✓
+      if (inner && inner.classList) {
+        if (wide) inner.classList.add('wide-pick'); else inner.classList.remove('wide-pick');
+      }
+    };
+
+    /* 这行平时**不显示** ✗ —— 只有"这台浏览器存不下东西"的时候才跳出来警示：
+       不说的话玩家会以为存上了，第二天发现没了还以为是编辑器坏的 ✓ */
+    packStoreMode().then((mode) => {
+      const hint = $('map-import-hint');
+      if (!hint) return;
+      if (mode === 'memory') {
+        hint.hidden = false;
+        hint.classList.add('warn');
+        hint.textContent = '⚠ 这台浏览器不让存本地数据（或是隐私模式）：导入的图**刷新就没了**，自己的原文件请留好';
+      } else {
+        hint.hidden = true;
+        hint.classList.remove('warn');
+        hint.textContent = '';
+      }
+    }).catch(() => {});
+
+    /* 🔴 两个动作**直接摆在卡片上** ✗ —— 原来藏在卡片右上角那个「⋯」小面板里，
+       用户 2026-10-12 要求提上来（多一次点击才看得见，不值当 ✓）
+       面板连元素带样式整个拆了：`#pack-menu` / `.map-more` 都不再有 ✓ */
+    async function doExportPack(id) {
+      setPackMsg('busy', '打包备份…', 5);
+      try {
+        let label = id;
+        try {
+          const rec = await getPack(id);
+          label = (rec && rec.manifest && rec.manifest.label) || id;
+        } catch (e) { /* 读不到就用 id 当名字 */ }
+        const bytes = await exportPackBytes(id, (msg) => setPackMsg('busy', msg, 60));
+        const blob = new Blob([bytes], { type: 'application/zip' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = id + '.pdxmap';
+        a.click();
+        setPackMsg('done', `成功导出地图：${label}`);
+      } catch (e) {
+        setPackMsg('bad', '导出失败：' + (e && e.message ? e.message : e));
+        LOG.error('导出地图包备份失败', e);
+      }
     }
+
+    async function doDeletePack(id) {
+      let label = id;
+      try {
+        const rec = await getPack(id);
+        label = (rec && rec.manifest && rec.manifest.label) || id;
+      } catch (e) { /* 读不到就用 id 当名字 */ }
+      if (typeof window.confirm === 'function'
+          && !window.confirm('是否删除该地图？')) return;
+      try {
+        await removePack(id);
+        /* 🔴 **涂色跟着一起删，不再问** ✗（用户 2026-10-12 定的 ✓）
+           以前会多问一句"要不要同时清掉这张图的涂色"—— 留着只有
+           "下次重新导入同一个包"才用得上，为这个多按一次"确定"不值当 ✓
+           ⚠ 但**设置 / 最近颜色不能碰**：它们按游戏类型存，不归这张图 ✓
+             （见 forgetMapPaint 那段说明 ✓）*/
+        forgetMapPaint('pack:' + id);
+        current = current.filter((x) => x.pack !== id);
+        render();
+        setPackMsg('', `成功删除地图：${label}`);
+      } catch (e) {
+        setPackMsg('bad', '删不掉：' + (e && e.message ? e.message : e));
+        LOG.error('删除地图包失败', e);
+      }
+    }
+
+    /** 导入成功后：把新卡片接进列表，高亮一下（**不自动进去**，玩家自己点 ✓） */
+    const afterImport = async (r) => {
+      let rec = null;
+      try {
+        rec = await getPack(r.key);
+      } catch (e) { /* 读不到记录不影响用，下面用返回值兜底 */ }
+      if (!rec) rec = { id: r.key, manifest: r.manifest, size: 0 };
+      /* 同一个作者 id 现在有几份了：第 2 份起名字后面标「第 N 份」✓
+         （两张卡长得一模一样的话，玩家根本分不清哪个是哪个 ✗） */
+      const mid = rec.manifestId || (rec.manifest && rec.manifest.id) || rec.id;
+      const n = current.filter((x) => x.manifestId === mid).length + 1;
+      const e = packEntry(rec, n);
+      const i = current.findIndex((x) => x.pack === e.pack);
+      if (i >= 0) current[i] = e; else current.push(e);
+      render(e.key);
+    };
+
+    const render = (flashKey) => {
+      list.innerHTML = '';
+      /* 一张卡都没有的时候说一句人话 ✗
+         （轻量版第一次打开就是这样：0.6 MB 的编辑器 + 还没导入任何地图包 ✓）
+         不说的话玩家看到的是"空白的选单 + 一个导入按钮"——
+         他不知道自己是不是漏了什么，也不知道下一步该干嘛 ✓
+         ⚠ 2026-10-12 用户要求：这句话**搬进下面那个提示框**（跟"成功导入地图…"
+           同一个框 ✓）—— 原来它在列表**上面**单独占一整块，白花一块地方 ✗
+         ⚠ 提示框里**已经有话**的时候（正在导入 / 报错 / 刚导完成）别去盖它 ✗ */
+      if (!current.length) {
+        const msgBox = $('map-msg');
+        if (msgBox && msgBox.hidden) {
+          setPackMsg('', '请点击导入按钮，或将 .pdxmap 文件直接拖进这一页。');
+        }
+      }
+      setPickWide(current.length >= TWO_COL_AT);   // 卡片一多就另起一列 ✓
+      for (const m of current) {
+        const b = document.createElement('button');
+        b.className = 'map-card' + (m.imported ? ' imported' : '');
+        /* ⚠ 这里原来是把 label 直接拼进 innerHTML 的 ✗
+           原版那几张的 label 是我们自己写死的，拼就拼了；
+           可导入的包是**陌生人给的文件**，label / note / author 全是他写的 ✓
+           一个 <img src=x onerror=...> 就是一个能在玩家机器上跑起来的脚本 ✗
+           所以改成建节点 + textContent（一个字符都不当 HTML 解释）*/
+        const bName = document.createElement('b');
+        bName.textContent = m.label;
+        const bNote = document.createElement('span');
+        bNote.textContent = m.note || '';
+        /* 同一张图导了好几份时，**左上角标个小序号**（1 / 2 / …）✓
+           ⚠ 只有一份时**不标** ✗ —— 每张卡都挂个"1"是噪音 ✓
+           （名字里不再塞"（第 2 份）"，就靠它认是哪一份 ✓ 2026-10-12 用户定的）*/
+        const dupN = current.filter((x) => x.manifestId === m.manifestId).length;
+        if (m.imported && dupN > 1 && m.nth) {
+          const no = document.createElement('span');
+          no.className = 'map-card-no';
+          no.textContent = String(m.nth);
+          no.title = `这是《${m.label}》的第 ${m.nth} 份`;
+          b.classList.add('has-no');        // 左边多让一点位置给这个序号 ✓
+          b.appendChild(no);
+        }
+        b.appendChild(bName);
+        b.appendChild(bNote);
+        if (m.imported) {
+          const tag = document.createElement('span');
+          tag.className = 'map-card-tag';
+          /* 作者**不显示**了 —— 这批包基本同一个作者，挂上去只是噪音 ✗
+             （字段本身留着：外来的包爱写就写，界面就是不露 ✓） */
+          /* ⚠ 「已导入」三个字**去掉了** ✗（2026-10-12 用户要求）——
+             卡片右下角那两个"导出 / 删除"本身就说明它是导入进来的 ✓
+             这一栏只剩版本号（没写版本号就整个空着 ✓）*/
+          tag.textContent = m.version ? 'v' + m.version : '';
+          b.appendChild(tag);
+          /* 两个动作**直接摆在卡片上**（右下角，跟左下角那栏版本号（v…）同一行 ✓）
+             —— 上面那种"藏在 ⋯ 弹窗里"多一次点击才看得见，用户要求提上来 ✓
+             ⚠ 它们必须**自己吃掉点击** ✗ 不然点按钮 = 点了卡片 = 直接进图 ✓ */
+          const acts = document.createElement('span');
+          acts.className = 'map-card-acts';
+          const mkAct = (text, danger, fn) => {
+            const x = document.createElement('span');
+            x.className = 'map-act' + (danger ? ' danger' : '');
+            x.textContent = text;
+            x.onclick = (ev) => {
+              if (ev && ev.stopPropagation) ev.stopPropagation();
+              if (ev && ev.preventDefault) ev.preventDefault();
+              /* ⚠ **必须把 Promise 返回出去** ✗ —— 自测走的是 `await 按钮.onclick(...)`，
+                 不 return 的话它拿到 undefined 就往下跑，导出/删除还在后台跑 ✓（踩过 ✓）
+                 真浏览器不看返回值，返回了也没副作用 ✓ */
+              return fn();
+            };
+            return x;
+          };
+          acts.appendChild(mkAct('导出', false, () => doExportPack(m.pack)));
+          acts.appendChild(mkAct('删除', true, () => doDeletePack(m.pack)));
+          b.appendChild(acts);
+        }
+        b.onclick = () => {
+          box.hidden = true;
+          setPickWide(false);      // 面板收回原宽 ✓（别把后面那条加载进度条也撑宽 ✓）
+          dropOff();
+          resolve(m);
+        };
+        list.appendChild(b);
+        if (flashKey && m.key === flashKey) {
+          b.classList.add('flash');
+          setTimeout(() => { try { b.classList.remove('flash'); } catch (e) {} }, 1500);
+        }
+      }
+    };
+
+    // ---- 导入入口：点一下 ／ 拖进来（**都可以一次好几个** ✓ 2026-10-12 用户要求）
+    const onImportClick = () => {
+      if (_importing) return;
+      if (fileInput) fileInput.click();
+    };
+    /** 挨个导 ✓ 一个不成不影响后面的 ✓
+     *  **提示照旧** ✗ —— 每次 importPackFlow 自己会说那一句，这里不另报总数
+     *  （多选时屏幕上留的就是最后那一张的提示 ✓ 用户 2026-10-12 定的 ✓
+     *    "这是第几份"改由卡片左上角那个**小序号**说 ✓）*/
+    const importMany = async (files) => {
+      const todo = Array.from(files || []).filter(Boolean);
+      for (const f of todo) await importPackFlow(f, afterImport);
+    };
+    const onFilePicked = async () => {
+      const files = fileInput && fileInput.files;
+      if (!files || !files.length) return;
+      await importMany(files);
+      try { fileInput.value = ''; } catch (e) { /* 清不掉无所谓，别连累导入 */ }
+    };
+    const onDragOver = (ev) => {
+      if (box.hidden) return;
+      if (ev && ev.preventDefault) ev.preventDefault();   // 不拦的话浏览器会拿文件当导航 ✗
+    };
+    const onDrop = async (ev) => {
+      if (box.hidden) return;
+      if (ev && ev.preventDefault) ev.preventDefault();
+      const dt = ev && ev.dataTransfer;
+      if (!dt || !dt.files || !dt.files.length) return;
+      await importMany(dt.files);
+    };
+    const dropOff = () => {
+      const boot = $('boot');
+      if (boot && boot.removeEventListener) {
+        boot.removeEventListener('dragover', onDragOver);
+        boot.removeEventListener('drop', onDrop);
+      }
+    };
+
+    $('map-import').onclick = onImportClick;
+    if (fileInput) fileInput.onchange = onFilePicked;
+    const bootBox = $('boot');
+    if (bootBox && bootBox.addEventListener) {
+      bootBox.addEventListener('dragover', onDragOver);
+      bootBox.addEventListener('drop', onDrop);
+    }
+
+    clearPackMsg();
+    render();
     box.hidden = false;
+    /* 只有一套、而且这一套就是导入来的？那也得让人看见导入入口 ✓
+       所以这里**不再**"只剩一张就跳过界面"：
+       跳过了，玩家就永远没有第二个入口了 ✗（单文件版本来就有六七张，不受影响） */
   });
 }
 // ---- 崩溃上屏：未捕获异常/未处理的 Promise 直接显示在页面上 ----
@@ -5668,18 +6068,31 @@ async function boot() {
     LOG.event('启动');
     setBoot('看看有哪些地图', 3);
     const maps = await availableMaps();
-    if (!maps.length) throw new Error('没有可用的地图数据，先跑一次 python build_data.py');
+    /* **一张图都没有也要能进来** ✗（2026-10-12 改的）
+       单文件版从今天起默认不内嵌地图（约 0.6 MB，地图改成 .pdxmap 包单独下）——
+       这时候"第一屏"本来就是"还没有地图，导一个进来" ✓
+       原来是直接抛错让人去跑 build_data.py ✗ 那是**开发者**才该看到的话，
+       玩家打开一个 0.6 MB 的文件却看到这句，等于告诉他"这东西坏了" ✗
+       （页面上那句"请点击导入按钮，或将 .pdxmap 文件直接拖进这一页。"
+         就摆在下方的提示框里，进度条这边就不再重复唠叨了 ✓） */
+    if (!maps.length) {
+      LOG.event('地图', '一张都没有（轻量版？还是缓存没建）—— 让玩家导入地图包');
+    }
 
     const chosen = await pickMap(maps);
-    LOG.event('选图', String(chosen.label || '') + (isEmbedded() ? '（单文件内嵌）' : '（' + chosen.dir + '）'));
-    if (isEmbedded()) setEmbeddedMap(chosen.emb);
+    LOG.event('选图', String(chosen.label || '')
+      + (chosen.pack ? '（导入的地图包 ' + chosen.pack + '）'
+         : isEmbedded() ? '（单文件内嵌）' : '（' + chosen.dir + '）'));
+    if (chosen.pack) setPackMap(chosen.pack);
+    else if (isEmbedded()) setEmbeddedMap(chosen.emb);
     else setDataDir(chosen.dir);
 
     setBoot(`读取「${chosen.label}」的元数据…`, 6);
     const meta = await api.meta();
     if (!meta || !meta.numTitles) throw new Error('data/ 里还没生成好缓存，先跑 python build_data.py');
     state.meta = meta;
-    /* **设置 + 最近颜色按地图接回来** ✓（用户要求：刷新 / 回主菜单都不丢 ✓ 每张图各存各的 ✓）
+    /* **设置 + 最近颜色按游戏类型接回来** ✓（刷新 / 回主菜单都不丢 ✓
+     * 同款游戏的图**共用一套**：TNO 和钢铁雄心4原版是同一份设置 ✓ 见 prefsKeyOf ✓）
      * 这份跟"涂色暂存"是分开的两份 —— 那份回主菜单才存、F5 就清 ✓（见 saveProject 上面的说明 ✓）
      * 接回来之后 `applySettings()` 会把它推给渲染器（renderer 建好之后调一次 ✓ 见下面）*/
     {

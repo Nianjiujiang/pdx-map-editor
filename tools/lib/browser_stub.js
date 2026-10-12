@@ -22,7 +22,7 @@ const path = require('path');
 const ROOT = path.join(__dirname, '..', '..');
 
 //: 单文件版（build_standalone.py）的拼接顺序 —— **必须和那边一致** ✓
-const MODULES = ['log.js', 'data.js', 'zip.js', 'bmp.js', 'gl.js', 'labels.js', 'tilemap.js', 'tutorial.js', 'app.js'];
+const MODULES = ['log.js', 'pack.js', 'zip.js', 'packstore.js', 'data.js', 'bmp.js', 'gl.js', 'labels.js', 'tilemap.js', 'tutorial.js', 'app.js'];
 
 /** 开发时 index.html 只加载 app.js（真 ES module），这里按单文件版的顺序拍平 */
 function flattenModules(modules = MODULES, root = ROOT) {
@@ -32,8 +32,243 @@ function flattenModules(modules = MODULES, root = ROOT) {
     if (s.startsWith('export ')) return line.replace('export ', '');
     return line;
   }).join('\n');
-  return modules.map((n) => `// ==== ${n} ====\n`
-    + strip(fs.readFileSync(path.join(root, 'web', 'js', n), 'utf8'))).join('\n\n');
+  return modules.map((n) => {
+    const file = path.join(root, 'web', 'js', n);
+    /* 清单和源码对不上时**说人话** ✗ —— 直接让 readFileSync 抛 ENOENT 的话，
+       下一个加模块的人只会看到"找不到某个文件"，还得自己猜是清单的问题 ✓
+       （perf_compare 那种拿老快照拍的，请自己按"那边实际有什么"过滤，见那个文件 ✓） */
+    if (!fs.existsSync(file)) {
+      throw new Error(`拍平清单里有 ${n}，但 ${file} 不存在 —— `
+        + `清单（MODULES / build_standalone.py）和这份源码对不上了`);
+    }
+    return `// ==== ${n} ====\n` + strip(fs.readFileSync(file, 'utf8'));
+  }).join('\n\n');
+}
+
+// ---------------------------------------------------------------- 假 IndexedDB
+
+/**
+ * 极简 IndexedDB 桩 —— 只实现 packstore.js 用到的那几样。
+ *
+ * 为什么要有它：导入的地图包存在 IndexedDB 里，而 Node 没有这个 API ✗
+ * 没有桩的话「导入 → 覆盖 → 删除 → 中途失败回滚」这四件事在自测里**一条都测不到**，
+ * 而它们恰好是最容易写错的地方（写一半关机、覆盖时把旧的删了新的没写进去…）
+ *
+ * 事务语义照着浏览器来：**有请求挂着就不算完** ✓
+ * packstore 是"发一个、等它回调、再发下一个"的写法，
+ * 所以"待完成请求数"必须真的对，不然"写了一半"的用例会假装通过 ✗
+ *
+ * 不实现（也用不到）：索引、游标、跨标签同步、版本迁移里的数据搬运、
+ * 真正的异步 IO（这里同步做完，只把回调排进微任务）
+ */
+function makeIndexedDBFake() {
+  const dbs = new Map();          // name → { version, data: Map<store, Map<key, value>>, keys: Map<store, keyPath> }
+
+  /* 失败注入（只给自测用）：>0 时，第 N 次 put/delete 抛错 ✓
+     用途是"写到一半失败"——回滚对不对，只有让它在中间炸一次才知道 ✗ */
+  const inject = { failPut: 0, failDelete: 0 };
+
+  const mkReq = () => ({ result: undefined, error: null, onsuccess: null, onerror: null });
+
+  /** 发一个请求：同步做掉，回调排微任务，事务的待完成数跟着走 */
+  function issue(tx, req, work) {
+    if (tx && tx._aborted) { req.error = new Error('事务已经中止'); if (req.onerror) req.onerror({ target: req }); return req; }
+    if (tx) tx._pending++;
+    try {
+      req.result = work();
+    } catch (e) {
+      req.error = e;
+      queueMicrotask(() => {
+        if (req.onerror) req.onerror({ target: req });
+        if (tx) tx._abort(e);
+      });
+      return req;
+    }
+    queueMicrotask(() => {
+      if (tx) tx._pending--;
+      if (tx && tx._aborted) return;
+      if (req.onsuccess) req.onsuccess({ target: req });
+      if (tx) tx._settle();
+    });
+    return req;
+  }
+
+  function inRange(range, key) {
+    if (!range) return true;
+    const s = String(key);
+    if (range.lower !== undefined && !(s >= range.lower)) return false;
+    if (range.upper !== undefined && !(s <= range.upper)) return false;
+    return true;
+  }
+
+  function makeTx(entry, names, mode) {
+    const tx = {
+      mode: mode || 'readonly', error: null,
+      oncomplete: null, onerror: null, onabort: null,
+      _pending: 0, _aborted: false, _done: false,
+    };
+    /* **回滚日志**：第一次碰到某个键时记下它原来的样子 ✓
+       真 IndexedDB 是"事务中止 = 全部撤销"，桩要是只把写入留在原地，
+       "写一半失败"的用例就会**假通过**（库里明明留了半个包，却看着没事）✗
+       记 undo 还有个附带好处：事务里读得到自己刚写的东西（read-your-writes）✓ */
+    const undo = [];
+    const touched = new Set();
+    tx._record = (storeName, key) => {
+      const tag = storeName + '\u0000' + key;
+      if (touched.has(tag)) return;
+      touched.add(tag);
+      const m = entry.data.get(storeName);
+      const had = !!(m && m.has(key));
+      undo.push({ storeName, key, had, value: had ? m.get(key) : undefined });
+    };
+    tx._rollback = () => {
+      for (let i = undo.length - 1; i >= 0; i--) {
+        const u = undo[i];
+        let m = entry.data.get(u.storeName);
+        if (!m) { m = new Map(); entry.data.set(u.storeName, m); }
+        if (u.had) m.set(u.key, u.value); else m.delete(u.key);
+      }
+      undo.length = 0;
+    };
+    tx._settle = () => {
+      // 再排一层微任务：消费者可能刚在 onsuccess 里又发了一个请求 ✓
+      queueMicrotask(() => {
+        if (tx._done || tx._aborted || tx._pending > 0) return;
+        tx._done = true;
+        if (tx.oncomplete) tx.oncomplete({ target: tx });
+      });
+    };
+    tx._abort = (e) => {
+      if (tx._aborted) return;
+      tx._aborted = true;
+      tx._rollback();
+      tx.error = tx.error || e || new Error('aborted');
+      queueMicrotask(() => { if (tx.onabort) tx.onabort({ target: tx }); });
+    };
+    tx.abort = () => tx._abort(new Error('aborted'));
+    tx.objectStore = (name) => {
+      if (names.indexOf(name) < 0) throw new Error(`事务里没有 ${name} 这个 store`);
+      const data = () => {
+        if (!entry.data.has(name)) entry.data.set(name, new Map());
+        return entry.data.get(name);
+      };
+      const keyPath = entry.keys.get(name);
+      return {
+        get: (k) => issue(tx, mkReq(), () => data().get(k)),
+        getAll: () => issue(tx, mkReq(), () => Array.from(data().values())),
+        getAllKeys: (r) => issue(tx, mkReq(), () => Array.from(data().keys()).filter((k) => inRange(r, k))),
+        put: (v, k) => issue(tx, mkReq(), () => {
+          if (inject.failPut && --inject.failPut === 0) throw new Error('（自测注入）写入失败');
+          const key = k !== undefined ? k : (keyPath ? v[keyPath] : undefined);
+          if (key === undefined) throw new Error('这条记录没有主键');
+          tx._record(name, key);
+          data().set(key, v);
+          return key;
+        }),
+        delete: (k) => issue(tx, mkReq(), () => {
+          if (inject.failDelete && --inject.failDelete === 0) throw new Error('（自测注入）删除失败');
+          tx._record(name, k);
+          data().delete(k);
+          return undefined;
+        }),
+        count: () => issue(tx, mkReq(), () => data().size),
+        clear: () => issue(tx, mkReq(), () => {
+          for (const k of Array.from(data().keys())) tx._record(name, k);
+          data().clear();
+          return undefined;
+        }),
+      };
+    };
+    return tx;
+  }
+
+  function makeDb(name, entry) {
+    return {
+      name,
+      get version() { return entry.version; },
+      objectStoreNames: { contains: (n) => entry.data.has(n) || entry.keys.has(n) },
+      createObjectStore: (n, opt) => {
+        if (!entry.data.has(n)) entry.data.set(n, new Map());
+        entry.keys.set(n, (opt && opt.keyPath) || null);
+        return { name: n };
+      },
+      deleteObjectStore: (n) => { entry.data.delete(n); entry.keys.delete(n); },
+      transaction: (names, mode) => makeTx(entry, Array.isArray(names) ? names : [names], mode),
+      close: () => {},
+      onversionchange: null,
+    };
+  }
+
+  return {
+    open(name, version) {
+      const req = mkReq();
+      queueMicrotask(() => {
+        let entry = dbs.get(name);
+        if (!entry) {
+          entry = { version: 0, data: new Map(), keys: new Map() };
+          dbs.set(name, entry);
+        }
+        const oldVersion = entry.version;
+        const upgrade = (version || 1) > entry.version;
+        if (upgrade) entry.version = version || 1;
+        req.result = makeDb(name, entry);
+        if (upgrade && req.onupgradeneeded) {
+          req.onupgradeneeded({ target: req, oldVersion, newVersion: entry.version });
+        }
+        if (req.onsuccess) req.onsuccess({ target: req });
+      });
+      return req;
+    },
+    deleteDatabase(name) {
+      const req = mkReq();
+      queueMicrotask(() => {
+        dbs.delete(name);
+        req.result = undefined;
+        if (req.onsuccess) req.onsuccess({ target: req });
+      });
+      return req;
+    },
+    //: 自测用：把某个库整个抹掉，模拟"玩家清了站点数据" ✓
+    _drop(name) { dbs.delete(name); },
+    /*: 自测用：让第 N 次 put / delete 炸掉（N = 1 就是下一次）✓ */
+    _failPutAfter(n) { inject.failPut = n; },
+    _failDeleteAfter(n) { inject.failDelete = n; },
+    /* 自测用：把库里的东西摊平成普通对象 ✓
+       为什么要它：导入/覆盖/删除之后要能数一数"库里到底躺了几个文件"——
+       数不出来就查不了"有没有留下孤儿条目"（覆盖时最容易留下的东西）✗ */
+    _dump() {
+      const out = {};
+      for (const [name, entry] of dbs) {
+        const stores = {};
+        for (const [sn, data] of entry.data) stores[sn] = Object.fromEntries(data);
+        out[name] = { version: entry.version, stores };
+      }
+      return out;
+    },
+  };
+}
+
+//: IDBKeyRange 的桩（就用到 bound 一种）
+function makeKeyRangeFake() {
+  return {
+    bound: (lo, hi, loOpen, hiOpen) => ({ lower: lo, upper: hi, lowerOpen: !!loOpen, upperOpen: !!hiOpen }),
+    only: (v) => ({ lower: v, upper: v }),
+    lowerBound: (v) => ({ lower: v }),
+    upperBound: (v) => ({ upper: v }),
+  };
+}
+
+/**
+ * 某个源码根下**实际存在**的那几个模块 ✓
+ *
+ * 给"拿旧快照做对比"的工具用（`tools/exp_*.js` 的 `PDX_BEFORE`、`tools/perf_compare.js`）：
+ * 旧快照里没有后来才加的模块（比如导入式地图那套 pack.js / packstore.js）✗
+ * 照当前清单硬拍会报"清单里有它但文件不存在" —— 那不是错觉，确实对不上 ✓
+ * 这类比较本来要的就是"那一边当时有什么"，所以过滤掉缺的 ✓
+ * （**别**拿它当默认行为：真缺文件时应该吵起来，那是清单和源码脱节了 ✓）
+ */
+function moduleListFor(root = ROOT) {
+  return MODULES.filter((n) => fs.existsSync(path.join(root, 'web', 'js', n)));
 }
 
 // ---------------------------------------------------------------- 假 DOM
@@ -334,6 +569,17 @@ function makeEnv(opt = {}) {
   sandbox.globalThis = sandbox;
   sandbox.self = sandbox;
 
+  /* IndexedDB：默认给桩 ✓
+     opt.idb === false 时装成"没有这个 API"—— 用来测"隐私模式 / 老浏览器"那条降级路
+     （那条路必须**明确告诉玩家刷新会丢**，不能假装存上了 ✗） */
+  if (opt.idb === false) {
+    sandbox.indexedDB = undefined;
+    sandbox.IDBKeyRange = undefined;
+  } else {
+    sandbox.indexedDB = opt.indexedDB || makeIndexedDBFake();
+    sandbox.IDBKeyRange = makeKeyRangeFake();
+  }
+
   const RealURL = URL;
   sandbox.URL = class extends RealURL {
     static createObjectURL(b) { savedBlob = b; return 'blob:fake'; }
@@ -420,20 +666,43 @@ if (typeof sameBlockPids !== 'undefined') _C.sameBlockPids = sameBlockPids;
 //   不能直接拷值：那是"取值快照"，拷进 _C 的永远是那个 null，
 //   boot 之后再怎么建也追不上（踩过：单文件自检报"渲染器没建起来"，其实建了）
 //   （注意这段是在模板字符串里，注释里别出现反引号 ✗）
+// 地图包那套（pack.js / packstore.js / data.js 的第三数据源）——
+// 用 typeof 兜住：换源代码（没有这几个文件时）照样能跑，同一把尺子两版都能量 ✓
+if (typeof importPack !== 'undefined') _p('importPack', importPack);
+if (typeof listPacks !== 'undefined') _p('listPacks', listPacks);
+if (typeof getPack !== 'undefined') _p('getPack', getPack);
+if (typeof removePack !== 'undefined') _p('removePack', removePack);
+if (typeof exportPackBytes !== 'undefined') _p('exportPackBytes', exportPackBytes);
+if (typeof packStoreMode !== 'undefined') _p('packStoreMode', packStoreMode);
+if (typeof validatePack !== 'undefined') _p('validatePack', validatePack);
+if (typeof readZip !== 'undefined') _p('readZip', readZip);
+if (typeof makeZip !== 'undefined') _p('makeZip', makeZip);
+if (typeof makeZipAsync !== 'undefined') _p('makeZipAsync', makeZipAsync);
+if (typeof setPackMap !== 'undefined') _p('setPackMap', setPackMap);
+if (typeof isPackMap !== 'undefined') _p('isPackMap', isPackMap);
+if (typeof setDataDir !== 'undefined') _p('setDataDir', setDataDir);
+if (typeof setEmbeddedMap !== 'undefined') _p('setEmbeddedMap', setEmbeddedMap);
+if (typeof isEmbedded !== 'undefined') _p('isEmbedded', isEmbedded);
+if (typeof api !== 'undefined') _p('api', api);
+_p('LOG', window.PDXLOG);
 Object.defineProperty(_C, 'renderer', { get: function () { return renderer; }, enumerable: true });
 Object.defineProperty(_C, 'labels', { get: function () { return labels; }, enumerable: true });
-_C.GAME = GAME; _C.TIER_BADGE = TIER_BADGE;
+/* GAME / TIER_BADGE 也是 boot() 里才按选中的图赋值的（模块级 let）✗
+   跟上面 renderer / labels 同一个坑：拷值等于永远停在 GAMES.ck3 那个初值，
+   测"选了一张 EU4 的图，术语应该跟着变成 EU4"就会假失败 ✗ —— 所以也改成活取 ✓ */
+Object.defineProperty(_C, 'GAME', { get: function () { return GAME; }, enumerable: true });
+Object.defineProperty(_C, 'TIER_BADGE', { get: function () { return TIER_BADGE; }, enumerable: true });
 return _C;`;
   const s = env.sandbox;
   const factory = new Function(
     'console', 'document', 'window', 'localStorage', 'performance',
     'requestAnimationFrame', 'cancelAnimationFrame', 'setTimeout', 'clearTimeout',
     'setInterval', 'clearInterval', 'fetch', 'URL', 'TextEncoder', 'TextDecoder',
-    'Blob', 'Response', src);
+    'Blob', 'Response', 'indexedDB', 'IDBKeyRange', src);
   return factory(s.console, s.document, s.window, s.localStorage, s.performance,
     s.requestAnimationFrame, s.cancelAnimationFrame, s.setTimeout, s.clearTimeout,
     s.setInterval, s.clearInterval, s.fetch, s.URL, s.TextEncoder, s.TextDecoder,
-    s.Blob, s.Response);
+    s.Blob, s.Response, s.indexedDB, s.IDBKeyRange);
 }
 
 /**
@@ -469,6 +738,7 @@ function readStandalone(htmlPath) {
 }
 
 module.exports = {
-  ROOT, MODULES, flattenModules, makeEnv, instantiate, readStandalone,
+  ROOT, MODULES, flattenModules, moduleListFor, makeEnv, instantiate, readStandalone,
   El, ctx2d, fakeGL, stats, resetCanvasStats,
+  makeIndexedDBFake,
 };

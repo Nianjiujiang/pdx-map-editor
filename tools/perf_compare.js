@@ -20,7 +20,13 @@ const path = require('path');
 const H = require('./lib/browser_stub.js');
 
 const ROOT = H.ROOT;
-const REL = path.join(ROOT, '_local', 'rel');          // 正式版源码（从 git v1.7 抽的 ✓）
+/*: 正式版源码（从 git v1.7 抽的 ✓ 只有 web/ 那几个文件）
+ *
+ * ⚠ 想跑出对比结果，得让这个目录下**也有 data/**（`makeEnv({root})` 是按 root 找数据的 ✗）：
+ *     比如 `cp -r data _local/rel/data`（或者改 REL 指到别的快照）
+ *   只有源码没有数据的话，正式版那侧会"一张图都列不出来"，报的是
+ *   `Cannot read properties of undefined (reading 'onclick')` —— 那**不是**源码坏了 ✓ */
+const REL = path.join(ROOT, '_local', 'rel');
 const MAP = process.env.MAP || 'hoi4';
 const SETTLE = 800;                                     // 让防抖跑完的等待（ms ✓）
 
@@ -29,7 +35,11 @@ const cpuMs = (a, b) => (b.user + b.system - a.user - a.system) / 1000;
 
 async function runOne(tag, root) {
   const env = H.makeEnv({ root });
-  let src = H.flattenModules(undefined, root);
+  /* ⚠ 正式版那边是 **v1.7 的源码快照**（`_local/rel/`）——
+     它比现在的清单少几个文件（导入式地图那套是后来才加的）✗
+     照当前清单拍平会直接报"清单里有 pack.js 但文件不存在" ✓
+     所以按"那边实际有什么"过滤一遍：**别改清单**，那会让两边的对比失去意义 ✓ */
+  let src = H.flattenModules(H.moduleListFor(root), root);
   /* ⚠ **老版本缺探针** ✗ —— 桩在源码末尾追加了一串 `_p('x', x);` ✓
    *   而 v1.7 里没有这些函数（provInfoAt / saveMapPrefs …）→ 直接 ReferenceError ✗
    *   所以：把**名字清单直接从桩里抽出来**（不手抄 ✗ 手抄必漏 ✓）

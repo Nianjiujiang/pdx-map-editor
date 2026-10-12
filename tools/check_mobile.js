@@ -52,7 +52,18 @@ function readScript(htmlPath) {
 
   // ① 补丁痕迹 —— 三块都要在
   ok('CSS 补丁打进去了（#mob-ui）', html.includes('#mob-ui'));
+  /* 滚动条统一暗色 ✓（用户 2026-10-12："手机版剧本太多冒出来的那条滑块是白的" ✗）
+     —— 这条盯着"别哪天把这几行删了、白条又回来" ✓ */
+  ok('滚动条染成暗色（不是浏览器那根白条 ✓）',
+     /::-webkit-scrollbar-thumb\s*\{[^}]*background:\s*#2b3542/i.test(html)
+     && /scrollbar-color:\s*#2b3542/.test(html),
+     /::-webkit-scrollbar-thumb/i.test(html) ? 'webkit 那条在 ✓' : '暗色滚动条那几行没找到 ✗');
   ok('JS 补丁打进去了（function bindMobile）', js.includes('function bindMobile'));
+  /* 手机上的文件过滤整个放开 ✓（用户 2026-10-12 报的"pdxmap 选不了"：
+     `.pdxmap` 类型是 octet-stream，安卓/iOS 的选择器按 MIME 过滤就把它灰掉 ✗）*/
+  ok('手机上把选文件的 MIME 过滤放开了（不然 .pdxmap 灰着点不动 ✗）',
+     /pack-file'\)[\s\S]{0,80}?accept = '\*\/\*'/.test(js),
+     /accept = '\*\/\*'/.test(js) ? "accept = '*/*' ✓" : '没找到放开过滤那两行 ✗');
   ok('JS 补丁的启动挂点也在（bindMobile() 的调用）',
      /bindEvents\(\);\s*\n\s*bindMobile\(\)/.test(js));
   ok('HTML 那段注释也打了（手机版界面说明）', html.includes('手机版的界面'));
@@ -77,8 +88,39 @@ function readScript(htmlPath) {
   for (let i = 0; i < 4000 && !env.get('map-pick-list').children.length; i++) {
     await new Promise((r) => setImmediate(r));
   }
-  const cards = env.get('map-pick-list').children;
-  ok('启动选单出来了', cards.length > 0, cards.length + ' 张');
+  let cards = env.get('map-pick-list').children;
+  /* 轻量版（2026-10-12 起单文件默认不内嵌地图）这里会是 0 张 ——
+     那就**先导一个包**，走玩家第一次用的那条路 ✓ */
+  const keys = Object.keys(embedded.maps || {});
+  if (!cards.length && keys.length === 0) {
+    let packPath = null;
+    for (const d of [path.join(H.ROOT, 'packs'), path.join(H.ROOT, '_local', 'packs')]) {
+      for (const n of ['pdx-eu4-vanilla.pdxmap', 'eu4-vanilla.pdxmap', 'eu4-vanilla-test.pdxmap']) {
+        const p = path.join(d, n);
+        if (fs.existsSync(p)) { packPath = p; break; }
+      }
+      if (packPath) break;
+    }
+    if (packPath) {
+      const fi = env.get('pack-file');
+      fi.files = [new Blob([fs.readFileSync(packPath)])];
+      await fi.onchange();
+      for (let i = 0; i < 3000 && !env.get('map-pick-list').children.length; i++) {
+        await new Promise((r) => setImmediate(r));
+      }
+      cards = env.get('map-pick-list').children;
+      ok('轻量版：导进一个地图包之后选单里有卡片了', cards.length === 1, cards.length + ' 张');
+    } else {
+      console.log('  （没有 _local/packs/ 里的测试包，轻量版这条跳过）');
+    }
+  }
+  ok('启动选单出来了（有内嵌地图，或者导进来一个包）', cards.length > 0, cards.length + ' 张');
+  /* 导入式地图这套手机版也带（同一套源码 ✓）——
+     补丁只碰界面结构，但选图界面那个导入入口是**新加的节点**，
+     手机版补丁要是把它搬没了、或者拍平漏了 packstore.js，这条会响 ✓ */
+  ok('手机版选图界面也有「导入地图包」', !!env.get('map-import'));
+  ok('校验器 / 仓库都拼进手机版了（拍平清单没有漏）',
+     /function validatePack/.test(js) && /function importPack/.test(js));
   if (cards.length) cards[0].onclick();
   await b;
   const step = (env.get('boot-step') || {}).textContent || '';

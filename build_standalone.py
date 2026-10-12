@@ -1,16 +1,22 @@
 """把编辑器打成一个自包含的 HTML —— 双击就能用，不用起服务。
 
-    python build_standalone.py
+    python build_standalone.py            # **轻量版**：不内嵌地图（约 0.6 MB）✓ 默认
+    python build_standalone.py --all-maps # 全量版：把所有地图烘进去（约 35 MB）
 
-出来的 ``pdx-map-editor.html`` 约 30 MB：网页、脚本和六套游戏自带地图的数据
-全在里面。file:// 协议下 fetch 和 ES module 都会被浏览器拦掉，
+2026-10-12 起**默认出轻量版** ✗ —— 地图改成 `.pdxmap` 包单独发（见 `build_packs.py`）：
+一个 0.6 MB 的编辑器 + 玩家按需下 0.8~12 MB 的地图包，比"人人下 35 MB"划算得多 ✓
+全量版（`--all-maps`）留着：本地自用、或者要发"离线一把梭"的版本时用 ✓
+
+file:// 协议下 fetch 和 ES module 都会被浏览器拦掉，
 所以这里把 JS 合成一段普通脚本、数据用 base64 内嵌，绕开这两个限制。
+（**轻量版没有内嵌数据**，但拼接方式不变 —— 只是 maps 空着 ✓）
 
-要跑 ``build_data.py`` 生成 data/ 之后才用得了。
+要烘地图才需要先跑 ``build_data.py``（轻量版不需要）。
 """
 
 from __future__ import annotations
 
+import argparse
 import base64
 import gzip
 import json
@@ -29,10 +35,36 @@ WEB = ROOT / "web"
 DATA = ROOT / "data"
 OUT = ROOT / "pdx-map-editor.html"
 
+#: 可选的地图 —— **一份表，两个用途** ✓
+#:   ① `--all-maps` 时把它们烘进单文件（全量版）
+#:   ② `build_packs.py` 按同一份表打 `.pdxmap` 地图包（轻量版的配菜）
+#: **别在别处再抄一份** ✗ 抄两份迟早对不上（拍平清单就抄了三份，为此踩过两回 ✓）
+#:
+#: 字段：emb 键（app.js 的 MAP_CHOICES 认这个）/ 包 id / 显示名 / 缓存目录 / 卡片副标题
+#: ⚠ **EU4HD 不在这张表里**：那是创意工坊模组的地图，没拿到作者授权 ——
+#:   既不内嵌、也不打包对外发 ✓（本地想用就把条目加回来，走 `python server.py` 照样看得到）
+MAPS = (
+    ("vanilla", "pdx-ck3-vanilla", "CK3 原版", "data", "9216 × 4608"),
+    ("eu4", "pdx-eu4-vanilla", "EU4 原版", "data_eu4", "5632 × 2048"),
+    ("hoi4", "pdx-hoi4-vanilla", "HOI4 原版", "data_hoi4", "5632 × 2048"),
+    ("hoi4alt", "pdx-hoi4-alt", "HOI4 修改边界", "data_hoi4_alt", "5632 × 2048"),
+    ("vic3", "pdx-vic3-vanilla", "V3 原版", "data_vic3", "8192 × 3616"),
+    ("eu5", "pdx-eu5-vanilla", "EU5 原版", "data_eu5", "8192 × 4096"),
+    ("eu5full", "pdx-eu5-full", "EU5 原尺寸", "data_eu5_full", "16384 × 8192"),
+)
+
 #: 拼接顺序有讲究：log 最前（报错日志要在 app 跑之前就挂上 ✓），app 最后
 #: （app 一加载就会跑起来）。tools/lib/browser_stub.js 里有一份同样的清单，
 #: 改这里记得一起改 —— 漏了的话那套桩里没有 PDXLOG，app.js 一取就炸 ✗
-MODULES = ("log.js", "data.js", "zip.js", "bmp.js", "gl.js", "labels.js", "tilemap.js", "tutorial.js", "app.js")
+#:
+#: pack.js / packstore.js 是「导入式地图」那套（见 docs/导入式地图-策划.md）：
+#:   pack.js      校验器（纯函数，自带流式 SHA-256）
+#:   packstore.js 存到 IndexedDB（映射包、导出备份）
+#: 这两个必须在 data.js **前面**：data.js 的第三数据源要调 packstore 的 getFile ✓
+#: ⚠ 拍平只认行首那种静态 import ✗ —— 里面别写 `await import('./zip.js')`，
+#:   那种写法会被原样留在产物里，file:// 下必炸 ✓
+MODULES = ("log.js", "pack.js", "zip.js", "packstore.js", "data.js", "bmp.js", "gl.js",
+           "labels.js", "tilemap.js", "tutorial.js", "app.js")
 
 
 def strip_module(src: str) -> str:
@@ -89,8 +121,17 @@ def strip_local_paths(meta_text: str) -> tuple[str, list[str]]:
 
 
 def main() -> int:
-    if not (DATA / "meta.json").is_file():
-        print("!! 还没构建缓存，先跑 python build_data.py")
+    ap = argparse.ArgumentParser(
+        description="把编辑器打成一个自包含的 HTML",
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--all-maps", action="store_true",
+                    help="把所有地图烘进去（约 35 MB）；不加就是轻量版（约 0.6 MB）✓")
+    ap.add_argument("--out", default=None, help="输出文件，默认 pdx-map-editor.html")
+    args = ap.parse_args()
+
+    want_maps = list(MAPS) if args.all_maps else []
+    if want_maps and not (DATA / "meta.json").is_file():
+        print("!! 要内嵌地图就得先构建缓存：python build_data.py")
         return 1
 
     print("读取前端资源 …")
@@ -103,55 +144,50 @@ def main() -> int:
         parts.append(f"// ==================== {name} ====================\n{strip_module(src)}")
     js = "\n\n".join(parts)
 
-    print("压数据 …")
-    # 有几套地图就压几套 —— **只压游戏自带的那几套** ✓
-    # 创意工坊模组那两张图没拿到模组作者授权，不进这个对外发的文件 ✗
-    # （本地留着，走 `python server.py` 照常能用 ✓）
-    maps = [("vanilla", ROOT / "data"),
-            ("eu4", ROOT / "data_eu4"),
-            ("hoi4", ROOT / "data_hoi4"),
-            ("hoi4alt", ROOT / "data_hoi4_alt"),      # HOI4 换了自己改过的边界图
-            ("vic3", ROOT / "data_vic3"),
-            ("eu5", ROOT / "data_eu5"),
-            ("eu5full", ROOT / "data_eu5_full")]
     blocks = []
-    for key, d in maps:
-        if not (d / "meta.json").is_file():
-            print(f"  跳过 {key}：{d.name}/ 里没有 meta.json")
-            continue
-        titles_gz = gzip.compress((d / "titles.json").read_bytes(), 9)
-        # 带 tiles.json 的地图（EU5 原尺寸）走分块：**不嵌整图 id** ✗
-        # （原尺寸那张解压后 256MB，分块路径根本不用它）
-        # 带分块的地图**也要**嵌整图 id —— 它是"分块初始化失败"时的兜底 ✗
-        # （不嵌的话，一旦那条路出错，退回普通路径也会因为空数据炸掉 → 白屏 ✗）
-        provinces = (d / "provinces_id.bin").read_bytes()
-        titlemap = (d / "titlemap.bin").read_bytes()
-        adjacency = (d / "adjacency.bin").read_bytes()
-        prov_pos = (d / "prov_pos.bin").read_bytes()
-        meta = (d / "meta.json").read_text(encoding="utf-8")
-        meta, _dropped = strip_local_paths(meta)
-        for _d in _dropped:
-            print(f"    （去掉本机路径：{_d}）")
-        print(f"  {key}: 头衔表 {len(titles_gz) / 1024:.0f} KB（gzip）"
-              f" / 省份图 {len(provinces) / 1024:.0f} KB")
-        blocks.append(
-            f"{key}:{{\n"
-            f"meta:{meta},\n"
-            f'titles:"{b64(titles_gz)}",\n'
-            f'provinces:"{b64(provinces)}",\n'
-            f'titlemap:"{b64(titlemap)}",\n'
-            f'adjacency:"{b64(adjacency)}",\n'
-            f'provPos:"{b64(prov_pos)}"'
-            + ((",\ntiles:{" + _tiles_js(d) + "}") if (d / "tiles.json").is_file() else "")
-            + "\n}"
-        )
-
-    if not blocks:
-        print("!! 一套地图数据都没有，先跑 python build_data.py")
-        return 1
+    if want_maps:
+        print("压数据 …")
+        # 只压表里那几张游戏自带的 ✓
+        # 创意工坊模组那两张图没拿到模组作者授权，既不内嵌也不打包 ✗
+        # （本地留着，走 `python server.py` 照常能用 ✓）
+        for key, _pack_id, _label, dirname, _note in want_maps:
+            d = ROOT / dirname
+            if not (d / "meta.json").is_file():
+                print(f"  跳过 {key}：{d.name}/ 里没有 meta.json")
+                continue
+            titles_gz = gzip.compress((d / "titles.json").read_bytes(), 9)
+            # 带 tiles.json 的地图（EU5 原尺寸）走分块：**不嵌整图 id** ✗
+            # （原尺寸那张解压后 256MB，分块路径根本不用它）
+            # 带分块的地图**也要**嵌整图 id —— 它是"分块初始化失败"时的兜底 ✗
+            # （不嵌的话，一旦那条路出错，退回普通路径也会因为空数据炸掉 → 白屏 ✗）
+            provinces = (d / "provinces_id.bin").read_bytes()
+            titlemap = (d / "titlemap.bin").read_bytes()
+            adjacency = (d / "adjacency.bin").read_bytes()
+            prov_pos = (d / "prov_pos.bin").read_bytes()
+            meta = (d / "meta.json").read_text(encoding="utf-8")
+            meta, _dropped = strip_local_paths(meta)
+            for _d in _dropped:
+                print(f"    （去掉本机路径：{_d}）")
+            print(f"  {key}: 头衔表 {len(titles_gz) / 1024:.0f} KB（gzip）"
+                  f" / 省份图 {len(provinces) / 1024:.0f} KB")
+            blocks.append(
+                f"{key}:{{\n"
+                f"meta:{meta},\n"
+                f'titles:"{b64(titles_gz)}",\n'
+                f'provinces:"{b64(provinces)}",\n'
+                f'titlemap:"{b64(titlemap)}",\n'
+                f'adjacency:"{b64(adjacency)}",\n'
+                f'provPos:"{b64(prov_pos)}"'
+                + ((",\ntiles:{" + _tiles_js(d) + "}") if (d / "tiles.json").is_file() else "")
+                + "\n}"
+            )
 
     payload = "window.__CK3_EMBEDDED__={maps:{\n" + ",\n".join(blocks) + "\n}};"
-    print(f"  内嵌数据合计 {len(payload) / 1048576:.2f} MB（base64 后）")
+    if blocks:
+        print(f"  内嵌数据合计 {len(payload) / 1048576:.2f} MB（base64 后）")
+    else:
+        print("  没内嵌任何地图 —— 这是**轻量版** ✓")
+        print("  玩家在选图那一页导入 .pdxmap 就能用；那些包由 build_packs.py 打 ✓")
 
     # ---- 拼 HTML
     # 1) 外链 CSS 换成内联
@@ -173,9 +209,12 @@ def main() -> int:
         print("!! 没找到 <script type=\"module\" src=\"js/app.js\">，index.html 结构变了？")
         return 1
 
-    OUT.write_text(html, encoding="utf-8")
-    print(f"\n写好了：{OUT}")
-    print(f"  {OUT.stat().st_size / 1048576:.2f} MB —— 双击这个文件就能用")
+    out = Path(args.out) if args.out else OUT
+    out.write_text(html, encoding="utf-8")
+    print(f"\n写好了：{out}")
+    print(f"  {out.stat().st_size / 1048576:.2f} MB —— 双击这个文件就能用")
+    if not blocks:
+        print("  （轻量版：把 packs/ 里的 .pdxmap 一起发出去，玩家在选图那页导入 ✓）")
     return 0
 
 

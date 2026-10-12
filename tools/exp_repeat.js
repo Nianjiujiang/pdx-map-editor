@@ -25,8 +25,9 @@ function stats(xs) {
 }
 
 async function measure(root, label) {
-  const env = H.makeEnv({ root: H.ROOT });       // 数据总是从本工程读
-  const ex = H.instantiate(H.flattenModules(undefined, root), env);
+  /* 数据总是从本工程读；**源码**按那一边实际有什么来拍（旧快照缺新模块 ✓ 见 moduleListFor） */
+  const env = H.makeEnv({ root: H.ROOT });
+  const ex = H.instantiate(H.flattenModules(H.moduleListFor(root), root), env);
   const b = ex.boot();
   for (let i = 0; i < 4000 && !env.get('map-pick-list').children.length; i++) {
     await new Promise((r) => setImmediate(r));

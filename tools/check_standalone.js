@@ -30,6 +30,38 @@ function ok(name, cond, extra = '') {
   console.log(`  ${cond ? '✔' : '✘'} ${name}${extra ? '  → ' + extra : ''}`);
 }
 
+/** 两个定型数组逐字节一样吗（"包里读的和内嵌那份是同一个东西"就靠它） */
+function sameArr(a, b) {
+  if (!a || !b || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+/**
+ * 两张头衔表一样吗 —— **名字 / 颜色 / 层级 / 父级 / 归属个数**逐项比 ✓
+ *
+ * 2026-10-12 廿九点名要确认的那件事：「国家、地区等以及他们的颜色也包含在地图包里」
+ * 说白了就是：包里那几份表 = 地图的**全部**数据，一样都不许少 ✗
+ * （名字和颜色在 titles.json，归属在 titlemap.bin ✓ 都在包的一个个条目里 ✓）
+ *
+ * @param {boolean} [brief] 只回一句摘要（给断言当 detail 用）
+ * @returns {string|null} null = 一致；否则是"哪一项不一样"
+ */
+function titlesDiff(a, b) {
+  if (!a || !b) return '有一边读不出来';
+  const fields = ['keys', 'tiers', 'parents', 'names', 'colors', 'provCount'];
+  for (const f of fields) {
+    const x = a[f];
+    const y = b[f];
+    if (!x || !y) return `${f} 缺`;
+    if (x.length !== y.length) return `${f} 条数不同（${x.length} vs ${y.length}）`;
+    for (let i = 0; i < x.length; i++) {
+      if (JSON.stringify(x[i]) !== JSON.stringify(y[i])) return `${f} 第 ${i} 项不同`;
+    }
+  }
+  return null;
+}
+
 /** 跑一次启动，返回探针与假环境 */
 async function bootWith(embedded, wantLabel) {
   const env = H.makeEnv({ embedded });
@@ -48,6 +80,55 @@ async function bootWith(embedded, wantLabel) {
   return { ex, env, cards, card };
 }
 
+/**
+ * **轻量版**的启动：先导一个地图包，再点它进编辑器 —— 这正是玩家的路 ✓
+ * @param {string} packPath 测试包（本地打的那个，仓库里没有）
+ */
+async function bootLiteWithPack(embedded, packPath) {
+  const env = H.makeEnv({ embedded });
+  const js = H.readStandalone(HTML).js;
+  const ex = H.instantiate(js, env);
+  const booting = ex.boot();
+  /* 等 pickMap 把界面接好 ✓
+     ⚠ 别等 `map-pick.hidden == false`：假 DOM 里 hidden 的默认值不一定是我们想的那个，
+       会"一秒都没等就往下走" ✗ 等**接线本身**（选文件那个 input 挂上 onchange = 界面出来了）✓ */
+  const fi = env.get('pack-file');
+  for (let i = 0; i < 3000 && typeof fi.onchange !== 'function'; i++) {
+    await new Promise((r) => setImmediate(r));
+  }
+  if (typeof fi.onchange !== 'function') throw new Error('选图界面没接上（pack-file 没有 onchange）');
+  /* 没有地图时那句引导现在在 `#map-msg` 那个框里 ✓（2026-10-12 挪下来的）
+     ⚠ 它**不再是 HTML 里的静态文字**了 —— 是 render() 用 setPackMsg 写进去的 ✓ */
+  const hintBox = env.get('map-msg');
+  const emptyShown = !!(hintBox && !hintBox.hidden);
+  const emptyText = (hintBox && hintBox.textContent) || '';
+  // 走玩家那条路：选文件 → 导入（UI 的接线也一起验了 ✓）
+  fi.files = [new Blob([fs.readFileSync(packPath)])];
+  await fi.onchange();
+  for (let i = 0; i < 3000 && !env.get('map-pick-list').children.length; i++) {
+    await new Promise((r) => setImmediate(r));
+  }
+  const cards = env.get('map-pick-list').children;
+  const card = cards[0];
+  if (card) card.onclick();
+  await booting;
+  return { ex, env, cards, card, emptyShown, emptyText };
+}
+
+/** 本地那个测试包（build_packs.py / pack_map.py 打的），没有就返回 null
+ *  `packs/` 是 build_packs.py 的正经输出；`_local/packs/` 是早先手工打的几个 ✓ */
+function findTestPack() {
+  const dirs = [path.join(H.ROOT, 'packs'), path.join(H.ROOT, '_local', 'packs')];
+  const names = ['pdx-eu4-vanilla.pdxmap', 'eu4-vanilla.pdxmap', 'eu4-vanilla-test.pdxmap'];
+  for (const d of dirs) {
+    for (const n of names) {
+      const p = path.join(d, n);
+      if (fs.existsSync(p)) return p;
+    }
+  }
+  return null;
+}
+
 (async () => {
   console.log(`\n===== 单文件版自检：${path.relative(H.ROOT, HTML)} =====`);
   if (!fs.existsSync(HTML)) { console.log('  ✘ 文件不存在'); process.exit(1); }
@@ -64,7 +145,16 @@ async function bootWith(embedded, wantLabel) {
   if (!embedded) process.exit(1);
 
   const keys = Object.keys(embedded.maps || {});
-  ok(`内嵌了 ${keys.length} 套地图`, keys.length >= 6, keys.join(' / '));
+  /* 两种形态都得认 ✓（2026-10-12 起单文件默认出**轻量版**：不内嵌地图，
+     地图改成 .pdxmap 包单独下；全量版还留着：`--all-maps` ✓） */
+  const lite = keys.length === 0;
+  if (lite) {
+    ok('这是轻量版（没内嵌地图，配地图包一起发）', true, 'maps 是空的 ✓');
+    ok('轻量版体积应该是 0.6 MB 量级（不是 35 MB）', size < 2 * 1024 * 1024,
+       `${(size / 1048576).toFixed(2)} MB`);
+  } else {
+    ok(`内嵌了 ${keys.length} 套地图`, keys.length >= 6, keys.join(' / '));
+  }
 
   // 每一套：meta / 头衔表都解得出，并且尺寸自洽
   for (const [key, m] of Object.entries(embedded.maps)) {
@@ -90,9 +180,31 @@ async function bootWith(embedded, wantLabel) {
 
   // 真跑一遍：挑第一张能起来
   console.log('\n---- 真跑一遍 ----');
-  const { ex, env, cards } = await bootWith(embedded, null);
-  ok('选单里的地图数 = 内嵌的数', cards.length === keys.length,
-     `${cards.length} 张：${cards.map((c) => c.flat().replace(/<[^>]*>/g, '').trim()).join(' / ')}`);
+  const testPack = findTestPack();
+  let ex; let env; let cards;
+  if (lite) {
+    /* 轻量版没有内嵌地图 → 必须"导入一个包 → 点它 → 进去"才跑得起来 ✓
+       这正好是玩家第一次用的完整路径，所以这一条比全量版那几条还值钱 ✓ */
+    if (!testPack) {
+      ok('轻量版能导入地图包并进去（需要 _local/packs/ 里的测试包）', false,
+         '没有测试包：先跑 python build_packs.py 或 pack_map.py');
+      process.exitCode = 1;
+      return;
+    }
+    const r = await bootLiteWithPack(embedded, testPack);
+    ex = r.ex; env = r.env; cards = r.cards;
+    /* ⚠ 2026-10-12 起那句引导**不在 HTML 里了** ✗ —— 它跟"成功导入地图…"共用
+       `#map-msg` 那个框，是 render() 用 setPackMsg 写进去的：直接读那个元素 ✓ */
+    ok('轻量版：一进来先看到那句引导（在下面那个提示框里 ✓）',
+       r.emptyShown === true && /请点击导入按钮/.test(r.emptyText || ''),
+       `hidden=${!r.emptyShown} · "${(r.emptyText || '').slice(0, 46)}"`);
+    ok('轻量版：导入地图包之后卡片出现了', cards.length === 1,
+       `${cards.length} 张：${cards.map((c) => c.flat().replace(/<[^>]*>/g, '').trim()).join(' / ')}`);
+  } else {
+    ({ ex, env, cards } = await bootWith(embedded, null));
+    ok('选单里的地图数 = 内嵌的数', cards.length === keys.length,
+       `${cards.length} 张：${cards.map((c) => c.flat().replace(/<[^>]*>/g, '').trim()).join(' / ')}`);
+  }
   const step = (env.get('boot-step') || {}).textContent || '';
   ok('boot 跑到"就绪"', /就绪/.test(step), step || '（没走到那一步）');
   ok('meta 装上了', !!(ex.state.meta && ex.state.meta.numTitles),
@@ -134,6 +246,131 @@ async function bootWith(embedded, wantLabel) {
   ok('状态栏写上了版本信息',
      /地块/.test((env.get('status-meta') || {}).textContent || ''),
      (env.get('status-meta') || {}).textContent || '');
+
+  /* ---- 导入式地图（见 docs/导入式地图-策划.md）----
+     pack.js / packstore.js / data.js 的第三数据源都是**新加的模块**，
+     拍平清单漏一个，功能就悄悄没了（页面照常跑，只是"导入"那颗按钮点了没反应）✗
+     这种"少拼一个文件"是最容易发生的回归，所以这里点名盯着它 ✓ */
+  ok('拍平脚本里有校验器（pack.js 拼进去了）',
+     /function validatePack/.test(js) && /class Sha256/.test(js));
+  ok('拍平脚本里有仓库（packstore.js 拼进去了）',
+     /function importPack/.test(js) && /function putPack/.test(js));
+  ok('data.js 的第三数据源在（setPackMap 拼进去了）', /function setPackMap/.test(js));
+  ok('HTML 里有选文件的 input（点「导入地图包」要有地方选）', /id="pack-file"/.test(html));
+  /* ⚠ `application/octet-stream` **不许从 accept 里掉出去** ✗
+     （2026-10-12 用户报的"手机上没法把 pdxmap 识别为可导入文件"：
+      `.pdxmap` 是自定义扩展名 → 类型是 octet-stream → 安卓按 MIME 过滤就把它灰掉 ✓） */
+  ok('选文件的 accept 里留着 application/octet-stream（不然手机上选不了 .pdxmap ✗）',
+     /id="pack-file"[\s\S]{0,200}?accept="[^"]*application\/octet-stream/.test(html),
+     (html.match(/id="pack-file"[\s\S]{0,160}?accept="[^"]*"/) || ['没找到'])[0].replace(/\s+/g, ' '));
+  /* ⚠ 动态 import 在单文件版里是**死路**：file:// 下 import() 会被拦掉 ✗
+     拍平只认得行首那种静态 import，所以产物里一个都不该有 ✓ */
+  ok('拍平脚本里没有动态 import（那在 file:// 下必炸）', !/await\s+import\s*\(/.test(js));
+
+  // 选图界面上那颗入口（点了会去开选文件那个 input）
+  const importBtn = env.get('map-import');
+  ok('单文件版的选图界面也有「导入地图包」（导入的是库里的，不占内嵌体积）',
+     !!importBtn && typeof importBtn.onclick === 'function');
+  ok('入口下面平时不摆说明文字（存的住的时候不啰嗦 ✓）',
+     !((env.get('map-import-hint') || {}).textContent || '').trim()
+     && (env.get('map-import-hint') || {}).hidden === true,
+     (env.get('map-import-hint') || {}).textContent || '（空的 ✓）');
+  // 卡片数不受影响：导入入口是**另一个按钮**，不混进卡片列表 ✓
+  ok('导入入口没有算进"地图卡片"里（换游戏那几条断言才不会错位）',
+     cards.every((c) => !/导入地图包/.test(c.flat())));
+
+  /* ⚠ `hidden` 必须真的能藏住 ✗
+     这条守卫是被玩家逮到之后补的：选图那页那个「⋯」管理面板
+     （`.pack-menu { display: flex }`，2026-10-12 已经连元素带样式整个拆了 ✓）
+     把我们自己的 hidden 属性压过去了 → **一进编辑器就浮在屏幕正中间，而且关不掉** ✓
+     （手机版的改名窗踩过同一个坑，所以这次提到全局做兜底）
+     假 DOM 不做 CSS，行为测不出来 —— 所以这条只能靠"扫样式表"：
+     兜底那条在，**任何**浮层就不会再犯这个错 ✓ */
+  ok('样式表里有 [hidden] 兜底（"浮层关不掉"那个 bug 的守卫）',
+     /\[hidden\]\s*\{[^}]*display:\s*none\s*!important/.test(html),
+     /\[hidden\]\s*\{[^}]*display:\s*none\s*!important/.test(html) ? '[hidden] { display: none !important }' : '没有 ✗');
+
+  /* ---- 导入的地图包：在**烤好的产物**里也整条走一遍 --------------------------
+     跟 check_import.js 那条不一样：那边是开发版（走服务、没有内嵌数据），
+     这边是真正发给玩家的那个文件 —— **内嵌的七套图和导入的包同时在** ✗
+     两个数据源要是打架（比如切包时没把内嵌那份让开），只有这里看得见 ✓
+     没有测试包就跳过（它不在仓库里，是 pack_map.py 现打的） */
+  const packPath = testPack;
+  if (packPath && typeof ex.importPack === 'function') {
+    console.log('\n---- 单文件版里导入一个地图包 ----');
+    // root 给上：轻量版要拿 data_eu4/ 目录那份当参照物（走桩的 fetch ✓）
+    const env2 = H.makeEnv({ embedded, root: H.ROOT });
+    const ex2 = H.instantiate(js, env2);
+    const r = await ex2.importPack(new Blob([fs.readFileSync(packPath)]), {});
+    ok('单文件版里能导入地图包', !!r.key, r.key);
+
+    /* 贴着"另一个来源的那份"比：这是"包里放的就是同一个东西"最硬的证据 ✓
+       全量版跟**内嵌**那份比；轻量版没有内嵌的，就跟 **data/ 目录**那份比 ✓
+       （两边都是同一套 EU4 数据，只是来源不同 ✓） */
+    let refTm; let refAdj; let refTitles; let refMeta; let refName;
+    if (lite) {
+      ex2.setDataDir('/data_eu4');
+      refName = 'data_eu4/ 目录';
+    } else {
+      ex2.setEmbeddedMap('eu4');
+      refName = '内嵌那份';
+    }
+    try {
+      refTm = await ex2.api.titlemap();
+      refAdj = await ex2.api.adjacency();
+      refTitles = await ex2.api.titles();
+      refMeta = await ex2.api.meta();
+    } catch (e) {
+      refTm = null; refAdj = null; refTitles = null; refMeta = null;
+      console.log(`  （参照物读不到：${e.message}）`);
+    }
+    ex2.setPackMap(r.key);
+    const packTm = await ex2.api.titlemap();
+    const packAdj = await ex2.api.adjacency();
+    const packTitles = await ex2.api.titles();
+    const packMeta = await ex2.api.meta();
+    ok(`导入的包和${refName}逐字节一致（titlemap）`, sameArr(refTm, packTm), `${packTm.length} 项`);
+    ok(`导入的包和${refName}逐字节一致（adjacency）`, sameArr(refAdj, packAdj), `${packAdj.length} 字节`);
+    /* **国家 / 地区以及它们的颜色也在包里**（廿九点名要的那件事）——
+       名字、颜色、层级、父级、每层归属个数都在 titles.json 里 ✓
+       这条以前没验：只比了"归属图"和"邻接"，名字和颜色要是丢了就悄悄丢了 ✗ */
+    const tDiff = titlesDiff(refTitles, packTitles);
+    ok(`导入的包和${refName}一致（头衔表：名字 + 颜色 + 层级 + 父级）`,
+       tDiff === null,
+       tDiff || `${packTitles.keys.length} 个头衔 · ${packTitles.colors.length} 条颜色 · `
+         + `${(packMeta.tierNames || []).length} 层（${(packMeta.tierNames || []).join('/')}）`);
+    ok('切到包之后别的来源让开了（两个数据源不打架）', ex2.isPackMap() === true);
+
+    // 再来一次真启动：选单里"原有的 + 刚导入的"，点导入那张能进去
+    const booting2 = ex2.boot();
+    for (let i = 0; i < 3000 && !env2.get('map-pick-list').children.length; i++) {
+      await new Promise((rr) => setImmediate(rr));
+    }
+    const cards2 = env2.get('map-pick-list').children;
+    /* 基准 = "本来就有几张"：全量版是内嵌那几套，轻量版是 0 ✓
+       （别拿上面那个 cards.length 当基准 ✗ 轻量版的 cards 里是**导进来的那一张**，
+         不是"本来有的"） */
+    const baseCards = lite ? 0 : keys.length;
+    ok(`选单里是「原有的 ${baseCards} 张 + 导入的 1 张」`, cards2.length === baseCards + 1,
+      `${baseCards} → ${cards2.length} 张`);
+    /* ⚠ 认卡不能只认名字 ✗ ——
+       全量版里内嵌的 EU4 卡也叫「EU4 原版」，而且在列表前面 ——
+       只按名字找会点到**内嵌那张**，然后"进去的确实是那张包"就会假红 ✓
+       ⚠ 2026-10-12 起那一栏上不写「已导入」了 ✗ —— 改认卡片的 `imported` 类
+       （内嵌的卡没有这个类，也没有"导出 / 删除"那两个动作 ✓）*/
+    const isPackCard = (c) => /(^| )imported( |$)/.test(c.className || '');
+    const packCard = cards2.find((c) => isPackCard(c) && /EU4/.test(c.flat()))
+      || cards2.find(isPackCard);
+    ok('导入的那张排在选单里', !!packCard);
+    if (packCard) packCard.onclick();
+    await booting2;
+    ok('点导入的那张能起到「就绪」',
+      /就绪/.test((env2.get('boot-step') || {}).textContent || ''),
+      (env2.get('boot-step') || {}).textContent || '');
+    ok('进去的确实是那张包', ex2.isPackMap() === true);
+  } else {
+    console.log('\n---- 跳过"单文件版里导入"（没有 _local/packs/ 里的测试包）----');
+  }
 
   // 再挑一张别的（有的话）—— 换游戏能不能起来
   if (cards.length > 1) {

@@ -430,8 +430,61 @@ def parse_subjects(history_countries: Path) -> dict[str, Subject]:
     return out
 
 
+#: 大写、但**不是国家 tag** 的块键（HOI4 的逻辑 / 作用域关键字）。
+#: 不排掉的话 ``IF = { ... }`` 里那句 cosmetic 会被算到 "IF" 头上 ✗
+#: （``NOR`` 特意不在里面：它同时是逻辑运算符，但只在 ``limit`` 里那么用，
+#:   而 ``limit`` 我们压根不进 ✓；TNO 的 ``NOR = { ... }`` 指的就是挪威那个国家 ✓）
+_NOT_A_TAG_KEY = frozenset((
+    "IF", "ELSE", "ELSE_IF", "AND", "OR", "NOT", "NAND", "XOR",
+    "ROOT", "PREV", "THIS", "FROM", "OWNER", "CONTROLLER", "OVERLORD",
+    "CAPITAL", "CAPITAL_SCOPE", "ALL", "ANY", "NONE",
+))
+
+
+def _collect_cosmetics(entries, scope: str, out: dict[str, str], depth: int = 0) -> None:
+    """在 ``entries`` 里找 ``set_cosmetic_tag``，算给**最里面那层国家作用域**。
+
+    ``NOR = { set_cosmetic_tag = NOR_GER }`` → 这条算 **NOR** 的 ✓
+
+    ``limit`` 里的是条件不是效果，不进去；``IF`` 这类关键字**不换作用域**，
+    但里面照样要找（``IF = { limit = {...} NOR = { ... } }`` 这种得认 ✓）。
+    """
+    if depth > 6:
+        return
+    for key, value in entries:
+        if key is None:
+            continue
+        if key == "set_cosmetic_tag" and isinstance(value, str):
+            cos = _clean_tag(value)
+            if cos:
+                out.setdefault(scope, cos)
+            continue
+        if not isinstance(value, list) or key == "limit":
+            continue
+        sub = str(key).strip().upper()
+        inner = sub if (_TAG_KEY.match(sub) and sub not in _NOT_A_TAG_KEY) else scope
+        _collect_cosmetics(value, inner, out, depth + 1)
+
+
 def parse_cosmetic_tags(history_countries: Path) -> dict[str, str]:
-    """``set_cosmetic_tag = X`` —— 显式指定的 cosmetic tag（20 来个国家）。"""
+    """``set_cosmetic_tag = X`` —— 显式指定的 cosmetic tag。
+
+    ⚠ **得看它写在谁的作用域里**。TNO 是这么写的::
+
+        NOR = { set_cosmetic_tag = NOR_GER }
+        SER = { set_cosmetic_tag = SER_GER }
+        COG = { set_cosmetic_tag = COG_GER }
+
+    —— 这几句是给 **NOR / SER / COG** 换名字的（"某某顶着德国"），
+    跟写它们的那个文件（``GER - Germany.txt``）半点关系都没有 ✗
+
+    只按"文件属于谁"认的话：德国会被判成**「挪威专员辖区」**
+    （``NOR_GER`` 排在候选表最前面，把 ``GER_national_socialism`` / ``GER`` 全盖过去了），
+    后面那几条还会被 ``setdefault`` 悄悄吃掉；意大利同理会被判成埃及的装饰名 ✓
+    （2026-10-12 廿九在 TNO 图上看见"德国那块写着挪威"，根子就在这儿 ✓）
+
+    原版 26 处全是各国自己文件里的平铺写法，所以加了作用域判断对原版**没有影响** ✓
+    """
     out: dict[str, str] = {}
     d = Path(history_countries)
     if not d.is_dir():
@@ -444,11 +497,7 @@ def parse_cosmetic_tags(history_countries: Path) -> dict[str, str]:
             text = fp.read_text(encoding="latin-1", errors="replace")
         except OSError:
             continue
-        for key, value in _walk_blocks(parse_script(text)):
-            if key == "set_cosmetic_tag" and isinstance(value, str):
-                cos = _clean_tag(value)
-                if cos:
-                    out.setdefault(tag, cos)
+        _collect_cosmetics(parse_script(text), tag, out)
     return out
 
 

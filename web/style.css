@@ -21,6 +21,26 @@
 
 * { box-sizing: border-box; }
 
+/* ============================================================================
+ * `hidden` 属性要**真的能藏住** ✗
+ *
+ * 浏览器只给 `[hidden]` 一条 `display: none`（在 UA 样式表里），
+ * 而我们自己的 `.xxx { display: flex }` **权重更高** —— 于是就成了
+ * "给元素加了 hidden，它照样杵在屏幕正中间，而且按关闭没反应" ✗
+ * （2026-10-11 真发生过：导入地图包那个「⋯」管理面板，一进编辑器就浮在中间，
+ *   而关闭按钮做的也是设 hidden，所以按了等于没按 ✓）
+ *
+ * 底下这条是**兜底**：以后新加的任何浮层，只要有 hidden 就一定藏得住 ✓
+ * （原来 `dropdown` / `modal` 各自写过一条 [hidden] —— 那两条留着也无害，
+ *   但新东西别再靠"记得写"了，靠这一条 ✓）
+ *
+ * ⚠ 这不是我第一个踩的人：**手机版那个改名窗踩过一模一样的坑**
+ * （见 mobile/mobile_css.txt 里那句注释："一进页面就杵在屏幕中间"，
+ *   那边修的办法也是加 `[hidden] { display: none !important; }`）✓
+ * 同一个坑踩两次，说明"记得给每个浮层补一条"本来就不该靠人记 —— 所以提到全局来 ✓
+ * ========================================================================== */
+[hidden] { display: none !important; }
+
 html, body {
   margin: 0;
   height: 100%;
@@ -362,7 +382,28 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin
   margin: 0 0 10px; font-size: 11px; letter-spacing: 2px;
   color: var(--text-faint); text-transform: uppercase;
 }
-.map-pick-list { display: flex; flex-direction: column; gap: 8px; }
+/* ⚠ 这里得是 **grid** 而不是 flex 列 ✗ ——
+   卡片一多要"另起一列"，而那条规则改的就是 grid-template-columns，
+   还是 flex 列的话它根本不生效 ✓ */
+.map-pick-list { display: grid; grid-template-columns: 1fr; gap: 8px; }
+/* 卡片到阈值以上：**列表排两列 + 面板放宽 + 列表自己滚** ✓
+   （2026-10-12 用户要求："导入的地图太多就另起一列"）
+   `.boot-inner` 只有 340px，两列会挤成一条 —— 所以面板也得跟着宽 ✓
+   限高滚动是为了卡一多别把整页顶出屏幕 ✓ */
+.boot-inner.wide-pick { width: 760px; }
+.map-pick-list.two-col {
+  grid-template-columns: 1fr 1fr;
+  max-height: min(62vh, 600px);
+  overflow-y: auto;
+  padding-right: 4px;          /* 滚动条别贴着卡片 ✓ */
+  /* ⚠ 这儿的滚动条得**自己染暗** ✗ —— 别处没管过它，默认是浏览器那根白条 ✓
+     （跟侧栏 `.sidebar::-webkit-scrollbar-thumb` 同一个色 ✓）*/
+  scrollbar-width: thin;
+  scrollbar-color: #2b3542 transparent;
+}
+.map-pick-list.two-col::-webkit-scrollbar { width: 8px; }
+.map-pick-list.two-col::-webkit-scrollbar-thumb { background: #2b3542; border-radius: 4px; }
+.map-pick-list.two-col::-webkit-scrollbar-track { background: transparent; }
 .map-card {
   appearance: none; cursor: pointer;
   display: flex; align-items: baseline; justify-content: space-between;
@@ -383,6 +424,79 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin
 }
 .map-card b { font-size: 14px; font-weight: 600; color: #f0d98a; }
 .map-card span { font: 10.5px var(--mono); color: var(--text-faint); }
+
+/* ---- 导入式地图（见 docs/导入式地图-策划.md 第 4 节） ----
+   ⚠ 下面这几条的选择器必须写成 `.map-card .xxx`：
+   上面那条 `.map-card span` 的权重是 (0,1,1)，写成单个类名 (0,1,0) 会**压不过它** ✗ */
+.map-card { position: relative; }
+.map-card .map-card-tag {
+  position: absolute; left: 15px; bottom: 5px;
+  font: 9.5px var(--mono); letter-spacing: .4px;
+  color: #7fb0d8;
+}
+/* 左上角那个**小序号**：同一张图导了好几份时才出现（1 / 2 / …）✓
+   —— 名字里不再塞"（第 2 份）"，就靠它认是哪一份 ✓（2026-10-12 用户定的）
+   它占的是卡片的左内边距，所以带序号的卡左边要**多让一点位置** ✓ */
+.map-card .map-card-no {
+  position: absolute; left: 6px; top: 5px;
+  min-width: 15px; padding: 1px 4px; border-radius: 7px;
+  background: #26313d; color: var(--gold);
+  font: 9.5px/1.4 var(--mono); text-align: center;
+}
+.map-card.has-no { padding-left: 34px; }
+
+/* 卡片右下角那两个动作（导出 / 删除）——
+   2026-10-12 从「⋯」小面板提上来的 ✓ 跟左下角那栏版本号（v…）同一行 ✓ */
+.map-card .map-card-acts {
+  position: absolute; right: 8px; bottom: 5px;
+  display: flex; gap: 6px;
+}
+.map-card .map-act {
+  padding: 2px 9px; border-radius: 6px;
+  border: 1px solid var(--line);
+  font: 10.5px var(--mono); color: var(--text-dim);
+  cursor: pointer; user-select: none;
+}
+.map-card .map-act:hover {
+  background: #26313d; border-color: var(--gold-dim); color: var(--gold);
+}
+.map-card .map-act.danger:hover {
+  background: #2a1b1b; border-color: #6b2b2b; color: #ff9c9c;
+}
+.map-card.imported { padding-bottom: 27px; }
+/* 一张图都没有时那句引导：**搬到 `.map-msg` 那个框里了** ✓
+   （原来这儿有个独立的 `.map-empty` 块，2026-10-12 用户要求挪下去省地方 ✗）
+   ⚠ 那条规则里写了 display，所以文件开头那个"[hidden] 兜底"还是必需 ✗ */
+/* 刚导入进来的那张闪一下边框（"它出现了"）✓ */
+.map-card.flash { border-color: var(--gold); background: #1f2731; }
+.map-import {
+  appearance: none; cursor: pointer; width: 100%;
+  margin-top: 8px; padding: 11px 15px;
+  background: transparent; border: 1px dashed var(--line);
+  border-radius: 9px; color: var(--text-dim);
+  font: inherit; text-align: center;
+  transition: border-color .12s, color .12s;
+}
+.map-import:hover { border-color: var(--gold-dim); color: var(--gold); }
+.map-import-hint {
+  margin-top: 7px; font: 10px var(--mono); line-height: 1.5;
+  color: var(--text-faint); text-align: center;
+}
+.map-import-hint.warn { color: #e8b06a; }
+.map-msg {
+  margin-top: 10px; padding: 9px 11px; border-radius: 8px;
+  background: #161c24; border: 1px solid var(--line);
+  font-size: 11.5px; line-height: 1.6; color: var(--text-dim);
+  word-break: break-word;
+}
+.map-msg.bad { border-color: #6b2b2b; color: #ff9c9c; }
+.map-msg.done { border-color: #2b5a3a; color: #8fe0a8; }
+.map-msg-bar { height: 3px; margin-top: 7px; background: #1c242e; border-radius: 2px; overflow: hidden; }
+.map-msg-bar i {
+  display: block; height: 100%; width: 0%;
+  background: linear-gradient(90deg, var(--gold-dim), var(--gold));
+  transition: width .2s;
+}
 .boot-step { font-size: 12px; color: var(--text-dim); margin-bottom: 11px; }
 .boot-bar { height: 3px; background: #1c242e; border-radius: 2px; overflow: hidden; }
 .boot-bar i {

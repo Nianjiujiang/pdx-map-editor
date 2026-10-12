@@ -40,5 +40,21 @@ promo-live.html
 # —— 手机版单文件（构建产物：python mobile/build.py 出 ✓ 走 Release 附件发布，不进仓库 ✓）
 pdx-map-editor-mobile.html
 
+# —— 轻量版单文件（构建产物：python build_standalone.py 出 ✓
+#    ⚠ 2026-10-12 廿九定的：**测试版主体暂时不放出来** ✗ —— 仓库里那份已经拿掉了 ✓
+#    本地要留一份（check_standalone / check_mobile 都从磁盘读它 ✓）
+pdx-map-editor.html
+
+# —— 全量版单文件（`--maps all` 烘出来的 35 MB 那个，要发才发，平时不进仓库 ✓）
+pdx-map-editor-full.html
+
+# —— 地图包（构建产物：python build_packs.py 出，26 MB，走 Release 附件发布 ✓）
+#    2026-10-12 起单文件默认不内嵌地图，这张表里的包跟它配套发 ✓
+#    ⚠ 只忽略**包本体**，别把整个 packs/ 忽略掉 ✗ ——
+#    那样这个文件夹在仓库里（GitHub 网页上）就"不存在"了，
+#    而它是玩家要知道"地图去哪下"的地方 ✓（`packs/README.md` 要进仓库 ✓）
+packs/*.pdxmap
+packs_test/
+
 # —— 封面那几个成品图（本地生成的，不进仓库 ✓）
 封面_*.png

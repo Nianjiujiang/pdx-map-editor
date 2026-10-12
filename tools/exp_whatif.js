@@ -258,7 +258,8 @@ async function bootEx(ex, env, card) {
   console.log('\n=== ③ 整体：改动前 vs 改动后（同一把尺子） ===');
   const runAgg = async (label, root) => {
     const e2 = H.makeEnv({ root: H.ROOT });
-    const x2 = H.instantiate(H.flattenModules(undefined, root), e2);
+    // 源码按那一边实际有什么来拍（旧快照缺新模块 ✓ 见 moduleListFor）
+    const x2 = H.instantiate(H.flattenModules(H.moduleListFor(root), root), e2);
     await bootEx(x2, e2, CARD);
     const s2 = x2.state;
     // 两边都先涂同样的 400 块，比较的才是同一件事

@@ -167,8 +167,12 @@ def name_candidates(tag: str, ideology: str | None, subject=None,
     if ideology:
         out.append(f"{tag}_{ideology}")
         out.append(f"{tag}_{ideology}_DEF")
-    out.append(tag + "_DEF")
-    out.append(tag)
+    # ⚠ **平铺的 `TAG` 在前、`TAG_DEF` 只当兜底** ✗ —— 顺序反过来的话，游戏里明明
+    #   写着「大日耳曼国」（键 `GER`），图上却会变成更长的「德意志民族的大日耳曼国」
+    #   （键 `GER_DEF`）✓（2026-10-12 廿九对着游戏点出来的 ✓）
+    #   顺序就是上面 NAME_SUFFIXES 写的那样 —— 那个常量以前定义了没人用 ✓
+    for suf in NAME_SUFFIXES:
+        out.append(tag + suf)
     return out
 
 

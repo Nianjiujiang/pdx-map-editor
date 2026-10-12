@@ -598,3 +598,6 @@ def main(argv: list[str]) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main(sys.argv))
+
+
+# 2026-10-12 · 地图编辑器 v1.9（本版未改动此脚本）

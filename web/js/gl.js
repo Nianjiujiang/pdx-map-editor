@@ -719,10 +719,6 @@ void main() {
      *   ⚠ 头衔那一通道（A）同时供"本层线"和"多级链"✓ 它俩只差线宽 ✓ */
     /* 多级链也各有自己的宽度 ✗ 新路径一次扫描要扫到"最粗那条"的半径才够 ✓
      *（距离本身**不按线宽裁剪** ✓ 每条线各自在混色那步判够不够 ✓ 所以取最大就对 ✓）*/
-    float _wAll = max(max(uBorderW, uPaintBorderW), max(uWaterW, uWasteW));
-    for (int ex = 0; ex < 4; ex++) if (ex < uExtraCount) _wAll = max(_wAll, uExtraW[ex]);
-    int Rall = int(clamp(ceil(0.5 * uMapPerPx * (_wAll + 1.0)), 1.0, float(MAXR)));
-
     /* ============ **逐像素射线：缩小时的兜底路径** ============
      * 放大时四条主线 + 多级链全走边掩码（一次采样 ✓ 见下面 _useEdges 那段 ✓）
      * **缩小时只能回这儿** ✗ —— 线宽超过 1 格时，缝可能落在**邻居的边**上，
@@ -739,23 +735,6 @@ void main() {
      *   ③ 正解 = **边掩码**：只记"我这一格的四条边里哪几条是缝" ✓
      *      亚格精度**天然有**（用片元在格内的小数 f ✓）不需要插值、不需要距离 ✓
      */
-    }
-
-    /* ⚠ 这一整套声明**不能挪位置、不能删** ✗
-     *   它们原来是写在上面那个 if 块里的 ✗ 而那个 if 在上一轮清理时被提前闭合了 ✓
-     *   → 射线代码就跑到块外、看不到它们 → 白屏报 dTitle undeclared ✓
-     *   现在在这里补一份（块外、main 作用域 ✓）**别再动它** ✓
-     *
-     * **射线半径**：按"最粗那条线"算 ✓
-     *   ⚠ 每条线各自在混色那步按**自己的**半宽判 ✓ 所以这里取最大就够 ✓
-     *   （被删掩码块时连这几个声明一起吃掉了 ✗ 白屏报 dTitle undeclared ✓ 别再删这段 ✓）*/
-    int R = int(clamp(ceil(0.5 * uMapPerPx
-             * (max(max(uBorderW, uPaintBorderW), max(uWaterW, uWasteW)) + 1.0)),
-             1.0, float(MAXR)));
-    float dTitle = 1e9;
-    float dPaint = 1e9;
-    float dWater = 1e9;
-    float dWaste = 1e9;
     /* **粗筛：一位定生死** ✓（加载时算好的那张"省界 ±2 格"轮廓位图 ✓）
      *   bit 1 ⇒ 值得看一眼（跑射线）· bit 0 ⇒ **一辈子画不到线**，直接退出 ✓
      *   ⚠ 它跟"当前层 / 涂色"无关 ✗ 所以换层、涂色都**不用重算**这张图 ✓
@@ -853,6 +832,16 @@ void main() {
         col = mix(col, vec3(0.035, 0.045, 0.06), be * uExtraA[ex]);
       }
     }
+  }
+  /* 🔴 **这个右花括号属于上面那个 if (pidAt(ip) != 0u)** ✗ ——
+   *   它以前落在那一堆 dTitle / dPaint 声明后面，把 if **提前闭合**了 ✓
+   *   后果：射线那整段跑到块外 —— 连地图底色（provAt = 0）都去跑边界射线 ✗
+   *   为了让它还能编过，当时**又补了一份一模一样的声明**（R / dTitle / …）✓
+   *   → 一个 if 两个作用域、同一批名字两份、外加一个算完没人用的 Rall ✓
+   *   2026-10-12：把这个右花括号挪回它该在的位置（缩进本来就写着它在这儿 ✓），
+   *   删掉那份重复声明和死代码 ✓ **别再把它往上挪** ✗
+   *   ⚠ 还有：这段里**不许出现反引号** ✗ —— 整段着色器是 JS 模板字符串，
+   *    一个反引号就把文件截断（测试当场炸在模块加载上 ✓）*/
 
   // 悬停**压暗**：整个头衔一起暗 ✓（用户要求：高亮 → 高暗）
   // **亮**起来的是 **uEditTier** 那一级 ✓（用户要求：把"高暗"改回"高亮"✓）
@@ -1085,7 +1074,13 @@ export class MapRenderer {
     gl.attachShader(prog, compile(gl, gl.FRAGMENT_SHADER, FRAG));
     gl.linkProgram(prog);
     if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
-      throw new Error('着色器链接失败：' + gl.getProgramInfoLog(prog));
+      /* ⚠ 日志**可能是空的** ✗（驱动内部报错时只给个 LINK_STATUS = false ✓）
+         那就把渲染器和版本一起带上 —— 否则报上来只有"链接失败"四个字，
+         根因（指令数超限 / 寄存器不够 / ANGLE 翻译不过）一点都看不出来 ✓ */
+      const info = gl.getProgramInfoLog(prog);
+      if (info && info.trim()) throw new Error('着色器链接失败：' + info.trim());
+      throw new Error('着色器链接失败（驱动没给日志）：'
+        + gl.getParameter(gl.VERSION) + ' ｜ ' + gl.getParameter(gl.RENDERER));
     }
     this.prog = prog;
 
