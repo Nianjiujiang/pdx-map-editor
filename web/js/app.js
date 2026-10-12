@@ -1070,6 +1070,12 @@ function recomputePainted() {
       if (state.provLabel) state.provLabel[pid] = -1;
     }
   }
+  /* **状态栏那个"改动 N"在这里统一刷** ✗ ——
+   *   以前是 paintPids() 里自己调 updateStatus()，可那时 state.changed 还是
+   *   **旧账本**（重算在它之后才跑）→ 涂完显示的还是上一笔的数（慢一拍 ✗）。
+   *   账本是这里重建的，那就这里刷 —— 涂 / 擦 / 清除 / 清除荒地 / 导入 / 撤销，
+   *   所有改手绘层的路最终都汇到这一个函数 ✓ */
+  updateStatus();
   // 撤销/重做/导入之后，荒地那些"自动底色"要重铺一遍
   // （玩家涂过的地方会被跳过，所以不会盖掉他的笔迹）
 }
@@ -1819,9 +1825,8 @@ function paintPids(pids, rgb) {
   state._wasteDirty = null;      // 头衔重刷会影响显示颜色 → 荒地那套全量重算 ✓
   blocksDirty = true;
   labelDirty = true;
-  updateStatus();
   scheduleSave();
-  markPaint();
+  markPaint();   // "改动 N" 的状态栏刷新在 recomputePainted() 里统一做 ✓（见那儿）
   // **边界图跟着变** ✓（身份变了 ✓ 防抖 150ms —— 拖动时每帧一笔，不能每帧重算 ✗）
   
 }
@@ -2666,8 +2671,7 @@ function undo() {
   const op = state.history.undo.pop();
   if (!op) return;
   for (const p of op.patches) applySide(p.from);
-  recomputePainted();
-  updateStatus();       // "改动 N"跟着历史走，不然撤销后还停在旧数
+  recomputePainted();   // 账本重算 + 状态栏 "改动 N" 都在里面 ✓
   state.history.redo.push(op);
   updateHistoryUI();
   scheduleSave();
@@ -2679,8 +2683,7 @@ function redo() {
   const op = state.history.redo.pop();
   if (!op) return;
   for (const p of op.patches) applySide(p.to);
-  recomputePainted();
-  updateStatus();       // 同 undo
+  recomputePainted();   // 同上
   state.history.undo.push(op);
   updateHistoryUI();
   scheduleSave();
