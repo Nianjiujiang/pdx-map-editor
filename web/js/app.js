@@ -2003,8 +2003,14 @@ function viewRect() {
 
 function minScale() {
   // 刚好把整张图放进视口的比例，再小就只会在边上留出地图外的空地
-  return Math.min($('stage').clientWidth / state.meta.mapWidth,
-                  $('stage').clientHeight / state.meta.mapHeight);
+  const s = Math.min($('stage').clientWidth / state.meta.mapWidth,
+                     $('stage').clientHeight / state.meta.mapHeight);
+  /* ⚠ stage 会**瞬时量出 0×0**（切后台/嵌入容器收放时视口塌一帧 —— 实测"首次
+     导入后进图"约一半概率撞上那一瞬）→ 这里会算出 0，谁拿它当相机缩放写下去，
+     谁就是**整张图全黑、只剩点「⤢」能救** ✗。量不到有效值就退回"当前缩放"
+     （再不行 1）—— 至少不会把画面弄没 ✓（正确适配交给 fitView 重试那条路 ✓）*/
+  if (Number.isFinite(s) && s > 0) return s;
+  return (state.cam && state.cam.scale > 0) ? state.cam.scale : 1;
 }
 
 /** 相机不许跑出地图：哪一边地图比视口小就居中，比视口大就不许把边缘拖进来 */
@@ -2035,6 +2041,17 @@ function panBy(dx, dy, ratio) {
 }
 
 function fitView() {
+  const stage = $('stage');
+  /* ⚠ 视口会**瞬时塌成 0×0**（切后台 / 嵌入容器；实测进图那几秒约一半概率撞上
+     那一瞬）——这一下量出来的"适配缩放"是 0，写进去就是**黑屏**
+     （用户报的那次：缩放 0%、地图全黑，点「⤢」才回来 ✗）。
+     量不到有效尺寸就**先不动相机**，下一帧再试 ✓（布局回来就有值）；
+     给个次数上限兜底，真的一直量不到（页面藏着没显示）就别空转了 ✓ */
+  if (!(stage.clientWidth > 0) || !(stage.clientHeight > 0)) {
+    if ((fitView._retry = (fitView._retry || 0) + 1) <= 120) requestAnimationFrame(fitView);
+    return;
+  }
+  fitView._retry = 0;
   state.cam.scale = minScale();
   state.cam.cx = state.meta.mapWidth / 2;
   state.cam.cy = state.meta.mapHeight / 2;
