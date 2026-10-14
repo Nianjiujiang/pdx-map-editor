@@ -650,6 +650,7 @@ _p('drawLabels', drawLabels); _p('legendEntries', legendEntries);
 _p('drawLegend', drawLegend); _p('rebuildLegendPanel', rebuildLegendPanel);
 _p('impassLabel', impassLabel); _p('specialTileLabel', specialTileLabel);
 _p('computeLabelZoom', computeLabelZoom); _p('applySettings', applySettings);
+_p('fitView', fitView); _p('minScale', minScale);
 _p('applyLutOverrides', applyLutOverrides); _p('lutColorOf', lutColorOf);
 _p('hexToRgb', hexToRgb); _p('renameAt', renameAt); _p('openRename', openRename);
 _p('exportLog', exportLog); _p('showFatal', showFatal);
