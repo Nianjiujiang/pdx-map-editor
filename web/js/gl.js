@@ -997,6 +997,10 @@ export class MapRenderer {
     this.noAA = false;        // 整图导出时置 true，关掉四点超采样（逐像素精确）
     this.showWaste = true;
     this.wasteGrey = [94 / 255, 94 / 255, 94 / 255];   // 设置页可改    // 荒地（不可通行）显示自己的颜色吗（荒漠涂色开关）
+    /*: **哪些分块已经真的传进显存了**（layer 号 ✓）——「JS 缓存里有」≠「显存里有」✗：
+     *   `provinceAt`（悬停）也会把块拉进缓存而不上传 ✓ 帧循环只认缓存的话
+     *   这些块会被一直跳过 → 那块地图永远渲成 0 号省份的灰 ✗（见 app.js 的 frame ✓）*/
+    this.uploadedTiles = new Set();
 
     this._build();
 
@@ -1029,6 +1033,7 @@ export class MapRenderer {
         this.paintDirty = true;
         this.lutDirty = true;
         this.dirty = true;
+        this.uploadedTiles.clear();    // 显存里的块全没了 → 记录也清（重新喂时逐块重记 ✓）
         if (this.onContextRestored) this.onContextRestored();
       } catch (err) {
         this.ctxLost = true;
@@ -1143,6 +1148,7 @@ export class MapRenderer {
     gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, layer,
       this.tileInfo.tileW, this.tileInfo.tileH, 1,
       gl.RED_INTEGER, gl.UNSIGNED_SHORT, data);
+    this.uploadedTiles.add(layer);      // 传成功了才记 ✓（早退 false 的那条路不算 ✓）
     this.dirty = true;
     return true;
   }
@@ -1247,6 +1253,9 @@ export class MapRenderer {
     // 分块路径：数据目录带了 tiles.json ✓ 或者上面就地切了块 ✓
     this.tileInfo = layout || null;
     this.useTiles = layout ? 1 : 0;
+    // 数组纹理刚重建（每层都是全新的占位 0）→ 上传记录清空 ✓
+    // （synthetic 那条就地切的不受影响：紧接着 uploadAllTiles 会逐块传、逐块记 ✓）
+    this.uploadedTiles.clear();
     if (layout) {
       const first = new Uint16Array(layout.tileW * layout.tileH);
       this.provArrTex = this.makeTileArray(layout.tileW, layout.tileH,
