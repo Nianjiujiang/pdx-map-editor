@@ -4355,8 +4355,17 @@ function frameBody() {
     const v = renderer.view;
     if (v && v.w > 0 && v.h > 0) {
       for (const [r, c] of state.tileMap.tilesInView(v)) {
-        if (state.tileMap.cache.has(`${r}_${c}`)) continue;
         const layer = r * state.tiles.cols + c;
+        const cached = state.tileMap.cache.get(`${r}_${c}`);
+        /* **「缓存里有」≠「显存里有」** ✗ —— `provinceAt`（悬停）也会把块拉进
+         *   缓存、而不上传 ✓ 原来只看缓存的跳过判断会让这些块**永远上不了车**：
+         *   那块地图一直渲成 0 号省份的灰（悬停却查得到 —— 用户报的"缺一块"就是它 ✓）。
+         *   所以：缓存有 → 没传过就趁这一帧补传 ✓；没缓存 → 取了传 ✓；
+         *   传过的（uploadedTiles 里有）才跳过 —— 别每帧白传 ✓ */
+        if (cached) {
+          if (!renderer.uploadedTiles.has(layer)) renderer.uploadTile(layer, cached);
+          continue;
+        }
         state.tileMap.get(r, c).then((tile) => {
           if (tile) renderer.uploadTile(layer, tile);
         }).catch(() => { /* 取块失败就下一帧再试 */ });
