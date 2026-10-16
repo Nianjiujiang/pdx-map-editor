@@ -5922,24 +5922,69 @@ function showFatal(msg) {
  * ⚠ 它和 showFatal 是**两条路** ✗ 都留着：一个给人看细节、一个保证看得见 ✓
  */
 /**
- * 🔴 **启动里程表**（只在手机上显示）—— 用户报"手机版黑屏、也没有报错条" ✓
+ * 🔴 **启动里程表**（`#diag` 打开，默认不显示）—— 用户报"手机版黑屏、也没有报错条" ✓
  *
  * 为什么需要它 ✗：黑屏如果**没有异常** ✓ 那错误捕获就一点用没有 ✓
  *   （着色器编译失败会抛 ✓ 但"画出来是黑的"不会抛 ✓）
  *   → 那就需要一条**不用等出错、一直在那儿**的文字 ✓
  *   它一路打勾：停在哪儿，就知道是哪一步 ✓✓
  *
- * ⚠ 只在**手机**上显示 ✗ 桌面版页面干干净净 ✓
+ * ⚠ 默认**一个字都不显示** ✗ 桌面版、手机版的页面都干干净净 ✓
+ *   要看它：地址后面加 `#diag` 再打开 ✓
+ *   （手机上：把文件路径改成 `…/pdx-map-editor.html#diag` ✓
+ *     或者排障时在控制台敲 `__PDX_DIAG_ON()` ✓）
  * ⚠ 用最原始的东西（inline style + <div>）✗ 不依赖任何样式表 ✓
+ *
+ * ⚠ **它以前是彻底哑的** ✗（函数体第一行就是 `return` ✓）——
+ *   文档里写着"手机版上留了启动里程表"，实际一个像素都没有 ✓
+ *   于是"手机黑屏、不知道什么缘故"这件事**连排障工具都没得用** ✓
+ *   → 现在是"开关一开就能用"，而不是"要改代码才有" ✓
  */
+let _markEl = null;
 function bootMark(txt) {
-  /* 排障用的启动里程表（手机上那行荧光绿的字）—— **正式版不显示** ✓
-   * 手机版黑屏时它很有用：字停在哪一步就指向哪一步 ✓
-   * ⚠ 但它每帧都调 getError()，那会**吞掉真实的 GL 错误** ✗ 所以正式版静音 ✓
-   * 要再排障：去掉这个 return，并把 gl.js 里逐帧探针的 getError 加回来 ✓ */
-  return;
-  void txt;
+  if (!DIAG) return;
+  try {
+    if (!_markEl) {
+      _markEl = document.createElement('pre');
+      _markEl.id = 'boot-mark';
+      _markEl.style.cssText = 'position:fixed;left:4px;top:4px;z-index:2147483647;'
+        + 'margin:0;padding:2px 6px;max-width:92vw;font:12px/1.45 monospace;'
+        + 'color:#5f5;background:rgba(0,0,0,.6);pointer-events:none;'
+        + 'white-space:pre-wrap;word-break:break-all';
+      document.body.appendChild(_markEl);
+    }
+    _markEl.textContent = txt;
+  } catch (e) { /* 上屏失败不能连累启动 ✓ */ }
 }
+
+/*: 排障模式（`#diag` / `?diag`）—— 里程表和 gl.js 那几处逐帧探针都看它 ✓
+ *  ⚠ **一处开、两处用** ✗：gl.js 读的是 window.__PDX_DIAG（它排在 app.js 前面 ✓）
+ *  ⚠ 是 `let` 不是 const ✗ —— 控制台里 `__PDX_DIAG_ON()` 要能当场打开（见下 ✓） */
+let DIAG = (() => {
+  try {
+    if (typeof location === 'undefined' || !location) return false;
+    return /(^|[#&?])diag\b/.test(String(location.hash || '') + String(location.search || ''));
+  } catch (e) { return false; }
+})();
+try { window.__PDX_DIAG = DIAG; } catch (e) { /* ✓ */ }
+/* 排障时也能现开：控制台敲 __PDX_DIAG_ON() —— 不用刷新，这一趟就能看着 ✓ */
+try {
+  const turnOn = () => {
+    DIAG = true;
+    window.__PDX_DIAG = true;
+    bootMark('排障已打开 ✓（里程表从这一条开始）');
+  };
+  window.__PDX_DIAG_ON = turnOn;
+  /* ⚠ 光看启动那一刻的 hash 不够 ✗ —— 往地址栏后面补 `#diag` **不会重载页面** ✓
+   *   （同文档导航：浏览器只挪个锚点 ✓）于是用户"加了 #diag 却什么都没出现" ✓
+   *   → 监听 hashchange：补上就当场开 ✓（问号那一路 `?diag=1` 本来就会重载 ✓）*/
+  window.addEventListener('hashchange', () => {
+    if (DIAG) return;
+    try {
+      if (/(^|[#&?])diag\b/.test(String(location.hash || ''))) turnOn();
+    } catch (e) { /* ✓ */ }
+  });
+} catch (e) { /* ✓ */ }
 
 function rawErr(msg) {
   /* 排障用的顶部红条 —— **正式版不显示** ✓
@@ -6105,6 +6150,77 @@ function onEnterForeground() {
   }, 3000);
 }
 
+/**
+ * 建渲染器 —— **上下文被收走的话，等它回来重试** ✓（2026-10-16 加）
+ *
+ * 为什么非有这一步 ✗：用户报"着色器经常加载失败，不知道什么缘故"：
+ *   手机上启动要好几秒到几十秒（维护者记过：首次编译着色器 20 秒级 ✓），
+ *   这段时间里切后台 / 锁屏 / 系统回收显存 / 驱动重置，浏览器就把 WebGL 上下文收走 ✓
+ *   编译正好落在这个窗口里 → 拿不到驱动日志 → 报出来是「着色器编译失败：null」✗
+ *   —— 查着色器一点毛病都查不出来，真凶是上下文没了 ✓
+ *
+ * 现在：gl.js 那边把这种失败标成 `code: 'CTX_LOST'`（它先问 isContextLost ✓），
+ *   这里收到就**等 `webglcontextrestored`**、然后**再建一次** ✓
+ *
+ * ⚠ **只重试 CTX_LOST** ✗ —— 真·着色器问题（code: COMPILE / LINK）必须**立刻上屏** ✓
+ *   那种等一万年也不会好，重试只会把真正的报错刷掉 ✓
+ * ⚠ 重试次数给得很少（一共 3 次）✗ —— 上下文一直回不来的机器，等再久也是白等 ✓
+ *   等不到就明说"刷新页面可以重来 + 导出日志"，别让人对着启动屏猜 ✓
+ */
+const CTX_LOST_TRIES = 3;         // 一共试几次（第一次 + 重试 ✓）
+const CTX_LOST_WAIT_MS = 8000;    // 每次等上下文回来，最多等多久
+
+/** 等画布的 `webglcontextrestored`：回来了 → true；等超了 → false ✓ */
+function waitContextRestored(cv, ms) {
+  return new Promise((resolve) => {
+    let done = false;
+    const onBack = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      cv.removeEventListener('webglcontextrestored', onBack);
+      resolve(true);
+    };
+    const timer = setTimeout(() => {
+      if (done) return;
+      done = true;
+      cv.removeEventListener('webglcontextrestored', onBack);
+      resolve(false);
+    }, ms);
+    cv.addEventListener('webglcontextrestored', onBack);
+  });
+}
+
+async function buildRenderer(meta) {
+  const cv = $('map');
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return new MapRenderer(cv, meta);
+    } catch (err) {
+      if (!(err && err.code === 'CTX_LOST')) {
+        rawErr('✗ 建渲染器失败：' + ((err && err.message) || err));
+        throw err;                       // 真·着色器问题：原样抛，马上上屏 ✓
+      }
+      const giveUp = () => {
+        err.message = '显卡把 WebGL 上下文收走了，等它回来也没等到（试了 '
+          + attempt + ' 次）。'
+          + '\n原因：' + ((err && err.message) || err)
+          + '\n刷新页面可以重来，涂色记得先导出；要是每次打开都这样，'
+          + '点「导出 ▾ → 导出日志」把那份发给作者 ✓';
+        LOG.event('上下文没回来', '启动期间丢失，重试 ' + attempt + ' 次都没等到');
+        return err;
+      };
+      if (attempt >= CTX_LOST_TRIES) throw giveUp();
+      LOG.event('上下文在启动时被收走', '第 ' + attempt + ' 次：等它回来重试（多半是切后台 / 显存紧张）');
+      bootMark('②上下文被收走，等它回来（第 ' + attempt + ' 次）');
+      setBoot('显卡上下文被收走了，等它回来…', 88);
+      const back = await waitContextRestored(cv, CTX_LOST_WAIT_MS);
+      if (!back) throw giveUp();
+      setBoot('显卡回来了，重新编译着色器…', 88);
+    }
+  }
+}
+
 async function boot() {
   try {
     // 启动屏那条**静态兜底提示**：脚本跑起来了就藏掉（它只在"脚本没跑"时才有意义 ✓）
@@ -6251,15 +6367,11 @@ async function boot() {
       if (window.PDXLOG) window.PDXLOG.event('加载细分', `${name}: ${dt.toFixed(0)} ms`);
     };
     bootMark('①到渲染器');
-    try {
-      renderer = new MapRenderer($('map'), meta);
-      bootMark('②着色器OK');
-    } catch (err) {
-      /* ⚠ 编译失败必须上屏 ✗ 手机上没有控制台可看 ✓ */
-      bootMark('②着色器失败: ' + (err && err.message ? err.message : err));
-      rawErr('✗ 着色器编译失败：' + (err && err.message ? err.message : err));
-      throw err;
-    }
+    /* **建渲染器**（上下文被收走就等它回来重试 ✓ 见 buildRenderer 那段 ✓）
+     * ⚠ 别改回"裸 new" ✗ —— 手机切后台落在启动那一瞬，报出来就是
+     *   「着色器编译失败：null」，谁都得往着色器上查半天 ✓ */
+    renderer = await buildRenderer(meta);
+    bootMark('②着色器OK');
     _tick('编译着色器 + 建渲染器');
     renderer.onContextLost = () => {
       // 这一条要进日志：白屏的最常见原因之一，而玩家只会说"它黑了" ✓

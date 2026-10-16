@@ -879,14 +879,62 @@ void main() {
   outColor = vec4(col, 1.0);
 }`;
 
+/** 上下文是不是**被浏览器收走了**（驱动重置 / 切后台 / 显存紧张 ✓）
+ *
+ * 🔴 **这条判断必须排在"编译失败"前面** ✗ —— 见过的那一幕（2026-10-16）：
+ *   上下文在编译途中被收走 → `COMPILE_STATUS` 是 false、`getShaderInfoLog` 是 **null**
+ *   → 报出来只有一句「着色器编译失败：null」✓
+ *   于是所有人都去查着色器（查了半天什么都没问题）✗ 而真凶是上下文没了 ✓
+ *   ⚠ 拿不到 isContextLost 的（老桩 / 假 GL）就当"没丢" ✓ 别把正常失败也吞了 */
+function ctxLost(gl) {
+  try { return !!(gl.isContextLost && gl.isContextLost()); } catch (e) { return false; }
+}
+
+/** 显卡档案 —— 报错时**必须带上** ✗（不然只看得见"失败了"三个字，无从下手 ✓）
+ *  优先用不打码的那个串（WEBGL_debug_renderer_info ✓ 各家都支持） */
+function gpuProfile(gl) {
+  try {
+    let gpu = '';
+    const dbg = gl.getExtension && gl.getExtension('WEBGL_debug_renderer_info');
+    if (dbg && dbg.UNMASKED_RENDERER_WEBGL) {
+      gpu = String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) || '');
+    }
+    const ver = String((gl.getParameter && gl.getParameter(gl.VERSION)) || '');
+    return ver + (gpu ? ' · ' + gpu : '');
+  } catch (e) { return '（显卡档案没问出来）'; }
+}
+
+/** 编译/链接失败：分两种，各带各的话 ✓（`code` 给 app 那边认"要不要等上下文回来" ✓）
+ *  · `CTX_LOST` —— 上下文被收走了，**等它回来重来一次就行** ✓（app.js 的 buildRenderer ✓）
+ *  · `COMPILE` / `LINK` —— 真·着色器问题，带上驱动给的日志 + 显卡档案 ✓
+ *  ⚠ 消息里**不许写"着色器加载失败"**这种笼统话 ✗ 要让看的人一眼知道该往哪儿查 ✓ */
+function shaderErr(code, msg) {
+  const e = new Error(msg);
+  e.code = code;
+  return e;
+}
+
 function compile(gl, type, src) {
   const sh = gl.createShader(type);
+  /* 上下文丢着时 `createShader` 会给 **null** ✓ —— 再拿它去 shaderSource 就是一句
+     "parameter 1 is not of type 'WebGLShader'" 的 TypeError ✗（信息量为零 ✓）
+     所以这儿先拦下来，报成"上下文丢了" ✓ */
+  if (!sh) {
+    if (ctxLost(gl)) throw shaderErr('CTX_LOST', '着色器对象没建出来：显卡上下文已经丢了');
+    throw shaderErr('COMPILE', '着色器对象没建出来（createShader 给了 null）｜ ' + gpuProfile(gl));
+  }
   gl.shaderSource(sh, src);
   gl.compileShader(sh);
   if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
     const log = gl.getShaderInfoLog(sh);
-    gl.deleteShader(sh);
-    throw new Error('着色器编译失败：' + log);
+    try { gl.deleteShader(sh); } catch (e) { /* 上下文丢着时删也白删 ✓ */ }
+    /* ⚠ **先问上下文** ✗ —— 丢了的话日志必然是 null，"编译失败：null"就是这么来的 ✓ */
+    if (ctxLost(gl)) {
+      throw shaderErr('CTX_LOST', '着色器还没编完，显卡上下文就被收走了'
+        + '（切后台 / 显存紧张 / 驱动重置都会这样）');
+    }
+    throw shaderErr('COMPILE', '着色器编译失败：' + (log && log.trim() ? log.trim() : '（驱动没给日志）')
+      + ' ｜ ' + gpuProfile(gl));
   }
   return sh;
 }
@@ -1002,8 +1050,23 @@ export class MapRenderer {
      *   这些块会被一直跳过 → 那块地图永远渲成 0 号省份的灰 ✗（见 app.js 的 frame ✓）*/
     this.uploadedTiles = new Set();
 
-    this._build();
+    /*: 这个渲染器**建完了吗** ✓
+     *   ⚠ `_build()` 挂掉时（上下文被收走最常见）本对象是个半成品 ✗
+     *     构造函数会抛出去、app 那边**重新 new 一个**（见 app.js 的 buildRenderer ✓）
+     *     而这个半成品的 restored 监听还挂在画布上 —— 得让它**别去重建** ✗
+     *     （重建了也没人用，白白往显存里塞一套着色器/纹理 ✓）*/
+    this._ready = false;
 
+    /* 🔴🔴 **监听必须挂在 `_build()` 之前** ✗ —— 这一条是 2026-10-16 抓到的真凶 ✓
+     *   用户报"着色器经常加载失败，不知道什么缘故"：查来查去着色器一点毛病没有 ✓
+     *   真相是**上下文在编译那一瞬被浏览器收走了**（切后台 / 显存紧张 / 驱动重置 ✓），
+     *   而监听挂在 `_build()` **后面** ✗ →
+     *     · 没人在 lost 上 preventDefault → 浏览器**永远不发 restored** ✓
+     *       （维护者自己的注释就写着这一条 ✓）
+     *     · 编译那边拿不到日志 → 报出来是「着色器编译失败：null」✓（所以都说去查着色器 ✗）
+     *   复现：手机/弱设备上启动要好几秒到几十秒（首次编译 20 秒级 ✓），
+     *     这段时间切后台、系统回收显存，正好落在这个窗口里 ✓ 于是"经常" ✓
+     *   ⚠ **别再把这两行挪到 _build() 后面** ✗（挪回去 = 那个 bug 原样回来 ✓）*/
     this.canvas.addEventListener('webglcontextlost', (e) => {
       /* preventDefault = "我们知道出事了，**请把它还回来**" ✓
        * 不写这一句，浏览器认为没人管 → 永远不发 restored ✓ */
@@ -1016,6 +1079,9 @@ export class MapRenderer {
      *   这里只管"跟上下文绑在一起"的那几样 ✓
      *   纹理交给 app 重新喂（它手上才有省份 id / 归属表 / 笔迹 ✓ 见 onContextRestored ✓）*/
     this.canvas.addEventListener('webglcontextrestored', () => {
+      /* 半成品（自己没建完就抛出去的那个）**不接这一趟** ✗ ——
+         接的人会是 app 重试时新建的那个 ✓（见上面 _ready 那段 ✓）*/
+      if (!this._ready) return;
       try {
         this._build();
         // 旧纹理的句柄全部作废：清成 null，render() 会一直等到数据重新喂完才画 ✓
@@ -1041,6 +1107,10 @@ export class MapRenderer {
         else if (this.onContextLost) this.onContextLost();
       }
     });
+
+    /* 监听挂好了，**现在才建** ✓ —— 顺序见上面那段（别对调 ✗）*/
+    this._build();
+    this._ready = true;
   }
 
   /**
@@ -1065,6 +1135,12 @@ export class MapRenderer {
       new Uint8Array([0]), gl.NEAREST);
 
     const maxTex = gl.getParameter(gl.MAX_TEXTURE_SIZE);
+    /* ⚠ 上下文丢着的时候 **getParameter 给 null** ✓
+     *   —— 不拦的话下面那句会报"贴图上限只有 nullpx"，把人往"设备太小"上带 ✗
+     *   （真正的原因还是上下文没了 ✓ 先说清楚 ✓）*/
+    if (ctxLost(gl)) {
+      throw shaderErr('CTX_LOST', '建渲染器的时候显卡上下文已经被收走了（还没轮到编译着色器）');
+    }
     // **地图比"单张贴图上限"大时不再拒绝** ✓ —— setData 里会把它就地切成一块块贴图 ✓
     // （手机 GPU 常见上限只有 4096 / 8192：CK3 9216×4608、EU5 8192×4096、
     //   米勒投影 11680×5760 都塞不进一张 ✗ 以前这里直接抛错 → 整张图加载不出来 ✗）
@@ -1075,17 +1151,27 @@ export class MapRenderer {
     this.maxTex = maxTex;
 
     const prog = gl.createProgram();
+    if (!prog) {
+      if (ctxLost(gl)) throw shaderErr('CTX_LOST', '着色器程序没建出来：显卡上下文已经丢了');
+      throw shaderErr('LINK', '着色器程序没建出来（createProgram 给了 null）｜ ' + gpuProfile(gl));
+    }
     gl.attachShader(prog, compile(gl, gl.VERTEX_SHADER, VERT));
     gl.attachShader(prog, compile(gl, gl.FRAGMENT_SHADER, FRAG));
     gl.linkProgram(prog);
     if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+      /* ⚠ **先问上下文再说着色器** ✗ —— 上下文被收走时 LINK_STATUS 也是 false ✓
+       *   这种"失败"等上下文回来重来一次就好了，报成链接失败会把人带偏 ✓ */
+      if (ctxLost(gl)) {
+        throw shaderErr('CTX_LOST', '着色器还没链接完，显卡上下文就被收走了'
+          + '（切后台 / 显存紧张 / 驱动重置都会这样）');
+      }
       /* ⚠ 日志**可能是空的** ✗（驱动内部报错时只给个 LINK_STATUS = false ✓）
          那就把渲染器和版本一起带上 —— 否则报上来只有"链接失败"四个字，
          根因（指令数超限 / 寄存器不够 / ANGLE 翻译不过）一点都看不出来 ✓ */
       const info = gl.getProgramInfoLog(prog);
-      if (info && info.trim()) throw new Error('着色器链接失败：' + info.trim());
-      throw new Error('着色器链接失败（驱动没给日志）：'
-        + gl.getParameter(gl.VERSION) + ' ｜ ' + gl.getParameter(gl.RENDERER));
+      throw shaderErr('LINK', '着色器链接失败：'
+        + (info && info.trim() ? info.trim() : '（驱动没给日志）')
+        + ' ｜ ' + gpuProfile(gl));
     }
     this.prog = prog;
 
@@ -1577,8 +1663,11 @@ export class MapRenderer {
      *     画布才 300×150（canvas 默认尺寸 ✓）而后来的视口没跟上" ✓
      *     → 画面被画进一个 300×150 的小角 → 屏幕其余地方全黑 ✓✓
      * ⚠ 只在手机上打 ✗ 桌面不刷屏 ✓ */
-    const _diag = (typeof window !== 'undefined') && window.innerWidth && window.innerWidth <= 900;
-    let _e0 = 0;
+    /* 🔴 **排障探针：显式开关** ✓（地址后面加 `#diag` 再打开，见 app.js 的 bootMark ✓）
+     *   ⚠ 默认**关着** ✗ —— 下面那段 while 会把真实的 GL 错误**吃掉** ✓
+     *   以前写的是「innerWidth ≤ 900 就开」✗：手机上没有控制台，恰恰最需要真实错误码，
+     *   却偏偏在那儿被吞掉 ✓ 现在谁要排障谁自己打开 ✓ */
+    const _diag = (typeof window !== 'undefined') && !!window.__PDX_DIAG;
     if (_diag) {
       try {
         const g0 = this.gl;
@@ -1693,14 +1782,17 @@ export class MapRenderer {
      *     · 画完之后的 GL 错误码（画前我清过 ✓ 所以这儿报的就是**这一帧**的 ✓）
      *     · 采样用的那几张纹理有没有绑上 ✓
      * ⚠ 只在手机上打 ✗ 桌面不刷屏 ✓ */
-    if ((typeof window !== 'undefined') && window.innerWidth && window.innerWidth <= 900
-        && typeof bootMark === 'function') {
+    if (_diag && typeof bootMark === 'function') {
       try {
         const cv1 = gl.canvas;
-        /* 逐帧探针已停用（它会吞掉真实的 GL 错误）✓ */
-        /* 逐帧探针已停用（它会吞掉真实的 GL 错误）✓ */
+        const vp1 = gl.getParameter(gl.VIEWPORT) || [0, 0, 0, 0];
+        /* ⚠ 这里**不调 getError()** ✗ —— 它会把手头那个真实的 GL 错误取走，
+         *   别处（工单里最值钱的那一行）就再也看不见它了 ✓
+         *   ⚠ 曾经这段写的是 `vp[2]` / `err` —— 那两个变量随着逐帧探针停用一起没了 ✗
+         *   → 每次跑到这儿都是一句 ReferenceError（被 try 吞掉，看不出任何东西 ✓）
+         *   **别再把变量写成不存在的** ✗ */
         bootMark('帧:画布' + cv1.width + '×' + cv1.height
-          + ' 视口' + vp[2] + '×' + vp[3] + ' 画后错' + err
+          + ' 视口' + vp1[2] + '×' + vp1[3]
           + ' 贴图' + (gl.isTexture(this.provTex) ? 'ok' : '坏'));
       } catch (e) { /* ✓ */ }
     }
