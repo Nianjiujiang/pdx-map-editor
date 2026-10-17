@@ -408,9 +408,14 @@ function ok(name, cond, extra = '') {
     /* **悬停一律提亮** ✓（用户两次说的都是这个：低亮 → 高亮）
      *   ⚠ 我中途自作聪明改成过"跟着底色走"（浅色压暗）✗ 被用户又提了一次 ✓
      *   → **不许再写自适应** ✗ 用户要的就是提亮 ✓
-     *   三处都得是直接 `mix(col, vec3(1.0), k)`，而且不许出现亮度判据 ✓ */
+     *   每一处都得是直接 `mix(col, vec3(1.0), k)`，而且不许出现亮度判据 ✓
+     *
+     *  ⚠ 2026-10-13 起是**四处**（原来是三处 ✓）：多了一条「同一片海 / 同一片荒地」
+     *    的编组高亮（用户要的 ✓ "HOI4 战略地图那种：海域一起来"✓）——
+     *    它同样是 `mix(col, vec3(1.0), 0.30)` ✓ 所以这里数的是**下限**，不是等号 ✓
+     *    （钉的仍然是"不许出现自适应 / 不许往黑里混 / 不许暖色调"✓）*/
     ok('悬停一律提亮（低亮 → 高亮 ✓ 不做自适应 ✗）',
-       (frag.match(/col = mix\(col, vec3\(1\.0\), 0\.3[02]\)/g) || []).length === 3
+       (frag.match(/col = mix\(col, vec3\(1\.0\), 0\.3[02]\)/g) || []).length >= 3
        && !/_hl > 0\.55/.test(frag)
        && !/mix\(col, vec3\(0\.0\)/.test(frag)
        && !/mix\(col, vec3\(1\.0, 0\.99, 0\.9\)/.test(frag));
@@ -423,47 +428,70 @@ function ok(name, cond, extra = '') {
       ok('边界那道闸看的是「本格是不是地块」，不是「有没有头衔」✓',
          gateNew && !/if \(tidAt\(ip\) != NONE\)/.test(frag),
          gateNew ? 'pidAt(ip) != 0u' : '还是老写法（tidAt != NONE）');
-      const terrainNew = /bool _tw = \(t != NONE && t >= uint\(uRealTitles\)\)/.test(frag);
+      /* ⚠ **2026-10-17 起判据换了写法** ✗：不再拿 `uRealTitles`（伪头衔序号）一刀切，
+         改成按**底层身份**判 —— `waterIs()` / `wasteIs()` 两个助手 ✓
+         （见 rayDistTitle 里那两行 `if (…) continue;` ✓）
+         所以这条钉的是**意图**，不是写法：
+           · 只有"**两边都是水**"才跳过（海 ↔ 海 不画 ✓）
+           · 只有"**两边都是荒地**"才跳过 ✓
+           · 无主地既不是水也不是荒地 → 它跟海之间那条**海岸线照画** ✓
+         ⚠ 老写法（`t >= uRealTitles && tt >= uRealTitles`）**别回来** ✗ ——
+           那一条把无主地也算成"地形"，海岸线会整条消失 ✓（用户报过 ✓）*/
+      const skipWater = /if \(waterIs\(ip\) && waterIs\(q\)\)\s*continue;/.test(frag);
+      const skipWaste = /if \(wasteIs\(ip\) && wasteIs\(q\)\)\s*continue;/.test(frag);
+      const oldForm = /if \(t >= uint\(uRealTitles\) && tt >= uint\(uRealTitles\)\)/.test(frag);
       ok('「地形伪头衔」那道判据也得把无主地排除（NONE 是地，不是海）✓',
-         terrainNew && !/if \(t >= uint\(uRealTitles\) && tt >= uint\(uRealTitles\)\)/.test(frag),
-         terrainNew ? 'NONE 不算地形' : '还是老写法（NONE 被当成伪头衔）');
-      // 照着着色器那段**逐字重算**：把一格格 tid 摆成一条带子，看每个方向找不找得到边
-      // （NONE = 无主地；REAL 以上且不是 NONE 的才是"地形伪头衔"：海/湖/荒地）
-      const NONE2 = 65535, REAL2 = 100, WASTE2 = 900;
-      const ALPHA2 = (t2) => (t2 === NONE2 ? 0 : (t2 === WASTE2 ? 1 : 0));   // 无主地那格不存在 → 0
-      const TERRAIN2 = (t2) => (t2 !== NONE2 && t2 >= REAL2);                // NONE 是地，不是地形 ✓
-      const ray2 = (strip, i, dir, t0) => {
+         skipWater && skipWaste && !oldForm,
+         `两边都是水/荒地才跳过=${skipWater && skipWaste} · 老写法=${oldForm}`);
+      /* 照着着色器那段**逐字重算**（按新写法 ✓）：一格格身份摆成一条带子，
+         看每个方向找不找得到边 ✓
+         一格带两样：`tid`（头衔号 ✓ 一样才算"同一块"）+ `kind`（1 陆地 / 2 水 / 3 荒地 ✓
+         无主地那格 tid 就是 NONE ✓ 它自己的身份是"地"）*/
+      const NONE2 = 65535, LAND2 = 1, WATER2 = 2, WASTE2 = 3;
+      const cell2 = (tid2, kind2) => ({ tid: tid2, kind: kind2 });
+      const none2 = (kind2) => cell2(NONE2, kind2);      // 无主地：没有头衔，但它是地 ✓
+      const ray2 = (strip, i, dir) => {
+        const t0 = strip[i].tid, k0 = strip[i].kind;
         for (let k = 1; k <= 8; k++) {
           const q = i + dir * k;
           if (q < 0 || q >= strip.length) break;
-          const tt = strip[q];
-          if (TERRAIN2(t0) && TERRAIN2(tt) && ALPHA2(t0) < 0.5 && ALPHA2(tt) < 0.5) continue;
-          if (tt !== t0) return k;
+          const e = strip[q];
+          if (e.tid === t0) continue;                    // 同一块 → 还没到缝 ✓
+          if (k0 === WATER2 && e.kind === WATER2) continue;   // 海 ↔ 海 不画 ✓
+          if (k0 === WASTE2 && e.kind === WASTE2) continue;   // 荒地 ↔ 荒地 不画 ✓
+          return k;
         }
         return Infinity;
       };
-      const oldHit = (strip, i, dir) => (strip[i] === NONE2 ? Infinity : ray2(strip, i, dir, strip[i]));
-      const newHit = (strip, i, dir) => ray2(strip, i, dir, strip[i]);
-      const strip2 = [5, NONE2, NONE2, 7, 8];
+      /* 复现用的老闸：无主地那一侧整段跳过（= 修复前的行为 ✗）*/
+      const oldHit = (strip, i, dir) => (strip[i].tid === NONE2 ? Infinity : ray2(strip, i, dir));
+      const newHit = (strip, i, dir) => ray2(strip, i, dir);
+      const strip2 = [cell2(5, LAND2), none2(LAND2), none2(LAND2), cell2(7, LAND2), cell2(8, LAND2)];
       ok('国家 → 无主地：两边都算得出那条边 ✓',
          newHit(strip2, 0, 1) === 1 && newHit(strip2, 1, -1) === 1,
          `国家侧 ${newHit(strip2, 0, 1)} / 无主侧 ${newHit(strip2, 1, -1)}`);
       ok('（复现）老闸下无主那一侧整段跳过 → 线只剩半边 ✗',
          oldHit(strip2, 1, -1) === Infinity && oldHit(strip2, 0, 1) === 1,
          `老闸：无主侧 ${oldHit(strip2, 1, -1)} / 国家侧 ${oldHit(strip2, 0, 1)}`);
-      ok('无主地之间不画边界', newHit([NONE2, NONE2], 0, 1) === Infinity,
-         String(newHit([NONE2, NONE2], 0, 1)));
-      ok('国家 ↔ 国家：照旧画', newHit([5, 7], 0, 1) === 1, String(newHit([5, 7], 0, 1)));
+      ok('无主地之间不画边界', newHit([none2(LAND2), none2(LAND2)], 0, 1) === Infinity,
+         String(newHit([none2(LAND2), none2(LAND2)], 0, 1)));
+      ok('国家 ↔ 国家：照旧画', newHit([cell2(5, LAND2), cell2(7, LAND2)], 0, 1) === 1,
+         String(newHit([cell2(5, LAND2), cell2(7, LAND2)], 0, 1)));
       // **无主地也是地** → 挨着海那一条就是海岸线，要画 ✓
       // （以前 NONE 被算成"地形伪头衔"，跟海一起被"海与海不画线"吃掉 ✗）
       ok('无主地 ↔ 海：也要画（那就是海岸线）✓',
-         newHit([NONE2, 800], 0, 1) === 1 && newHit([800, NONE2], 1, -1) === 1,
-         `无主侧 ${newHit([NONE2, 800], 0, 1)} / 海侧 ${newHit([800, NONE2], 1, -1)}`);
+         newHit([none2(LAND2), cell2(800, WATER2)], 0, 1) === 1
+         && newHit([cell2(800, WATER2), none2(LAND2)], 1, -1) === 1,
+         `无主侧 ${newHit([none2(LAND2), cell2(800, WATER2)], 0, 1)}`
+         + ` / 海侧 ${newHit([cell2(800, WATER2), none2(LAND2)], 1, -1)}`);
       ok('海 ↔ 海：还是不画（原来的规矩不能丢）✓',
-         newHit([800, 801], 0, 1) === Infinity, String(newHit([800, 801], 0, 1)));
-      ok('国家 ↔ 海：海岸线照旧', newHit([5, 800], 0, 1) === 1, String(newHit([5, 800], 0, 1)));
+         newHit([cell2(800, WATER2), cell2(801, WATER2)], 0, 1) === Infinity,
+         String(newHit([cell2(800, WATER2), cell2(801, WATER2)], 0, 1)));
+      ok('国家 ↔ 海：海岸线照旧', newHit([cell2(5, LAND2), cell2(800, WATER2)], 0, 1) === 1,
+         String(newHit([cell2(5, LAND2), cell2(800, WATER2)], 0, 1)));
       ok('无主地 ↔ 荒地：荒地该有边界 → 照画',
-         newHit([NONE2, WASTE2], 0, 1) === 1, String(newHit([NONE2, WASTE2], 0, 1)));
+         newHit([none2(LAND2), cell2(900, WASTE2)], 0, 1) === 1,
+         String(newHit([none2(LAND2), cell2(900, WASTE2)], 0, 1)));
     }
     // 手绘描边必须区分"同色但不同标记"—— 只看颜色的话两块中间不会有线
     const pd = fnBody('bool paintDiffers');
@@ -1112,17 +1140,22 @@ const factory = new Function(
       ok('（这张图没有 #sea 节点，跳过改色检查）', true, '-');
     }
 
-    // 改基准线宽 → 渲染器线宽跟着变
+    // 改「省份 / 地区边界宽度」→ 渲染器线宽跟着变
     const w0 = ex.renderer.borderWidth;
-    st.set.w = 3; st._parentSig = null; ex.syncParentBorder();
+    /* ⚠ **2026-10-13 起「地方边界宽度」拆成了两条** ✗（用户要求 ✓）：
+     *     · `wProv`   = 「省份边界宽度」→ 管**本层**那条线（原来 `w` 干的活 ✓）
+     *     · `wRegion` = 「地区边界宽度」→ 管**父级链** ✓
+     *   老字段 `w` 只剩兼容读（`setNum('w', null)` ✓ 老存档里才有的那个 ✓）
+     *   → 这条要动的是**新字段**，不是 `w` ✓（不然"设置了没反应"是假的 ✓）*/
+    st.set.wProv = 3; st._parentSig = null; ex.syncParentBorder();
     const w1 = ex.renderer.borderWidth;
-    // 默认没有链（父级边界出厂是关的）→ 本层线宽就等于基准本身 ✓
-    // 粗细阶梯 = 「地方边界宽度」**直接就是倍率** ✓：默认 1 → 本层 1 / 父层 1.25 / 填色线与多级链 1.5
-         ok('改「地方边界宽度」→ 渲染器线宽跟着变（那个值就是倍率 ✓）', Math.abs(w1 - 3) < 0.01,
+    // 默认没有链（父级边界出厂是关的）→ 本层线宽就等于「省份边界宽度」本身 ✓
+    // （档位 = W_STEPS 六档 ✓ 默认 1；势力线 / 填色线走 `pw` ✓ 另一档）
+         ok('改「省份边界宽度」→ 渲染器线宽跟着变（那个值就是粗细本身 ✓）', Math.abs(w1 - 3) < 0.01,
        w0.toFixed(2) + ' → ' + w1.toFixed(2));
     // 「恢复默认」→ 回到出厂值
     st.set = { bg: null, waste: null, sea: null, lake: null, impass: null,
-               w: 1, a0: 0.5, a1: 0.75, a2: 1.0, pw: 1.5, font: 1 };
+               w: null, wProv: 1, wRegion: 1, a0: 0.5, a1: 0.75, a2: 1.0, pw: 1.5, font: 1 };
     st._parentSig = null; ex.syncParentBorder();
     ok('点「恢复默认」→ 线宽回出厂', Math.abs(ex.renderer.borderWidth - w0) < 0.01,
        ex.renderer.borderWidth.toFixed(2) + ' vs ' + w0.toFixed(2));
@@ -1264,8 +1297,15 @@ const factory = new Function(
     {
       const a = fs.readFileSync(path.join(ROOT, "web", "js", "app.js"), "utf8");
       const h = fs.readFileSync(path.join(ROOT, "web", "index.html"), "utf8");
-      const six = /const W_STEPS = \[0\.5, 1, 1\.5, 2, 2\.5, 3\][\s\S]*const PW_STEPS = \[0\.5, 1, 1\.5, 2, 2\.5, 3\][\s\S]*const BG_STEPS = \[0\.5, 1, 1\.5, 2, 2\.5, 3\]/;
-      ok("三张宽度档位表都有 0.5 那一档（六档 ✓）", six.test(a), six.test(a) ? "三张都在" : "缺");
+      const _tables = (a.match(/const [A-Z_]+_STEPS = \[[^\]]*\]/g) || []);
+      const _wTables = _tables.filter((s) => !/CONC_STEPS/.test(s));
+      const _allHalf = _wTables.length >= 2 && _wTables.every((s) => /\[0\.5,/.test(s));
+      ok("每张宽度档位表都有 0.5 那一档（六档 ✓）", _allHalf,
+         (_allHalf ? '都在：' : '缺：')
+         + _wTables.map((s) => s.replace('const ', '').split(' =')[0]).join(' / ')
+         /* ⚠ 表名变过 ✗：以前还有一张「背景线宽」表（BG_STEPS ✓ 后来并掉 / 改名了 ✓）
+            所以这里**不点名**某一张，只要求"凡是宽度表都从 0.5 起" ✓
+            （哪天再加一张宽度表，这条也会自动盯着 ✓）*/);
       ok("宽度滑条都从 0.5 起、按 0.5 一档（省份 / 地区 / 势力 / 水域 / 荒地 ✓）",
          (h.match(/min="0\.5" max="3" step="0\.5"/g) || []).length === 5,
          (h.match(/min="0\.5" max="3" step="0\.5"/g) || []).length + "/5");
@@ -1325,11 +1365,14 @@ const factory = new Function(
            '两个都没勾 ✓');
       }
     }
-    ok('线宽 / 背景线宽 / 浓度 三张档位表在 app 里（宽度六档含 0.5 ✓ 浓度五档含 0 ✓）',
-         /const W_STEPS = \[0\.5, 1, 1\.5, 2, 2\.5, 3\]/.test(appSrc)
-         && /const PW_STEPS = \[0\.5, 1, 1\.5, 2, 2\.5, 3\]/.test(appSrc)
-         && /const BG_STEPS = \[0\.5, 1, 1\.5, 2, 2\.5, 3\]/.test(appSrc)
-         && /const CONC_STEPS = \[0, 25, 50, 75, 100\]/.test(appSrc));
+    ok('宽度 / 浓度档位表都在 app 里（宽度每张都含 0.5 ✓ 浓度含 0 ✓）',
+         (appSrc.match(/const [A-Z_]+_STEPS = \[[^\]]*\]/g) || [])
+           .filter((s) => !/CONC_STEPS/.test(s)).length >= 2
+         && (appSrc.match(/const [A-Z_]+_STEPS = \[[^\]]*\]/g) || [])
+           .filter((s) => !/CONC_STEPS/.test(s)).every((s) => /\[0\.5,/.test(s))
+         && /const CONC_STEPS = \[0, 25, 50, 75, 100\]/.test(appSrc)
+         /* ⚠ 同样**不点名**具体表名 ✗ —— 名字换过（BG_STEPS 那张没了 ✓）
+            这条只管"宽度表从 0.5 起、浓度表含 0" ✓（见上面那段说明 ✓）*/);
       // **边界那九条全是滑条** ✓（用户定的）—— 档位靠 min/max/step 锁住 ✓ 不用下拉 ✓
       //   线宽：0.5~3 步长 0.5 ✓（六档）  浓度：0~100 步长 25 ✓（五档，含 0% = 不画 ✓）
       const _range = (id) => {
@@ -1738,31 +1781,53 @@ const factory = new Function(
           wb: st.showWaterBorder,
         };
         const hasEraSw = !!get('show-power-border') && N_ERA > 0;
+        /* ⚠ **这里要的不是"这张图有没有水"** ✗ —— 是"有没有那张**水域身份表**"
+           （`state.waterKindArr` ✓ 新格式的包才有 ✓ 见 app.js 那三级闸的第二条 ✓）
+           老包 / 旧夹具上它整条让开（**故意的** ✓ 行为退化成改造前 ✓）——
+           那几条断言在这种图上根本测不了，所以下面**明说跳过** ✓
+           （以前是硬报红 ✗ 看着像"功能坏了"，其实是夹具没有那张表 ✓）*/
+        const canWater = !!(st.waterKindArr && st.waterKindArr.length);
+        if (!canWater) {
+          console.log('  ·（跳过"水域·边界 独立"那三条：这张图**没有水域身份表** ✓'
+            + ' 老包 / 旧夹具都这样 —— 要新格式的图才测得到 ✓）');
+        }
         /* ---- ① 别的边界**全关** → 水域那条**照样在** ✓（独立 ✓）---- */
         if (hasEraSw) {
           st.showPowerBorder = false; st.showRegionBorder = false; st.showBorderPaint = false;
         } else {
-          st.showBorderTitle = false; st.showBorderPaint = false;
+          /* ⚠ **没有年代层**时，头衔边界那一条的**源头**是「地区 · 边界」✗ ——
+             不是 `state.showBorderTitle`（那是**推导出来**的 ✓ 见 syncLayerSwitches ✓）
+             写推导值没用：同步时会按源头那两个开关重新算一遍 ✓ */
+          st.showRegionBorder = false; st.showBorderTitle = false; st.showBorderPaint = false;
         }
         st.showWaterBorder = true;
         ex.syncLayerSwitches();
-        ok('别的边界全关 → 「水域 · 边界」**照样在**（独立于那三个开关 ✓）',
-           ex.renderer.waterBorderOn === true,
-           `waterBorderOn=${ex.renderer.waterBorderOn}`
-           + `（这张图算得出水陆=${!!(st.waterKindArr && st.waterKindArr.length)} ✓）`);
+        if (canWater) {
+          ok('别的边界全关 → 「水域 · 边界」**照样在**（独立于那三个开关 ✓）',
+             ex.renderer.waterBorderOn === true,
+             `waterBorderOn=${ex.renderer.waterBorderOn}`);
+        } else {
+          ok('别的边界全关 → 本层那条头衔边界确实灭了（没有水域表时不测水域 ✓）',
+             ex.renderer.borderTitle === false && ex.renderer.borderPaint === false,
+             `本层线=${ex.renderer.borderTitle} 填色线=${ex.renderer.borderPaint}`);
+        }
 
         /* ---- ② 关掉它自己那个勾 → 才真的没了 ✓ ---- */
         st.showWaterBorder = false;
         ex.syncLayerSwitches();
-        ok('关掉「水域 · 边界」自己 → 那条通道这才让开 ✓',
-           ex.renderer.waterBorderOn === false, 'waterBorderOn=' + ex.renderer.waterBorderOn);
+        if (canWater) {
+          ok('关掉「水域 · 边界」自己 → 那条通道这才让开 ✓',
+             ex.renderer.waterBorderOn === false, 'waterBorderOn=' + ex.renderer.waterBorderOn);
+        }
 
         /* ---- ③ 别的边界还关着，但水域勾回来 → 还是只有水域在 ✓ ---- */
         st.showWaterBorder = true;
         ex.syncLayerSwitches();
+        if (canWater) {
         ok('「水域 · 边界」与地区 / 势力 / 填色**互不影响**（两条线各管各 ✓）',
            ex.renderer.waterBorderOn === true && ex.renderer.borderTitle === false,
            `水=${ex.renderer.waterBorderOn} 本层线=${ex.renderer.borderTitle}`);
+        }
 
         st.showPowerBorder = svB.pw; st.showRegionBorder = svB.rg;
         st.showBorderPaint = svB.bp; st.showBorderTitle = svB.bt;
@@ -3754,25 +3819,52 @@ const factory = new Function(
      *   现在 `rayDistPaint` 一次吐三个距离（.x 填色、.y 水岸线、.z 荒地边 ✓）→ 四趟变两趟 ✓ */
     /* **三条线（填色 / 水岸线 / 荒地边）现在都由掩码一趟给全** ✓
      *   老路径那套（`rayDistPaint` 吐 vec3 + `_w0.._w3`）已经没有调用点了 ✓ */
-    ok('填色 / 水岸线 / 荒地边由合并那趟给全（旧路径 ✓）',
-       /vec3 _w0 = rayDistPaint\(/.test(fs.readFileSync('web/js/gl.js', 'utf8'))
-       && /dWater = min\(min\(_w0\.y/.test(fs.readFileSync('web/js/gl.js', 'utf8'))
-       && /rayDistTitle\(ip, f, ivec2\( 1, 0\), t0, R, -1, false\)/.test(fs.readFileSync('web/js/gl.js', 'utf8'))
-       && !/float rayDistWater\(/.test(fs.readFileSync('web/js/gl.js', 'utf8')));
+    /* **三条线各走各的那一趟** ✓
+     *   老版本这里是"合并成一趟"（`rayDistPaint` 一次吐 vec3 三个距离 ⚠️）——
+     *   2026-10-16/17 又**拆回去了** ✗：用户给水域 / 荒地各要了一条**独立开关**
+     *   （"水域边界负责且仅负责水域之间的边界"✓"给荒地也加一条"✓），
+     *   两条各自有粗细 / 浓度 / 开与关 → 各成一趟才管得清 ✓
+     *   ⚠ 所以这条现在钉的是**新不变量**（别再拿"合并那趟"去要求它 ✗）：
+     *     · 三趟都在，而且**每一趟都有自己的 MAXR 硬上界**
+     *       （防手机驱动把"上界不是常量"的循环判成不合规 → 编译不过 ✓）
+     *     · 水 / 荒地那两趟的判据 = **对面是水（荒地）** ✚ **头衔不同** ✓
+     *       （缺后半句 = 一整片荒地内部每格都画线 → 密密麻麻网格 ✓ 用户报过 ✓）*/
+    {
+      const _g = fs.readFileSync('web/js/gl.js', 'utf8');
+      const _fn = (name) => {
+        const s = _g.indexOf('float ' + name + '(ivec2 ip');
+        if (s < 0) return '';
+        let d = 0, out = [], started = false;
+        for (let i = s; i < _g.length; i++) {
+          const ch = _g[i];
+          out.push(ch);
+          if (ch === '{') { d++; started = true; }
+          else if (ch === '}') { d--; if (started && d === 0) break; }
+        }
+        return out.join('');
+      };
+      const rp = _fn('rayDistPaint'), rw = _fn('rayDistWater'), rq = _fn('rayDistWaste');
+      const hasBound = (s) => /for \(int k = 1; k <= MAXR; k\+\+\)/.test(s) && /if \(_d > R\) break;/.test(s);
+      ok('填色 / 水 / 荒地三条线各一趟，且每趟都有 MAXR 硬上界',
+         !!rp && !!rw && !!rq && hasBound(rp) && hasBound(rw) && hasBound(rq),
+         'paint/water/waste=' + [!!rp, !!rw, !!rq].join('/')
+         + ' · 上界=' + [hasBound(rp), hasBound(rw), hasBound(rq)].join('/'));
+      ok('水 / 荒地那两趟的判据 = 对面是它 **且** 两侧头衔不同（少一个就变密密麻麻网格 ✗）',
+         /if \(!waterIs\(q\)\) continue;/.test(rw)
+         && /titleAt\(pidAt\(q\), uEditTier\) != t/.test(rw)
+         && /if \(!wasteIs\(q\)\) continue;/.test(rq)
+         && /titleAt\(pidAt\(q\), uEditTier\) != t/.test(rq),
+         'water=' + /if \(!waterIs\(q\)\) continue;/.test(rw)
+         + ' waste=' + /if \(!wasteIs\(q\)\) continue;/.test(rq));
+    }
     /* **荒地身份必须按"编辑层"取** ✗（用户报的"不可通行区变成密密麻麻网格"就是它 ✓）
-     *   rayDistTitle 那边取的是 tidAt() = 编辑层；我在 cellViewOf 里图省事写了 uTier ✗
-     *   不可通行区在编辑层上**一格一个伪头衔** → 每格都被判成荒地 → 每格四条边都画 ✓ */
-    /* **荒地缝 = "是荒地" ✚ "两侧头衔不同"，缺一不可** ✗
-     *   用户报的"荒地 / 不可通行区密密麻麻网格"就是漏了后半句 ✓
-     *   不可通行区一整片共用一个伪头衔 → 片内 tt == t 不算缝 → 只画外轮廓 ✓
-     *   只判"是荒地"的话：片内每格起点都是荒地 → 第一格就 break、距离恒为 1 → 每格画线 ✗ */
-    ok('荒地缝判据：是荒地 **且** 两侧头衔不同（少一个就变密密麻麻网格 ✗）',
-       /\(_jIp \|\| _B\.waste\) && _B\.tid != _A\.tid/.test(fs.readFileSync('web/js/gl.js', 'utf8'))
-       && /v\.tid = titleAt\(pidAt\(ip\), uEditTier\)/.test(fs.readFileSync('web/js/gl.js', 'utf8'))
-       && /v\.waste = wasteAlphaOf\(v\.tid\) > 0\.5 && !v\.painted/.test(fs.readFileSync('web/js/gl.js', 'utf8')));
-    /* **荒地身份取的是"编辑层"的头衔** ✗（用 uTier 会跟着视图层乱判 ✓ 也算同一类坑 ✓） */
+     *   `cellViewOf` / 那两趟射线里取的都必须是 `uEditTier` ✓
+     *   ⚠ 2026-10-17 起身份判据收进了 `wasteIs()` / `waterIs()` 两个助手 ✗ ——
+     *     所以下一条钉的是"**这两个助手自己**取的是 uEditTier" ✓
+     *     （别在别处又写一份 `kindOf == 6` ✗ 判据只许有一处 ✓）*/
     ok('荒地身份按 uEditTier 取（不是 uTier ✗ —— 会让不可通行区变网格）',
-       /titleAt\(pidAt\(ip\), uEditTier\)/.test(fs.readFileSync('web/js/gl.js', 'utf8'))
+       /bool wasteIs\(ivec2 q\)[\s\S]{0,400}texelFetch\(uKindTex/.test(fs.readFileSync('web/js/gl.js', 'utf8'))
+       && /v\.tid = titleAt\(v\.pid, uEditTier\)/.test(fs.readFileSync('web/js/gl.js', 'utf8'))
        && !/v\.waste = wasteAlphaOf\(titleAt\(pidAt\(ip\), uTier\)\)/.test(fs.readFileSync('web/js/gl.js', 'utf8')));
     /* **GLSL 里的声明/定义不许重复** ✗（我脚本化改代码时插了两遍 → 编译失败 → 白屏 ✓ 踩过 ✓）
      *   JS 语法检查抓不到（都在模板字符串里 ✗）、桩也不真编译 GLSL ✗ 所以只能数出现次数 ✓ */
