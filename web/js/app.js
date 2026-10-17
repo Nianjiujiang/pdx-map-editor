@@ -5126,6 +5126,11 @@ function stamp() {
 function exportViewPNG() {
   // 先补一帧，保证 WebGL 缓冲区里是刚画好的内容
   // （preserveDrawingBuffer 是关的，隔一帧就取不到了）
+  /* 🔴 **导出前把悬停高亮哑掉** ✗✗（2026-10-17 用户报的："导出的图里莫名亮一块"）
+   *   高亮是画在着色器里的（mix 到白）✗ 不是叠框 —— 鼠标停着就一起被截进 PNG 了 ✓
+   *   画完立刻恢复，屏幕上的高亮照旧 ✓ */
+  const _restoreHover = (renderer && renderer.muteHoverForExport)
+    ? renderer.muteHoverForExport() : null;
   renderer.dirty = true;
   renderer.render();
   // 两套地名各自独立：原有的（头衔/地区名）和玩家的（手绘色块名），
@@ -5138,9 +5143,13 @@ function exportViewPNG() {
   out.height = glCanvas.height;
   const ctx = out.getContext('2d');
   // 画布太大 / 设备内存不够时 getContext 会给 null —— 别让后面 drawImage 变成 TypeError ✓
-  if (!ctx) return toast('导出失败：画布太大，这台设备画不出来', true);
+  if (!ctx) {
+    if (_restoreHover) _restoreHover();
+    return toast('导出失败：画布太大，这台设备画不出来', true);
+  }
   ctx.drawImage(glCanvas, 0, 0);
   ctx.drawImage($('overlay'), 0, 0);
+  if (_restoreHover) _restoreHover();       // 像素已经拷进 out 了，这时候恢复正好 ✓
   // 导出图例：勾了「画进导出的图」就画上去 ✓
   const _lgN = maybeDrawLegend(ctx, out.width, out.height);
 
@@ -5205,7 +5214,12 @@ async function exportFullPNG(scale = 1) {
   renderer.noAA = true;
   toast(scale > 1 ? `正在渲染整张地图（${scale}× 高清）` : '正在渲染整张地图');
 
+  let _restoreHover = null;
   try {
+    // 🔴 整图导出也一样：悬停高亮是画在着色器里的，不哑掉的话
+    //    正在悬停的那一块/那一族会被提亮进整张图 ✗（2026-10-17 用户报的）
+    _restoreHover = (renderer && renderer.muteHoverForExport)
+      ? renderer.muteHoverForExport() : null;
     for (let ty = 0; ty < H; ty += TILE) {
       for (let tx = 0; tx < W; tx += TILE) {
         const tw = Math.min(TILE, W - tx);
@@ -5237,6 +5251,7 @@ async function exportFullPNG(scale = 1) {
       }
     }
   } finally {
+    if (_restoreHover) { _restoreHover(); _restoreHover = null; }
     renderer.fixedSize = false;
     renderer.noAA = false;
     glCanvas.width = savedW;

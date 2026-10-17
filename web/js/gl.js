@@ -2169,6 +2169,41 @@ export class MapRenderer {
   setBorderTitle(v) { this.borderTitle = !!v; this.dirty = true; }
   setBorderPaint(v) { this.borderPaint = !!v; this.dirty = true; }
 
+  /**
+   * **导出前把悬停高亮临时哑掉** ✓（2026-10-17 用户报的：导出的图里莫名亮一块）
+   *
+   *  高亮是**画在着色器里的**（mix 到白 0.30）✗ 不是叠一层半透明框 ✓
+   *  → 导出时只要鼠标正停着，那一块就被"提亮"进 PNG 了 ✓ 图上永远带一块亮的 ✗
+   *  这里把几个悬停量整体清零，返回一个**恢复函数**；调用方导出完必须调它 ✓
+   *
+   *  ⚠ 只动"高亮"这一路 ✗ —— 悬停卡片、取色那些走 state ✓ 不受影响 ✓
+   */
+  muteHoverForExport() {
+    const save = {
+      tid: this.hoverTid,
+      pid: this.hoverPid,
+      group: this.hoverGroupId,
+      on: this.hoverPaintOn,
+      paint: this.hoverPaint ? this.hoverPaint.slice() : null,
+      label: this.hoverLabel,
+    };
+    this.hoverTid = this.noTitle;      // NONE → 着色器那几路全不命中 ✓
+    this.hoverPid = 0;
+    this.hoverGroupId = 0;
+    this.hoverPaintOn = false;
+    this.hoverLabel = 0;
+    this.dirty = true;
+    return () => {
+      this.hoverTid = save.tid;
+      this.hoverPid = save.pid;
+      this.hoverGroupId = save.group;
+      this.hoverPaintOn = save.on;
+      if (save.paint) this.hoverPaint = save.paint;
+      this.hoverLabel = save.label;
+      this.dirty = true;
+    };
+  }
+
   setHover(tid) {
     const v = tid == null ? this.noTitle : tid;
     if (this.hoverTid === v) return;        // 没换就别标脏 ✓（见下面 setHoverState 的说明）
