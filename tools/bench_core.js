@@ -21,7 +21,7 @@
 const H = require('./lib/browser_stub.js');
 
 const WHICH = (process.argv[2] || 'EU4').toUpperCase();
-const CARD = WHICH === 'VIC3' ? 'V3 原版' : WHICH === 'EU4HD' ? 'EU4HD'
+const CARD = WHICH === 'VIC3' ? 'VIC3 原版' : WHICH === 'EU4HD' ? 'EU4HD'
   : WHICH === 'EU5' ? 'EU5 原版' : `${WHICH} 原版`;
 //: 拿别处的源码跑同一把尺子（对照"改动前 / 改动后"用）：
 //:   PDX_SRC=/path/to/old/web node tools/bench_core.js VIC3

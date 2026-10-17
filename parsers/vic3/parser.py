@@ -262,3 +262,180 @@ def load_loc(root: Path, lang: str, keys=None) -> dict[str, str]:
 
     want = {k for k in keys if k in out}
     return {k: expand(out[k]) for k in want}
+
+
+#: 接口收的语言简称 → VIC3 的本地化目录名（目录叫 ``simp_chinese``，不叫 ``zh``）
+_LOC_DIR = {
+    "zh": "simp_chinese",
+    "zh_cn": "simp_chinese",
+    "zh-hans": "simp_chinese",
+    "cn": "simp_chinese",
+    "simp_chinese": "simp_chinese",
+    "en": "english",
+    "english": "english",
+}
+
+
+def game_dir(root: Path) -> Path:
+    """VIC3 的数据全在**安装根目录下的 ``game/``** 里（比别的游戏多一层）。
+
+    传进来的可能是安装根（``…/Victoria 3``），也可能已经是 ``game/`` 本身 ——
+    看有没有 ``map_data`` 认一下，两种都给对。
+    """
+    r = Path(root)
+    if (r / "game" / "map_data").is_dir():
+        return r / "game"
+    return r
+
+
+def _read_loc_file(path: Path) -> dict[str, str]:
+    """读**一个** yml 本地化文件 → ``{键: 文本}``。
+
+    ``KEY: "…"`` 和 ``KEY:0 "…"`` 两种写法并存（``#UNUSED`` 段普遍带 ``:0``），
+    ``_LOC_LINE`` 两种都吃；版本号字段一律不依赖。
+    """
+    out: dict[str, str] = {}
+    fp = Path(path)
+    if not fp.is_file():
+        return out
+    text = fp.read_bytes().decode("utf-8-sig", errors="replace")
+    for line in text.splitlines():
+        m = _LOC_LINE.match(line)
+        if m:
+            out.setdefault(m.group(1), m.group(3))
+    return out
+
+
+def dense_province_ids(root: Path) -> dict[int, int]:
+    """24 位省 id（``xRRGGBB``）→ 编辑器序号。**跟 ``build_vic3.py`` 同一套口径**。
+
+    渲染管线是 R16UI（上限 65535），装不下 24 位，所以构建缓存时把 id 重映射成
+    密集序号 1..N：``known`` = 省份图像素里出现过的 ∪ 所有州引用的 ∪
+    ``default.map`` 的 ``sea_starts``/``lakes``，**排序后第 i 个 → ``i + 1``**。
+    这里把同一张表重算一遍 —— 水域名要按编辑器那套编号给。
+
+    省份图读不到就**算不出来**（``known`` 少一大截、序号整体错位），返回 ``{}``：
+    宁可没有名字，也不能把名字画到错的地块上。
+    """
+    g = game_dir(root)
+    png = g / "map_data" / "provinces.png"
+    if not png.is_file():
+        return {}
+    try:
+        raw = parse_provinces(png)[0]
+    except (OSError, ValueError):
+        return {}
+    known = {int(x) for x in np.unique(raw)}
+    known.discard(0)
+    for s in parse_state_regions(g / "map_data" / "state_regions").values():
+        known.update(s.provinces)
+    dm = parse_default_map(g / "map_data" / "default.map")
+    known.update(dm.get("sea_starts", []))
+    known.update(dm.get("lakes", []))
+    return {rid: i + 1 for i, rid in enumerate(sorted(known))}
+
+
+def load_water_names(root: Path, *, lang: str = "zh") -> dict[int, str]:
+    """VIC3 的水域名 → ``{编辑器地块 id : 水域名}``，认不出来返回 ``{}``。
+
+    三层拼起来（水陆在 VIC3 里**原生分开**，不用猜）：
+
+    * ``map_data/state_regions/99_seas.txt`` —— 海州 **106 条**（``id = 3000…``），
+      每条**正好一个省**（``provinces = { "xRRGGBB" }``）。**这份是权威名单**。
+    * ``common/strategic_regions/water_strategic_regions.txt`` —— 海州 → 水战略区，1:1。
+    * ``localization/<lang>/map/seas_l_<lang>.yml`` —— ``STATE_XXX`` 的名字。
+
+    ⚠ ``seas_l_*.yml`` 里有 **168** 个 ``STATE_`` 键，分三段：
+    ``#Current sea state regions`` 106 + ``#Lakes`` 2 + ``#UNUSED`` 60。
+    后 62 条在 ``state_regions`` 里**查不到任何定义**（预留 / 废弃名），
+    **必须按"在不在 99_seas.txt 里"过滤** —— 不然会凭空画出 62 个不存在的水域。
+
+    ⚠ 返回的 key 是**编辑器那套密集序号**（``data_vic3/provinces_id.bin`` 里的值），
+    **不是** ``xRRGGBB`` —— 见 :func:`dense_province_ids`。
+
+    ⚠ 数据在安装根的 ``game/`` 下（多一层），传根或传 ``game/`` 都认。
+    """
+    g = game_dir(root)
+    seas_path = g / "map_data" / "state_regions" / "99_seas.txt"
+    if not seas_path.is_file():
+        return {}
+    states = parse_state_regions(g / "map_data" / "state_regions")
+    # 权威名单：只在 99_seas.txt 里出现过的 STATE_ 键才算真水域
+    sea_keys = {k for k, v in parse_script(
+        seas_path.read_text(encoding="utf-8-sig", errors="replace"))
+        if isinstance(k, str) and isinstance(v, list) and k.startswith("STATE_")}
+    if not sea_keys:
+        return {}
+    dense_of = dense_province_ids(g)
+    if not dense_of:
+        return {}
+
+    # 海州 → 水战略区（名字键大多就写在这儿，值是 $STATE_XXX$ 引用）
+    ref: dict[str, str] = {}
+    sr_path = g / "common" / "strategic_regions" / "water_strategic_regions.txt"
+    if sr_path.is_file():
+        for key, value in parse_script(sr_path.read_text(encoding="utf-8-sig", errors="replace")):
+            if not isinstance(key, str) or not isinstance(value, list):
+                continue
+            for skey in _words(block_get(value, "states")):
+                ref.setdefault(skey, key)
+
+    # 名字：先要的语言，缺的条目落回英文（两个都没有的跳过那一条）
+    d0 = _LOC_DIR.get(str(lang).lower(), str(lang))
+    primary = _read_loc_file(g / "localization" / d0 / "map" / f"seas_l_{d0}.yml")
+    fallback = {} if d0 == "english" else _read_loc_file(
+        g / "localization" / "english" / "map" / "seas_l_english.yml")
+
+    def expand(value: str) -> str:
+        for _ in range(4):
+            if "$" not in value:
+                break
+            value = re.sub(r"\$([A-Za-z0-9_.\-]+)\$",
+                           lambda m: primary.get(m.group(1)) or fallback.get(m.group(1))
+                           or m.group(0), value)
+        return value
+
+    sr_loc = _read_loc_file(g / "localization" / d0 / "map" / f"strategic_regions_l_{d0}.yml")
+
+    out: dict[int, str] = {}
+    for key in sorted(sea_keys):
+        st = states.get(key)
+        if st is None or not st.provinces:
+            continue                      # 名字挂着、定义没有 —— 就是那 62 条废名
+        name = primary.get(key) or fallback.get(key)
+        if not name:
+            rk = ref.get(key)
+            name = expand(sr_loc[rk]) if rk and rk in sr_loc else ""
+        if not name:
+            continue
+        for rid in st.provinces:
+            d = dense_of.get(rid)
+            if d:
+                out[d] = name
+    return out
+
+
+def load_water_names_by_tier(root: Path, *, lang: str = "zh") -> dict[str, dict[int, str]]:
+    """**按层**给水域名 —— 让 VIC3 也走"每层一片"那套 ✓（2026-10-13 补 ✓）
+
+    返回 ``{"sr": {...}, "st": {...}, "pr": {...}, "wasteland": {}}``
+    （键名跟 `build_vic3.py` 的层名对齐 ✓ 见那边的 `meta["tiers"]` ✓）
+
+    🔴 **VIC3 只有一层水域数据** ✗ —— 这不是偷懒，是游戏就这样：
+      · `map_data/state_regions/99_seas.txt` 里**一个海州正好一个省** ✓
+      · `water_strategic_regions.txt` 是 **1:1**（海州 → 水战略区 ✓ 没有更粗的归并 ✓）
+      → 所以"省份级 / 州级 / 战略区级"**是同一批东西** ✓
+        跟 HOI4 那个"省份级水域 = 地区级"是**同一类情况** ✓
+
+    用户点破的基本思维（原话）：
+      "province.bmp 里面那些小碎块是**省份级水域**，上面是地区级，再上面是战略级，
+       每个水域不同的层级**按游戏内容给名字**，……只不过 Hoi4 的省份级水域和地区级
+       是同一个东西，而且没有名字而已" ✓
+    → **"按游戏内容给名字"** 就是这里：VIC3 的内容只有一层 ✓ 三层就返回同一张 ✓
+      （**没有的东西不要编** ✗ —— 别拿别层的名去填 ✓）
+
+    ⚠ 真正的实现只有一份 ✗ —— 直接调 `load_water_names` ✓ 别复制那段解析 ✓
+      （那段有"过滤 62 条废名"的讲究 ✓ 复制一份早晚会两边不一致 ✓）
+    """
+    one = load_water_names(root, lang=lang)
+    return {"sr": dict(one), "st": dict(one), "pr": dict(one), "wasteland": {}}

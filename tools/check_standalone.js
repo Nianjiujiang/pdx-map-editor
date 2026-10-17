@@ -224,8 +224,30 @@ function findTestPack() {
   ok('报错日志模块在（log.js 拼进单文件了）', !!(log && typeof log.text === 'function'));
   const logTxt = log && typeof log.text === 'function' ? log.text() : '';
   ok('日志里有启动轨迹和地图信息（不是个空壳）',
-     /\[轨迹\]/.test(logTxt) && /就绪/.test(logTxt) && /\[当时的状态\]/.test(logTxt),
+     /\[5\] 事件时间线/.test(logTxt) && /就绪/.test(logTxt) && /\[2\] 运行状态/.test(logTxt),
      logTxt ? `'${logTxt.split(/\r?\n/).find((l) => /版本戳/.test(l)) || ''}'` : '');
+  /* 🔴 **启动页就能导出诊断报告** ✗（2026-10-17）
+   *   编辑器自己没起来时，顶栏「导出日志」根本挂不上 —— 所以按钮必须由
+   *   **log.js 自己绑定**，而且按钮得真的在烤出来的 HTML 里 ✓ */
+  {
+    const htmlText = fs.readFileSync(HTML, 'utf8');
+    const flat = H.readStandalone(HTML).js;
+    ok('启动页有「导出诊断报告」按钮，且由 log.js 自己绑定（不依赖 app.js ✓）',
+       /id="btn-boot-log"/.test(htmlText)
+       && /function bindBootExport/.test(flat)
+       && /btn-boot-log/.test(flat),
+       '按钮=' + /id="btn-boot-log"/.test(htmlText)
+       + ' 绑定=' + /function bindBootExport/.test(flat));
+    const bb = env.get('btn-boot-log');
+    if (bb && typeof bb.dispatchEvent === 'function') {
+      bb.dispatchEvent({ type: 'click', preventDefault() {} });
+      ok('启动页按钮点了真能生成报告（不是死按钮 ✓）',
+         bb.textContent === '已导出', `按钮文字：${bb.textContent}`);
+    }
+    ok('产物里有构建戳（打包时间，不是 dev ✗）',
+       /<meta name="pdx-build" content="\d{4}-\d{2}-\d{2} \d{2}:\d{2}">/.test(htmlText),
+       (htmlText.match(/<meta name="pdx-build"[^>]*>/) || ['没找到'])[0]);
+  }
 
   // 崩溃上屏：结构改过（多一层容器 + 一颗导出按钮），
   // "文字还进得去""按钮还在""再崩一次不会把按钮冲掉"这三件都要盯
@@ -424,6 +446,58 @@ function findTestPack() {
     r.dirty = false;
     env.dispatchWindow('pageshow');
     ok('回到前台：pageshow 那条也兜住了（有的浏览器只发这个）', r.dirty === true);
+  }
+
+  /* ---- **`viewTierFor(pid)` 的每一处，作用域里都得真有 `pid`** ✗✗ ----
+   *
+   * 2026-10-14 用户当场抓的：`Uncaught ReferenceError: pid is not defined`
+   *   at `positionHoverCard` —— 我批量替换 `labelTier()` → `viewTierFor(pid)`
+   *   时没看作用域 ✗ 那个函数**没有 pid 参数**（该用 `state.hover.pid` ✓）
+   *   → 整个悬停卡片直接崩 ✓ 而**现有自检全绿** ✗（没有一条覆盖悬停）
+   *
+   * 所以补这一条：静态扫源码，逐个 `viewTierFor(pid)` 往上看最近的函数，
+   * 要么它有 `pid` 参数、要么函数体里有 `const/let/var pid` ✓
+   * ⚠ 这条只查"有没有"，不查"取的是不是**当前**那一格" ✗（那是语义 ✓ 靠人看 ✓）
+   */
+  /* ---- **产物里不许留 `<script src=...>`** ✗✗ ----
+   *
+   * 2026-10-14 用户报的：`Failed to load resource: net::ERR_FILE_NOT_FOUND tutorial.js:1`
+   *   根因：`web/index.html` 有三句 script（log.js / tutorial.js 是**传统脚本** ✓
+   *     app.js 是模块入口 ✓），而 `build_standalone.py` 只替换了**模块那一句** ✗
+   *     → 单文件版去抓旁边不存在的 `js/log.js` / `js/tutorial.js` ✓ 控制台报错 ✓
+   *   ⚠ 这两句的代码**早就内联进产物了** ✓ 所以它们只剩坏处 ✓
+   * 这条就是守着它别再回来 ✓
+   */
+  {
+    const raw = fs.readFileSync(HTML, 'utf8');
+    const hits = raw.match(/<script[^>]*\ssrc=/g) || [];
+    ok('产物里没有 <script src=...>（单文件版不该再去抓外部 js）',
+       hits.length === 0, hits.length ? hits.slice(0, 3).join(' ') : '一句都没有 ✓');
+  }
+
+  {
+    const src = fs.readFileSync(path.join(H.ROOT, 'web/js/app.js'), 'utf8').split('\n');
+    const bad = [];
+    for (let i = 0; i < src.length; i++) {
+      const ln = src[i];
+      if (!/viewTierFor\(pid\)/.test(ln)) continue;
+      if (/^\s*[*/]/.test(ln)) continue;                 // 注释行不算 ✓
+      let fn = null;
+      let args = '';
+      let start = 0;
+      for (let j = i; j >= 0; j--) {
+        const m = /^\s*function\s+(\w+)\s*\(([^)]*)\)/.exec(src[j]);
+        if (m) { fn = m[1]; args = m[2]; start = j; break; }
+      }
+      const hasArg = /\bpid\b/.test(args);
+      let hasLocal = false;
+      for (let k = start; k < i; k++) {
+        if (/(const|let|var)\s+pid\b/.test(src[k])) { hasLocal = true; break; }
+      }
+      if (!hasArg && !hasLocal) bad.push(`L${i + 1} ${fn || '?'}()`);
+    }
+    ok('viewTierFor(pid) 的每一处，作用域里都有 pid（不然悬停直接崩）',
+       bad.length === 0, bad.length ? bad.join(' · ') : `${src.filter((l) => /viewTierFor\(pid\)/.test(l)).length} 处全有`);
   }
 
   console.log('\n==========================================================');

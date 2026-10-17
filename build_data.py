@@ -7,7 +7,9 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
+import math
 import re
 import sys
 import time
@@ -100,16 +102,30 @@ def _parse_date(s: str) -> tuple[int, int, int]:
 # ------------------------------------------------------------------ 省份图
 
 
-def build_province_map(png_path: Path, defs: dict[int, tuple[int, int, int, str]]):
+def build_province_map(png_path: Path, defs: dict[int, tuple[int, int, int, str]],
+                       scale: int = 1):
     """把 provinces.png 的每个像素换算成 province id。
 
     CK3 用的是「颜色查表」而不是调色板索引：图片里的 RGB 直接等于
     definition.csv 第三列的颜色。所以先建一张 24 位色 → id 的查找表。
+
+    :param scale: 降采样倍数（默认 1 = 原样 ✓）。
+        ⚠ **CK3 永远不传它** ✗（它那张 9216×4608 是编辑器的主力尺寸 ✓ 缩了画质就没了 ✓）——
+        CK2 那份（``build_ck2.py``）才有 ``--scale``：它地图只有 3072×2048，
+        想要一张更省显存的对照图时才会用到 ✓
+        ⚠ 缩放必须在**建颜色表之前**做 ✗ —— 缩完再认色，边缘那圈混色像素
+        才会老老实实落进 ``UNKNOWN`` 那一档（先认色再缩，插值出来的新颜色
+        会变成一堆"表里没有的颜色" ✓ 数量级完全不同 ✓）；NEAREST 保证
+        缩出来的每一个像素都还是**原来某个省份的颜色** ✓ 不会凭空造色 ✓
     """
     log(f"读取 {png_path.name} …")
     im = Image.open(png_path)
     if im.mode != "RGB":
         im = im.convert("RGB")
+    if scale > 1:
+        im = im.resize((max(1, im.width // scale), max(1, im.height // scale)),
+                       Image.NEAREST)
+        log(f"  按 1/{scale} 降采样 → {im.width}×{im.height}")
     w, h = im.size
 
     max_pid = max(defs)
@@ -239,7 +255,7 @@ def parse_default_map(path: Path) -> dict[str, set[int]]:
     return out
 
 
-#: 这些类别**每块地单独一个节点**（可以一块块涂色），其余地形仍旧一类一个伪头衔。
+#: 这些类别**最细那层每块地单独一个节点**（可以一块块涂色），粗层每层各一片 ✓
 #: 都是"不可通行的陆地 / 无归属荒地"—— 玩家会想按周边国家给它们上色。
 SETTABLE_CATEGORIES = ("#impassable", "#wasteland")
 
@@ -250,56 +266,44 @@ def build_special_titles(
     blank: np.ndarray,
     base_index: int,
     special_names: dict[str, str] | None = None,
-) -> tuple[list[Title], np.ndarray, list[str], np.ndarray, list[int], np.ndarray, list[int]]:
-    """给制不出头衔的地块分类；海/湖/河一类一个伪头衔，**荒地每块一个**。
+    geo_tiers=None,
+    tier_names: dict[str, dict[int, str]] | None = None,
+    waste_names: dict[int, str] | None = None,
+    skip_fine_tier: bool = False,
+    script_tiers=None,
+) -> tuple[list[Title], dict[str, np.ndarray], list[str], list[int], list[int]]:
+    """给制不出头衔的地块分类 —— **每一层给该层自己的伪头衔**（2026-10-13 统一 ✓）。
 
-    :param blank: 长度 n_prov 的 bool 表，True 表示这个省份在**所有**层级
-                  都没有头衔（也就是海、湖、河、山这些）。
-    :returns: (伪头衔列表, 全层共用的归属数组, 分类统计文字,
-               只落在最细那层的归属数组, 逐块荒地的地块号,
-               逐块荒地的**真实节点号**（与地块号一一对应）)
+    以前是"全世界的海共用一个 ``#sea``、荒地粗层共用一个灰"✗ —— 归属表每一行填的都是
+    同一个序号 ✓ 于是"换层海域范围会变"在缓存里根本没有表达 ✗，前端只好为它们到处写
+    旁路 ✓（水名表 / 悬停特判 / 高亮编组 / 边界特判…一口气四五处配对改 ✗）。
+    现在：**每一层的海 / 湖 / 河 / 荒地各有各的节点** ✓ 每层的"片"就是该层同名地块的
+    集合 ✓ 前端按"当前层那个头衔"一套逻辑走到底 ✓ 不用再开特例 ✓。
+
+    真正的实现（两种口径、"上下级"父子连接、逐块荒地）在 ``build_tier_pieces`` 里 ✓
+    —— 那份文件是 CK3 与 EU4/HOI4/VIC3/EU5 共用的，别在这儿复制一份 ✗
+
+
+    ⚠ 参数 `tier_names` 就是 `parsers/ck3` 那边……**CK3 没有水名表** ✓
+    （游戏数据里没有"每片海叫什么"这一级 ✓ 见 `docs/水域名调研.md` 第 411 行 ✓）
+    所以 CK3 每一层整片算一片、名字用类别名 ✓ 这是实话，不是没实现 ✓
+    `waste_names` 同理（CK3 的荒地名字由 `patch_wasteland` 统一补成类别名 ✓）。
     """
-    assign = np.full(n_prov, -1, dtype=np.int64)
-    fine_assign = np.full(n_prov, -1, dtype=np.int64)   # 只有"逐块荒地"会用到
-    titles: list[Title] = []
-    stats: list[str] = []
-    waste_pids: list[int] = []
-    waste_tids: list[int] = []   # 跟 waste_pids 一一对应：建一个节点记一个序号
-
-    for key, label, rgb, sources in SPECIAL_CATEGORIES:
-        wanted: set[int] = set()
-        for s in sources:
-            wanted |= terrain.get(s, set())
-        candidates = np.fromiter((p for p in wanted if 0 < p < n_prov), dtype=np.int64)
-        if candidates.size:
-            candidates = candidates[blank[candidates] & (assign[candidates] < 0)]
-        if key == "#wasteland":
-            # 兜底：前面都没认领的空白地块
-            rest = np.nonzero(blank & (assign < 0))[0]
-            candidates = rest
-        if candidates.size == 0:
-            continue
-        # 共享的粗层伪头衔（照旧：海/湖/河/荒地的**粗层**都是它）
-        assign[candidates] = base_index + len(titles)
-        t = Title(key, tier="@")
-        t.color = rgb
-        titles.append(t)
-        if special_names is not None:
-            special_names[t.key] = label
-        stats.append(f"{label} {candidates.size}")
-        # ② 荒地额外：**每块地一个节点**，只占最细那一层
-        if key in SETTABLE_CATEGORIES:
-            for pid in candidates.tolist():
-                _tid = base_index + len(titles)   # 序号在建节点时记下，别事后反推
-                fine_assign[pid] = _tid
-                wt = Title(f"wl_{pid}", tier=TIER_ORDER[-1])
-                wt.color = rgb
-                titles.append(wt)
-                waste_pids.append(int(pid))
-                waste_tids.append(_tid)
-            stats.append(f"→ 逐块 {len(candidates)} 个")
-
-    return titles, assign, stats, fine_assign, waste_pids, waste_tids
+    from build_tier_pieces import build_special_titles as _impl   # noqa: PLC0415
+    return _impl(
+        terrain, SPECIAL_CATEGORIES, n_prov, blank, base_index,
+        list(geo_tiers or TIER_ORDER),
+        tier_names=tier_names,
+        waste_names=waste_names,
+        settable=SETTABLE_CATEGORIES,
+        # 🔴 **最细层不造片** ✗（2026-10-14 ✓ 用户要求 ✓ 见调用处那段长注释 ✓）
+        #   水域的最细层就是它自己那个 province ✓ 不需要片 ✓
+        #   ⚠ 荒地 / 不可通行**不受影响** ✗ —— 它们走 `settable` 那条逐块路 ✓
+        #     （`skip_fine_tier` 只作用于"按名字分片"那一条 ✓）
+        skip_fine_tier=skip_fine_tier,
+        script_tiers=script_tiers,
+        name_sink=special_names,
+    )
 
 
 # ------------------------------------------------------------------ 头衔
@@ -343,16 +347,25 @@ def build_titlemap(
     index_of: dict[str, int],
     owned: dict[str, list[int]],
     n_prov: int,
+    order: list[str] | None = None,
 ) -> np.ndarray:
-    """给每个省份、每个层级找出它归属的头衔，做成 len(MAP_ORDER)×n_prov 的表。
+    """给每个省份、每个层级找出它归属的头衔，做成 len(层级栈)×n_prov 的表。
 
     这一张表就是前端着色的全部依据：查到 province id，再去对应层级取头衔，
     最后取头衔的颜色。
 
-    ⚠ 第 0 行（**1066 剧本**那一层）不在这里填 ✗ —— 它要等伪头衔建好
-      （"无主"要挂到无归属荒地上 ✓），由 build_realm_layer 收尾 ✓
+    :param order: 层级栈（**行号就是它里面的下标** ✓）。不给 = 本文件那份 ``MAP_ORDER`` ✓
+        ⚠ **CK2 显式传它自己的** ✗ —— CK2 第 0 层是「空白剧本」、CK3 第 0 层是「1066」✓
+          两边 e…b 的下标**碰巧**都是 1…5 ✓ 但那是巧合 ✗ 别靠巧合
+          （CK3 哪天给剧本块再加一层，这边就会悄悄错位一格 ✓）
+          显式传进来，行号才是调用方自己说了算的 ✓（默认值保住 CK3 的老行为 ✓）
+
+    ⚠ 第 0 行（**剧本层**）不在这里填 ✗ —— CK3 那边要等伪头衔建好
+      （"无主"要挂到无归属荒地上 ✓），由 build_realm_layer 收尾 ✓；
+      CK2 那边整层留空（本版不做归属 ✓ 只有背景地形由伪头衔填 ✓ 见 build_ck2.py ✓）
     """
-    table = np.full((len(MAP_ORDER), n_prov), NO_TITLE, dtype=np.uint16)
+    order = list(order) if order is not None else MAP_ORDER
+    table = np.full((len(order), n_prov), NO_TITLE, dtype=np.uint16)
     per_pid: dict[int, dict[str, int]] = {}
     for t in ordered:
         ti = index_of[t.key]
@@ -363,7 +376,9 @@ def build_titlemap(
     filled = 0
     for pid, tiers in per_pid.items():
         for tier, ti in tiers.items():
-            table[MAP_ORDER.index(tier), pid] = ti
+            if tier not in order:
+                continue
+            table[order.index(tier), pid] = ti
             filled += 1
     log(f"头衔归属表完成：{filled} 个 (省份, 层级) 对")
     return table
@@ -380,8 +395,18 @@ def build_realm_layer(
     obedient: set[str] | None = None,
     tributaries: set[str] | None = None,
     dejure_size: dict[str, int] | None = None,
+    order: list[str] | None = None,
+    tiers: tuple[str, ...] | None = None,
 ) -> tuple[dict[str, list[int]], int]:
-    """算出**1066 剧本**每一格归谁：每块地归到它的**非封臣**（独立政权）✓
+    """算出**剧本层**每一格归谁：每块地归到它的**非封臣**（独立政权）✓
+
+    :param order: 层级栈（行号就是它里面的下标 ✓）。不给 = 本文件那份 ``MAP_ORDER`` ✓
+    :param tiers: **法理层级**（粗 → 细 ✓）。不给 = 本文件那份 ``TIER_ORDER`` ✓
+        ⚠ **CK2 必须传它自己的** ✗ —— 它只有 e/k/d/c 四级（没有男爵领 ✓ 见
+          ``parsers/ck2/parser.py`` 的 ``TIER_ORDER`` 那段 ✓）。
+          默认那份里有 ``b`` ✗ → `rows` 会多算一个用不上的行号 ✓
+          （眼下 `fine_first` 会把 ``b`` 排掉 ✓ 所以不传也不会当场炸 ✓
+           但那是**碰巧** ✓ 别靠碰巧 ✓ 见 `build_titlemap` 的 `order` 同理 ✓）
 
     用户要的那张地图就是这一层：**封臣的地盘算进宗主那一块**（CK3 的领地地图 ✓），
     所以先把每块地判给"最细那一级有持有者的头衔"，再顺 liege 一路往上 ✓
@@ -407,12 +432,15 @@ def build_realm_layer(
     keys = [t.key for t in ordered]
     n_none = 0
     raw: dict[str, list[int]] = {}
-    rows = {tier: MAP_ORDER.index(tier) for tier in TIER_ORDER}
+    _tiers = tuple(tiers) if tiers is not None else tuple(TIER_ORDER)
+    _order = list(order) if order is not None else MAP_ORDER
+    rows = {tier: _order.index(tier) for tier in _tiers if tier in _order}
     # ⚠ **从伯爵领（c）开始往上找，不看男爵领** ✗ ——
     #   用户点名的："男爵领本来就没法在 CK3 进行细分，全都应该属于伯爵领才对" ✓
     #   男爵领只是伯爵领**里面的地产** ✓ 它自己那条 liege / holder 不该决定
     #   "这块地归谁政权" ✗（辽东范围不对就是这个：那几块地的男爵领挂着别的 liege ✓）
-    fine_first = [rows[tier] for tier in reversed(TIER_ORDER) if tier != "b"]   # c → e
+    #   ⚠ CK2 的 `tiers` 里**压根没有 b** ✓ 这边这个过滤对它就是个空操作 ✓
+    fine_first = [rows[tier] for tier in reversed(_tiers) if tier != "b" and tier in rows]   # c → e
     for pid in range(1, n_prov):
         start = -1
         for r in fine_first:
@@ -709,8 +737,30 @@ def main() -> int:
 
     # 6. 海/湖/河/山：所有层级都没头衔的地块才归地形类别
     terrain = parse_default_map(game / "map_data" / "default.map")
-    blank = np.all(titlemap == NO_TITLE, axis=0) & present
-    log(f"完全没有头衔的地块：{int(blank.sum())} 个")
+    # 🔴🔴 **水域不算"空白"** ✗✗（2026-10-14 ✓ 用户要求 ✓）
+    #
+    #   用户："你就不能把水域变成一个**仅仅是不能填色的地块**吗……
+    #     最底层的单位也有自己的 Province id"✓
+    #   → 水域**不再造伪头衔** ✓ 于是它"所有层都无主"✓ 正好落进下面这个 blank ✗
+    #     → 被「**无归属荒地**」那一片盖住 ✓
+    #     后果（实跑量到的）：悬停一块海，`tid` 拿到的是 `#wasteland_c_3` ✓
+    #       于是**海的高亮跟着荒地整片亮** ✗ 边界也走了荒地那条 ✓
+    #
+    #   → 水域必须**排除在 blank 之外** ✓ 那它就"完全无归属"✓
+    #     身份完全靠 `pid` + `meta.waterMask`（那个"小标签"✓）——
+    #     颜色走海域色 ✓ 边界听水域那两条开关 ✓ 高亮按 pid ✓ 别的全跟普通地块一样 ✓
+    #
+    #   ⚠ 水域**不能**进 `#wasteland` ✗ —— 荒地是"可以一块块涂色"的 ✓
+    #     而水域**不能填色** ✓ 两者待遇相反 ✓ 混在一起两头都错 ✓ */
+    _water_all = np.zeros(int(n_prov), dtype=bool)
+    for _wcat in ("river_provinces", "lakes", "sea_zones", "impassable_seas"):
+        for _wp in (terrain.get(_wcat) or ()):
+            _wpi = int(_wp)
+            if 0 <= _wpi < _water_all.size:
+                _water_all[_wpi] = True
+    blank = np.all(titlemap == NO_TITLE, axis=0) & present & ~_water_all
+    log(f"完全没有头衔的地块：{int(blank.sum())} 个"
+        f"（已排除 {int(_water_all.sum())} 个水域 ✓ 它们不算「无主荒地」✓）")
 
     _special_names: dict[str, str] = {}
 
@@ -788,20 +838,103 @@ def main() -> int:
     #: 伪头衔的起始序号 = 真头衔 + 1066 剧本节点（后面一律用这个 ✓ 别再写 len(ordered) ✗）
     SPECIAL_BASE = len(ordered) + len(realm_nodes)
 
-    special, assign, stats, fine_assign, waste_pids, waste_tids = build_special_titles(
-        terrain, n_prov, blank, SPECIAL_BASE, _special_names)
+    # ⚠ **CK3 没有水名表** ✗ —— 游戏数据里没有"每片海叫什么"这一级 ✓
+    #   （`map_data/default.map` 的 `sea_zones` 只是一串地块号，
+    #     连行注释都只是给人看的分类 ✓ 见 `docs/水域名调研.md` 第 411 行 ✓）
+    #   → 每一层整片算一片、名字用类别名 ✓ 这是**实话**，不是没做 ✓
+    #     CK3 的"换层海域边界变了"本来也不该变：游戏里海就不分层 ✓
+    # 🔴🔴 **水域不造层级伪头衔** ✗✗（2026-10-14 ✓ 用户要求 ✓）
+    #
+    #   用户原话："你就不能把水域变成一个**仅仅是不能填色的地块**吗，
+    #     明明在游戏里也是这样的，而且**最底层的单位也有自己的 Province id**"
+    #     "和陆地一样啊，**大名，河北，华北**，这样下来"（= 逐块 / 地区 / 大区 ✓）
+    #     "只是水域**带一个小标签**来让他在**边界和颜色**等方面听从相关的开关，
+    #      **其他逻辑不变**"
+    #
+    #   → 所以：
+    #     · **最细层**：水域**不造节点** ✓ 它就是它自己那个 province ✓
+    #       （跟荒地不一样 ✗ —— 荒地要"一块块涂色"✓ 所以它有 `wl_<pid>` ✓
+    #        水域**不能填色** ✗ 所以连那个都不需要 ✓）
+    #     · **粗层**：**CK3 游戏里没有水域层级** ✗（`default.map` 的 `sea_zones`
+    #       只是一串地块号 ✓ 没有任何归并 ✓）→ 所以**一层都不造** ✓
+    #       （EU4/EU5 有 `sea_starts` / `area` 那种真层级 ✓ 它们**粗层照造** ✓
+    #        见各自的脚本传的 `skip_fine_tier` ✓）
+    #
+    #   ⚠ **`skip_fine_tier=True`** ✗ —— 意思是"最细层不造片 ✓ 粗层照造"✓
+    #     CK3 没有粗层 ✓ → `coarser` 为空 ✓ → 于是一层都不造 ✓ 正是要的 ✓
+    #   ⚠⚠ **候选池要把水域加回来** ✗✗（2026-10-14 ✓ 差点栽在这儿）
+    #     `blank` 上面**排除了水域** ✓（那是给 `patch_blank_era` 用的 ✓ 它不该
+    #     把水域当"背景地形"抄进空白层 ✓）—— 可 `build_special_titles` **也拿它
+    #     当候选池** ✗ → 于是水域一个片都造不出来 ✓（实跑：EU4/HOI4/VIC3 全是 0 片 ✓）
+    #     → 这里传 **`blank | _water_all`** ✓：水域重新进候选池 ✓
+    #       而"最细层不造"由 `skip_fine_tier` 负责 ✓ 两件事各管各的 ✓
+    #   ⚠ 水域**先认领**、荒地最后兜底 ✓ —— `SPECIAL_CATEGORIES` 的顺序保证的 ✓
+    #     （`#river`/`#lake`/`#sea`/`#impassable_sea` 都在 `#wasteland` 前面 ✓
+    #      `claimed` 一置 ✓ 荒地就拿不到水域了 ✓）
+    special, _sp_rows, stats, waste_pids, waste_tids = build_special_titles(
+        terrain, n_prov, blank | _water_all, SPECIAL_BASE, _special_names,
+        geo_tiers=TIER_ORDER, skip_fine_tier=True,
+        # 🔴 **剧本层：每一类共用一个"海洋"节点** ✗（2026-10-14 ✓ 用户的主意 ✓）
+        #   = 全层里排在地理层**前面**的那几格（CK3 是 `1066` ✓）
+        script_tiers=[t for t in MAP_ORDER if t not in TIER_ORDER])
     log("地形类别：" + "，".join(stats) if stats else "地形类别：无")
 
-    sel = assign >= 0
-    if sel.any():
-        vals = assign[sel].astype(np.uint16)
-        for r in range(len(MAP_ORDER)):
-            titlemap[r, sel] = vals
+    # 🔴🔴 **底层地块的"身份标"** ✗✗（2026-10-16 补 ✓ 用户点名要的 ✓）
+    #   用户原话："我记得开发一开始就给每个地图每个最低等级都加上了相应的标记"✓
+    #   —— 他记得对：`build_tier_pieces.kind_mask()` **早就写好了** ✓
+    #     而 `build_ck2.py` / `build_eu5.py` 一直在调它 ✓
+    #     **CK3 / EU4 / HOI4 / VIC3 这四家从来没接过** ✗（这一轮就是来补这个的 ✓）
+    #   → `meta.kindMask`：每地块 **1 字节**、base64（跟当年那枚 `waterMask` 一个形状 ✓）
+    #     1 陆地（**兜底** ✓ 不属于下面几类的全是它）/ 2 海洋 / 3 湖泊 / 4 河流 /
+    #     5 不可通行海域 / 6 不可通行区域 ✓
+    #   ⚠ **无归属区域不进这枚标** ✗（用户明确交代：无归属是**剧本 / 归属**决定的 ✓
+    #     不是地块身份 ✓ 它继续按运行时算 —— 见前端那行 `set-unpainted` ✓
+    #     → 所以下面只挑 KIND_CODES 里有的那几个类别 ✓
+    #     CK3 的 `#wasteland`（无归属荒地 ✓）**故意不进** ✓ 它照旧落"陆地 1" ✓）
+    #   ⚠ 判据是**构建期那几套现成类别集合**（`terrain` ✓ 就是 `SPECIAL_CATEGORIES`
+    #     里那几个来源清单读出来的那份 ✓ 跟"水域优先"一条口径 ✓
+    #     `#river` 排在 `#sea` 前面 ✓ 所以河流那些是码 4 不是码 2 ✓）
+    #   ⚠ **跟 CK3 那枚老的 `waterMask` 是两回事** ✗ —— 那枚只有 0/1（"是不是水"）
+    #     而且**当前仓库里已经没有任何脚本会产出它** ✓（2026-10-15 那轮退役的 ✓
+    #     见 `_local/_surgery_water_data.py` 开头那段 ✓）
+    #     → 这枚 `kindMask` 是它的**正当接班人** ✓ 六类齐全 ✓
+    #   ⚠ **不许拿 `{ }` 当作用域块** ✗✗ —— Python 里那不是块，是**字典/集合字面量** ✓
+    #     （我第一版就这么写的 ✓ `py -3` 直接 `SyntaxError: invalid syntax` ✓
+    #      在 JS 里写顺手了 ✗ —— 空格子块在 Python 3.14 上更是硬报错 ✓）
+    #     → 下面**平铺写** ✓ 变量一律带 `_kind` / `_cat` 前缀，不污染这个函数的命名空间 ✓
+    import base64 as _kind_b64mod                                 # noqa: PLC0415
+    from build_tier_pieces import (kind_mask as _kind_mask,       # noqa: PLC0415
+                                   KIND_CODES as _KIND_CODES)
+    _cat: dict[str, set[int]] = {}
+    for _key, _klabel, _krgb, _sources in SPECIAL_CATEGORIES:
+        if _key not in _KIND_CODES:
+            continue                # `#wasteland` 这类：无归属 ≠ 地块身份 ✓ 不进标 ✓
+        _s: set[int] = set()
+        for _src in _sources:
+            _s |= set(terrain.get(_src, ()) or ())
+        # ⚠ 只收"真有像素的地块" ✗ —— 跟候选池同一口径（`present` ✓）
+        _s = {int(p) for p in _s if 0 < int(p) < n_prov and present[int(p)]}
+        if _s:
+            _cat[_key] = _s
+    _kind_b64 = _kind_mask(n_prov, _cat)
+    _kind_n = {c: 0 for c in range(7)}
+    for _kb in _kind_b64mod.b64decode(_kind_b64):
+        _kind_n[int(_kb)] = _kind_n.get(int(_kb), 0) + 1
+    _kind_tot = sum(_kind_n[c] for c in range(1, 7))
+    # **自证**：1~6 加起来必须 = numProvinces - 1 ✗（0 号那一格是空位 ✓ 不许有空洞 ✓）
+    assert _kind_tot == n_prov - 1, \
+        f"kindMask 有空洞 ✗：1~6 合计 {_kind_tot} ≠ numProvinces-1 = {n_prov - 1}"
+    assert _kind_n[0] == 1, f"kindMask 的 0 号格子应该是空位 ✗（实际 {_kind_n[0]} 个）"
+    log("身份标 kindMask："
+        + " · ".join(f"{c}={_kind_n[c]}" for c in range(1, 7))
+        + f"（1~6 合计 {_kind_tot} = numProvinces-1 ✓ 无空洞 ✓）")
 
-    # 逐块荒地**只盖最细那层** —— 粗层照旧是那块共享的灰（跟 EU5 一个口径）
-    sel2 = fine_assign >= 0
-    if sel2.any():
-        titlemap[MAP_ORDER.index(TIER_ORDER[-1]), sel2] = fine_assign[sel2].astype(np.uint16)
+    # **每一层填它自己那一片** ✓（2026-10-13 统一，见 `build_tier_pieces.apply_rows`）
+    #   以前是"全层共用一个 `#sea`"✗ → 现在每层各有各的节点 ✓
+    #   剧本层（1066）借**最粗那层地理层**的海片 ✓（它只关心陆地归谁 ✓）
+    from build_tier_pieces import apply_rows as _apply_rows     # noqa: PLC0415
+    log(f"背景地形按层填了 {_apply_rows(titlemap, _sp_rows, MAP_ORDER, TIER_ORDER)} 个"
+        f" (省份, 层级) 对")
     left = int(np.count_nonzero(titlemap[MAP_ORDER.index(TIER_ORDER[-1])] == NO_TITLE))
     log(f"仍是空白的格子：{left}")
 
@@ -810,69 +943,43 @@ def main() -> int:
     WATER_KEYS = ("#river", "#lake", "#sea", "#impassable_sea")
 
     def _is_water_key(k: str) -> bool:
-        return k in WATER_KEYS
+        # ⚠ **前缀匹配** ✗（2026-10-13 起每层一片：键长这样 `#sea_pr_57` ✓）
+        #   精确相等在这儿会把新键**一个都认不出来** ✗ ——
+        #   荒地边长那一步就会把海算进"陆地周长"里去 ✓
+        return str(k).startswith(WATER_KEYS)
     water_tids = {SPECIAL_BASE + k for k, sp in enumerate(special) if _is_water_key(sp.key)}
     # 逐块荒地的**真实节点号**直接来自 build_special_titles（建节点时记的）。
     # 以前在这里拿"special 尾部恰好连续 len(waste_pids) 个"反推 waste_base，
     # 可 #wasteland 的共享粗层节点插在两组逐块节点中间 —— 一差就差一位：
     # 第一块山地漏出 meta["wasteland"]、面积和标注位置整体错位一格。
     waste_tid_of = dict(zip(waste_pids, waste_tids))
-    # 粗层那两个共享伪头衔也算"荒地"（荒漠涂色关着时它们要显示灰）
+    # 粗层那些"整片"伪头衔也算"荒地"（荒漠涂色关着时它们要显示灰 ✓）
+    # ⚠ **前缀匹配** ✗ —— 2026-10-13 起每层一片，键是 `#impassable_c_3` 这种 ✓
+    #
+    # 🔴🔴 **`#impassable_sea` 必须排除** ✗✗
+    #   （2026-10-13 用户报："不同时期**不可通行海域会被上色为背景色**"✓）
+    #   `startswith("#impassable")` 是**前缀**匹配 ✓ 于是
+    #     `#impassable_sea_e_0`（不可通行**海域** ✓）**也被吞进来** ✓
+    #   而它是**水** ✗ —— 该走水域那套（海洋色 ✓），根本不该进"荒地"列表 ✓
+    #   进去的后果：`meta.wasteland` 里混着它 ✓
+    #     → 前端 `isWastelandTid()` 对它返回 **true** ✓
+    #     → 按荒地逻辑上色 → **画成荒地色 / 背景色** ✓ 正是用户看到的 ✓
+    #   （这个坑其实一直在 ✗ 只是"每层一片"改名之后更明显 ✓
+    #     以前叫 `#impassable_sea` 也是同样被吞 ✓ 只是没人注意 ✓）
+    #   ⚠ 判定要**先看排除项** ✗ —— 别指望调整前缀顺序能解决 ✓
+    _WASTE_EXCLUDE = ("#impassable_sea",)
     for k, sp in enumerate(special):
-        if sp.key in SETTABLE_CATEGORIES:
-            waste_tids.append(SPECIAL_BASE + k)
+        _key = str(sp.key)
+        if not _key.startswith(SETTABLE_CATEGORIES):
+            continue
+        if _key.startswith(_WASTE_EXCLUDE):
+            continue          # 不可通行海域：是水 ✗ 不是荒地 ✓
+        waste_tids.append(SPECIAL_BASE + k)
 
-    # ---- 荒地自动上色：按"跟周边国家接壤的边界像素占比"，严格过半 ----
-    waste_auto: list[list[int]] = []
-    if waste_pids:
-        n_pid = int(ids.max()) + 1
-        wmask = np.zeros(n_pid, dtype=bool)
-        wmask[np.array(sorted(set(waste_pids)), dtype=np.int64)] = True
-        pair_cnt: dict[int, int] = {}
-        for axis in (0, 1):
-            a = ids[:-1, :] if axis == 0 else ids[:, :-1]
-            b = ids[1:, :] if axis == 0 else ids[:, 1:]
-            aw = wmask[a]
-            bw = wmask[b]
-            m = aw != bw
-            if not m.any():
-                continue
-            pa = a[m].astype(np.int64)
-            pb = b[m].astype(np.int64)
-            awm = aw[m]
-            wp = np.where(awm, pa, pb)
-            nb = np.where(awm, pb, pa)
-            uk, uc = np.unique((wp << 16) | nb, return_counts=True)
-            for k_, c_ in zip(uk.tolist(), uc.tolist()):
-                pair_cnt[k_] = pair_cnt.get(k_, 0) + c_
-        per_waste: dict[int, dict[int, int]] = {}
-        edge_tot: dict[int, int] = {}          # 这块荒地的**整条陆地周长**
-        for k_, c_ in pair_cnt.items():
-            wp, nb = k_ >> 16, k_ & 0xFFFF
-            # ⚠ 这里取的是**帝国那一行**（法理），不是第 0 行 ✗
-            #   第 0 行现在是 1066 剧本（无主的一大片 ✓），拿它当"周边国家"会变味：
-            #   荒地自动上色一直按"法理上的归属"算 ✓ 换行等于偷偷改了这个功能 ✓
-            t_nb = int(titlemap[MAP_ORDER.index("e"), nb])
-            if t_nb in water_tids:             # 水不算边长
-                continue
-            edge_tot[wp] = edge_tot.get(wp, 0) + c_
-            if t_nb >= len(ordered):           # 无主/地形：进分母，但不算"某个国家"
-                continue
-            d = per_waste.setdefault(wp, {})
-            d[t_nb] = d.get(t_nb, 0) + c_
-        for wp, d in per_waste.items():
-            tot = edge_tot.get(wp, 0)          # ← 分母是整条周长
-            if not tot:
-                continue
-            best = max(d.items(), key=lambda kv: kv[1])
-            if best[1] * 2 > tot:
-                waste_auto.append([int(wp), int(best[0])])
-        log(f"荒地自动上色：{len(waste_auto)}/{len(waste_pids)} 块有主（边缘过半）")
 
     # 7. 标注位置（伪头衔不参与，它们不上地名）
     log("计算名字标注位置 …")
     gx, gy = centroids_for_titles(ordered, owned, counts, pcx, pcy, ids, index_of)
-
     # 标注位置一律**按地盘算**（跟其他游戏同一套逻辑 ✓）：
     #   全部层级都用自己的几何中心 —— 重心落在自家地盘外时，
     #   centroids_for_titles 会自动退到面积最大那块省份的重心 ✓
@@ -883,6 +990,9 @@ def main() -> int:
     # ⚠ 顺序：真头衔 → 1066 剧本节点 → 伪头衔（海/湖/荒地）✓
     ordered_all = ordered + realm_nodes + special
     n_all = len(ordered_all)
+    #: **全量** key → 序号（真头衔 + 剧本节点 + 伪头衔 ✓）—— 父节点查表用 ✓
+    #  ⚠ 别拿 `index_of` ✗ 它只有真头衔 ✓ 伪头衔之间的"上下级"会被它一律查成 -1 ✓
+    _all_index = {t.key: i for i, t in enumerate(ordered_all)}
 
     # 8. 颜色：优先自己的，没有就往上继承（男爵领常年没有自己的颜色）
     colors = np.zeros((n_all, 3), dtype=np.uint8)
@@ -923,6 +1033,11 @@ def main() -> int:
         "numProvinces": n_prov,
         "numTitles": n_all,
         "numRealTitles": len(ordered) + len(realm_nodes),   # 剧本节点也算"真"（不是伪头衔 ✓）
+        # **底层地块身份标**（每地块 1 字节 base64 ✓ 2026-10-16 补 ✓
+        #   1 陆地 / 2 海洋 / 3 湖泊 / 4 河流 / 5 不可通行海域 / 6 不可通行区域 ✓
+        #   以前 CK3 只有一枚 `waterMask`（0/1 ✓ 而且已经没有脚本产出它了 ✗）——
+        #   这枚是它的接班人 ✓ 前端 `decodeKindMask` 读的就是它 ✓）
+        "kindMask": _kind_b64,
         "tiers": list(MAP_ORDER),
         "tierNames": [ERA_LABEL if t == ERA_TIER else TIER_NAME[t] for t in MAP_ORDER],
         # 悬停卡片左边那个小徽章，CK3 就是 key 的前缀；1066 那一层写年份 ✓
@@ -952,7 +1067,6 @@ def main() -> int:
         "colorLutWidth": 256,
         # 荒地（不可通行山地 / 无归属荒地）：哪些节点算荒地 + 逐块的自动归属
         "wasteland": sorted(set(waste_tids)),
-        "wastelandAuto": waste_auto,
     }
     (DATA / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -960,8 +1074,13 @@ def main() -> int:
     prov_count = [len(owned[t.key]) for t in ordered]
     for t in realm_nodes:
         prov_count.append(len(realm_own.get(t.key[len(ERA_TIER) + 1:], ())))
-    for k in range(len(special)):
-        prov_count.append(int(np.count_nonzero(assign == SPECIAL_BASE + k)))
+    # 伪头衔：**按它自己那一层那一行数** ✓（每层一片，一个节点只在自己那层出现 ✓）
+    #   ⚠ 不能再像以前那样拿一个"全层共用"的 assign 数 ✗ ——
+    #     那样每层一片会被数漏（`assign` 已经没有了 ✓）
+    for k, _sp in enumerate(special):
+        _idx = SPECIAL_BASE + k
+        _r = MAP_ORDER.index(_sp.tier) if _sp.tier in MAP_ORDER else None
+        prov_count.append(int(np.count_nonzero(titlemap[_r] == _idx)) if _r is not None else 0)
 
     # 每个头衔在地图上占的真实像素数。地名标注靠它判断"这块够不够大、放得下字吗"
     # —— 拿省份个数当面积代理是不准的，同一个伯爵领的省份大小能差上百倍。
@@ -973,9 +1092,12 @@ def main() -> int:
     # 1066 剧本节点：面积按它**这个剧本里**那个最大连通域算（跟真头衔同一把尺 ✓）
     for j, t in enumerate(realm_nodes):
         area[len(ordered) + j] = realm_area.get(t.key, 0)
-    for k in range(len(special)):
+    # 伪头衔的面积同样**按它自己那一层那一行**算 ✓（跟上面 provCount 同一个口径 ✓）
+    for k, _sp in enumerate(special):
         idx = SPECIAL_BASE + k
-        area[idx] = int(counts[assign == idx].sum())
+        _r = MAP_ORDER.index(_sp.tier) if _sp.tier in MAP_ORDER else None
+        if _r is not None:
+            area[idx] = int(counts[titlemap[_r] == idx].sum())
     # 逐块荒地节点：它只管自己那一块地，面积和位置就取那一块的
     # （以前没给，于是 area=0、lx=null —— 标签层按面积排序时它们全挤在 (0,0)，
     #   挑视口会挑到它们头上，一个名字都画不出来）
@@ -1013,20 +1135,26 @@ def main() -> int:
     special_names = {key: label for key, label, _rgb, _src in SPECIAL_CATEGORIES}
     # 伪头衔的中文名（SPECIAL_CATEGORIES 里写好的那份 + 函数里 name_sink 带出来的）
     special_names.update(_special_names)
+    _keys_all = [t.key for t in ordered_all]
+    _lx_all = _pad_pos(lx, 0)
+    _ly_all = _pad_pos(ly, 1)
     payload = {
-        "keys": [t.key for t in ordered_all],
+        "keys": _keys_all,
         # ⚠ 这里是**地图层级**下标（前端拿它查 TIER_BADGE / 跳层 ✓）✗
         #   不是法理那五级的序号 —— 1066 那一层占据 0，所以 e_ 是 1 ✓
         "tiers": [MAP_ORDER.index(t.tier) if t.tier in MAP_ORDER else len(MAP_ORDER)
                   for t in ordered_all],
-        "parents": [index_of.get(t.parent, -1) if t.parent else -1 for t in ordered_all],
+        # ⚠ 父节点要查**全量**表 ✗（2026-10-13）—— 伪头衔（海/湖/河/荒地）现在按
+        #   "上下级"互相挂 ✓（细层的片挂在粗层的片上 ✓）；只有真头衔的 `index_of`
+        #   会把它们一律查成 -1 ✓ 上下级就白连了 ✓
+        "parents": [_all_index.get(t.parent, -1) if t.parent else -1 for t in ordered_all],
         "names": [names.get(t.key) or realm_names.get(t.key)
                   or special_names.get(t.key) or t.key for t in ordered_all],
         "colors": [[int(c[0]), int(c[1]), int(c[2])] for c in colors],
         "provCount": prov_count,
         "area": area.tolist(),
-        "lx": _pad_pos(lx, 0),
-        "ly": _pad_pos(ly, 1),
+        "lx": _lx_all,
+        "ly": _ly_all,
         "gx": _pad_pos(gx, 0),
         "gy": _pad_pos(gy, 1),
         "provinceNames": prov_names,

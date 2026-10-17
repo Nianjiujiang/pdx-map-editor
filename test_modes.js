@@ -24,10 +24,13 @@ const isEU4 = WHICH.startsWith('EU4');
 const isHoi4 = WHICH === 'HOI4';
 const isVic3 = WHICH === 'VIC3';
 const isEu5 = WHICH === 'EU5';
-/** 有"年份视图"的几套（EU4 三个年份、HOI4 两个、V3 一个） */
+/** 有"年份视图"的几套（EU4 三个年份、HOI4 两个、VIC3 一个） */
 const hasEras = isEU4 || isHoi4 || isVic3;
+/*: ⚠ **卡片名要跟 `MAP_CHOICES` 一字不差** ✗ —— 测试是按名字找那张卡的 ✓
+ *  （2026-10-16 用户把 V3 改名成 VIC3 ✓ 这一行跟着改 ✓
+ *    源头上是 `web/js/app.js` 的 `MAP_CHOICES` + `GAMES.vic3.name` ✓） */
 const CARD = WHICH === 'EU4HD' ? 'EU4HD'
-  : WHICH === 'VIC3' ? 'V3 原版'
+  : WHICH === 'VIC3' ? 'VIC3 原版'
   : WHICH === 'HOI4' ? 'HOI4 原版'          // ① 原版 ② 修改边界，测试点原版 ✓
   : WHICH === 'EU5' ? 'EU5 原版' : WHICH;
 const fails = [];
@@ -209,6 +212,24 @@ function ok(name, cond, extra = '') {
          js.indexOf('bindAuthorLinks();') < js.indexOf('function bindEvents'),
          js.indexOf('bindAuthorLinks();') < js.indexOf('function bindEvents')
            ? '挂在文件开头 ✓' : '又挪回 bindEvents 里了 ✗');
+      /* 🔴 **启动页版本戳不能再用 document.lastModified** ✗✗（2026-10-17 用户发现）
+       *   lastModified 在单文件 / 某些浏览器里会变成**当前时间**，看着像"版本戳一直在变" ✓
+       *   现在由 build_standalone.py 往 <meta name="pdx-build"> 里写构建时间，
+       *   开发版写 dev → 显示"开发版" ✓ */
+      ok('启动页版本戳来自构建 meta（不是 lastModified 当前时间 ✗）',
+         /meta\[name="pdx-build"\]/.test(js)
+         && /id="pdx-build"|name="pdx-build"/.test(html)
+         && !/boot-ver[\s\S]{0,180}lastModified/.test(js),
+         /pdx-build/.test(html) ? 'meta 在 ✓' : 'meta 不在 ✗');
+      /* 🔴 2026-10-17 用户："地图列表统一变成列表形式，多的时候塞进列表而不是塞进两列"
+       *   → 分列那套（TWO_COL_AT / two-col / wide-pick）全删，列表自己滚 ✓ */
+      {
+        const cssSrc = fs.readFileSync(path.join(ROOT, 'web', 'style.css'), 'utf8');
+        ok('地图列表永远一列（多张卡在列表里滚，不再排两列 ✓）',
+           !/TWO_COL_AT|two-col|wide-pick/.test(js + html + cssSrc)
+           && /\.map-pick-list\s*\{[^}]*overflow-y:\s*auto/.test(cssSrc),
+           /two-col|wide-pick/.test(js + cssSrc) ? '还有分列残留 ✗' : '一列 + 滚动 ✓');
+      }
 
       // 当前颜色那个色块：点一下要弹系统取色器（跟设置页里的 <input type=color> 同一个 ✓）
       ok('页面上有个取色 input（藏在色块旁边）',
@@ -271,48 +292,83 @@ function ok(name, cond, extra = '') {
     const g3 = require('fs').readFileSync('web/js/gl.js', 'utf8');
     const nWaste = (g3.match(/, true\)\);/g) || []).length;
     const nNorm = (g3.match(/, false\)\);/g) || []).length;
-    /* **背景那两条线各有自己的宽 + 浓** ✓（用户要求可调 ✓
-     *   以前水域固定 1 格 + 写死实心、荒地借「填色边界」那两个值 ✗）
-     *   开关是**内部**的（shader 分两条 if ✓），设置页上没有单独的开关 ✗ */
-    ok('海域 / 荒地边界各有自己的宽度 + 浓度 uniform ✓（不再互相借 ✗）',
-       g3.includes('uniform float uWaterW;') && g3.includes('uniform float uWaterA;')
-       && g3.includes('uniform int   uShowWasteBorder;')
-       && g3.includes('uniform float uWasteW;') && g3.includes('uniform float uWasteA;')
-       && g3.includes('0.5 * uWasteW * uMapPerPx')
-       && g3.includes('bwd * uWasteA')
-       && g3.includes('bwv * uWaterA')
-       && !g3.includes('bwd * uPaintBorderA'),
-       `水域宽=${g3.includes('uniform float uWaterW;')} 水域浓=${g3.includes('uniform float uWaterA;')}`
-       + ` 荒地开关=${g3.includes('uShowWasteBorder')} 荒地宽=${g3.includes('uWasteW')}`
-       + ` 荒地不借填色=${!g3.includes('bwd * uPaintBorderA')}`);
-    /* **荒地边现在也搭填色那趟的便车** ✓（用户要求合并射线 ✓）
-     *   以前它有**单独一趟**（`rayDistTitle(..., wasteOnly=true)` × 4 方向 ✗），
-     *   现在由 `rayDistPaint` 的**第三个分量**一起吐出来 ✓
-     *   → `wasteOnly=true` 的调用该是 **0 个** ✓（`false` 那些是本层 / 多级链在用的 ✓）
-     *   ⚠ 判据仍然只有一套：`cellView.waste`（含"涂过就不算"✓）跟 `_hasWaste` 对齐 ✓ */
-    /* **老路径一个调用点都没有了** ✓（第四轮：main 里只剩"查掩码"那一条路 ✓）
-     *   `rayDistTitle` / `rayDistPaint` 那些函数**还留在文件里** ✗ 但没人调用 ✓
-     *   → GLSL 编译器会把它们丢掉（dead code elimination）→ 编译时的着色器是小的 ✓
-     *    首次那 23 秒能不能省下来，就看这个 ✓
-     *   ⚠ 判据（`_hasWaste` 那套）**留在函数体里当档案** ✓ 别删 —— 万一要回退还得靠它 ✓ */
-    ok('旧路径是**唯一在跑的**那条（掩码那套留着但不调用 ✓）',
-       g3.includes('if (_hasWaste != wasteOnly) continue;')   // 判据还在（档案 ✓）
-       && !g3.includes('_byReal')
-       && nWaste === 0 && nNorm > 0                            // false 那些是旧路径在调 ✓
-       && !/scanMaskNear\(ip, f, Rall/.test(g3),
-       `wasteOnly=true ${nWaste} 个 / false ${nNorm} 个（都该是 0 ✓）`);
-    // 荒地的判据**只看 LUT 那个标记**，不许再挂"必须是伪头衔"的前置 ✗
-    //   EU5 的荒地序号混在真头衔范围内（1819 个里 1818 个 < numRealTitles ✗）→
-    //   一挂前置，EU5 的荒地缝全落到本层那条 50% 的线上 ✗（用户报过 ✓）
-    //   （"这局有多少这种荒地"的数据事实，在那几个探针后面打 ✓ 那儿才拿得到 state）
+    /* 🔴🔴 **这一段 2026-10-16 整块按新口径重写** ✗✗（handover §3.4 第 9 步 ✓）
+     *
+     *  原来那三条量的是**已退役的背景线**（`uWaterW` / `uShowWasteBorder` / `uWasteW` ✓
+     *    2026-10-15 "水与荒地 = 普通地块"那轮一起退役的 ✓）→ 一直是红的（历史老账 ✓）
+     *  现在用户把「**水域 · 边界**」请回来了，但**语义不一样** ✗：
+     *    · 旧：一条"水 ↔ 非水"的海岸线，跟着"边界全关"一起藏 ✓
+     *    · 新：只管**水域之间**的缝 ✓ 独立一条通道 ✓ 地区/势力/填色三个开关都不管它 ✓
+     *  荒地那条**没有**请回来 ✓（这次只点名了水域 ✓）
+     *  → 所以旧断言一个字都用不上，整块换成新的 ✓ */
+    ok('「水域 · 边界」和「荒地 · 边界」各有自己的开关 + 宽 + 浓三个 uniform ✓',
+       g3.includes('uniform int   uWaterBorderOn;')
+       && g3.includes('uniform float uWaterBorderW;')
+       && g3.includes('uniform float uWaterBorderA;')
+       && !g3.includes('uShowWasteBorder')     // 别另起一套命名（跟水域同一个长相 ✓）
+       && g3.includes('uniform int   uWasteBorderOn;')
+       && g3.includes('uniform float uWasteBorderW;')
+       && g3.includes('uniform float uWasteBorderA;')
+       && g3.includes('colorOfWaterBorder') === false,   // 别另造一个取色函数（线色跟别处一样 ✓）
+       `开关=${g3.includes("uWaterBorderOn")} 宽=${g3.includes("uWaterBorderW")}`
+       + ` 浓=${g3.includes("uWaterBorderA")} 荒地=${g3.includes("uWasteBorderOn")}`);
+    /* 🔴 **2026-10-17 给荒地那条补的判据** ✗（用户："给荒地加上边界开关，
+     *   这个负责的是**荒地与荒地之间**的边界，你之前做了水域-水域的边界，
+     *   这个应该轻车熟路了吧"✓）
+     *  量三件事（跟水域那条一一对应 ✓）：
+     *    ① 判据函数 `wasteIs` 在，而且**读的是 uKindTex**（不是新开一张表 ✓
+     *       —— 身份标里 6 就是 6，不用算 ✓ 跟水域那条的区别正在这儿 ✓）
+     *    ② 射线 `rayDistWaste` 在 ✓
+     *    ③ **两条旧通道都让开荒地缝**（rayDistTitle / rayDistPaint 各一句 ✓
+     *       跟水域那两句同款 ✓ 少一句就是"同一条缝画两遍"✗）
+     *  ⚠ `uKindOn == 0`（老包）时它恒 false ✓ 整条不生效 ✓ 观感不变 ✓ */
+    ok('「荒地 · 边界」：wasteIs 读身份标 + rayDistWaste + 两处让位 ✓',
+       /bool wasteIs\(ivec2 q\)/.test(g3)
+       && /texelFetch\(uKindTex/.test(g3)
+       && /float rayDistWaste\(ivec2 ip, vec2 f, ivec2 dir, uint t, int R\)/.test(g3)
+       && (g3.match(/wasteIs\(ip\) && wasteIs\(q\)/g) || []).length === 2,
+       `wasteIs=${/bool wasteIs/.test(g3)} 读身份标=${/texelFetch\(uKindTex/.test(g3)}`
+       + ` 射线=${/rayDistWaste/.test(g3)} 让位=${(g3.match(/wasteIs\(ip\) && wasteIs\(q\)/g) || []).length} 处`);
+    /* **判据必须"两侧都是水 + 编辑层 tid 不同"** ✓（handover §3.4 第 5 步 ✓）
+     *  ⚠ 只有一条出处 ✗：`rayDistWater` 是这条通道**唯一**的射线函数 ✓
+     *    旧通道那边由 `waterIs(ip) && waterIs(q)` 两处 `continue` 让开 ✓ */
     {
-      const _m = /bool _hasWaste = [^;]+;/.exec(g3);
-      ok('荒地判据 = LUT 标记 **且没被涂过**（不许加"必须是伪头衔"的前置 ✗ —— EU5 会全变 50%）',
-         !!_m && _m[0].includes('wasteAlphaOf(t) > 0.5 && paintAt(ip).a < 0.5')
-         && _m[0].includes('wasteAlphaOf(tt) > 0.5 && paintAt(q).a < 0.5')
-         && !/uRealTitles/.test(_m[0]),
-         _m ? _m[0] : '(没找到)');
+      const _rw = /float rayDistWater\([^)]*\)\s*\{[\s\S]*?\n\}/.exec(g3);
+      const _body = _rw ? _rw[0] : '';
+      ok('水域边界的射线只管"对面也是水"的格子（海岸线不归它 ✓）',
+         /if \(!waterIs\(q\)\) continue;/.test(_body)
+         && /titleAt\(pidAt\(q\), uEditTier\) != t/.test(_body),
+         _body ? '判据齐（对面得是水 + 编辑层 tid 不同）✓' : '(没找到 rayDistWater ✗)');
+      /* **两条旧通道必须都把水水缝让出去** ✗（不然同一条缝画两遍 → 后画的赢 ✓
+       *   那正是 8.3 第 4 条那个坑："水域那一档怎么调都没反应"✓ */
+      const _rt = /float rayDistTitle\([^)]*\)\s*\{[\s\S]*?\n\}/.exec(g3);
+      const _tb = _rt ? _rt[0] : '';
+      const _rp = /float rayDistPaint\([^)]*\)\s*\{[\s\S]*?\n\}/.exec(g3);
+      const _pb = _rp ? _rp[0] : '';
+      ok('本层线 / 填色线都把"两侧都是水"那条缝让给水域通道 ✓（不许同处画两遍 ✗）',
+         /if \(waterIs\(ip\) && waterIs\(q\)\) continue;/.test(_tb)
+         && /if \(waterIs\(ip\) && waterIs\(q\)\) continue;/.test(_pb),
+         `本层让位=${/waterIs\(ip\) && waterIs\(q\)\) continue;/.test(_tb)}`
+         + ` 填色让位=${/waterIs\(ip\) && waterIs\(q\)\) continue;/.test(_pb)}`);
+      /* **让位是 continue、不是 return** ✗✗ ——
+       *  return 会让"这一向整个没了"，跳过水水缝之后的**真边界**也一起丢 ✓ */
+      ok('让位用的是 continue（跳过这条缝接着往外找 ✓ 不是 return 1e9 ✗）',
+         !/waterIs\(ip\) && waterIs\(q\)\) return/.test(_tb)
+         && !/waterIs\(ip\) && waterIs\(q\)\) return/.test(_pb));
+      /* **预筛也要让位** ✓：两边都是水时不许走"跳一步"那条近似 ✓
+       *  （水片内部头衔相同 → 预筛会说"这一向没缝" → 另一头贴着的那条缝被跳过 ✗）*/
+      ok('rayDistTitle 的跳步预筛在水面上让路 ✓（否则水水缝会被近似跳过去 ✗）',
+         /if \(!\(waterIs\(ip\) && waterIs\(far\)\)/.test(_tb));
     }
+    /* **旧那片"荒地边界"整套**（wasteOnly 那条路 ✓）**仍然不在** ✓
+     *  用户 2026-10-16 只把水域请回来了 ✓ 荒地还是"普通地块" ✓
+     *  ⚠ `_hasWaste` 那些判据留在 gl.js 里当档案（万一要回退 ✓）——
+     *    所以只断言"没有 uWasteW / uShowWasteBorder 这两个 uniform" ✓
+     *    别去断言函数名不存在 ✗（档案是要留的 ✓） */
+    ok('荒地专属边界仍然退役（这次只请回水域 ✓）',
+       !g3.includes('uShowWasteBorder') && !g3.includes('uWasteW')
+       && !g3.includes('uWasteA') && !g3.includes('uWasteGrey'));
+
   }
 
   // 主菜单与 F5 的分工：接完必须把存档**写回 localStorage**
@@ -765,19 +821,41 @@ return {
   get TIER_BADGE() { return TIER_BADGE; },
   titleAt, renderHoverCard, actAt, pickTitle, paintTitle, restoreTitle, pickAt,
   setBrush, setTier, setTool, needsRestore, isLocked, isSpecialTid, runSearch,
-  searchJumpScale, jumpToResult, wasteApply, wasteClear, wasteClearPlayerPaint, displayedColor,
-  syncParentBorder, syncLayerSwitches, retintCountryLabels,
+  jumpToResult, searchJumpScale, paintAt, hoverGroupRgb, hoverTargetTid, applyHoverHighlight,
+  syncParentBorder, syncLayerSwitches, retintCountryLabels, buildBorderDepth,
   get searchHits() { return searchHits; },
   editTier, setGrain, gotoLevel, pressTier, eraTierCount, refreshTierButtons,
   projectData, saveProject, applyProject, labelForColor, undo, redo, recomputePainted,
-  provInfoAt, paintTargetsAt, labelMaxValue, saveMapPrefs, loadMapPrefs, clearRecent, buildBorderDepth,
+  describeRendererFailure, createRendererWithRetry, clearWastePaint, paintPidsAsOne,
+  provInfoAt, paintTargetsAt, labelMaxValue, labelPlaceMaxValue, saveMapPrefs, loadMapPrefs, clearRecent,
+  rebuildPaintBlocks, paintedPoints, playerGroupTids, playerGroupTidsAt,
+  /* **地名的连通域取点** ✓（2026-10-16 加 —— 地名改成"每个连通域一个标"之后
+   *   真画的那份名单就是它 ✓ 下面 3h / 改名那两条断言要量它 ✓
+   *   ⚠ 新加的探针函数**必须加进这一份清单** ✗ —— 少了就是
+   *     "ex.xxx is not a function"（我这次就栽在这儿 ✓）
+   *   ⚠ 这段整体在**模板字符串**里 ✗ —— 注释里**不许出现反引号** ✓
+   *     （项目里栽过一次了：着色器那边同一个坑 ✓）*/
+  buildPlaceComponents, placePointsFor, groupComponents,
+  /* **「每省是不是水」那张表** ✓（2026-10-16 加 ——「水域 · 边界」那条通道的判据来源 ✓
+   *   ⚠ 同样必须加进这一份清单 ✗ 见上面那段（少了就是 ex.xxx is not a function ✓）*/
+  buildWaterKindMask, waterKindByPid,
+  /* ⚠ **kindOfTid 也得加进来** ✗（2026-10-17 加 —— state.waterKindSet 那张表拆了 ✓
+   *   标签闸改成问现成的 kindOfTid(tid) ✓ 断言要量它 ✓
+   *   少了就是 ex.kindOfTid is not a function ✓ —— 我这次又栽在这儿了 ✓
+   *   正是上面那段注释警告过的坑 ✓
+   *   ⚠⚠ **这段注释里一个反引号都不许有** ✗✗ —— 整段在**模板字符串**里 ✓
+   *     我第一版就是写了反引号 → 模板字符串当场截断 → Unexpected identifier ✓
+   *     （上面那段警告写的正是这个 ✓ 我看了、还踩了 ✓）*/
+  kindOfTid, kindOfPid,
   get renderer() { return renderer; },
   get labels() { return labels; },
   isDegradedBaron, displayedColor, displayedLabel, screenToMap, updateHover,
-  rebuildPaintBlocks, paintedPoints, playerGroupTids, playerGroupTidsAt, paintAt, hoverGroupRgb, stableColor, hoverTargetTid, applyHoverHighlight, setWasteAuto, readablePlaceName, manualWaterName,
   drawLabels, legendEntries, drawLegend, rebuildLegendPanel, impassLabel, specialTileLabel,
-  computeLabelZoom, ARRIVE_SPAN,
-  applySettings, applyLutOverrides, lutColorOf, hexToRgb, renameAt, openRename,
+  readablePlaceName, manualWaterName, computeLabelZoom, ARRIVE_SPAN,
+  applySettings, lutColorOf, hexToRgb, renameAt, openRename,
+  /* 荒地自动上色（2026-10-17 重做 ✓）—— 周长 / 重算 / 帧循环 ✓
+   *   ⚠ 新探针必须加进这一份清单 ✗（少了就是 ex.xxx is not a function ✓）*/
+  buildWastePidIndex, setupWastePerimeter, refreshWasteAuto, wasteWatch,
 };`;
 
 const factory = new Function(
@@ -869,6 +947,23 @@ const factory = new Function(
     ok('荒地全是伪头衔（序号 >= numRealTitles ✓ 各模式一个形状 ✓）',
        _below === 0, `${_wl.length} 个荒地里 ${_below} 个还在真头衔范围 ✗`);
   }
+  /* **越界 / 坏输入不许崩** ✓（2026-10-17 体检加的两条护栏）——
+   *   `titleAt` 是全图扫 / 悬停 / 标签都在调的热路径，
+   *   `applyProject` 吃的是**外部文件 / 本地暂存**，两者都不该让坏输入变成 TypeError ✓ */
+  {
+    const NONE = (st.meta.noTitle != null) ? st.meta.noTitle : 65535;
+    ok('titleAt 越界 / 非法参数统一回 NO_TITLE（不崩 ✓）',
+       ex.titleAt(0, 0) === NONE
+       && ex.titleAt(-5, 0) === NONE
+       && ex.titleAt(st.meta.numProvinces + 10, 0) === NONE
+       && ex.titleAt(1, -1) === NONE,
+       `0 / -5 / 越界 / 负层 = ${ex.titleAt(0, 0)} / ${ex.titleAt(-5, 0)} / `
+       + `${ex.titleAt(st.meta.numProvinces + 10, 0)} / ${ex.titleAt(1, -1)}`);
+    ok('applyProject 吃 null / 字符串 / 数字都静默回 0 ✓（外部文件不可信 ✓）',
+       ex.applyProject(null) === 0 && ex.applyProject('x') === 0
+       && ex.applyProject(42) === 0,
+       '三种坏输入都没抛 ✓');
+  }
   /** 跟 app 的 countryTier() 一套：细层视图下"最近的那个剧本层"要跳过空白剧本 ✓ */
   const countryT = () => {
     if (N_ERA <= 0) return st.tier;
@@ -936,11 +1031,66 @@ const factory = new Function(
   const HTML = require('fs').readFileSync('web/index.html', 'utf8');
   // 二级设置页：控件都在 / 改了真生效 / 恢复默认 / 跟着存档走 ✓
   {
-    const ids = ['btn-settings', 'settings', 'set-bg', 'set-waste', 'set-sea', 'set-lake',
-                 'set-impass', 'set-w', 'set-a0', 'set-a1', 'set-a2', 'set-pw',
-                 'set-font', 'set-reset', 'set-close'];
+    /* 🔴🔴 **2026-10-16 把这份清单换成"现在真的在界面上"的那些** ✗✗
+     *   原来点名的 15 个里有一半是**已经不存在的 id** ✗：
+     *     `set-waste`（荒地那组 2026-10-15 退役 ✓）· `set-w`（老「地方边界宽度」✓ 后来拆成
+     *     省/地区两条 ✓）· `set-a0 / set-a1 / set-a2`（老的三条浓度 ✓ 现在是 pa/ra/ca ✓）
+     *   → 它一直在红（历史老账 ✓）而且**红得没意义**：量的是早就删掉的东西 ✓
+     *   现在改成量**当前这四栏里真的有**的那些 ✓ 一件不落 ✓
+     *   ⚠ 加新控件时**记得往这份清单里补** ✗（这就是它的用处 ✓）*/
+    const ids = ['btn-settings', 'settings', 'set-reset', 'set-close',
+                 // 颜色栏（7 项 ✓）
+                 'set-bg', 'set-unpainted', 'set-sea', 'set-isea', 'set-lake', 'set-river',
+                 'set-impass',
+                 // 边界栏（8 根 ✓）
+                 'set-w-prov', 'set-pa', 'set-w-region', 'set-ra',
+                 'set-pw', 'set-ca', 'set-water-w', 'set-water-a',
+                 // 名字栏（5 项 ✓）
+                 // 名字栏（6 项 ✓ 2026-10-17 字号拆两块 → 6 根 ✓）
+                 // ⚠ **逗号别漏** ✗✗ —— 漏了就会跟下一行拼成一个字符串、静默少查一个 ✓
+                 'set-fontplace', 'set-fontpower',
+                 'set-labelmax', 'set-labelplacemax', 'set-labelac', 'set-labelap',
+                 // 其他栏（4 项 ✓）
+                 'set-legend', 'set-legend-title', 'set-legend-pos', 'set-picktool'];
     const miss = ids.filter((id) => !get(id));
-    ok('设置页的控件都在页面上', miss.length === 0, miss.length ? ('缺: ' + miss.join(',')) : '15 个都在');
+    ok('设置页的控件都在页面上', miss.length === 0,
+       miss.length ? ('缺: ' + miss.join(',')) : `${ids.length} 个都在`);
+
+    /* 🔴🔴 **那一作的显示名是「VIC3」** ✗✗（2026-10-16 用户定的：原话"之后V3改名叫VIC3吧"✓）
+     *   三件事一起钉 ✗：
+     *     ① `GAMES.vic3.name` = `VIC3`（进日志与标题 ✓）
+     *     ② `MAP_CHOICES` 那张卡 = `VIC3 原版`（**这一条最要紧**——
+     *        测试 / 探针全是**按名字找那张卡**的 ✓ 改坏了它们会静默找不到 ✓）
+     *     ③ **旧名不许再出现在界面文案里** ✗（`'V3'` 那种写法 ✓
+     *        但注释里提历史是允许的 ✓ 所以只查"带引号的字面量" ✓）
+     *   ⚠ 只改**给人看的名字** ✗ —— `id` / `game` / `dir` / `saveKey` / `filePrefix`
+     *     一个都不许动 ✓（动了老存档、老包、缓存目录全接不上 ✓）
+     *     `brand: 'VIC'` + `brandSmall: '3'` 是招牌，也不动 ✓ */
+    {
+      const _a = fs.readFileSync(path.join(ROOT, 'web', 'js', 'app.js'), 'utf8');
+      /* ⚠ **别拿 `indexOf('saveKey')` 当"这个对象到哪儿结束"的锚点** ✗✗ ——
+       *   我第一版就这么写的 ✓ 结果那段注释里**我自己提了一句 `saveKey`** ✗
+       *   → 切出来的片段是空的 → 断言报"(没找到)" → **假红** ✓
+       *   正解：**按行扫**，只看**真字段行**（`^\s*saveKey:` 那种 ✓
+       *     注释行以 `*` / `/*` 开头 ✓ 一眼能排掉 ✓）*/
+      const _lines = _a.split('\n');
+      const _start = _lines.findIndex((l) => /^\s{2}vic3:\s*\{/.test(l));
+      let _nm = null;
+      for (let k = _start; k >= 0 && k < _lines.length; k++) {
+        const l = _lines[k];
+        if (k > _start && /^\s*\}?,?\s*$/.test(l)) break;        // 这个对象收尾了 ✓
+        const m = /^\s*name:\s*'([^']+)'/.exec(l);
+        if (m) { _nm = m[1]; break; }
+      }
+      ok('GAMES.vic3.name 是「VIC3」（不再是 V3 ✗）',
+         _nm === 'VIC3', _nm ? `name='${_nm}'` : '(没找到)');
+      const _lb = /key:\s*'vic3'[^}]*label:\s*'([^']+)'/.exec(_a);
+      ok('选图卡片叫「VIC3 原版」（测试与探针按这个名字找卡 ✓）',
+         !!_lb && _lb[1] === 'VIC3 原版', _lb ? `label='${_lb[1]}'` : '(没找到)');
+      //: ③ 旧名不许再当字面量出现（注释里提历史不算 ✗ → 只查引号包起来的 ✓）
+      ok('界面文案里不再有「V3」这个旧名',
+         !/'V3'/.test(_a), /'V3'/.test(_a) ? "还有 'V3' 字面量" : '干净 ✓');
+    }
 
     // 改「海洋」颜色 → LUT 里那个节点真的变了
     let seaTid = -1;
@@ -1061,8 +1211,9 @@ const factory = new Function(
       // 「名字上限」的数值提示必须在**滑块左边** ✓ ——
       // 放右边的话 `.set-row` 的 space-between 会把滑块挤到中间，
       // 跟上面「字号倍率」那根（标签 + 滑块两元素）就对不齐了 ✗
-      ok('「势力名称上限」的数值在滑块左边（滑块才能跟上一行对齐 ✓）',
-         /势力名称上限<\/span><span class="hint" id="set-labelmax-v"><\/span><input type="range" id="set-labelmax"/.test(HTML)
+      /* ⚠ **2026-10-17：那两行标签都缩成「上限」了** ✗（块头说清了是谁的 ✓）*/
+      ok('「上限」那个数值在滑块左边（滑块才能跟上一行对齐 ✓）',
+         /上限<\/span><span class="hint" id="set-labelmax-v"><\/span><input type="range" id="set-labelmax"/.test(HTML)
          && /\.set-row \.hint \{[^}]*margin-right: auto/.test(css));
       /* **上限是"每个国家"的，不是"全世界"的** ✓（用户澄清过一次 ✓
        *   他要的是"英国本土 + 它的殖民地，加起来最多 N 个" ✓
@@ -1072,6 +1223,37 @@ const factory = new Function(
          /const _per = new Map\(\)/.test(appSrc)
          && /_per\.get\(k\)/.test(appSrc)
          && !/if \(_cap > 0 && out\.length > _cap\) out\.length = _cap;/.test(appSrc));
+      /* **地名上限**（2026-10-16 用户定的 ✓）：跟「势力名称上限」**分开一根** ✓
+       *   地名也改成"每个连通域一个标"之后，一个头衔底下可能一堆碎块 ✓ */
+      ok('「上限」那根滑条（地块 / 势力各一根 ✓ 1~21，同款档位 ✓）',
+         /上限<\/span><span class="hint" id="set-labelplacemax-v"><\/span><input type="range" id="set-labelplacemax"[^>]*min="1"[^>]*max="21"/
+           .test(HTML)
+         && />地名上限</.test(HTML) === false,      // 旧名一个都不许留 ✓
+         '地块 / 势力各一根 ✓');
+      /* 🔴 2026-10-17 用户："设置里的地名最高上限改为1" ✓
+       *   默认值从 12 改成 1（老存档的旧默认 12 会迁一次，见 app.js 的 placeCapV1 ✓） */
+      ok('地名上限默认 = 1（2026-10-17 用户定的 ✓）',
+         /labelPlaceMax: 1,/.test(appSrc) && ex.labelPlaceMaxValue() === 1,
+         `labelPlaceMaxValue=${ex.labelPlaceMaxValue()}`);
+      ok('地名上限按 **tid** 分组截断（不是全局取前 N ✗）',
+         /const per = new Map\(\)/.test(appSrc)
+         && /per\.get\(p\.tid\)/.test(appSrc)
+         && /per\.set\(p\.tid, c \+ 1\)/.test(appSrc));
+      /* 🔴 **跨接缝那套已退役** ✓（2026-10-16 用户定的 ✓）——
+       *   邻接表只连图内 4 邻域、没有跨左右边界的边 → 那片海本来就是两块 ✓
+       *   → `wrapLabel` / `buildWrapLabelPoints` / 圆均值（`Math.atan2`）全没了 ✓
+       *   ⚠ 断言只盯**代码** ✗ —— 注释里还写着这些名字（讲历史 ✓ 会误报 ✓）*/
+      {
+        const eu5src = fs.readFileSync(path.join(ROOT, 'build_eu5.py'), 'utf8');
+        const left = [
+          ['buildWrapLabelPoints 函数', /function buildWrapLabelPoints/.test(appSrc)],
+          ['读 titles.wrapLabel', /state\.titles\.wrapLabel/.test(appSrc)],
+          ['圆均值 Math.atan2', /Math\.atan2/.test(appSrc)],
+          ['build_eu5.py emit wrapLabel', /"wrapLabel":/.test(eu5src)],
+        ].filter(([, hit]) => hit).map(([k]) => k);
+        ok('跨接缝那套（wrapLabel / 左右各一枚 / 圆均值）已退役',
+           left.length === 0, left.length ? '还剩：' + left.join(' / ') : '一处不剩 ✓');
+      }
       /* **线宽五档 / 浓度四档** ✓（用户定的）：
        *   下拉里的档位必须跟 app 里那几张表对得上（两处写死，测试盯着 ✓）
        *   浓度就是 25% / 50% / 75% / 100% 这四档 ✓ */
@@ -1084,18 +1266,64 @@ const factory = new Function(
       const h = fs.readFileSync(path.join(ROOT, "web", "index.html"), "utf8");
       const six = /const W_STEPS = \[0\.5, 1, 1\.5, 2, 2\.5, 3\][\s\S]*const PW_STEPS = \[0\.5, 1, 1\.5, 2, 2\.5, 3\][\s\S]*const BG_STEPS = \[0\.5, 1, 1\.5, 2, 2\.5, 3\]/;
       ok("三张宽度档位表都有 0.5 那一档（六档 ✓）", six.test(a), six.test(a) ? "三张都在" : "缺");
-      ok("四个宽度滑条都从 0.5 起",
-         (h.match(/min="0\.5" max="3" step="0\.5"/g) || []).length === 4,
-         (h.match(/min="0\.5" max="3"/g) || []).length + "/4");
+      ok("宽度滑条都从 0.5 起、按 0.5 一档（省份 / 地区 / 势力 / 水域 / 荒地 ✓）",
+         (h.match(/min="0\.5" max="3" step="0\.5"/g) || []).length === 5,
+         (h.match(/min="0\.5" max="3" step="0\.5"/g) || []).length + "/5");
       /* **浓度要有 0%** ✗（用户要的 ✓ 0% = 那条线完全不画 ✓）*/
       ok("浓度档位含 0%（五档 ✓）",
          /const CONC_STEPS = \[0, 25, 50, 75, 100\]/.test(a)
-         && (h.match(/id="set-(pa|ra|ca|water-a|waste-a)"[^>]*min="0" max="100" step="25"/g) || []).length === 5,
+         && (h.match(/id="set-(pa|ra|ca|water-a)"[^>]*min="0" max="100" step="25"/g) || []).length === 4,
          "档位表 " + (/\[0, 25, 50, 75, 100\]/.test(a) ? "有0" : "没0")
-         + " · 滑条 " + (h.match(/min="0" max="100" step="25"/g) || []).length + "/5");
-      const dft = [/w: 1, pa/, /pw: 1, font/, /waterW: 1, waterA/, /wasteW: 1, wasteA/];
-      ok("默认宽度一律 1.0（pw / 水域 / 荒地 ✓）", dft.every((r) => r.test(a)),
-         dft.map((r) => (r.test(a) ? "1" : "≠1")).join(" · "));
+         + " · 滑条 " + (h.match(/min="0" max="100" step="25"/g) || []).length + " 条");
+      /* 🔴🔴 **默认值那几条改成"读真值"** ✗✗（2026-10-17 重写 ✓）
+       *   原来那套是拿正则在 app.js 里找 `/w: 1, pa/` 这种**排版片段** ✗ ——
+       *   排版一改就假红 ✓（实测：**HEAD 版就已经红了** ✓ 老账一条）
+       *   → 现在从 `const SET_DEFAULTS` 那一段里把键值**读出来**再比数 ✓
+       *     排版怎么动都不影响 ✓（这是"量真值"，不是"量文字"✓）
+       *   ⚠ 加了新的滑条就把它补进 `want` ✓（别再退回"正则找片段"那条路 ✗）*/
+      {
+        const _blk = a.slice(a.indexOf('const SET_DEFAULTS'));
+        const _body = _blk.slice(0, _blk.indexOf('\n};'));
+        /* ⚠ 这里**别用手写正则** ✗✗ —— 我第一版写的
+         *   `new RegExp('(?:^|[{,\\s])' + k + ':\\s*…')` 死活读不出 `wRegion:` 那些键 ✓：
+         *   `^` 在**没加 m 标志**时不匹配换行位置 ✗ 而那几个键正好在行首 ✓
+         *   → 逐行解析 ✓ 顺带把「一行好几个键」那种写法
+         *     （`pa: 50, ra: 75, ca: 100, pw: 1,`）也一并解决 ✓（靠正则得再写一条 ✗）*/
+        const _num = (k) => {
+          let hit = null;
+          for (const _ln of _body.split('\n')) {
+            const _re = new RegExp('(?:^|[{,])\\s*' + k + ':\\s*(-?[0-9.]+)');
+            const _m = _re.exec(_ln);
+            if (_m) hit = Number(_m[1]);
+          }
+          return hit;
+        };
+        /* **宽度一律 1.0**（用户 2026-10-16 定的："默认宽度都是 1.0"✓）
+         * ⚠ `waterA` 是**不透明度**不是宽度 ✗ 归下一条管 ✓ 别塞进 want ✓ */
+        const want = { wRegion: 1, wProv: 1, pw: 1, waterW: 1 };
+        ok('默认宽度一律 1.0（省份 / 地区 / 势力 / 水域 ✓）',
+           Object.keys(want).every((k) => _num(k) === want[k]),
+           Object.keys(want).map((k) => k + '=' + _num(k)).join(' · '));
+        /* **水域不透明度默认 25%** ✓（2026-10-17 用户定的："默认水域边界不透明度是25%"✓
+         *   2026-10-16 那版是 100（实心 ✓ 图个"默认观感不变"）→ 现在改成淡的 25 ✓
+         *   跟"默认关闭水域边界"配着看：这一档默认就是个**很淡的辅助线** ✓）*/
+        ok('水域边界不透明度默认 25%（2026-10-17 用户定的 ✓）',
+           _num('waterA') === 25, `waterA=${_num('waterA')}`);
+        /* **两个水域开关默认关闭** ✓（2026-10-17 用户定的："默认关闭水域边界、名称"✓
+         *   ⚠ 这两面旗在 `state` 的**初值**里（不在 SET_DEFAULTS 里 ✗ 那是设置页的账 ✓）
+         *     所以这一条读 `app.js` 的 state 初值那两行 ✓
+         *     顺带也盯 HTML 里那两个复选框**不许写 `checked`** ✗
+         *     （不盯的话：界面一开是勾着的、状态却是关的 → 用户点一下反而"关"不掉 ✓）*/
+        const _st = appSrc;
+        ok('「水域 · 边界 / 名称」两面旗默认都是 false（开图时水缝不画、水名不出 ✓）',
+           /showWaterBorder:\s*false/.test(_st) && /showWaterName:\s*false/.test(_st),
+           (/showWaterBorder:\s*(\w+)/.exec(_st) || ['', '?'])[1] + ' / '
+           + (/showWaterName:\s*(\w+)/.exec(_st) || ['', '?'])[1]);
+        ok('HTML 里那两个复选框不许写 `checked`（界面初值要跟状态一致 ✓）',
+           !/id="show-water-border"[^>]*\schecked/.test(HTML)
+           && !/id="show-water-name"[^>]*\schecked/.test(HTML),
+           '两个都没勾 ✓');
+      }
     }
     ok('线宽 / 背景线宽 / 浓度 三张档位表在 app 里（宽度六档含 0.5 ✓ 浓度五档含 0 ✓）',
          /const W_STEPS = \[0\.5, 1, 1\.5, 2, 2\.5, 3\]/.test(appSrc)
@@ -1109,14 +1337,18 @@ const factory = new Function(
         return m ? m.slice(1).join(',') : '';
       };
       const _isRange = (id) => new RegExp('type="range" id="' + id + '"').test(HTML);
+      /* 🔴 **2026-10-16 重写** ✗ —— 原来那四条量的是"背景那两条线"（水域 / 荒地 ✓
+       *   荒地那条已退役 ✗；水域那条**语义换了**：现在是独立一条通道 ✓
+       *   → 滑条 id 从 `set-waste-w/a` 换成 `set-water-w/a` ✓
+       *     ⚠ `set-w` 那条老 id **还在 HTML 里**（老存档回填用它 ✓ 见 _range('set-w') ✓）
+       *       但**界面上不显示**（它是历史包袱 ✓ 别再为它数滑条 ✗）*/
+      const _widths = ['set-w-prov', 'set-w-region', 'set-pw', 'set-water-w'];
       ok('四条宽度滑条**同一个范围**（0.5~3，步长 0.5 ✓ 六档）',
-         ['set-w', 'set-pw', 'set-water-w', 'set-waste-w'].every(_isRange)
-         && ['set-w', 'set-pw', 'set-water-w', 'set-waste-w'].every((id) => _range(id) === '0.5,3,0.5'),
-         'set-w=' + _range('set-w') + ' 海域=' + _range('set-water-w'));
+         _widths.every(_isRange) && _widths.every((id) => _range(id) === '0.5,3,0.5'),
+         _widths.map((id) => id + '=' + (_range(id) || '无')).join(' '));
       ok('浓度五条都是滑条（0~100，步长 25 ✓ 五档）',
-         ['set-pa', 'set-ra', 'set-ca', 'set-water-a', 'set-waste-a']
-           .every((id) => _isRange(id) && _range(id) === '0,100,25'),
-         'set-ca=' + _range('set-ca'));
+         ['set-pa', 'set-ra', 'set-ca', 'set-water-a'].every((id) => _isRange(id) && _range(id) === '0,100,25'),
+         'set-ca=' + _range('set-ca') + ' 水域浓=' + _range('set-water-a'));
       /* 🔴 **导出按钮出错必须有人管** ✗（用户报：手机版导出 `Script error: 0` ✓）
        *   根因：`_wrap` 原来只有一句 `return fn(ev)` ✗ 而 exportFullPNG 是 **async** ✓
        *   → 它抛错成了**未处理的 Promise 拒绝** ✓ 手机浏览器报成 Script error: 0
@@ -1159,12 +1391,106 @@ const factory = new Function(
            && /box\.onclick =/.test(fn),
            /fatal-close/.test(fn) ? "有关闭 ✓" : "关不掉 ✗");
       }
-      /* **界面上叫「势力名称不透明度」** ✗（用户定的 ✓ 原来写"国名" ✓）
-       *   它盖的是剧本/年份那几层的势力名 ✓ 叫"国名"范围说窄了 ✓
-       *   ⚠ 变量名还是 labelAC / alphaCountry ✗ 那是历史包袱 ✓ 别跟着改 ✓ */
-      ok("那条滑条叫「势力名称不透明度」（不再叫国名 ✓）",
-         /势力名称不透明度/.test(HTML) && !/国名不透明度/.test(HTML)
-         && /set-labelac/.test(HTML));
+      /* 🔴 **渲染器初始化失败必须按 stage 分类** ✗✗（2026-10-17 管理员报的那条）
+       *   以前 `new MapRenderer` 的任何异常都被 boot 写成"着色器编译失败" ✓
+       *   管理员顺着这句在着色器源码里找了半天 —— 真正的病是 WebGL 上下文丢了 ✓
+       *   现在：
+       *     gl.js → `RendererSetupError` + `_setupFail('context-lost' …)` + compile 先判 `isContextLost`
+       *     app.js → `describeRendererFailure` / `createRendererWithRetry` / 刷新重试按钮
+       *   真行为用例在 `tools/check_renderer_error.js` ✓（这条只管"代码别退回老写法"✓）
+       */
+      {
+        const _g = fs.readFileSync(path.join(ROOT, "web", "js", "gl.js"), "utf8");
+        const _a = fs.readFileSync(path.join(ROOT, "web", "js", "app.js"), "utf8");
+        ok('渲染器失败带 stage（上下文丢失不再被报成着色器错 ✗）',
+           /class RendererSetupError/.test(_g)
+           && /_setupFail\('context-lost'/.test(_g)
+           && /gl\.isContextLost\(\)/.test(_g.slice(_g.indexOf('function compile'),
+                                                    _g.indexOf('function makeTexture')))
+           && /function describeRendererFailure/.test(_a)
+           && /async function createRendererWithRetry/.test(_a)
+           && /const fail = describeRendererFailure\(err\)/.test(_a)
+           && !/rawErr\('✗ 着色器编译失败/.test(_a)
+           && /id = 'fatal-reload'/.test(_a),
+           '分类=' + /class RendererSetupError/.test(_g)
+           + ' 翻译=' + /function describeRendererFailure/.test(_a)
+           + ' 重试=' + /async function createRendererWithRetry/.test(_a)
+           + ' 旧文案=' + /rawErr\('✗ 着色器编译失败/.test(_a));
+        {
+          const d1 = ex.describeRendererFailure({
+            name: 'RendererSetupError', stage: 'context-lost',
+            detail: { contextLost: true, unmaskedRenderer: 'FakeGPU' },
+          });
+          ok('上下文丢失 → 人话里只提显卡（不许再指着色器 ✗）',
+             d1.code === 'WEBGL_CONTEXT_LOST'
+             && /上下文/.test(d1.title)
+             && !/着色器(编译|链接)失败/.test(d1.title + d1.body)
+             && d1.steps.length >= 2,
+             d1.code + ' · ' + d1.title);
+          const d2 = ex.describeRendererFailure({
+            stage: 'shader-compile', detail: { log: 'ERROR: 0:12 syntax error' },
+          });
+          ok('真·着色器编译错才说着色器，并带驱动日志 ✓',
+             d2.code === 'SHADER_COMPILE_FAILED'
+             && /着色器/.test(d2.title)
+             && /syntax error/.test(d2.body),
+             d2.code + ' · ' + d2.title);
+        }
+        {
+          let n = 0;
+          const r = await ex.createRendererWithRetry({}, {
+            make: () => {
+              n++;
+              if (n === 1) {
+                const e = new Error('lost');
+                e.stage = 'context-lost';
+                throw e;
+              }
+              return { ok: true };
+            },
+            wait: () => Promise.resolve(),
+          });
+          ok('上下文丢失会自动重试（刷新前先自救一次 ✓）',
+             !!r && r.ok === true && n === 2, `第 ${n} 次成功`);
+          let m = 0;
+          let re = null;
+          try {
+            await ex.createRendererWithRetry({}, {
+              make: () => {
+                m++;
+                const e = new Error('syntax');
+                e.stage = 'shader-compile';
+                throw e;
+              },
+              wait: () => Promise.resolve(),
+            });
+          } catch (e) { re = e; }
+          ok('着色器真编译错不自动重试（重试也没用 ✓）',
+             !!re && m === 1 && re.stage === 'shader-compile', `尝试 ${m} 次`);
+          let k = 0;
+          try {
+            await ex.createRendererWithRetry({}, {
+              make: () => {
+                k++;
+                const e = new Error('no webgl2');
+                e.stage = 'no-webgl2';
+                throw e;
+              },
+              wait: () => Promise.resolve(),
+            });
+          } catch (e) { /* 预期失败 ✓ */ }
+          ok('no-webgl2 只重试一次（真不支持时别反复等 ✓）', k === 2, `尝试 ${k} 次`);
+        }
+      }
+      /* **2026-10-17：那根滑条现在只叫「不透明度」** ✗（用户：「可以去掉那个势力or地块前缀了」✓
+       *   块头「势力」已经说清了是谁的 ✓ 所以界面上就两个字 ✓
+       *   ⚠ 变量名仍是 `labelAC` / `alphaCountry` ✗ 那是历史包袱 ✓ 别跟着改 ✓
+       *   ⚠ 但**两根都得在**（地块一根 `set-labelap`、势力一根 `set-labelac` ✓
+       *     拆两块之后少一根 = 有一类名字调不了不透明度 ✓）*/
+      ok('两块各有一根「不透明度」（地块 = labelap · 势力 = labelac ✓）',
+         (HTML.match(/<span>不透明度<\/span>/g) || []).length === 2
+         && /id="set-labelap"/.test(HTML) && /id="set-labelac"/.test(HTML)
+         && !/国名不透明度/.test(HTML) && !/势力名称不透明度/.test(HTML));
       ok('滑条旁边有当前值提示（跟「名字上限」同一套 ✓）',
          /function buildSliderTips/.test(appSrc) && /const SLIDER_TIPS = \[/.test(appSrc)
          && /margin-right: auto/.test(css));
@@ -1180,16 +1506,46 @@ const factory = new Function(
          && /renderer\.setView\(tx, ty, tw, th\)/.test(appSrc)
          && /Math\.max\(512, Math\.floor\(2048 \/ scale\)\)/.test(appSrc)
          && /maybeDrawLegend\(ctx, W \* scale, H \* scale\)/.test(appSrc));
-      /* **命名规范**（用户定的 ✓）：「某某边界」+ 宽度 / 浓度 ——
-       *   地方边界（原"基准线宽"）、势力边界（原"势力线宽"）、
-       *   水域边界（原"海域"）、荒地边界 ✓ */
-      ok('边界那九条的名字规范（四个宽度 + 五个浓度 ✓）',
-         ['地方边界宽度', '势力边界宽度', '水域边界宽度', '荒地边界宽度',
-          '省份边界浓度', '地区边界浓度', '势力边界浓度',
-          '水域边界浓度', '荒地边界浓度']
-           .every((nm) => HTML.includes('>' + nm + '<'))
-         && !HTML.includes('>基准线宽<') && !HTML.includes('>海域宽度<')
-         && !HTML.includes('>海域浓度<') && !HTML.includes('>荒地浓度<'));
+      /* ✅ **边界栏的命名规范 —— 2026-10-16 第二轮整条重写** ✓
+       *   用户原话："**最大关键点：滑块左边就写边界宽度而不是省份边界宽度**"✓
+       *   旧那条盯的是「省份边界宽度 / 地区边界浓度」那种**长标签** ✗
+       *   现在那九个名字**一个都不在界面上了** ✓（类别交给 `.set-sub` 说 ✓）
+       *   新规范 = **四类各两行，两行只说「边界宽度 / 浓度」** ✓
+       *   ⚠ 旧名不许回来 ✗：「基准线宽」「海域宽度 / 海域浓度」「荒地浓度」
+       *     还有把类别名重复一遍的「省份边界宽度」那种写法 ✓ */
+      {
+        const _bi = HTML.indexOf('<h3>边界</h3>');
+        const _bseg = HTML.slice(_bi, HTML.indexOf('</div>', HTML.indexOf('set-water-a')));
+        const _subs = (_bseg.match(/class="set-sub">([^<]+)</g) || [])
+          .map((s) => s.replace(/.*set-sub">/, '').replace(/<.*$/, '').trim());
+        /* 行标签：小标题里**已经没有提示了** ✗（用户 2026-10-16：
+         *   "红框框圈起来的东西去掉"✓ 那五处提示全清了 ✓）——
+         *   所以这儿**不用再过滤** ✓ 数出来的就是滑条那八行 ✓ */
+        const _labels = (_bseg.match(/<span>([^<]+)<\/span>/g) || [])
+          .map((s) => s.replace(/<\/?span>/g, ''));
+        ok('边界栏：四类（省份 / 地区 / 势力 / 水域）+ 八行写「边界宽度 / 边界不透明度」✓',
+           _subs.join(',') === '省份,地区,势力,水域'
+           && _labels.join(',') === '边界宽度,边界不透明度,边界宽度,边界不透明度,边界宽度,边界不透明度,边界宽度,边界不透明度',
+           `小标题=${_subs.join('/')} ｜ 行标签=${_labels.join('/')}`);
+        ok('边界栏不再有重复类别名的长标签（「省份边界宽度」✗）',
+           !/>省份边界宽度</.test(HTML) && !/>地区边界宽度</.test(HTML)
+           && !/>势力边界宽度</.test(HTML) && !/>水域边界宽度</.test(HTML)
+           && !/>省份边界浓度</.test(HTML) && !/>地区边界浓度</.test(HTML)
+           && !/>势力边界浓度</.test(HTML) && !/>水域边界浓度</.test(HTML)
+           && !HTML.includes('>基准线宽<') && !HTML.includes('>海域宽度<')
+           && !HTML.includes('>海域浓度<') && !HTML.includes('>荒地浓度<')
+           && !HTML.includes('>荒地边界宽度<') && !HTML.includes('>地方边界宽度<'));
+        /* 🔴 **小标题旁边不许再挂提示** ✗✗（用户 2026-10-16：
+         *   "红框框圈起来的东西去掉"✓ —— 截图里那五处（本层那条线 / 父级链 /
+         *   国家·剧本那一圈 / 只管水与水之间 / 字号与上限）全清了 ✓）
+         *   ⚠ 这条守的是"别哪天又觉得'加一句说明更友好'就给加回去" ✗ ——
+         *     用户明说了"就这样，简单点" ✓ 小标题就是个名字 ✓ */
+        ok('小标题旁边没有提示文字（.set-sub 里不许再挂 hint ✓）',
+           !/class="set-sub"[^>]*>[^<]*<span class="hint"/.test(HTML),
+           ((HTML.match(/class="set-sub"[^>]*>[^<]*<span class="hint"/g) || []).length
+             ? '还有 ' + (HTML.match(/class="set-sub"[^>]*>[^<]*<span class="hint"/g) || []).length + ' 处 ✗'
+             : '一处都没有 ✓'));
+      }
       /* **搜索框那个色点要跟着涂色走** ✓（用户报的"最近用的颜色没更新它"✓）
        *   地区 / 省份行：按地块查（`swatchColorOf`）✓
        *   国家行：手里只有名字 → **按名字反查手绘层**（`paintedColorByName`）✓ */
@@ -1275,25 +1631,49 @@ const factory = new Function(
         const p = String(r).split(',').map(Number);
         return (p[2] > 0) ? Math.round((p[1] - p[0]) / p[2]) + 1 : 0;
       };
-      ok('滑条档位数跟档位表一致（宽度 6 / 浓度 4 ✓）',
-         _count(_range('set-w')) === 6 && _count(_range('set-water-w')) === 6
-         && _count(_range('set-ca')) === 5,
-         `线宽 ${_count(_range('set-w'))} / 海域 ${_count(_range('set-water-w'))} / 浓度 ${_count(_range('set-ca'))}`);
+      ok('滑条档位数跟档位表一致（宽度 6 / 浓度 5 ✓）',
+         _count(_range('set-w-prov')) === 6 && _count(_range('set-water-w')) === 6
+         && _count(_range('set-ca')) === 5 && _count(_range('set-water-a')) === 5,
+         `线宽 ${_count(_range('set-w-prov'))} / 水域宽 ${_count(_range('set-water-w'))}`
+         + ` / 浓度 ${_count(_range('set-ca'))} / 水域浓 ${_count(_range('set-water-a'))}`);
       ok('老存档的连续值会**吸附**到最近的档位（不是显示成空白 ✓）',
          /function snapStep/.test(appSrc) && /snapStep\(Number\(s\.w/.test(appSrc));
-      /* **海域 / 荒地**：设置里只有**宽度 + 浓度** ✓（显示开关用户要求去掉了 ✗
-       *   它们跟着"当前模式的边界全关"一起藏 ✓ 见下面那条 ✓）*/
-      ok('设置页「海域 / 荒地」只有宽度 + 浓度（显示开关已去掉 ✓ 宽度默认 1 ✓）',
+      /* 🔴 **2026-10-16 重写** ✗（handover §3.1 / §3.2 ✓）
+       *  原文：「海域 / 荒地」在设置里只有宽浓、且"跟着边界全关一起藏" ——
+       *  **两条都不成立了** ✗：
+       *   · 荒地那一对**整对退役** ✓（这次只点名水域 ✓）
+       *   · 水域这条**语义换了**：只管水域之间的缝 ✓ **独立**于那三个开关 ✓
+       *     → "边界全关就藏"恰恰是用户要废掉的行为 ✓（他要的是"不再受地区边界的管理"✓）
+       *  所以下面改成量**新口径**：滑条在 ✓ 开关**不跟着别的开关走** ✓ */
+      /* 🔴 **2026-10-17 重写** ✗（用户："给荒地加上边界开关…"✓ 并且确认要配一对宽/浓 ✓）
+       *   原文盯的是"水域那对在、**荒地那对已退役**"✗ ——
+       *     荒地那对 2026-10-15 退役过 ✓ 这一轮**又请回来了** ✓（用的还是原来的 id ✓）
+       *   → 改成量：**水 + 荒地各一对，四条都在** ✓ 而且**各认自己的出厂值** ✓ */
+      ok('设置页有「水域 / 荒地」各一对边界滑条（宽 + 不透明度 ✓）',
          ['set-water-w', 'set-water-a', 'set-waste-w', 'set-waste-a']
            .every((id) => HTML.includes('id="' + id + '"'))
          && !HTML.includes('set-water-on') && !HTML.includes('set-waste-on')
-         && /waterW: 1, waterA: 100/.test(appSrc)
+         && /waterW: 1, waterA: 25/.test(appSrc)
+         /* 🔴 **荒地的出厂值 2026-10-17 改成了 100%（实心）** ✗
+          *   用户原话："荒地边界默认100%"✓
+          *   ⚠ **它跟水域那条不再是一个值** ✗（水域 25% = 很淡的辅助线 ✓）
+          *     所以这两条**必须各写各的** ✓ 别图省事合成一条 ✗ */
          && /wasteW: 1, wasteA: 100/.test(appSrc)
-         /* ⚠ 别写成 !/waterOn|wasteOn/ ✗ —— 注释里引用着色器判据时会出现 `wasteOnly`，
-          *   而它正好以 `wasteOn` 开头 → **误伤** ✓（踩过一次 ✓）
-          *   这里要查的是"有没有这两个**字段**"，所以只认 `waterOn:` / `waterOn=` 那种写法 ✓ */
+         && !/wasteW: 1, wasteA: 25/.test(appSrc)
+         /* ⚠ 别写成 !/waterOn|wasteOn/ ✗ —— 注释里引用着色器判据时会出现 wasteOnly，
+          *   而它正好以 wasteOn 开头 → **误伤** ✓（踩过一次 ✓）
+          *   这里要查的是"有没有这两个**字段**"，所以只认 waterOn: / waterOn= 那种写法 ✓ */
          && !/[^A-Za-z]waterOn\s*[:=]/.test(appSrc)
          && !/[^A-Za-z]wasteOn\s*[:=]/.test(appSrc));
+      /* ⚠ **这条 2026-10-16 第二轮就过时了** ✗ —— 界面上早不叫「水域边界宽度」了 ✓
+       *   现在那两行的标签是「**边界宽度 / 边界不透明度**」✓（类别交给小标题说 ✓）
+       *   → 改成量**新名字 + 旧名一律不许回来** ✓
+       *   ⚠ 留着这条有用 ✗：「海域宽度 / 海域浓度」是**绝对禁用**的旧叫法 ✓
+       *     用户 2026-10-16 的命名规范里点过名 ✓（`>海域宽度<` 那种写法不许出现 ✓）*/
+      ok('水域那两行用新名字（「海域宽度 / 海域浓度」这种旧叫法不许回来 ✗）',
+         HTML.includes('<span>边界宽度</span>') && HTML.includes('<span>边界不透明度</span>')
+         && !HTML.includes('>海域宽度<') && !HTML.includes('>海域浓度<')
+         && !HTML.includes('>水域边界宽度<') && !HTML.includes('>水域边界浓度<'));
       /* **设置页就 4 栏** ✓（颜色 / 边界 / 导出图例 / 名字等）——
        *   弹窗 1120px 一行放得下 4×240 + 3×22 ≈ 1026 ✓（用户要求加宽：不然标签会换行 ✓）
        *   拆成 5 栏就换行，后一栏掉进滚动区、**看不见** ✗（海域·荒地 就是这么丢的 ✓）
@@ -1302,38 +1682,105 @@ const factory = new Function(
          (HTML.match(/class="set-col"/g) || []).length === 4,
          (HTML.match(/class="set-col"/g) || []).length + ' 栏');
 
-      /* **水域 / 荒地边界**在"当前模式里能关的边界全关"时也该藏 ✓
-       *   · 有年代层（EU4 / HOI4 / V3 / EU5）：势力 / 地区 / 填色 三个 ✓
-       *   · CK3：头衔 / 填色 两个（"势力/地区"那两组在 CK3 是隐藏的 ✗
-       *     以前写死看那三个名字 → CK3 两个全关了、线还在画 ✓）
-       */
+      /* 🔴🔴 **2026-10-16 收拾过一遍** ✗✗（用户："全都进行全面优化！"✓）
+       *   两条断言，钉住"收拾成什么样了"：
+       *   ① **栏内要分组** ✓ —— 颜色栏七项 / 边界栏八根，一栏平铺下来分不清谁跟谁一伙 ✓
+       *      现在靠 `.set-sub` 小标题分开（颜色：底子/水域/陆地 ✓
+       *      边界：省份/地区/势力/水域 ✓ 名字：显示/不透明度 ✓ 其他：导出图例/取色 ✓）
+       *   ② **边界栏"一类两行连排"** ✓ —— 原来是"四根宽度挨着、四根浓度挨着"✗
+       *      于是"把水域调淡"要跨半栏找 ✓ → 现在省份(宽,浓) 地区(宽,浓) 势力(宽,浓)
+       *      水域(宽,浓) ✓ 排法直接量 **id 的出现次序** ✓（比数字符串稳 ✓）*/
+      {
+        const subs = (HTML.match(/class="set-sub"/g) || []).length;
+        ok('设置页栏内用 `.set-sub` 分了组（不再一栏平铺 ✗）',
+           subs >= 8 && /\.set-sub\s*\{/.test(css),
+           `${subs} 个小标题 · CSS 里有 .set-sub ✓`);
+        /* 边界栏那八根的**顺序**：宽/浓 成对交替 ✓ */
+        const _bi = HTML.indexOf('<h3>边界</h3>');
+        const _bseg = HTML.slice(_bi, HTML.indexOf('</div>', HTML.indexOf('set-waste-a')));
+        const _ord = (_bseg.match(/id="(set-[a-z-]+)"/g) || [])
+          .map((s) => s.slice(4, -1))      // 去掉 `id="` 与结尾那个 `"` ✓（少切一位会被截掉首字母 ✓）
+          .filter((id) => !/-row$/.test(id));   // 行容器 id 不算滑条顺序 ✓
+        const _want = ['set-w-prov', 'set-pa', 'set-w-region', 'set-ra',
+                       'set-pw', 'set-ca', 'set-water-w', 'set-water-a',
+                       'set-waste-sub', 'set-waste-w', 'set-waste-a'];
+        ok('边界栏按"一类两行"排（宽度与浓度成对挨着 ✓）',
+           _ord.join(',') === _want.join(','),
+           _ord.join(' → '));
+      }
+
+      /* 🔴 **2026-10-17：「剧本 · 名称」那个镜像勾随整组删了** ✓
+       *   现在只剩「势力 · 名称」（#show-labels-paint）一个入口 ✓
+       *   ⚠ 假 DOM 的 getElementById 找不到会**现造一个** ✗ → 必须扫源码 ✓ */
+      {
+        const _html = require('fs').readFileSync('web/index.html', 'utf8');
+        ok('「剧本 · 名称」镜像勾已删（只剩「势力 · 名称」一个入口 ✓）',
+           !/id="show-power-names"/.test(_html) && /id="show-labels-paint"/.test(_html),
+           `show-power-names=${/id="show-power-names"/.test(_html)}`
+           + ` · show-labels-paint=${/id="show-labels-paint"/.test(_html)}`);
+      }
+
+      /* 🔴🔴 **2026-10-16 整块重写** ✗✗（handover §3.1 / §3.2 第 3 条 ✓）
+       *
+       *  原文量的是："**当前模式里能关的边界全关 → 水域 + 荒地边界也藏了**"✓
+       *  那条**正是用户这次要废掉的** ✗✗ ——
+       *  他的原话："水域边界开关负责且仅负责水域之间的边界的显示或隐藏。
+       *    **同时受管理的这些东西不再受地区边界、地区名称的管理**"✓
+       *  → 所以现在是**反过来**的断言：别的边界全关，**水域那条照样在** ✓
+       *    （想关就关「水域 · 边界」自己那个勾 ✓）
+       *  ⚠ 海岸线**不归它** ✗ —— 水 ↔ 陆那条仍旧跟着"还有边界在画"走 ✓
+       *    那条判据在 syncLayerSwitches 里（就是原来那个 _anyBorderOn ✓）
+       *    下面把它一起量上：分开测"水域独立"和"海岸线跟大流"两件事 ✓ */
       {
         const svB = {
           pw: st.showPowerBorder, rg: st.showRegionBorder,
           bp: st.showBorderPaint, bt: st.showBorderTitle,
+          wb: st.showWaterBorder,
         };
         const hasEraSw = !!get('show-power-border') && N_ERA > 0;
+        /* ---- ① 别的边界**全关** → 水域那条**照样在** ✓（独立 ✓）---- */
         if (hasEraSw) {
           st.showPowerBorder = false; st.showRegionBorder = false; st.showBorderPaint = false;
-          ex.syncLayerSwitches();
-          ok('势力 / 地区 / 填色 三个全关 → 水域 + 荒地边界也藏了 ✓',
-             ex.renderer.showWater === false, 'showWater=' + ex.renderer.showWater);
-          st.showRegionBorder = true;
-          ex.syncLayerSwitches();
-          ok('只留一个（地区）→ 它们又画出来 ✓', ex.renderer.showWater === true,
-             'showWater=' + ex.renderer.showWater);
         } else {
           st.showBorderTitle = false; st.showBorderPaint = false;
-          ex.syncLayerSwitches();
-          ok('CK3 头衔 / 填色 两个全关 → 水域 + 荒地边界也藏了 ✓',
-             ex.renderer.showWater === false, 'showWater=' + ex.renderer.showWater);
-          st.showBorderTitle = true;
-          ex.syncLayerSwitches();
-          ok('只留一个（头衔）→ 它们又画出来 ✓', ex.renderer.showWater === true,
-             'showWater=' + ex.renderer.showWater);
         }
+        st.showWaterBorder = true;
+        ex.syncLayerSwitches();
+        ok('别的边界全关 → 「水域 · 边界」**照样在**（独立于那三个开关 ✓）',
+           ex.renderer.waterBorderOn === true,
+           `waterBorderOn=${ex.renderer.waterBorderOn}`
+           + `（这张图算得出水陆=${!!(st.waterKindArr && st.waterKindArr.length)} ✓）`);
+
+        /* ---- ② 关掉它自己那个勾 → 才真的没了 ✓ ---- */
+        st.showWaterBorder = false;
+        ex.syncLayerSwitches();
+        ok('关掉「水域 · 边界」自己 → 那条通道这才让开 ✓',
+           ex.renderer.waterBorderOn === false, 'waterBorderOn=' + ex.renderer.waterBorderOn);
+
+        /* ---- ③ 别的边界还关着，但水域勾回来 → 还是只有水域在 ✓ ---- */
+        st.showWaterBorder = true;
+        ex.syncLayerSwitches();
+        ok('「水域 · 边界」与地区 / 势力 / 填色**互不影响**（两条线各管各 ✓）',
+           ex.renderer.waterBorderOn === true && ex.renderer.borderTitle === false,
+           `水=${ex.renderer.waterBorderOn} 本层线=${ex.renderer.borderTitle}`);
+
         st.showPowerBorder = svB.pw; st.showRegionBorder = svB.rg;
         st.showBorderPaint = svB.bp; st.showBorderTitle = svB.bt;
+        st.showWaterBorder = svB.wb;
+        ex.syncLayerSwitches();
+      }
+      /* ⚠ **这张图算不出水陆时它必须整条让开** ✗（老包 / 认不出水的图 ✓）
+       *  判据是 `state.waterKindArr` 非空 —— 拿它置空试一下 ✓
+       *  （handover §3.4 第 2 步："0 = 这张图算不出水陆 → 整条通道退化成现状"✓）*/
+      {
+        const _svWK = st.waterKindArr, _svWB = st.showWaterBorder;
+        st.showWaterBorder = true;
+        st.waterKindArr = null;
+        ex.syncLayerSwitches();
+        ok('这张图算不出水陆（老包）→ 水域通道整条让开 ✓（行为退化成现状 ✓）',
+           ex.renderer.waterBorderOn === false,
+           'waterBorderOn=' + ex.renderer.waterBorderOn);
+        st.waterKindArr = _svWK; st.showWaterBorder = _svWB;
         ex.syncLayerSwitches();
       }
     }
@@ -1430,15 +1877,24 @@ const factory = new Function(
         const tid0 = ex.titleAt(clean, ex.editTier ? ex.editTier() : _fineT);
         const sv = ex.displayedLabel(clean, tid0);
         ex.renameAt(clean, '改过的头衔名');
-        // 查**标签层真画出来的那份名单**（pointsFor）—— 只查 displayedLabel 会漏掉
+        // 查**标签层真画出来的那份名单** —— 只查 displayedLabel 会漏掉
         // "改了名但界面上不变"这种毛病（上一版就是这么漏的 ✗）
-        const pts0 = ex.labels && ex.labels.pointsFor ? (ex.labels.pointsFor(ex.editTier ? ex.editTier() : _fineT) || []) : [];
+        // ⚠ 2026-10-16：地名改成"**每个连通域一个标**"之后，
+        //   真画的那份从 `labels.pointsFor` 换成了 app.js 的 `placePointsFor` ✓
+        //   （口径变了，这把尺子得跟着走 —— 拿旧的那份量就量不到画出来的东西了 ✗）
+        const _pt0 = (ex.editTier ? ex.editTier() : _fineT);
+        const pts0 = (typeof ex.placePointsFor === 'function')
+          ? (ex.placePointsFor(_pt0) || []) : [];
         const drawn = pts0.some((p) => p.name === '改过的头衔名');
         ok('没涂的地改名 → 显示名 + 标签层名单都跟着变',
            ex.displayedLabel(clean, tid0) === '改过的头衔名'
            && st.titles.names[tid0] === '改过的头衔名' && drawn,
            '原=' + sv + ' displayed=' + ex.displayedLabel(clean, tid0)
-             + ' titles.names=' + st.titles.names[tid0] + ' 名单里有=' + drawn);
+             + ' titles.names=' + st.titles.names[tid0] + ' 名单里有=' + drawn
+             + ` · tid0=${tid0} 层=${_pt0} 名单 ${pts0.length} 枚`
+             + ` 其中 tid0 的 ${pts0.filter((p) => p.tid === tid0).length} 枚`
+             + ` · 全量 ${(ex.buildPlaceComponents ? ex.buildPlaceComponents(_pt0).length : '—')} 枚`
+             + ` · cap=${ex.labelPlaceMaxValue ? ex.labelPlaceMaxValue() : '—'}`);
         // ③ 存读档带着走
         const proj3 = ex.projectData();
         st.titleName = new Map();
@@ -1703,18 +2159,10 @@ const factory = new Function(
            countRGB(MY0) === 0 && countRGB([64, 64, 72]) === occ0.length,
            `玩家色 ${countRGB(MY0)} 块 / 占领 ${countRGB([64, 64, 72])} 块`);
       }
-      // ④ 只开「势力 · 边界」→ 按**剧本归属**整块（整个国家 ✓ 含被占的那半）
-      if (occ0.length && free0.length) {
-        clearAll0(); makeOcc0();
-        st.showBorderPaint = false; st.showPowerBorder = true;
-        ex.syncLayerSwitches();
-        st.brush = MY0.slice(); st.brushLabel = '玩家国';
-        ex.paintAt(free0[0], ex.titleAt(free0[0], ERA0));
-        ok('只开「势力 · 边界」→ 按剧本归属整块（整个国家，含被占的那半 ✓）',
-           countRGB(MY0) === land0.length,
-           `玩家色 ${countRGB(MY0)} / ${land0.length} 块`);
-      }
-      // ⑤ 两个都没开 → 按「填色 · 边界」开着算（用户定的 ✓）→ 跟 ② 一样
+      // ④ **2026-10-17：「剧本 · 边界」那个勾删了** ✓
+      //    那条"按剧本归属整块（含被占的那半）"的路不再有入口 ✓
+      //    下面只验剩下的「势力 · 边界」行为 ✓
+      // ⑤ 「势力 · 边界」关着 → 按填色那条算（跟 ② 一样 ✓）
       if (occ0.length && free0.length) {
         clearAll0(); makeOcc0();
         st.showBorderPaint = false; st.showPowerBorder = false;
@@ -2001,19 +2449,6 @@ const factory = new Function(
     ex.setGrain(svG); ex.setTier(svT);
   }
 
-  // 自动荒地：开了之后，渲染器要显示**荒地自己的颜色**（不然自动上的色看不见）✓
-  if ((st.meta.wasteland || []).length && get('waste-auto') && ex.wasteApply) {
-    const svAuto = st.wasteAuto, svWaste = st.showWaste, svR = ex.renderer.showWaste;
-    st.wasteAuto = true;
-    st.showWaste = false;          // 先关着，走顺手打开那条路 ✓
-    const box = get('waste-auto');
-    if (box) box.checked = true;
-    ex.setWasteAuto(true);          // 走处理器里那段真代码 ✓
-    ok('开「自动」→ 渲染器显示荒地自己的颜色（自动色才看得见）',
-       ex.renderer.showWaste === true, 'renderer.showWaste=' + ex.renderer.showWaste);
-    st.wasteAuto = svAuto; st.showWaste = svWaste;
-    ex.renderer.setShowWaste(svR);
-  }
 
   // 机器串不当名字显示（CK3 的不可通行海域就是 NORWEGIAN IMPASSABLE 1 这种）✓
   if (typeof ex.readablePlaceName === 'function') {
@@ -2081,19 +2516,22 @@ const factory = new Function(
        bad3.length === 0, bad3.length ? ('缺前置声明: ' + bad3.join(',')) : 'ok');
   }
 
-  // 卡片规则：海洋不显示名字；湖泊、河流显示；不可通行统一叫「不可通行区域」✓
+  /* 卡片规则（2026-10-16 二次重写）：用户后来把规格**一类一类点全**了
+   * （见 `hoverTileLines` 里那张表 ✓）—— 断言也跟着看那**唯一出处** ✓
+   * 老写法查的是"海洋不显示名字"那种**早就不存在**的源码 ✓ 两次重构都没跟上 ✓ */
   {
     const src4 = require('fs').readFileSync('web/js/app.js', 'utf8');
-    const seaHidden = src4.includes("const _noName = _isImpassable || _isSeaKey;");
-    const riverKept = !/const _noName = [^;]*#river/.test(src4);
-    const noLake = !/const _noName = [^;]*#lake/.test(src4);
-    const hasType = src4.includes("? (_dataName.includes('海域') ? _dataName : '不可通行区域')");
-    ok("卡片名字规则：水域（海/湖/河）一律不显示名字、不可通行叫「不可通行区域」",
-       src4.includes("const _noName = _isImpassable || _isSeaKey")
-         && /const _noName = [^;]*#lake/.test(src4)
-         && /const _noName = [^;]*#river/.test(src4)
-         && src4.includes("? (_dataName.includes('海域') ? _dataName : '不可通行区域')"),
-       "ok");
+    const hasTable = /function hoverTileLines\(pid\)/.test(src4)
+      && /TYPE_LABEL/.test(src4)
+      && /isWastelandTile\(pid, fineTid\)/.test(src4)
+      && /waterKindOf\(pid\)/.test(src4);
+    const hasRuler = /function nameIsMeaningful\(/.test(src4)
+      && /isPlaceholderName\(s\) \|\| isPseudoCategoryName\(s\)/.test(src4);
+    /* 卡片和侧栏都从那**一处**取那两行 ✓（别再各写一份 ✗）*/
+    const bothUse = (src4.match(/hoverTileLines\(/g) || []).length >= 3;   // 定义 + 卡片 + 侧栏
+    ok('卡片规则：那两行只有一处出处（hoverTileLines）+ 判定尺（nameIsMeaningful）',
+       hasTable && hasRuler && bothUse,
+       `规格表=${hasTable} 尺=${hasRuler} 用它的地方=${(src4.match(/hoverTileLines\(/g) || []).length}`);
   }
 
   // 「不可通行××」的显示名归一（山地/荒地/沙漠 → 不可通行区域；海域保留 ✓）
@@ -2130,10 +2568,14 @@ const factory = new Function(
     }
   }
 
-  // 卡片：provinceNames 只是代号（EU4 的 RNW）时，回退用最细层节点名（昆仑山）✓
+  /* 代号名字回退（EU4 的 `RNW` → 最细层节点名"昆仑山"那种）：
+   * ⚠ 老写法查的是侧栏里那句 `readablePlaceName(_fineName) && _fineOk ? ...` ✗
+   *   2026-10-16 侧栏那套拼名字的代码整段删了（收口到 `hoverTileLines` ✓）——
+   *   同一条规矩现在由 `realNameAtTier` 兜着（`fineName` / `curName` 那两处 ✓）*/
   {
     const src5 = require('fs').readFileSync('web/js/app.js', 'utf8');
-    const ok5 = src5.includes("readablePlaceName(_fineName) && _fineOk ? _fineName : _nameSrc");
+    const ok5 = /fineName \|\| curName \|\| typeLabel/.test(src5)
+      || /fineName \|\| curName \|\| label/.test(src5);
     ok('代号名字回退到最细层节点名（RNW → 昆仑山 这类；泛称湖泊/海洋不当名字）',
        ok5, ok5 ? 'ok' : '没找到回退逻辑');
   }
@@ -2633,44 +3075,6 @@ const factory = new Function(
     st._layerSig = null; ex.syncLayerSwitches();
   }
 
-  // 荒地自动上色的**来源随开关**：原版色来的随「颜色」，玩家色来的随「填色」
-  {
-    const lut2 = ex.renderer.lutData;
-    // 「没上色」= 等于荒地"起手"的样子 = **荒地灰** ✓
-    // （EU5 的荒地数据 colors[] 是省份位图技术色，早就不是"画面上那个底"了 ✗）
-    const _wg2 = ((st.set && st.set.impass) || [94, 94, 94]);
-    const isBase = (tid) => {
-      const b = (st.meta.wasteland || []).indexOf(tid) >= 0 ? _wg2 : (st.titles.colors[tid] || _wg2);
-      return lut2[tid * 4] === b[0] && lut2[tid * 4 + 1] === b[1] && lut2[tid * 4 + 2] === b[2];
-    };
-    const SP = st.showPaint, ST = st.showTitles, SW = st.showWaste;
-    const countLit = () => {
-      let c = 0;
-      for (const tid of (st.meta.wasteland || [])) {
-        const pid = st.meta.wastelandPidOf ? st.meta.wastelandPidOf[tid] : null;
-        /* **没进 pid 映射的荒地节点不算** —— 自动上色是按地块（pid）走的：
-         * wastePerimeter 里没有它 → 它根本轮不到"上色"，永远是数据里那个原色 ✓
-         * 以前这里只挡了"玩家自己涂的"，`pid == null` 的那几个就漏进来了：
-         * EU5 有 4 个（helene_atoll / olohega / uracas / vatoa 那种小岛），
-         * 它们的 LUT 色正好等于 titles.colors（因为压根没被改过），
-         * 于是 isBase() 判"不是荒地灰" → 报成"还有 4 块自动色没还原" ✗
-         * 那是断言自己看错了对象，不是自动上色漏了 ✓ */
-        if (pid == null) continue;
-        if (st.provTitle && st.provTitle[pid] >= 0) continue;   // 玩家自己涂的，不算
-        if (!isBase(tid)) c++;
-      }
-      return c;
-    };
-    st.showWaste = false; st.showPaint = true; st.showTitles = true;
-    ex.wasteApply();
-    const lit = countLit();
-    ok('两个开关都开着：能上色的都上色了（这块数据可能本来就没得投）', lit >= 0, String(lit));
-    st.showPaint = false; st.showTitles = false;
-    ex.wasteApply();
-    ok('两个颜色开关都关掉：自动色一块都不剩（各随各的开关 ✓）', countLit() === 0, String(countLit()));
-    st.showPaint = SP; st.showTitles = ST; st.showWaste = SW;
-    ex.wasteApply();
-  }
 
   // 「更新国名」：清空所有国名 → 按**当前显示的颜色**重画（那片地现在是谁就写谁 ✓）
   if ((st.meta.eraDates || []).length) {
@@ -3327,9 +3731,23 @@ const factory = new Function(
      *   以前剧本视图下只放行"最细的两层"✗ → 粒度选"地区"就一个地名都没有 ✓（用户报的 ✓）
      *   但**剧本层本身不算地名** ✗（那是国家/势力，归势力名那套管 ✓）*/
     ok('地名层 = 当前粒度层（不再只放行最细两层 ✗）',
-       /const nameTier = isCountryView \? _et : viewTier;/.test(fs.readFileSync('web/js/app.js', 'utf8'))
-       && /if \(nameTier >= nEra\)/.test(fs.readFileSync('web/js/app.js', 'utf8'))
-       && !/nameTier >= 0/.test(fs.readFileSync('web/js/app.js', 'utf8')));
+       /* ⚠ **判据要跟着实现走** ✗✗ —— 这条老账盯的是两轮前的写法
+        *   （`const nameTier = isCountryView ? _et : viewTier;` 那个 `_et` 中间变量 ✓
+        *    早被 `editTier()` 直接替掉了 ✗）→ 一直红着 ✓
+        *   现在按**真实现**量三件事 ✓：
+        *     ① `nameTier` 在剧本视图取**编辑层（粒度）**、地理视图取视图层 ✓
+        *     ② 别再把门槛写死成 `nameTier >= 0`（那等于"哪层都放行"✗）✓
+        *     ③ 外闸是「地块·名称 **或** 水域·名称 **或** 荒地·名称」✓
+        *        （水名 / 荒名两个独立闸 ✓ 见 handover §3.1 ✓
+        *          ⚠ 2026-10-17 起荒地也有自己的名称开关了，外闸必须把它算进来 ✓
+        *            不然"只勾荒地名"时整段都不跑 = 那根开关是死的 ✓）*/
+       (function () {
+         const s = fs.readFileSync('web/js/app.js', 'utf8');
+         return /const nameTier = isCountryView \? editTier\(\) : viewTier;/.test(s)
+           && !/nameTier >= 0/.test(s)
+           && /if \(\(state\.showLabelsTitle \|\| state\.showWaterName \|\| state\.showWasteName\)/
+             .test(s);
+       })());
     /* **水岸线跟填色那趟合并成一次扫描** ✓（用户要求"合并那几趟射线"✓）
      *   以前水岸线单独一趟（`rayDistWater` × 4 方向 ✗），而它判的"这一侧是不是水"
      *   填色那趟的 `_terrainSeam` 本来就在判 ✗ —— 同一件事每帧算两遍 ✓
@@ -3444,16 +3862,20 @@ const factory = new Function(
          (fs.readFileSync('web/js/gl.js', 'utf8').match(/MAX_CANVAS_PX = ([\d.e]+)/) || [])[1] || '?');
     }
     /* **顶栏布局**（用户定的 ✓）：
-     *   教程 + 署名在**左侧工具栏右边**；**「文件」收尾在最右**（导入 / 导出 / 清除都在它菜单里 ✓）
+     *   教程 + 署名在**左侧工具栏右边**；**「文件」收尾在最右**（导入 / 导出都在它菜单里 ✓）
+     *   🔴 2026-10-17：**清除搬到左栏「显示」区**（用户："文件栏的清除按钮放在显示区"✓），
+     *   文件菜单里只剩导入 / 导出 ✓
      * ⚠ 两个容器 id 必须留着：`author-row`（手机版搬它）、`export-row` + `export-menu`
      *   （手机版搬前者、并把后者的子项摊平 ✓）—— 所以电脑版怎么排都不许改这两个名字 ✗ */
-    ok('顶栏布局：工具 → 教程 → 署名 → … → 文件（最右，收着导入/导出/清除）✓',
-       /id="tool-group"[\s\S]*?id="help-row"[\s\S]*?id="btn-tutorial"[\s\S]*?id="author-row"[\s\S]*?id="btn-author"[\s\S]*?id="export-row"[\s\S]*?id="btn-export"[\s\S]*?id="btn-import"[\s\S]*?id="btn-reset"[\s\S]*?<\/header>/.test(htmlSrc)
+    ok('顶栏布局：工具 → 教程 → 署名 → … → 文件（最右，收着导入/导出）✓',
+       /id="tool-group"[\s\S]*?id="help-row"[\s\S]*?id="btn-tutorial"[\s\S]*?id="author-row"[\s\S]*?id="btn-author"[\s\S]*?id="export-row"[\s\S]*?id="btn-export"[\s\S]*?id="btn-import"[\s\S]*?<\/header>/.test(htmlSrc)
        && htmlSrc.indexOf('id="btn-tutorial"') < htmlSrc.indexOf('id="btn-author"')
        && htmlSrc.indexOf('id="btn-author"') < htmlSrc.indexOf('id="export-row"')
-       // 「文件」那个菜单里得同时有导入 / 导出 / 清除 ✓
-       && /id="btn-import"[\s\S]*?id="btn-png"[\s\S]*?id="btn-project"[\s\S]*?id="btn-reset"/.test(htmlSrc),
-       '教程在署名左边、文件收在 header 最后、菜单里有导入/导出/清除 ✓');
+       // 「文件」那个菜单里得同时有导入 / 导出 ✓（清除已经搬走 ✗）
+       && /id="export-menu"[\s\S]*?id="btn-import"[\s\S]*?id="btn-png"[\s\S]*?id="btn-project"[\s\S]*?id="btn-log"/.test(htmlSrc)
+       // 「显示」区里得同时有「清除全部」和「清除荒地」✓
+       && /id="display-panel"[\s\S]*?id="btn-reset"[\s\S]*?id="btn-clear-waste"/.test(htmlSrc),
+       '教程在署名左边、文件收在 header 最后、清除在显示区 ✓');
     ok('页面里加载了引导脚本 ✓', htmlSrc.includes('src="js/tutorial.js"'), 'script 标签');
     const buildSrc = fs.readFileSync('build_standalone.py', 'utf8');
     ok('打包清单里有 tutorial.js（单文件版才带得上 ✓）',
@@ -3555,8 +3977,189 @@ const factory = new Function(
         ex.rebuildPaintBlocks(!!(st.meta.eraDates && st.meta.eraDates.length) && st.tier < nEra0);
       }
 
-      // ---- 回归：细层里挑「最后一层年份才有的 tag」的颜色+标签，只涂一小块 ----
-      // 以前细层里"没涂的邻居"按 cTier = 最后一层年份（EU4 是 1789）算身份 ✗
+      /* 🔴🔴 **「水域 · 名称」那个独立闸** ✗✗（2026-10-16 ✓ handover §3.4 第 7 步 / 第 9 步 ✓）
+       *
+       *  用户原话："水域名称开关同理" + "同时受管理的这些东西**不再受地区名称的管理**"✓
+       *  → 所以要量的是**两件事**，缺一件这个开关就是假的 ✗：
+       *    ① 关掉水名 → `drawLabels` 吐出来的点里**一个水点都没有** ✓
+       *    ② 但**陆地名字一个都不许少** ✓（把陆地名一起带走 = 接错了闸 ✓）
+       *    ③ 反过来：把「地区 · 名称」关掉、水名开着 → **水名还在** ✓（这才是"独立"✓）
+       *
+       *  ⚠ 怎么认"水点" ✗：不能看 `p.name`（"波罗的海"也可能碰巧是个陆地省名 ✓）
+       *    只能看它那个 tid 在**当前层**的键 —— 跟 app 里同一个判据（isWaterKey ✓）
+       *  ⚠ 视口拉满（同上面那段 ✓）否则点会被 `_cull` 筛掉、数量对不上 ✓ */
+      {
+        const _keep = {
+          tier: st.tier, grain: st.grain, showLabelsTitle: st.showLabelsTitle,
+          showWaterName: st.showWaterName, showLabelsPaint: st.showLabelsPaint,
+        };
+        const _fine = st.meta.tierNames.length - 1;
+        const _gather = () => {
+          const got = [];
+          const orig = ex.labels.drawPoints;
+          ex.labels.drawPoints = (list) => { for (const p of list) got.push(p); };
+          try { ex.drawLabels(view); } finally { ex.labels.drawPoints = orig; }
+          return got;
+        };
+        /* 那些**没有头衔**的点（老包水名 / 荒地名 ✓ `tid: null` ✓）单独算一类 ✓
+         * 它们走的是 ②′ 那条路，跟 ① 那条"连通域地名"不是一回事 ✓ 两边都得量 ✓
+         * 🔴 **判据必须跟应用同一个出处** ✗✗（2026-10-16 现场栽过两次 ✓）
+         *   栽法一：我按**键前缀**（`#sea_` 那套）认水 ✗ ——
+         *     结果 **EU5 的水键压根不带 `#`**（`chukchi_sea` / `siberian_lakes_1` ✓）
+         *     → "水点 0 个"、后面几条全判错 ✓
+         *   栽法二：改成调 `waterKindByPid` 之后，我**只按最细层**建那张 tid 表 ✗ ——
+         *     可水片**每一层都有自己的片** ✓（EU5 各层的水 tid 数是
+         *     `reg=121 · area=373 · prov=925 · loc=5709` ✓ 见 probe_water_allsets ✓）
+         *     而应用那边收的是**所有层的并集** ✓ → 我这张表小了 → 又判错 ✓
+         *   → 正解：**跟应用一字不差** —— 直接读它自己产出的
+         *     `state.waterKindSet`（`buildWaterKindMask()` 那一趟出的 ✓ 同样是并集 ✓）✓
+         *   ⚠ 为什么这样最稳：那个 Set 就是**应用真正用的那张** ✓
+         *     测试另建一张 = 迟早漂移 ✗（这次就漂了 ✓）*/
+        /* ⚠ **别读 `state.waterKindSet` 了** ✗✗ —— 那张表 2026-10-17 拆了 ✓
+         *   用户原话：「既然是如何判别水，那不是还有现成的东西嘛」✓
+         *   现成的就是 `kindOfTid(tid)`（走 `kindTidMap()` ✓ 扫每一层 +
+         *   老包退回键前缀 ✓ 自带缓存 ✓）——**判据仍然收在应用那一处** ✓ */
+        /* ⚠ **顺序必须跟应用里那道闸一样** ✗✗ —— 键先说、键说不出话才问身份标 ✓
+         *   （应用那边是 `_isWaterLabel` ✓ 见它那段：CK3 有 2 块地键写着 lake、
+         *     身份标却是 6 ✓ 只按身份标判就会把它们当陆地 ✓）*/
+        const _kOf = (tid) => {
+          const _key = String(((st.titles && st.titles.keys) || [])[tid] || '');
+          if (ex.isWaterKey ? ex.isWaterKey(_key) : /^#(impassable_sea|sea|lake|river)/.test(_key)) return 1;
+          const k = ex.kindOfTid(tid);
+          return (k >= 2 && k <= 5) ? k : 0;
+        };
+        /* 🔴🔴 **每张图的每个最低单位都得带"身份标"** ✗✗（2026-10-16 迁移 ✓ 用户点名要的 ✓）
+         *   用户原话："我记得开发一开始就给每个地图每个最低等级都加上了相应的标记"✓
+         *   —— 他记得对：`build_tier_pieces.kind_mask()` 早就写好了 ✓
+         *     可**只有 CK2 / EU5 两家构建脚本在调它** ✗，另外四家一直靠"`#` 键名前缀"推 ✓
+         *   → 2026-10-16 给 `build_data.py`(CK3) / `build_eu4.py` / `build_hoi4.py` /
+         *     `build_vic3.py` 全接上了 ✓ 这一条是**防回退**：
+         *     哪家又变回"推出来的"，当场红 ✓
+         *   ⚠ **CK3 那枚老 `waterMask` 不算数** ✗ —— 只有 0/1（"是不是水"），
+         *     分不出海 / 湖 / 河 / 不可通行海域 ✓ 而且是 2026-10-15 退役的遗留 ✓
+         *     `kindOfPid` 读的是 `kindMask` ✓ 所以这条只认它 ✓ */
+        ok('每张图的每个最低单位都带 kindMask（不再靠 `#` 键名推 ✗）',
+           !!st.kindMask && st.kindMask.length === (st.meta.numProvinces | 0),
+           st.kindMask
+             ? `kindMask ${st.kindMask.length} 字节（= numProvinces ✓）`
+             : (st.waterMask ? '✗ 只有老 waterMask（0/1，分不出类别 ✗）' : '✗ 两样都没有 → 在靠键名推'));
+        {
+          /* 顺带盯一眼"那枚标不许有空洞" ✗ —— 0 号一格空位、其余 1~6 全有值 ✓
+           *   构建期已经 assert 过一次 ✓ 这里是**消费端**再看一眼：
+           *   前端拿它当唯一判据 ✓ 有空洞 = 某几块地没身份 ✓ */
+          let _holes = 0;
+          const _km = st.kindMask;
+          if (_km) for (let p = 1; p < _km.length; p++) if (!_km[p]) _holes++;
+          ok('kindMask 没有空洞（1 号之后每一格都有身份 ✓）',
+             !!_km && _holes === 0, _km ? `${_holes} 格没身份` : '没有那枚标');
+        }
+        ok('应用的判别口能认出「这个头衔是水」（`kindOfTid` ✓ 标签闸的地基 ✓）',
+           typeof ex.kindOfTid === 'function'
+           && (st.kindMask || null) != null
+           && (() => {
+             for (let _p = 1; _p < st.meta.numProvinces; _p++) {
+               if (!(st.waterKindArr && st.waterKindArr[_p])) continue;
+               const _t = ex.titleAt(_p, (st.meta.tiers || []).length - 1);
+               if (_t == null || _t < 0 || _t === 65535) continue;
+               return _kOf(_t) !== 0;      // 找到一块水就够 ✓
+             }
+             return false;
+           })());
+        /* 🔴🔴 **这张表必须是"所有层的并集"** ✗✗（2026-10-16 21:4x ✓ 刚踩过 ✓）
+         *   水片**每一层都有自己的片** ✓（EU5：`reg` 121 · `area` 373 · `prov` 925 · `loc` 5709 ✓）
+         *   ⚠ 只收最细层 → 中间层的水名被判成陆地 ✗
+         *     表现：关掉水名开关还剩一堆水名点 ✓（EU5 5709 那次的真凶就是这个 ✓）
+         *   ⚠ 还有个更阴的变体（同一场踩的）：层数读 `TIER_COUNT`（模块变量 ✓ 初值 5 ✗）
+         *     而它在 `buildWaterKindMask` 跑的那一步**还没被 meta.tiers 更新** ✓
+         *     → 差 1~2 层 → 同样漏 ✓（打印出来才看见：`TIER_COUNT=5` 而 `meta.tiers=6/7` ✓）
+         *   → 这条断言直接量"**最细层每一个水 tid 都在表里**" ✓
+         *     层数读 `meta.tiers.length`（权威 ✓ 不是模块变量 ✓）*/
+        {
+          const _nT = (st.meta.tiers || []).length;
+          const _NONE = (st.meta.noTitle != null) ? st.meta.noTitle : 65535;
+          const _miss = [];
+          for (let _t = 0; _t < _nT; _t++) {
+            let _m = 0;
+            for (let _p = 1; _p < st.meta.numProvinces; _p++) {
+              if (!(st.waterKindArr && st.waterKindArr[_p])) continue;
+              const _tt = ex.titleAt(_p, _t);
+              /* ⚠ **无主地块不算** ✗ —— 有些层（EU5 的 `1337` / `blank` ✓）整层都是无主 ✓
+               *   它们拿到的是 NONE（65535 ✓ 不是合法 tid ✗）
+               *   建表时那句 `tt >= 0 && tt !== NO_TITLE` 本来就把它们挡掉了 ✓
+               *   → 断言数它们 = 假红 ✓（我第一版就这么报的："层0 漏 5709 块" ✓）*/
+              if (_tt == null || _tt < 0 || _tt === _NONE) continue;
+              if (!_kOf(_tt)) _m++;
+            }
+            if (_m) _miss.push(`层${_t}(${st.meta.tiers[_t]}) 漏 ${_m} 块`);
+          }
+          ok('每一层的水片，应用那道闸都认（键先说 → `kindOfTid` ✓）',
+             _miss.length === 0,
+             _miss.length ? _miss.join(' · ')
+               : `${_nT} 层全命中 ✓（最细层 ${st.meta.tiers[_nT - 1]} ✓ 无主那几层本来就不收 ✓）`);
+        }
+        const _isWaterPt = (p) => (p.tid == null
+          ? !!p.sea && !p.waste
+          : (_kOf(p.tid) !== 0));
+        st.grain = null;
+        st.tier = _fine;                   // 细层视图：地名真出得来的那一档 ✓
+        st.showLabelsTitle = true;
+        st.showLabelsPaint = false;        // 别让色块名混进来 ✓
+        st.showWaterName = true;
+        const _on = _gather();
+        st.showWaterName = false;
+        const _off = _gather();
+        const _wOn = _on.filter(_isWaterPt).length;
+        const _wOff = _off.filter(_isWaterPt).length;
+        const _lOn = _on.filter((p) => !_isWaterPt(p)).length;
+        const _lOff = _off.filter((p) => !_isWaterPt(p)).length;
+        /* ⚠ **先看这一局到底有没有水名可出** ✗✗（2026-10-16 现场量出来的 ✓）
+         *  CK3：786 个水组件**全被"类名闸"挡住**（它的键是 `#impassable_sea_b_66`、
+         *   名字是 `#12764` 那种占位 ✓ 见 `isPseudoCategoryName` / 占位 `#` 那两道 ✓）
+         *  → 按 `NAME_POLICY` 的口径，**CK3 本来就一个水名都不出** ✓
+         *    （handover §3.2 也写着："CK3 那些水节点本来只有类名，被挡也出不来字"✓）
+         *  所以这一局量"开关有没有用"是**量不出来的** ✗ —— 正例天然为空 ✓
+         *  → 没得量就**明说跳过**，别硬编一个绿 ✗（那才是自欺 ✓）
+         *  ⚠ 但**反面**（关掉之后一个不剩 / 别把陆地名字带走）**照量不误** ✓
+         *    那两条在 CK3 上也是有意义的（0 → 0、11297 → 11297 都得成立 ✓）*/
+        const _noWaterHere = (_wOn === 0);
+        if (_noWaterHere) {
+          console.log('  （这一局按名字方案就不出水名（CK3 的海 / 湖只有类名 ✓）'
+            + '—— 正例那两条跳过 ✓）');
+        } else {
+          ok('「水域 · 名称」开着时，地图上**真有**水名点 ✓（否则这个开关是假的 ✗）',
+             _wOn > 0, `水点 ${_wOn} 个 / 全部 ${_on.length} 个`);
+        }
+        ok('关掉「水域 · 名称」→ 水名点**一个都不剩** ✓',
+           _wOff === 0, `关着时还剩 ${_wOff} 个（该是 0 ✓）`);
+        ok('关水名**不会把陆地名字一起带走** ✓（接错闸就是这条红 ✓）',
+           _lOff === _lOn && _lOn > 0,
+           `陆地/荒地/河那批：开 ${_lOn} → 关 ${_lOff}`);
+        /* ③ 独立：**关掉「地区 · 名称」**，水名开着 → 水名还得在 ✓ */
+        st.showLabelsTitle = false;
+        st.showWaterName = true;
+        const _onlyWater = _gather();
+        const _w3 = _onlyWater.filter(_isWaterPt).length;
+        const _l3 = _onlyWater.filter((p) => !_isWaterPt(p)).length;
+        if (_noWaterHere) {
+          ok('「地区 · 名称」关 → 地名点全没了 ✓（这一局没有水名，所以是空 ✓）',
+             _onlyWater.length === 0, String(_onlyWater.length) + ' 个');
+        } else {
+          ok('「地区 · 名称」关 + 「水域 · 名称」开 → **只剩水名** ✓（真独立 ✓）',
+             _w3 > 0 && _w3 === _wOn && _l3 === 0,
+             `水点 ${_w3}（开着水名时是 ${_wOn}）/ 其余 ${_l3} 个（该是 0 ✓）`);
+        }
+        /* ④ 两边都关 → 一个地名都不出 ✓（别留"漏网"的点 ✗） */
+        st.showWaterName = false;
+        const _none = _gather();
+        ok('两个都关 → 一个地名点都不出 ✓',
+           _none.length === 0, String(_none.length) + ' 个');
+        st.tier = _keep.tier; st.grain = _keep.grain;
+        st.showLabelsTitle = _keep.showLabelsTitle;
+        st.showWaterName = _keep.showWaterName;
+        st.showLabelsPaint = _keep.showLabelsPaint;
+      }
+
+      // ---- 回归：细层里挑「最后一层年份才有的 tag」的颜色+标签，只涂一小块 ----      // 以前细层里"没涂的邻居"按 cTier = 最后一层年份（EU4 是 1789）算身份 ✗
       // → 颜色+标签撞上某个 1789 tag 时，整块 1789 的地会被并进来 →
       //   国名显示成整个国家的大小和位置，而不是跟着涂色实时变 ✗（用户报的 bug）
       {
@@ -3931,10 +4534,26 @@ const factory = new Function(
     ex.runSearch();
   }
 
-  // 荒地（不可通行）：只有真烘过 wasteland 数据的模式才跑（现在是 EU5）
+  // 荒地 UI：有荒地的模式显示；VIC3 / HOI4 这种没有荒地设定的，显示区和设置区都不许出现
+  {
+    const hasWaste = !!(st.meta.wasteland && st.meta.wasteland.length);
+    const wg = get('waste-group');
+    const wsub = get('set-waste-sub');
+    const cw = get('btn-clear-waste');
+    ok('荒地 UI 跟地图走：没有荒地设定的模式（VIC3 / HOI4）不显示荒地组 / 荒地设置 / 清除荒地',
+       hasWaste
+         ? (!wg || wg.style.display !== 'none')
+           && (!wsub || wsub.style.display !== 'none')
+           && (!cw || cw.style.display !== 'none')
+         : !!wg && wg.style.display === 'none'
+           && !!wsub && wsub.style.display === 'none'
+           && (!cw || cw.style.display === 'none'),
+       `荒地 ${st.meta.wasteland ? st.meta.wasteland.length : 0} 块 · 显示区=${wg && wg.style.display} · 设置区=${wsub && wsub.style.display}`);
+  }
+
   // 荒地（不可通行）：只有真烘过 wasteland 数据的模式才跑
   if (st.meta.wasteland && st.meta.wasteland.length) {
-    console.log('\n=== 2h. 荒地：可涂 + 自动涂色/清除两个按钮 ===');
+    console.log('\n=== 2h. 荒地：可涂 + 自动上色（2026-10-17 重做） ===');
     {
       const T3 = st.titles;
       const fine = st.meta.tierNames.length - 1;
@@ -3971,7 +4590,41 @@ const factory = new Function(
       ok('荒地不再锁死（可以单独涂）', wtid >= 0 && !ex.isLocked(wtid), String(wtid));
 
       const alphaOf = (t2) => (t2 >= 0 ? ex.renderer.lutData[t2 * 4 + 3] : -1);
-      ok('LUT 的 alpha 给荒地打了标记', alphaOf(wtid) === 255, String(alphaOf(wtid)));
+      /* 🔴🔴 **LUT 的 alpha = "这一格固定显示自己那份色"** ✗✗（2026-10-17 ✓ 用户定的 ✓）
+       *   原话："**荒地不管什么视图都是荒地颜色**，就这样"✓
+       *
+       *   ⚠ 旧语义是 `setWasteland()` 打的"这是不是荒地" ✓
+       *     那个方法 **2026-10-14 就退役了、没人调** ✓ 所以这里一直是 0 ✓（空断言 ✓）
+       *   ⚠ 新语义：开图时 `setWasteFixed()` 把所有**荒地节点**打上 255 ✓
+       *     着色器在 `tid == NONE` 那道早退**之前**先查它 ✓
+       *     （剧本层荒地永远没归属 → 不查就被 `uUnpainted`(150,150,150) 盖掉 ✗
+       *       —— 用户报的"剧本模式把荒地颜色覆盖了，明明画好了却还是 150,150,150"✓）
+       *   验三样：荒地 255 ✓ / **不在名单里的一个都没打**（不误伤 ✓）/
+       *           走一遍 `applySettings` 仍在 ✓
+       *   ⚠ 不误伤那条**别拿 `plainTid`** ✗ —— 它在下面十几行才定义 ✓
+       *     （外层 `let` 的 TDZ：这里读到的是 -1 ✓ 断言当场假红 ✓ 栽过一次 ✓）
+       *     改成"**全表扫一遍**：带标记的必须**正好**是 `meta.wasteland` 那批" ✓
+       *     这比挑一块地更硬 ✓ 而且不依赖下面那些变量 ✓ */
+      {
+        const wl = st.meta.wasteland || [];
+        let aW = -1, aAfter = -1, markedN = 0, stray = 0;
+        try {
+          aW = alphaOf(wtid);
+          ex.applySettings();
+          aAfter = alphaOf(wtid);
+          const inList = new Set(wl);
+          const n = Math.floor(ex.renderer.lutData.length / 4);
+          for (let t = 0; t < n; t++) {
+            if (ex.renderer.lutData[t * 4 + 3] > 0.5) {
+              markedN++;
+              if (!inList.has(t)) stray++;
+            }
+          }
+        } catch (err) { /* ✓ */ }
+        ok('荒地不管什么视图都显示荒地色（标记正好 = 荒地名单 ✓ 不误伤 ✓）',
+           aW === 255 && aAfter === 255 && markedN === wl.length && stray === 0,
+           `荒地=${aW} applySettings后=${aAfter} 带标记=${markedN}/${wl.length} 误伤=${stray}`);
+      }
       let plainTid = -1;
       for (let i = 0; i < T3.keys.length; i++) {
         if (T3.tiers[i] === fine && st.meta.wasteland.indexOf(i) < 0 && T3.names[i]) {
@@ -3989,106 +4642,167 @@ const factory = new Function(
       const bAuto = get('waste-auto');
       // 假 DOM 不解析标签名，这里只验"在不在"
       ok('「自动」是个开关（不是按钮）', !!bAuto, bAuto ? '在' : '不在');
+      ok('「自动上色」默认关闭（开图不自动改荒地色 ✓）',
+         st.wasteAuto === false && (!bAuto || bAuto.checked !== true),
+         `state=${st.wasteAuto} · 勾=${bAuto ? bAuto.checked : '-'}`);
 
-      // ① 按一下：按当前看到的颜色算一遍
-      ex.wasteClear();
-      ok('清除之后荒地都是原版色', !isColoured(wtid), JSON.stringify(lutOf(wtid)));
-      // **荒地起手 = 荒地灰** ✓（不许顶着数据里那个"省份位图技术色"）
-      // 用户报的：EU5 剧本视图开「荒地自动上色」，一片荒地冒出莫名其妙的颜色 ✗
+      /* 🔴 **荒地自动上色重做**（2026-10-17 ✓）
+       *   验四件事：周长表建出来了 / 最细层层号传给了渲染器 /
+       *   过半的邻居颜色能写进最细节点 / 关掉开关回退荒地灰 ✓ */
       {
-        const _g = wasteGreyOf().join(',');
-        const notGrey = st.meta.wasteland.filter((t2) => lutOf(t2).join(',') !== _g);
-        ok('荒地的 LUT 起手就是「荒地灰」（不是数据里的技术色）✓',
-           notGrey.length === 0,
-           notGrey.length
-             ? `${notGrey.length}/${st.meta.wasteland.length} 块不是灰，例如 `
-               + notGrey.slice(0, 3).map((t2) => JSON.stringify(lutOf(t2))).join(' ')
-             : `全 ${st.meta.wasteland.length} 块都是灰`);
-      }
-      // **先把颜色显示打开**：自动填色只认"看得见的颜色"——
-      // 头衔色关着（EU4/EU5 默认）时画面上只有涂色，没涂的地方本来就不该有票 ✓
-      const savedTitles = st.showTitles;
-      st.showTitles = true;
-      const n1 = ex.wasteApply();
-      ok('按一下「自动涂色」确实上了色（依据是当前看到的颜色）',
-         n1 > 0 && colouredN() > 0, `算了 ${n1} 块，颜色变了的 ${colouredN()} 块`);
-      st.showTitles = savedTitles;
+        ok('荒地自动上色：周长表建出来了（每块荒地都能查到邻居与边长）',
+           !!st.wastePidList && st.wastePidList.length > 0
+             && !!st.wastePerim && st.wastePerim.size > 0,
+           `荒地块 ${st.wastePidList ? st.wastePidList.length : 0} · 周长表 ${st.wastePerim ? st.wastePerim.size : 0}`);
 
-      // ② 再按几下：颜色应该继续往外传染（上一圈涂上的荒地，这一圈就有票了）
-      const per = st.meta.wastelandPerimeter;
-      ok('周长表烘好了（带权重）', !!per && per.length > 0, per ? `${per.length} 块` : '没有');
-      let selfN = 0, wasteN = 0;
-      for (const e of (per || [])) {
-        for (const pair of e[1]) {
-          if (pair[0] === e[0]) selfN++;
-          if (st.meta.wasteland.indexOf(ex.titleAt(pair[0], fine)) >= 0) wasteN++;
+        const _fine = st.meta.tiers.length - 1;
+        ok('荒地自动上色：渲染器知道最细层层号（着色器按 uFineTier 读 ✓）',
+           ex.renderer.fineTier === _fine, `${ex.renderer.fineTier} vs ${_fine}`);
+
+        /* 静态守卫：着色器里必须真的按 uFineTier 取荒地那份色 ✓
+         *   （只把 uniform 传进去、着色器不读 = 画面一点变化都没有 ✗）*/
+        {
+          const glsrc = fs.readFileSync(path.join(ROOT, 'web', 'js', 'gl.js'), 'utf8');
+          ok('荒地自动上色：着色器按 uFineTier 取色（不是 uTier / uEditTier ✗）',
+             /titleAt\(pid, uFineTier\)/.test(glsrc) && /_fc\.a > 0\.5/.test(glsrc));
+          /* 🔴 **顺序守卫** ✗✗（2026-10-17 用户报的 CK3 问题 ✓）
+           *   CK3 的荒地底层身份是 kind = 6 → 必须**先**查荒地的 alpha 标记，
+           *   再走 kind >= 2 那条类色；反了的话画面永远显示荒地灰 ✓
+           *   （CPU 侧的 displayedColor / 取色不受影响 → 所以"取色说成功了、画面没变" ✓）*/
+          const iWaste = glsrc.indexOf('titleAt(pid, uFineTier)');
+          const iKind = glsrc.indexOf('int _kind = kindOf(pid)');
+          ok('荒地自动上色：着色器的荒地取色排在 kind >= 2 之前（CK3 kind=6 ✓）',
+             iWaste > 0 && iKind > iWaste, `荒地@${iWaste} · kind@${iKind}`);
         }
-      }
-      ok('周长表里没有"自己接壤自己"', selfN === 0, String(selfN));
-      ok('别的荒地也算进周长（荒地之间的边没丢）', wasteN > 0, `荒地邻居 ${wasteN} 处`);
 
-      // 传染：挑一块**光靠荒地邻居的边长就过半**的荒地（周长表里有权重，能直接算），
-      // 只把它的荒地邻居在颜色表上"染上"某色（模拟上一遍自动涂的结果），其余不动 ——
-      // 再按一下，它就该跟着变成那个色。
-      {
-        const _skip = st.meta.wasteAutoSkip || [];
-        let pick = null;
-        for (const e of (per || [])) {
-          if (_skip.indexOf(e[0]) >= 0) continue;      // 名单里的不参与自动填色
-          let wt = 0, tot = 0;
-          for (const pair of e[1]) {
-            tot += pair[1];
-            if (st.meta.wasteland.indexOf(ex.titleAt(pair[0], fine)) >= 0) wt += pair[1];
+        /* 挑一块"有一个陆地邻居占它周长严格过半"的荒地 ✓
+         *   ⚠ 那个邻居必须**不是荒地** ✗ —— 荒地邻居第一圈还没颜色，投不出票 ✓ */
+        let wp = -1, nb = -1;
+        for (const pid of (st.wastePidList || [])) {
+          const per = st.wastePerim.get(pid);
+          if (!per || !per.length) continue;
+          let tot = 0;
+          for (const p of per) tot += p[1];
+          const top = per[0];
+          if (top && top[1] * 2 > tot && !(st.wastePidFlag && st.wastePidFlag[top[0]])) {
+            wp = pid; nb = top[0]; break;
           }
-          if (tot && wt * 2 > tot && e[1].length >= 1) { pick = { e, wt, tot }; break; }
         }
-        if (pick) {
-          const X = [7, 8, 9];
-          const savedShowPaint = st.showPaint;
-          st.showPaint = true;
-          let marked = 0;
-          for (const pair of pick.e[1]) {
-            const nt = ex.titleAt(pair[0], fine);
-            if (st.meta.wasteland.indexOf(nt) >= 0) {
-              // **涂**上去，而不是改颜色表：涂色不会被还原，能稳定地当票 ✓
-              ex.renderer.setPaint(pair[0], X[0], X[1], X[2], 255);
-              marked++;
+        if (wp > 0) {
+          const tid = st.wasteFineTid[wp];
+          const lutOf = () => Array.from(ex.renderer.lutData.slice(tid * 4, tid * 4 + 3));
+          const savedPaint = Array.from(ex.renderer.paintData.slice(nb * 4, nb * 4 + 4));
+          const savedFlags = [st.showPaint, st.showPowerColor, st.showRegionColor, st.wasteAuto, st.tier, st.grain];
+          try {
+            st.showPaint = true;
+            st.showPowerColor = false;
+            st.showRegionColor = false;
+            st.wasteAuto = true;
+            st.grain = null;
+            ex.renderer.setPaint(nb, 17, 201, 99, 255);
+            st._wasteSig = null;
+            ex.refreshWasteAuto();
+            ok('荒地自动上色：周长过半的玩家涂色写进了这块荒地的最细节点',
+               JSON.stringify(lutOf()) === JSON.stringify([17, 201, 99]),
+               `pid=${wp} 邻居=${nb} → ${JSON.stringify(lutOf())}`);
+
+            st.wasteAuto = false;
+            st._wasteSig = null;
+            ex.refreshWasteAuto();
+            const grey = ((st.set && st.set.impass) || [94, 94, 94]).slice();
+            ok('荒地自动上色：关掉开关 → 回退「不可通行区域」那个色',
+               JSON.stringify(lutOf()) === JSON.stringify(grey),
+               `${JSON.stringify(lutOf())} vs ${JSON.stringify(grey)}`);
+          } finally {
+            ex.renderer.setPaint(nb, savedPaint[0], savedPaint[1], savedPaint[2], savedPaint[3]);
+            [st.showPaint, st.showPowerColor, st.showRegionColor, st.wasteAuto, st.tier, st.grain] = savedFlags;
+            st._wasteSig = null;
+            try { ex.refreshWasteAuto(); } catch (err) { /* ✓ */ }
+          }
+        } else {
+          ok('荒地自动上色：过半邻居取色（找不到单邻居过半的荒地，跳过）', true, 'skip');
+        }
+
+        /* 🔴 **「清除荒地」按钮**（2026-10-17 用户要的 ✓）
+         *   干两件事：清掉荒地块上的手绘色 + 关掉自动上色（否则下一帧又算回来）
+         *   ⚠ 只挑一块荒地手绘，别把整张图的测试状态搅乱 ✓ */
+        {
+          const wp2 = (st.wastePidList || [])[0] || 0;
+          if (wp2 > 0) {
+            const savedAuto2 = st.wasteAuto;
+            const savedPx2 = Array.from(ex.renderer.paintData.slice(wp2 * 4, wp2 * 4 + 4));
+            try {
+              ex.renderer.setPaint(wp2, 12, 34, 56, 255);
+              st.wasteAuto = true;
+              const bAuto2 = get('waste-auto');
+              if (bAuto2) bAuto2.checked = true;
+              ex.clearWastePaint();
+              const pd2 = ex.renderer.paintData;
+              ok('「清除荒地」：清掉荒地手绘色 + 自动上色一起关掉 ✓',
+                 pd2[wp2 * 4 + 3] === 0 && st.wasteAuto === false
+                 && (!bAuto2 || bAuto2.checked === false),
+                 `pid=${wp2} alpha=${pd2[wp2 * 4 + 3]} · auto=${st.wasteAuto}`);
+            } finally {
+              ex.renderer.setPaint(wp2, savedPx2[0], savedPx2[1], savedPx2[2], savedPx2[3]);
+              st.wasteAuto = savedAuto2;
+              const bAuto3 = get('waste-auto');
+              if (bAuto3) bAuto3.checked = savedAuto2;
+              st._wasteSig = null;
+              try { ex.refreshWasteAuto(); } catch (err) { /* ✓ */ }
+              st.history.undo.length = 0;
+              st.history.redo.length = 0;
+            }
+          } else {
+            ok('「清除荒地」：这张图没有荒地，跳过', true, 'skip');
+          }
+        }
+
+        /* 🔴 **剧本模式开启时不再检查地区颜色** ✗✗（2026-10-17 用户追加 ✓）
+         *   把视图停在「空白剧本」（全无主）+ 粒度开到地理层 + 地区颜色打开：
+         *   剧本没归属、也没涂色 → 一个颜色来源都没有 → 所有荒地必须回灰 ✓
+         *   ⚠ 改之前这里会拿粒度层的地区色投票，能染上一片五颜六色 ✓ */
+        {
+          const nEra = (st.meta.eraDates || []).length;
+          if (nEra > 0) {
+            const fineT = st.meta.tiers.length - 1;
+            const saved = [st.tier, st.grain, st.showPaint, st.showPowerColor,
+                           st.showRegionColor, st.wasteAuto];
+            try {
+              st.tier = nEra - 1;              // 空白剧本（全无主）
+              st.grain = fineT;                // 粒度开到最细的地理层
+              st.showPaint = false;
+              st.showPowerColor = true;        // 剧本色开着，但这一层没归属
+              st.showRegionColor = true;       // 地区色开着 —— 新口径下**不该被检查**
+              st.wasteAuto = true;
+              st._wasteSig = null;
+              ex.refreshWasteAuto();
+              const grey = ((st.set && st.set.impass) || [94, 94, 94]);
+              let colored = 0;
+              for (const pid of st.wastePidList) {
+                const tid = st.wasteFineTid[pid];
+                if (tid < 0) continue;
+                const c = [ex.renderer.lutData[tid * 4], ex.renderer.lutData[tid * 4 + 1],
+                           ex.renderer.lutData[tid * 4 + 2]];
+                if (c[0] !== grey[0] || c[1] !== grey[1] || c[2] !== grey[2]) colored++;
+              }
+              ok('荒地自动上色：剧本视图里不检查地区颜色（空白剧本 + 地区色开 → 全灰 ✓）',
+                 colored === 0, `染上地区色的荒地 ${colored} / ${st.wastePidList.length}`);
+            } finally {
+              [st.tier, st.grain, st.showPaint, st.showPowerColor,
+               st.showRegionColor, st.wasteAuto] = saved;
+              st._wasteSig = null;
+              try { ex.refreshWasteAuto(); } catch (err) { /* ✓ */ }
             }
           }
-          ex.wasteApply();
-          const dt = ex.titleAt(pick.e[0], fine);
-          ok('荒地之间会带色（旁边那块荒地有颜色，这块就跟着有票）',
-             marked > 0 && JSON.stringify(lutOf(dt)) === JSON.stringify(X),
-             `荒地邻居权重 ${pick.wt}/${pick.tot}，染了 ${marked} 块；LUT ${JSON.stringify(lutOf(dt))}`);
-          for (const pair of pick.e[1]) ex.renderer.setPaint(pair[0], 0, 0, 0, 0);
-          st.showPaint = savedShowPaint;
-        } else {
-          ok('荒地之间带色：这张图没有"光靠荒地邻居就过半"的样本，跳过', true, '-');
         }
       }
 
-      // ③ 你涂的颜色也能把荒地吸过去
-      ex.wasteClear();
-      let target = null;
-      for (const e of (per || [])) if (e[1].length >= 2) { target = e; break; }
-      if (target) {
-        const rgb = [10, 20, 30];
-        for (const pair of target[1]) ex.renderer.setPaint(pair[0], rgb[0], rgb[1], rgb[2], 255);
-        ex.wasteApply();
-        const dt = ex.titleAt(target[0], fine);
-        ok('邻居被你涂成一色之后，这块荒地跟着变成那个颜色',
-           JSON.stringify(lutOf(dt)) === JSON.stringify(rgb),
-           `LUT ${JSON.stringify(lutOf(dt))} vs 涂的 ${JSON.stringify(rgb)}`);
-        for (const pair of target[1]) ex.renderer.setPaint(pair[0], 0, 0, 0, 0);
-      } else {
-        ok('邻居全涂一色：这张图没有合适样本，跳过', true, '-');
-      }
+
 
       // 取色 = 画面上此刻的颜色（跟着开关走）
       {
         const saved = [st.showWaste, st.showPaint, st.showTitles];
         const ownTid = ex.titleAt(wpid, fine);
-        ex.wasteClear();
         // ① 「荒漠 · 涂色」关着：荒地显示原版灰，取色就该取到灰
         st.showWaste = false;
         st.showPaint = false;
@@ -4171,13 +4885,14 @@ const factory = new Function(
            !/if \(isLocked\(tid\)\) return;/.test(pa),
            /isLocked/.test(pa) ? "还有 isLocked（看是不是带条件的 ✓）" : "干净");
       }
-      /* 静态顺序：displayedColor 里"手绘"必须在"荒地灰"**前面** ✓ */
+      /* 静态顺序：displayedColor 里"手绘"必须在"荒地自动色"**前面** ✓
+       *   （2026-10-17 重做：荒地不再走旧 `showWaste` 那条，改成读最细层 LUT ✓）*/
       {
         const a = fs.readFileSync(path.join(ROOT, "web", "js", "app.js"), "utf8");
         const fn = a.slice(a.indexOf("function displayedColor"), a.indexOf("function stableColor"));
         const iPaint = fn.indexOf("state.showPaint && pd && pid");
-        const iWaste = fn.indexOf("isWastelandTid(own) && !state.showWaste");
-        ok("displayedColor 的顺序：手绘层在荒地灰之前（跟 colorOfPid 对齐 ✓）",
+        const iWaste = fn.indexOf("isWastelandTid(own) && renderer");
+        ok("displayedColor 的顺序：手绘层在荒地自动色之前（跟 colorOfPid 对齐 ✓）",
            iPaint > 0 && iWaste > 0 && iPaint < iWaste,
            "手绘@" + iPaint + " · 荒地@" + iWaste);
       }
@@ -4206,139 +4921,6 @@ const factory = new Function(
         st.showTitles = saved[2];
       }
 
-      // 没有任何颜色过半的荒地：按一下之后自己变回原版色（不留下上一按的颜色）
-      {
-        const per2 = st.meta.wastelandPerimeter || [];
-        let target = null;
-        for (const e of per2) {
-          let wt = 0, tot = 0, wn = 0;
-          for (const pair of e[1]) { tot += pair[1]; }
-          // 逐邻居按"当前这层的主人"归色，看有没有哪个色过半；这里只挑明显没有的：
-          const votes = new Map();
-          for (const pair of e[1]) {
-            const nt = ex.titleAt(pair[0], st.tier);
-            if (nt === 0xffff || nt == null) continue;
-            const c = T3.colors[nt];
-            if (!c) continue;
-            const k = c.join(",");
-            votes.set(k, (votes.get(k) || 0) + pair[1]);
-            wn += pair[1];
-          }
-          let best = 0;
-          for (const v of votes.values()) if (v > best) best = v;
-          if (tot > 0 && !(best * 2 > tot)) { target = e; break; }
-        }
-        if (target) {
-          const dt = ex.titleAt(target[0], fine);
-          ex.renderer.setLutColor(dt, 5, 6, 7);        // 假装它上一按被涂过
-          ex.wasteApply();
-          ok('没有任何颜色过半的荒地，会被还回原版色（荒地灰）',
-             JSON.stringify(lutOf(dt)) === JSON.stringify(restOf(dt)),
-             `${JSON.stringify(lutOf(dt))} vs 原版 ${JSON.stringify(restOf(dt))}`);
-        } else {
-          ok('还回原版色：这张图没有"谁也不过半"的样本，跳过', true, '-');
-        }
-      }
-
-      // **剧本层按一下：荒地只该是「荒地灰」或「真国家的颜色」** ✓
-      // 数据里荒地那个 colors[]（省份位图技术色）**一个都不许出现在画面上** ——
-      // 用户报的「西伯利亚针叶林变成莫名其妙的颜色」就是它继承了**邻居荒地的私有技术色** ✗
-      {
-        const svT6 = st.tier, svST6 = st.showTitles;
-        const svPaint6 = st.showPaint;
-        st.tier = 0; st.showTitles = true; st.showPaint = true;
-        ex.wasteClear();
-        ex.wasteApply();
-        // 允许出现的颜色：荒地灰 + **第 0 层上真出现的那些头衔**的颜色 + 玩家涂过的色
-        // ⚠ 别按 `tiers[i] === 0` 找 ✗ —— CK3 的第 0 层是「1066 剧本地图」，
-        //   它借的是法理头衔的节点（帝国/王国/伯爵…都有 ✓）→ 按"谁在这一层出现"才准 ✓
-        const allow = new Set([wasteGreyOf().join(',')]);
-        {
-          const inRow0 = new Set();
-          const NPw = st.meta.numProvinces;
-          for (let p = 1; p < NPw; p++) {
-            const t = st.titlemap[p];                     // 第 0 行 = 那一年/那一层 ✓
-            if (t > 0 && t < T3.keys.length) inRow0.add(t);
-          }
-          for (const i of inRow0) {
-            if (st.meta.wasteland.indexOf(i) >= 0) continue;
-            const c = T3.colors[i];
-            if (c) allow.add(c.join(','));
-          }
-        }
-        {
-          const pd = ex.renderer.paintData;
-          for (let q = 1; q < st.meta.numProvinces; q++) {
-            if (pd[q * 4 + 3] > 0) allow.add(`${pd[q * 4]},${pd[q * 4 + 1]},${pd[q * 4 + 2]}`);
-          }
-        }
-        const bad = [];
-        for (const t2 of st.meta.wasteland) {
-          const k = lutOf(t2).join(',');
-          if (!allow.has(k)) bad.push(`${t2}:${k}`);
-        }
-        ok('剧本层自动上色：荒地只出现「荒地灰 / 真国家的颜色 / 我涂的色」✓',
-           bad.length === 0,
-           bad.length ? `${bad.length} 块是别的色，例如 ${bad.slice(0, 3).join(' ')}` : '干净');
-        ex.wasteClear();
-        st.tier = svT6; st.showTitles = svST6; st.showPaint = svPaint6;
-      }
-
-      // 名单里的地块：不参与自动填色，一直保持原版色
-      if ((st.meta.wasteAutoSkip || []).length) {
-        const savedTitles2 = st.showTitles;
-        st.showTitles = true;
-        ex.wasteClear();
-        // 先把它们故意染成别的色，看自动填色会不会把它们还原回去
-        for (const pid of st.meta.wasteAutoSkip) {
-          ex.renderer.setLutColor(ex.titleAt(pid, fine), 200, 10, 10);
-        }
-        ex.wasteApply();
-        let bad = 0;
-        for (const pid of st.meta.wasteAutoSkip) {
-          const dt = ex.titleAt(pid, fine);
-          if (JSON.stringify(lutOf(dt)) !== JSON.stringify(restOf(dt))) bad++;
-        }
-        ok('名单里的荒地不参与自动填色（被还原成原版色）',
-           bad === 0, `名单 ${st.meta.wasteAutoSkip.length} 块，没还原的 ${bad}`);
-        st.showTitles = savedTitles2;
-      }
-
-      // 「清除荒地填色」：只清玩家涂的，自动色不动
-      {
-        ex.wasteClear();
-        const dt = ex.titleAt(wpid, fine);
-        st.showWaste = true;
-        st.showPaint = true;
-        st.provTitle[wpid] = 0;                       // 账本记着：这是玩家涂的
-        ex.renderer.setPaint(wpid, 44, 55, 66, 255);
-        ex.wasteApply();                              // 自动填色先上一遍
-        const auto = JSON.stringify(lutOf(dt));
-        const cleared = ex.wasteClearPlayerPaint();
-        ok('「清除荒地填色」清掉了玩家在荒地上的笔迹',
-           cleared > 0 && ex.renderer.paintData[wpid * 4 + 3] === 0,
-           `清了 ${cleared} 块，手绘 alpha ${ex.renderer.paintData[wpid * 4 + 3]}`);
-        ok('「清除荒地填色」不动自动填的颜色',
-           JSON.stringify(lutOf(dt)) === auto, `${JSON.stringify(lutOf(dt))} vs ${auto}`);
-        st.provTitle[wpid] = -1;
-        ex.renderer.setPaint(wpid, 0, 0, 0, 0);
-        ex.wasteClear();
-      }
-
-      // ④ 清除
-      ex.wasteClear();
-      let left = 0;
-      for (const t2 of (st.meta.wasteland || [])) if (isColoured(t2)) left++;
-      ok('「清除」把自动色全还原成原版色', left === 0, `还剩 ${left} 块有色`);
-
-      // ⑤ 你自己涂过的荒地，自动涂色不碰
-      st.provTitle[wpid] = 12345;
-      ex.wasteClear();
-      ex.wasteApply();
-      ok('你自己涂过的荒地，自动涂色不碰它',
-         !isColoured(wtid), JSON.stringify(lutOf(wtid)));
-      st.provTitle[wpid] = -1;
-      ex.wasteClear();
     }
   }
 
@@ -4357,13 +4939,23 @@ const factory = new Function(
       .test(require('fs').readFileSync('web/index.html', 'utf8')));
     ok('「头衔」那组显示开关已经删干净（index.html 里不该再有那几个 id）',
        gone.length === 0, gone.length ? ('还留着：' + gone.join('、')) : '一个都不剩 ✓');
-    if (get('power-group')) {
-      ok(hasEra ? '有年代层：显示「势力 / 地区」两组'
-                : '没有年代层的旧缓存：这两组收起来',
-         hasEra ? (vis('power-group') && vis('region-group'))
-                : (!vis('power-group') && !vis('region-group')),
-         `势力=${vis('power-group')} 地区=${vis('region-group')} 有年代层=${hasEra}`);
+    /* 🔴 **2026-10-17：「剧本」那组整组删了** ✓（用户："三个开关已经没什么用了"✓）
+     *   ⚠ 假 DOM 会现造元素 ✗ → 删没删必须扫源码 ✓ */
+    {
+      const _html = require('fs').readFileSync('web/index.html', 'utf8');
+      const _ids = ['power-group', 'show-power-border', 'show-power-names', 'show-power-color'];
+      const _left = _ids.filter((id) => new RegExp(`id="${id}"`).test(_html));
+      ok('「剧本」那组的三个开关已经删干净（颜色 / 边界 / 名称 ✓）',
+         _left.length === 0, _left.length ? ('还留着：' + _left.join('、')) : '一个都不剩 ✓');
+      ok('显示区里「填色」这个组名改成了「势力」✓',
+         /<span class="group-label">势力<\/span>/.test(_html)
+         && !/<span class="group-label">填色<\/span>/.test(_html),
+         '找 group-label = 势力 / 填色');
     }
+    ok(hasEra ? '有年代层：显示「地块」组'
+              : '没有年代层的旧缓存：「地块」组收起来',
+       hasEra ? vis('region-group') : !vis('region-group'),
+       `地块=${vis('region-group')} 有年代层=${hasEra}`);
   }
 
   // **剧本 + 地区/省份粒度**这个组合（用户报的三条都在这里）
@@ -4520,15 +5112,10 @@ const factory = new Function(
     ok('CK3（没有年代层）不拆 势力/地区：仍旧「头衔」一组', true, '✓');
   }
 
-  // 没有荒地数据的模式：荒地那一组（含清除按钮）都该收起来
-  {
-    const el = get('waste-clear');
-    const has = !!(st.meta.wasteland && st.meta.wasteland.length);
-    ok(has ? '有荒地的模式里「清除荒地填色」按钮在'
-           : '没有荒地的模式里「清除荒地填色」按钮收起来了',
-       !!el && (el.style.display === 'none') !== has,
-       el ? `display=${el.style.display || '(空)'}` : '没有这个按钮');
-  }
+  /* 🔴 **2026-10-17：用户又要了一个「清除荒地」按钮** ✗（id `btn-clear-waste`）——
+   *   它跟 2026-10-14 退役的旧按钮不是同一个：新按钮 = 清荒地块手绘色 + 关自动上色，
+   *   断言在「荒地自动上色」那一段（`clearWastePaint`）✓
+   *   ⚠ 旧的「清除荒地填色」按钮（`waste-clear`）仍然是退役状态 ✗ 别把它加回来 ✓ */
 
   // 最细那层额外描父级边界（CK3 男爵领→伯爵领 / EU5 地块→省份 / 其他省份→地区）
   if (st.meta.tierNames && st.meta.tierNames.length > 1) {
@@ -4620,35 +5207,53 @@ const factory = new Function(
            ex.renderer.extraWs[0] < ex.renderer.extraWs[ex.renderer.extraCount - 1],
            `${ex.renderer.extraWs[0].toFixed(2)} < `
            + `${ex.renderer.extraWs[ex.renderer.extraCount - 1].toFixed(2)}`);
-        /* **海域 / 荒地那两条：宽浓都是**它们自己设置里那个值** ✓（用户要求可调 ✓）
-         *   · 不跟链、不跟本层那条线走 ✓（以前水域取"链上最粗那条" ✗ → 开不开剧本会变 ✗）
-         *   · **也不再跟「基准线宽」缩放** ✗（那是老口径 ✓ 现在宽度就是格数 ✅）*/
+        /* 🔴🔴 **2026-10-16 重写** ✗✗（handover §3.4 第 6 步 ✓）
+         *  原文量的字段叫 `renderer.waterW` / `waterA` ✓ —— 那一套**早退役了** ✗
+         *  现在这条通道的字段是 **`waterBorderW` / `waterBorderA`** ✓
+         *  （名字跟 uniform `uWaterBorderW/A` 对齐 ✓ 别跟"填色那条"混 ✓）
+         *  要量的三件事一条都没变 ✓：
+         *    · 粗细 = 设置里那个格数（**不跟链、不跟本层那条线** ✓）
+         *    · 不跟「基准线宽 / 地区宽度」缩放 ✓
+         *    · 改设置立刻跟着变 ✓
+         *  ⚠ **荒地那一对（wasteW/wasteA）不再量** ✗ —— 它整对退役了 ✓
+         *    用户 2026-10-16 只点名了水域（handover §3.4："只加水域那两条滑条"✓）*/
         {
           const _svW = st.set ? st.set.w : undefined;
+          const _svWRegion = st.set ? st.set.wRegion : undefined;
           const _svWW = st.set ? st.set.waterW : undefined;
-          if (st.set) { st.set.w = 2; st.set.waterW = 1; }
-          ex.syncLayerSwitches();
-          const _w1 = ex.renderer.waterW;
-          if (st.set) st.set.w = 4;                    // 基准线宽拉两倍 → **不该影响它** ✓
-          ex.syncLayerSwitches();
-          const _w2 = ex.renderer.waterW;
-          if (st.set) st.set.waterW = 2.5;             // 直接改"海域宽度" → 它才跟着变 ✓
-          ex.syncLayerSwitches();
-          const _w3 = ex.renderer.waterW;
+          const _svWA = st.set ? st.set.waterA : undefined;
+          if (st.set) { st.set.w = 2; st.set.wRegion = 2; st.set.waterW = 1; st.set.waterA = 100; }
+          ex.syncParentBorder();
+          const _w1 = ex.renderer.waterBorderW;
+          const _a1 = ex.renderer.waterBorderA;
+          if (st.set) { st.set.w = 4; st.set.wRegion = 4; }   // 基准 / 地区宽度拉两倍 → **不该影响它** ✓
+          ex.syncParentBorder();
+          const _w2 = ex.renderer.waterBorderW;
+          if (st.set) st.set.waterW = 2.5;                    // 直接改「水域边界宽度」→ 它才跟着变 ✓
+          ex.syncParentBorder();
+          const _w3 = ex.renderer.waterBorderW;
+          if (st.set) st.set.waterA = 50;                     // 浓度同理 ✓
+          ex.syncParentBorder();
+          const _a3 = ex.renderer.waterBorderA;
           if (st.set) {
             if (_svW === undefined) delete st.set.w; else st.set.w = _svW;
+            if (_svWRegion === undefined) delete st.set.wRegion; else st.set.wRegion = _svWRegion;
             if (_svWW === undefined) delete st.set.waterW; else st.set.waterW = _svWW;
+            if (_svWA === undefined) delete st.set.waterA; else st.set.waterA = _svWA;
           }
-          ex.syncLayerSwitches();
-          ok('海域边界：粗细 = 设置里那个格数（不跟链、不跟本层那条线 ✓）',
+          ex.syncParentBorder();
+          ok('水域边界：粗细 = 设置里那个格数（不跟链、不跟本层那条线 ✓）',
              Math.abs(_w1 - 1) < 0.001,
-             `waterW=${_w1} 链上最粗=${ex.renderer.extraWs[ex.renderer.extraCount - 1].toFixed(2)}`
+             `waterBorderW=${_w1} 链上最粗=${ex.renderer.extraWs[ex.renderer.extraCount - 1].toFixed(2)}`
              + ` 本层=${ex.renderer.borderWidth.toFixed(2)}`);
-          ok('海域边界：不再跟「基准线宽」缩放，只认「海域宽度」那一档 ✓',
+          ok('水域边界：不再跟「基准线宽 / 地区宽度」缩放，只认「水域边界宽度」那一档 ✓',
              Math.abs(_w2 - 1) < 0.001 && Math.abs(_w3 - 2.5) < 0.001,
-             `基准拉两倍后=${_w2}（应仍是 1）  改海域宽度=2.5 → ${_w3}`);
-          ok('荒地边界也有自己的粗细字段（不再借填色的 ✗）',
-             ex.renderer.wasteW !== undefined && ex.renderer.wasteA !== undefined,
+             `基准/地区拉两倍后=${_w2}（应仍是 1）  改水域宽度=2.5 → ${_w3}`);
+          ok('水域边界：浓度也吃自己那一档（100% → 1.0、50% → 0.5 ✓ 实心默认 ✓）',
+             Math.abs(_a1 - 1.0) < 0.001 && Math.abs(_a3 - 0.5) < 0.001,
+             `默认=${_a1}（应 1.0）  改成 50% → ${_a3}`);
+          ok('荒地那对字段仍然退役（这次只请回水域 ✓）',
+             ex.renderer.wasteW === undefined && ex.renderer.wasteA === undefined,
              `wasteW=${ex.renderer.wasteW} wasteA=${ex.renderer.wasteA}`);
         }
         {
@@ -4657,8 +5262,8 @@ const factory = new Function(
           st.grain = null; st.tier = ERA0;
           ex.syncParentBorder(); ex.syncLayerSwitches();
           ok('水域边界：换成"剧本层 + 没粒度"（本层 1.5）也还是 1 格 ✓',
-             Math.abs(ex.renderer.waterW - 1) < 0.001,
-             `waterW=${ex.renderer.waterW}`
+             Math.abs(ex.renderer.waterBorderW - 1) < 0.001,
+             `waterBorderW=${ex.renderer.waterBorderW}`
              + ` 本层=${ex.renderer.borderWidth.toFixed(2)}`);
           st.grain = _svG2; st.tier = _svT3;
           ex.syncParentBorder(); ex.syncLayerSwitches();
@@ -5291,17 +5896,8 @@ const factory = new Function(
       ex.paintTitle(ex.titleAt(P, LAST4), colB);
       ex.recomputePainted();
 
-      // ① 势力边界 → 整个 A
-      st.showBorderPaint = false; st.showPowerBorder = true;
-      ex.syncLayerSwitches();
-      const t1 = ex.paintTargetsAt(P) || [];
-      const aSet = new Set(aPids);
-      const miss1 = aPids.filter((q) => !inList(t1, q)).length;
-      const extra1 = t1.filter((q) => !aSet.has(q)).length;
-      ok(`① 势力边界：指着涂成「${nameB}」色的巴黎 → 目标是整个「${nameA}」✓`,
-         miss1 === 0 && extra1 === 0,
-         `目标 ${t1.length} 个 / A 有 ${aPids.length} 个（缺 ${miss1}，多 ${extra1}）`);
-
+      // ⚠ 2026-10-17：「剧本 · 边界」删了 → "① 按整个 A" 那条不再测 ✓
+      //    现在只剩「势力 · 边界」（填色那条）✓
       // ② 填色那条，指着 P（涂成 B 色）→ 整个 B
       st.showBorderPaint = true; st.showPowerBorder = false;
       ex.syncLayerSwitches();
@@ -5410,9 +6006,149 @@ const factory = new Function(
        && !/id="set-labelmax-off"/.test(HTML),
        'min=1 max=21，勾选框已经省掉 ✓');
     st.set.labelMax = svMax;
-    ex.rebuildPaintBlocks(true, true);
+    ex.rebuildPaintBlocks(true);
     st.showBorderPaint = svBP;
     ex.syncLayerSwitches();
+  }
+
+  /* ==== 3h. **地名上限**（每个头衔按连通域面积从大到小各留 N 个 ✓）====
+   *  2026-10-16：地名也改成"**每个连通域一个标**"了 ✓ 所以它另有一根上限 ✓
+   *  ⚠ 本段量的是**运行时的 app 函数** ✗ —— 它们得先在**本文件顶部那份
+   *    `return {…}` 导出清单**里 ✓ 忘了加就是 `ex.xxx is not a function` ✓
+   *    所以先挡一道：不在就**判失败 + 跳过** ✓
+   *    （不这么挡的话整段炸掉，**后面所有用例都跑不到** —— 我栽过一次 ✓）*/
+  if (typeof ex.buildPlaceComponents !== 'function' || typeof ex.placePointsFor !== 'function') {
+    ok('产物里有 buildPlaceComponents / placePointsFor（新探针函数要加进导出清单 ✓）', false,
+       'ex 上没有这两个 —— 把 buildPlaceComponents / placePointsFor 加进本文件顶部那份 return 清单');
+  } else {
+    const svPM = st.set.labelPlaceMax;
+    const fine = st.meta.tiers.length - 1;
+    // 挑"连通域数 > 头衔数"的那一层最能看出差别；没有就退回最细层 ✓
+    let tier = fine;
+    for (let t = 0; t < fine; t++) {
+      const pts = ex.buildPlaceComponents(t);
+      const s = new Set();
+      for (const p of pts) s.add(p.tid);
+      if (pts.length > s.size) { tier = t; break; }
+    }
+    st.set.labelPlaceMax = 21;                 // 拉满 = 无上限
+    const allPts = ex.placePointsFor(tier);
+    const tids = new Set();
+    for (const p of allPts) tids.add(p.tid);
+    ok('地名取点：一个连通域一个标（点数 ≥ 不同头衔数 ✓）',
+       tids.size > 0 && allPts.length >= tids.size,
+       `层${tier}：连通域 ${allPts.length} 个 / 头衔 ${tids.size} 个（多出 ${allPts.length - tids.size} 枚）`);
+    ok('地名上限拉满 = 无上限 ✓', ex.labelPlaceMaxValue() === 0,
+       'labelPlaceMaxValue=' + ex.labelPlaceMaxValue());
+    /* **跨接缝的海照样左右都有** ✓ —— 没有 `wrapLabel` 也出得来 ✓
+     *  ⚠ 别拿"裂得最碎"那个当头 ✗（EU4 上那是 `#sea`，187 枚但全在左半 ✓）——
+     *    要**按"同一 tid 的标分处图中线两侧"去找**，找不到就只报一声不判失败 ✓ */
+    {
+      const byTid = new Map();
+      for (const p of allPts) {
+        let r = byTid.get(p.tid);
+        if (!r) { r = { n: 0, lo: Infinity, hi: -Infinity }; byTid.set(p.tid, r); }
+        r.n++;
+        if (p.x < r.lo) r.lo = p.x;
+        if (p.x > r.hi) r.hi = p.x;
+      }
+      const W = st.meta.mapWidth || 0;
+      let cross = null, most = null;
+      for (const [tid, r] of byTid) {
+        if (!most || r.n > most.n) most = { tid, n: r.n, lo: r.lo, hi: r.hi };
+        if (r.n >= 2 && r.lo < W / 2 && r.hi > W / 2 && (!cross || r.n > cross.n)) {
+          cross = { tid, n: r.n, lo: r.lo, hi: r.hi };
+        }
+      }
+      const _nmOf = (t) => `「${(st.titles.names || [])[t]}」`;
+      if (cross) {
+        ok('跨 180° 经线的那片：同一个 tid 左右各有一枚标（没有 wrapLabel 也出得来 ✓）',
+           true,
+           `${_nmOf(cross.tid)}${cross.n} 枚 · x ${cross.lo.toFixed(0)} ~ ${cross.hi.toFixed(0)}`
+           + `（图中线 ${W / 2}）`);
+      } else {
+        console.log('  （这张图上没有"分处左右两头"的头衔 —— 本项跳过 ✓）');
+      }
+      console.log(`    裂得最碎的：${_nmOf(most.tid)}${most.n} 枚`
+        + `（旧那枚单点 titles.lx=${st.titles.lx ? st.titles.lx[most.tid] : '—'}）`);
+    }
+    st.set.labelPlaceMax = 2;                  // 每个头衔各留 2 个
+    const cutPts = ex.placePointsFor(tier);
+    {
+      const cnt = new Map();
+      for (const p of cutPts) cnt.set(p.tid, (cnt.get(p.tid) || 0) + 1);
+      const over = [...cnt.entries()].filter(([, n]) => n > 2);
+      ok('地名上限：每个**头衔**各留 2 个（没有一个留 3 个 ✓）',
+         over.length === 0,
+         over.length ? over.slice(0, 3).map(([k, n]) => k + '×' + n).join(' / ') : `头衔数 ${cnt.size}`);
+      ok('地名上限：留的比"全局前 N"多（证明是按头衔分的 ✓）',
+         cutPts.length > 2, `每个头衔 2 个 → 一共 ${cutPts.length} 个`);
+    }
+    st.set.labelPlaceMax = 21;
+    ok('地名上限再拉满 → 回到原样 ✓', ex.placePointsFor(tier).length === allPts.length,
+       `${ex.placePointsFor(tier).length} / ${allPts.length}`);
+    /* 两根上限**互不干扰** ✓ —— 动地名那根，势力名那份一个不差 ✓ */
+    {
+      const svMax2 = st.set.labelMax;
+      st._blocksAll = true; st._blocksTier = null;
+      st.set.labelMax = 21; ex.rebuildPaintBlocks(true);
+      const nA = (st.paintBlocks || []).length;
+      st.set.labelPlaceMax = 2;                // 只动地名那根
+      ex.rebuildPaintBlocks(true);
+      ok('两根上限互不干扰（动地名那根，势力名那份一个不差 ✓）',
+         (st.paintBlocks || []).length === nA,
+         `势力名无上限 ${nA} 个 → 动完地名那根还是 ${(st.paintBlocks || []).length} 个`);
+      st.set.labelMax = svMax2;
+      ex.rebuildPaintBlocks(!!st._blocksAll);
+    }
+    st.set.labelPlaceMax = svPM;
+    ex.placePointsFor(tier);                   // 让缓存回到用户原来的档位 ✓
+  }
+
+  /* ==== 3i. 剧本层 + 无粒度：**对涂出来的色块动手 = 整块** ✓ ====
+   *  2026-10-16 用户报的：**空白剧本那一层全是无主** ✗ ——
+   *  以前"无主 → 单格"那一刀对每一格都成立，于是涂出来的色块永远只能动一格 ✓
+   *  定的优先级（用户原话）：
+   *    · 「势力 · 边界」**关着** → 先看**所指处的填色** → 再剧本 → 再最低粒度 ✓
+   *    · 「势力 · 边界」**开着** → 先剧本 → 再最低粒度，**不看填色** ✓ */
+  {
+    const _nEra0 = (st.meta.eraDates || []).length;
+    if (_nEra0 <= 0 || typeof ex.paintTargetsAt !== 'function') {
+      console.log('  （没有剧本层 / 产物是旧的 —— 本段跳过 ✓）');
+    } else {
+      const svT = st.tier, svG = st.grain, svBL = st.brushLabel, svBrush = st.brush;
+      const svBP = st.showBorderPaint, svPB = st.showPowerBorder;
+      const fine0 = st.meta.tiers.length - 1;
+      st.tier = _nEra0 - 1;                    // 空白剧本 = 剧本块最右那一格 ✓
+      st.grain = null;
+      st.showPowerBorder = false; st.showBorderPaint = true;   // 填色那条路 ✓
+      const pd0 = ex.renderer.paintData;
+      const pids = [];
+      for (let q = 1; q < st.meta.numProvinces && pids.length < 3; q++) {
+        const t = ex.titleAt(q, fine0);
+        if (t == null || t === 65535 || ex.isLocked(t, q)) continue;
+        if (st.provPos[q * 3 + 2] < 5) continue;
+        if ((st.meta.wasteland || []).indexOf(t) >= 0) continue;
+        if (pd0 && pd0[q * 4 + 3] > 0) continue;                // 只用没涂过的 ✓
+        pids.push(q);
+      }
+      if (pids.length < 3) {
+        console.log('  （挑不出 3 块干净的陆地 —— 本段跳过 ✓）');
+      } else {
+        st.brushLabel = '测试色块';
+        ex.setBrush([12, 200, 77], false);
+        for (const q of pids) ex.paintAt(q, ex.titleAt(q, fine0));
+        const tgt = ex.paintTargetsAt(pids[0]) || [];
+        ok('空白剧本 + 无粒度：点涂出来的色块 → **整块涂色**（不再是单格 ✗）',
+           pids.every((q) => tgt.indexOf(q) >= 0),
+           `涂了 ${pids.length} 块 · 目标 ${tgt.length} 块`);
+        // ⚠ 2026-10-17：「剧本 · 边界」那个勾删了 → "先剧本、不看填色"那条不再有入口 ✓
+        //    这里只验剩下的填色范围 ✓
+        ex.setBrush(svBrush, false);
+      }
+      st.tier = svT; st.grain = svG; st.brushLabel = svBL;
+      st.showBorderPaint = svBP; st.showPowerBorder = svPB;
+    }
   }
 
   console.log('\n=== 3d. 导入带 clearEraNames 的配色之后，剧本层国名不能空 ===');

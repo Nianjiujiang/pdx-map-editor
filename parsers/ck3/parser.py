@@ -767,17 +767,32 @@ def _clean(value: str) -> str:
     return " ".join(value.split())
 
 
-def parse_localisation(lang_dir: Path, keys: Iterable[str] | None = None) -> dict[str, str]:
+def parse_localisation(lang_dir: Path, keys: Iterable[str] | None = None,
+                       *, recursive: bool = False,
+                       skip: Iterable[str] = ()) -> dict[str, str]:
     """读某个语言目录下所有 yml，返回 {key: 显示名}。
 
     先把整张表读进来再按 keys 过滤 —— 因为 $key$ 展开需要引用表外的条目，
     边读边过滤会导致大量名字展开不出来。
+
+    ``recursive=True`` 时连子目录一起读：模组爱把文本按主题分文件夹放
+    （HOI4 的 KR 就分在 ``KR_common/`` ``KR_country_specific/`` 里，顶层反而只有一点点）。
+    ``skip`` 列出的目录名整体跳过，留给调用方单独叠 —— HOI4 的 ``replace/``
+    优先级最高，得最后读才盖得住。
     """
     if not lang_dir.is_dir():
         return {}
 
+    files = sorted(lang_dir.rglob("*.yml") if recursive else lang_dir.glob("*.yml"))
+    skip = tuple(skip)
+    if skip:
+        def _skipped(fp: Path) -> bool:
+            rel = fp.relative_to(lang_dir).parts[:-1]      # 去掉文件名，只看目录链
+            return any(s in rel for s in skip)
+        files = [fp for fp in files if not _skipped(fp)]
+
     table: dict[str, str] = {}
-    for fp in sorted(lang_dir.glob("*.yml")):
+    for fp in files:
         text = None
         for enc in _LOC_ENCODINGS:
             try:

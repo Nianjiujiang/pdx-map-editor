@@ -52,7 +52,15 @@
 /* ── 二级界面：从按钮**正上方**弹出来的那一栏（上拉菜单那种 ✓）──────── */
 #mob-sheet {
   position: absolute; z-index: 61;
-  max-height: 62vh; display: flex; flex-direction: column;
+  /* ⚠ 2026-10-13：跟 `.tall` 一起**按三成降**（用户要求"设置高度减去 30%"✓）
+   *   原来是 **62vh** → 62 × 0.5 ≈ **31vh** ✓（之前试过 52 ✗ 那个不是"三成"）
+   *   这一条管的是**非 tall** 的常规二级面板（工具 / 颜色那些）✓ 它们内容本来就短 ✓ */
+  max-height: 25vh; display: flex; flex-direction: column;
+  /* 🔴 **必须 `overflow: hidden`** ✗（2026-10-13 用户报"高度仍然遵循界面最高的"✓）
+   *   不加这句，超出 max-height 的内容**照样画在面板外面** ✓
+   *   看着就是"面板高度跟着内容走"✗ 其实是溢出了 ✓
+   *   收了之后：多余的进 `.mob-panes` 的滑条 ✓ 面板本身老老实实 43vh / 40vh ✓ */
+  overflow: hidden;
   background: #0d131a; border-radius: 16px;
   border: 1px solid #2b3743;
   box-shadow: 0 -14px 44px rgba(0, 0, 0, .66), 0 0 0 1px rgba(0, 0, 0, .3);
@@ -95,8 +103,30 @@
   min-height: 34px; padding: 0 12px; border-radius: 17px; border: 1px solid #2b3743;
   background: #131b23; color: #cfd9e4; font: 600 13px/1 "Microsoft YaHei", system-ui, sans-serif;
 }
+/* 🔴🔴 **这里不许滚动** ✗✗（2026-10-13 用户报"滑动时连带着上面的分类按钮一起滑动，很怪"✓）
+ *
+ *   原来的 DOM 是"两层滚动套着"，而且**标签栏住在滚动层里面** ✗：
+ *     #mob-sheet-head     ← 标题栏（不滚 ✓）
+ *     #mob-sheet-body     ← `overflow-y: auto` **滚动层 ①** ← 标签栏在这儿 ✗
+ *       .mob-tabs         ← 「设置 / 颜色 / 工具 / 视图」← 被一起滑走了 ✓
+ *       .mob-panes        ← **滚动层 ②**（但原来只在 `mob-tall` 时才允许滚 ✓）
+ *
+ *   所以在**普通模式**下只能靠①滚 → 标签栏必然跟着走 ✓ 就是那个"很怪" ✓
+ *   （「更高」模式下①被设成 `hidden` ✗ 反而不犯这个毛病 ✓
+ *     所以这个 bug 只在普通模式出现 ✓ 用户看到的正是这样 ✓）
+ *
+ *   ✅ 正确分工：**滚动只发生在 `.mob-panes` 里** ✓
+ *     · `#mob-sheet-body` → `overflow: hidden`（一个像素都不滚 ✓）
+ *     · 但它是 flex 列容器 ✗ 这样 `.mob-panes` 才能撑满剩下的地方 ✓
+ *     · `.mob-tabs` 加 `flex: none` ✓ 永远待在原地 ✓
+ *   ⚠ 这三处是一套 ✗ 改一处要看另外两处 ✓（见下面 `.mob-tabs` 和 `.mob-panes` ✓）
+ *   ⚠ 原来那句 `-webkit-overflow-scrolling: touch` 一起搬给 `.mob-panes` ✓
+ *     那才是真正滚动的那个层 ✓ 不搬的话手机上滑起来会发涩 ✓ */
 #mob-sheet-body {
-  flex: 1 1 auto; overflow-y: auto; -webkit-overflow-scrolling: touch;
+  flex: 1 1 auto;
+  overflow: hidden;                  /* ← 不滚 ✓ 交给里面的 .mob-panes */
+  display: flex; flex-direction: column;
+  min-height: 0;                     /* ← 不写这句，内容会把面板顶高 ✓ */
   padding: 10px 12px calc(20px + env(safe-area-inset-bottom, 0px));
 }
 .mob-group { display: block; }
@@ -118,11 +148,60 @@
   display: flex; flex-wrap: wrap; gap: 8px;
   padding-bottom: 12px; margin-bottom: 10px; border-bottom: 1px solid #1d2833;
 }
-/* **设置这一栏高度锁死** ✓ 换标签时不许变 ✗ */
-#mob-sheet.tall { height: 58vh; max-height: 58vh; }
-#mob-sheet.tall #mob-sheet-body { display: flex; flex-direction: column; }
-#mob-sheet.tall .mob-group { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
-#mob-sheet.tall .mob-panes { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+/* **设置这一栏高度锁死** ✓ 换标签时不许变 ✗
+ * ⚠ 2026-10-13 用户要求："**设置高度减去 30%**" ✓
+ *   基准是原来的 **58vh** → 58 × 0.5 ≈ **29vh** ✓
+ *
+ * 🔴🔴 **类名必须跟 JS 一致** ✗✗（用户报"根本没看到，高度仍然遵循界面最高的"✓ 就是这个）
+ *   JS 那边用的是 **`mob-tall`**（`sheet.classList.toggle('mob-tall', …)` ✓ 见 mobile_js.txt）
+ *   而这里原来写的是 **`.tall`** ✗ —— 那个类**谁也没加过** ✓
+ *   → 这三条规则全是**死代码** ✗ 高度当然没变 ✓
+ *   ✅ 现在两个名字都写上（`.tall` 留着以防别处还在用 ✗ 反正不冲突 ✓）
+ *
+ * 🔴 **两件事一起做才有用** ✗ 光设 height 不够：
+ *   ① flex 子项的 `min-height` 默认是 `auto` ✓ → 内容会把父容器**顶高** ✓
+ *      所以 `#mob-sheet-body` 必须补 `min-height: 0` ✓（原来漏了 ✓）
+ *   ② `#mob-sheet` 自身要 `overflow: hidden` ✓ → 不然溢出内容照样画在外面 ✓
+ *      （看着就是"高度按内容走"✓ 用户说的"怎么不把多余内容收进去"✓）
+ *   下面那行 `.mob-panes { overflow-y: auto }` 就是滑条 ✓ 内容放得下 ✓
+ *
+ * ⚠ 「颜色什么的当然不变」✓ —— `.set-row input[type=color]` 那几条
+ *   （`-webkit-color-swatch`）是修"手机上色块露灰"的 ✓ 跟高度无关 ✓ 别动 ✓
+ * ⚠ 跟上面 `#mob-sheet` 那个 `max-height` 是一对 ✗ 两个都按三成降过了 ✓ */
+#mob-sheet.tall, #mob-sheet.mob-tall { height: 29vh; max-height: 29vh; }
+#mob-sheet.tall #mob-sheet-body, #mob-sheet.mob-tall #mob-sheet-body {
+  display: flex; flex-direction: column;
+  min-height: 0;            /* ← 不加这句，内容会把面板顶回原高度 ✓ */
+}
+#mob-sheet.tall .mob-group, #mob-sheet.mob-tall .mob-group {
+  flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column;
+}
+/* ⚠ **普通模式也要能滚** ✗（2026-10-13 跟上面 `#mob-sheet-body` 配套改的 ✓）
+ *   原来是 `#mob-sheet.tall …, #mob-sheet.mob-tall …` 两个前缀 ✗
+ *   → 只有「更高」模式下 `.mob-panes` 才滚 ✓ 普通模式压根不滚 ✓
+ *     于是滚动全落在 `#mob-sheet-body` 上 → **标签栏被一起滑走** ✓（用户报的那个 ✓）
+ *   现在**无条件**让它滚 ✓ 标签栏就固定住了 ✓
+ *   ⚠ `min-height: 0` 必须有 ✗ 不然 flex 子项按内容撑开、滚条不出现 ✓
+ *   ⚠ `overflow-y: auto` 只管纵向 ✗ 横向那个 `overflow-x: hidden !important`
+ *     在下面那段"滑块彻底根治"里 ✓ 两者不冲突 ✓ */
+.mob-panes {
+  flex: 1 1 auto; min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;   /* ← 从 #mob-sheet-body 搬过来的 ✓ */
+}
+.mob-tabs, .mob-tabs-row { flex: none; }   /* ← 标签栏固定，永远不被挤/不被滑 ✓ */
+/* ⚠ **中间那层（`.mob-group`）也得能撑** ✗（2026-10-13 补 ✓）
+ *   链子是 `#mob-sheet-body`（flex 列）→ `.mob-group` → `.mob-tabs` + `.mob-panes`
+ *   · `.mob-panes` 写了 `flex: 1` ✓ 但它得先有个"能撑开的父"
+ *   · 原来 `flex: 1 1 auto` 只在 `#mob-sheet.tall …` / `.mob-tall …` 下给 ✗
+ *     → **普通模式**里 `.mob-group` 是普通块 ✓ 高度按内容走 ✓
+ *     → `.mob-panes` 跟着按内容 ✓ `overflow-y: auto` **永远不触发** ✗
+ *     → 于是滚动还是落回 `#mob-sheet-body` ✓ 标签栏又被滑走 ✓（白改 ✓）
+ *   ⚠ 这四层是一条链子 ✗（body / group / panes / tabs）少一环就白搭 ✓ */
+.mob-sheet-body > .mob-group, #mob-sheet-body > .mob-group {
+  flex: 1 1 auto; min-height: 0;
+  display: flex; flex-direction: column;
+}
 .mob-tab {
   min-height: 38px; padding: 0 14px; border-radius: 19px;
   border: 1px solid #26313d; background: #101820; color: #cfd9e4;
@@ -214,18 +293,62 @@
 .mob-author-row { margin-top: 12px; padding-top: 10px; }
 .mob-author-row .btn, .mob-author-row a { min-height: 34px; font-size: 13px; }
 
+/* ===========================================================================
+   🔴 **设置面板再紧凑一档 + 高度 +15%**（2026-10-17 ✓ 用户点名 ✓）
+      原话："手机版的设置UI再紧凑一下，同时高度提升15%。**只有设置**！颜色什么的不要改"✓
+
+   ⚠ **选择器一律带 `.mob-pane`** ✗✗ —— 三个理由：
+     ① 那是"**设置**"里那 5 个标签页（显示 / 颜色 / 边界 / 名字 / 其他）的类名 ✓
+        工具 / 视图 / 文件那些面板用的是 `.mob-group` ✓ **一个都不会被这条命中** ✓
+        （2026-10-13 踩过反过来的坑：规则只写 `.mob-pane`，工具页没命中 ✗
+          这次要的正是"只打设置" ✓ 所以这个前缀刚好对 ✓）
+     ② 上面那一坨 `#mob-sheet …` 是**所有**二级面板共用的 ✓ 不能直接改 ✗
+     ③ 颜色那几条（`.set-row input[type=color]` / `-webkit-color-swatch`）是修
+        "手机上色块露灰"的 ✓ 跟疏密无关 ✓ —— 这一段里**一个 color 字样都没有** ✓
+
+   ⚠ **高度只加在 `.mob-tall` 那一档** ✗：
+     `#mob-sheet` 的 25vh 是常规二级面板（工具 / 颜色那些，内容本来就短）共用的 ✓
+     能进"更高"模式的才是内容多的那几页 ✓ 所以 +15% 加在那儿最合适 ✓
+     29vh × 1.15 ≈ 33vh（实际 +13.8% ✓ 就按 15% 算 ✓）
+     ⚠ 后来又加过一次 → 现在是 **38vh** ✓（见下面那行 ✓）
+   ⚠ `#mob-sheet` 的 max-height 也**必须一起跟着改** ✗ ——
+     两个是一对 ✓ 只改一个等于没改（另一个兜着 ✓）
+   ⚠ 那个 `!important` 是必须的 ✗：上面 `.tall, .mob-tall` 那条是 `height: 29vh`
+     同权重、而且它在**后面**? —— 不，它在前面 ✓ 但 `.mob-tall` 只一个类、
+     这条两个类（`#mob-sheet.mob-tall`）权重更高 ✓ 不加也能赢 ✓
+     留着 `!important` 只是防以后有人插一条更狠的 ✓
+   =========================================================================== */
+/* 🔴 **2026-10-17 再 +15%**（用户："手机版的高度再提升15%"✓）
+   上一版 29vh → 33vh（+13.8% ✓）· 这一版 33 × 1.15 = 37.95 ≈ **38vh** ✓
+   ⚠ **两份都要改** ✗ —— `height` 跟 `max-height` 是一对 ✓
+     只改一个 = 另一个兜着 = 等于没改 ✓（上一版就是为这才写两遍 ✓）
+   ⚠ 高度**不写死**也成 ✗ —— JS 的 `place()` 会按内容把它顶到算出来的上限 ✓
+     这里给的是**上限** ✓ 内容少的时候它照样矮（贴着底部往上长 ✓）*/
+#mob-sheet.mob-tall { height: 38vh !important; max-height: 38vh !important; }
+
+/* ── 疏密：每一行的"手感"往下压一档 ─────────────────────────────────
+   压的是**留白**，不是字号 ✗（字号再小就影响读了 ✓ 用户只说"紧凑" ✓）
+   ⚠ 数值都只在设置页里用 ✓ 别把这些挪到 `#mob-sheet …` 去 ✗ */
+.mob-pane #mob-sheet-body { padding-top: 6px; }
+.mob-pane .mob-tabs { gap: 5px; padding-bottom: 6px; margin-bottom: 6px; }
+.mob-pane .mob-tab { min-height: 29px; padding: 0 11px; border-radius: 15px; }
+.mob-pane .set-row { min-height: 29px; gap: 8px; }
+.mob-pane .switch { min-height: 29px; gap: 4px; }
+.mob-pane .tool-group + .tool-group { margin-top: 4px !important; }
+/* 小标题（陆地 / 水域 / 省份…）那一条细线上下也收一点 ✓ */
+.mob-pane .set-sub { padding-top: 3px; margin-top: 4px; }
+/* 色块 / 色板 / 结果行 / 链条行：跟着行高一齐收 ✓（**只动尺寸，不动颜色** ✓）*/
+.mob-pane .chip { width: 29px; height: 29px; }
+.mob-pane .result { min-height: 30px; }
+.mob-pane .chain-row { min-height: 30px; }
+.mob-pane input[type="text"], .mob-pane input[type="number"] { padding: 5px 7px; }
+.mob-pane .btn { min-height: 30px; padding: 0 11px; }
+/* 滑条那几行：把 range 上下那点余量也收掉 ✓ */
+.mob-pane .set-row input[type="range"] { margin: 0; }
+
 /* ── 地图：一级界面就它一个 ───────────────────────────────────────── */
 .toolbar { display: none !important; }        /* 顶栏全部搬进面板了 ✓ */
 .sidebar { display: none !important; }        /* 左栏内容也搬进去了 ✓ */
-
-/* ===========================================================================
-   「荒地」那一组：**没有荒地的地图整组藏掉** ✓
-   app 是逐个元素用内联 display:none 藏的 ✓（waste-label / waste-row / waste-auto-row / waste-clear ✓）
-   可上面那条 .group-label 规则带 !important ✗ 会把内联的 display:none 压过去 ✗
-   → 没有荒地的图上就只剩一个「荒地」标题杵着 ✗（用户报的正是这个 ✓）
-   JS 检测到 app 把它藏了，就给整组打上 .no-waste ✓ 整组消失 ✓ 一个标点都不剩 ✓
-   =========================================================================== */
-#mob-sheet .mob-pane .tool-group.no-waste { display: none !important; }
 
 /* 「更高」那个按钮**不做动画** ✓（用户要求去掉 ✓）
    曾经给 #mob-sheet 加过 height 过渡 ✓ 但那要求高度一直是显式 px ✗
@@ -267,13 +390,11 @@
 .set-row { min-height: 44px; }
 .legend-row { min-height: 44px; }
 
-/* 启动页：单列大按钮（⚠ 卡片多的时候电脑版会排两列 + 面板放宽 ✗
-   手机上两条都要钉回去：列数 1、面板不许超宽 ✓ 2026-10-12）*/
+/* 启动页：单列大按钮（⚠ 2026-10-17 起**电脑版也统一一列** ✓
+   这里只把宽度 / 间距调到手指友好；`.boot-inner` 不许超宽 ✓）*/
 .boot-inner { width: 100%; padding: 16px 14px; }
-.boot-inner.wide-pick { width: 100% !important; }
 .boot-title { font-size: 24px; }
 .map-pick-list { grid-template-columns: 1fr !important; gap: 10px; }
-.map-pick-list.two-col { grid-template-columns: 1fr !important; }
 .map-pick-list > * { min-height: 56px; }
 .boot-author { font-size: 12px; flex-wrap: wrap; gap: 6px; }
 

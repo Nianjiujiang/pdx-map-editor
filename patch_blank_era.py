@@ -43,6 +43,12 @@ except Exception:
     pass
 
 #: 打包单文件版时会用到的几份缓存（data = CK3 那份；data_eu4_hd 只在本地测，也一起补 ✓）
+#: ⚠ **`data_ck2` 没列在这儿** ✓ —— 它的「空白剧本」由 `build_ck2.py` 收尾时自己调本脚本 ✓
+#:   （那边先建好 **1066 剧本层**、再让本脚本往剧本块最右边插一格 ✓ 于是空白层落在第 1 层 ✓
+#:    左边那一格就是 1066，背景地形照抄得到 ✓ 一切都对 ✓）
+#:   ⚠ 而且**重复跑是幂等的** ✗（`k = len(eraDates) - 1 = 1` = `tiers.index('blank')` ✓
+#:     走「刷新」那一支、照抄的还是 tm[0] ✓ 结果一模一样 ✓）——
+#:     所以列进来也不会有害 ✓ 只是没必要 ✓；真要手动补，`py patch_blank_era.py data_ck2` 也行 ✓
 DEFAULT_DIRS = ("data", "data_eu4", "data_eu4_hd", "data_hoi4", "data_hoi4_alt",
                 "data_vic3", "data_eu5", "data_eu5_full")
 
@@ -95,30 +101,69 @@ def patch(data_dir: Path | str, quiet: bool = False) -> dict:
                 f"但位置/名字跟现在这套对不上（应该是第 {k} 层「{BLANK_NAME}」）—— "
                 f"先把旧的去掉再跑，或者从备份还原一份干净的重来 ✓")
             return {"dir": str(D), "skipped": "stale-layout", "tier": old_k}
+        # 🔴 **这一支也要照抄左边那层的水域** ✗✗（2026-10-14 ✓ 用户点破 ✓）
+        #   ⚠ 幂等重跑时**必须跟新建那一支算得一模一样** ✗ ——
+        #     只改新建那支的话，第二次跑就把刚填好的海色又清掉了 ✓
+        #     （我上一轮就栽在这儿：只改了新建那支 ✓ 实跑"改了没用"✓）
         blank = np.full(n, no_title, dtype="<u2")
         keep = 0
-        for pid in range(1, n):
-            t = int(tm[fine, pid])
-            if t != no_title and t < len(keys) and is_bg(t):
-                blank[pid] = t
-                keep += 1
+        if old_k > 0:
+            _prev = tm[old_k - 1]
+            for pid in range(1, n):
+                t = int(_prev[pid])
+                if t != no_title and t < len(keys) and is_bg(t):
+                    blank[pid] = t
+                    keep += 1
         tm[old_k] = blank
         tm_p.write_bytes(zlib.compress(tm.astype("<u2").tobytes(), 6))
+        # ⚠ **顺手把按层的数组校准长度** ✗（2026-10-13）
+        #   这一支是"空白层已经在了"（幂等重跑 ✓）—— 上面那次新建插好了，
+        #   但**这一版之前跑过的缓存**里 `seaNamesByTier` 是**短的**（少插了一格 ✓）
+        #   长度对不上就当场补齐/截掉 ✓ 不然地图按层查表会整体错位 ✓
+        _sbt = M.get("seaNamesByTier")
+        if isinstance(_sbt, list) and len(_sbt) != rows:
+            if len(_sbt) < rows:
+                _sbt.insert(old_k if old_k <= len(_sbt) else len(_sbt), None)
+            else:
+                _sbt.pop(old_k if old_k < len(_sbt) else len(_sbt) - 1)
+            meta_p.write_text(json.dumps(M, ensure_ascii=False, indent=2), encoding="utf-8")
+            say(f"  {D}: 顺手把 seaNamesByTier 的长度校准成 {len(_sbt)}（跟层数对齐 ✓）")
         say(f"  {D}: 已经有「{BLANK_NAME}」层（第 {old_k} 层）—— 只把那一行按最新规则重写 ✓"
             f"（背景地形 {keep} 格 · 其余 {n - 1 - keep} 块无主）")
         return {"dir": str(D), "refreshed": True, "tier": old_k, "bgCells": keep}
 
+    # 🔴🔴 **空白层：陆地留空、水域照抄左边那层** ✗✗（2026-10-14 ✓ 用户点破 ✓）
+    #
+    #   用户原话："空白剧本**依旧看不见海洋在哪**"
+    #     "我知道了，你是不是**没给你刚刚分配给他们的这个 ID 配一个海蓝色**"
+    #   ⚠ 完全对 ✗ —— 我上一版把空白层**整层清空**了（`no_title` 一路到底 ✓）——
+    #     那时是对的（剧本层水域本来就没归属 ✓）
+    #     可现在**剧本层的水域有归属了** ✗（每一类一个"海洋"节点 ✓
+    #       见 `build_tier_pieces` 的 `script_tiers` ✓）
+    #     → 空白层却还是全空 ✓ → 它的海是 `NONE` → **显示成"未上色"的灰** ✗
+    #       （用户看到的"看不见海洋在哪"✓）
+    #
+    #   ✅ 正解：**空白层的水域 / 荒地照抄它左边那一格**（`tm[k - 1]` ✓
+    #     也就是最后一个真剧本层，比如 EU4 的 `1789` ✓）——
+    #     拿到的正是 `#sea_all_1789` 那种"整类一片"节点 ✓
+    #     **颜色 / 名字 / 边界行为全都对** ✓（它们本来就该跟剧本层一致 ✓）
+    #   ⚠ **陆地仍旧留空** ✗ —— 空白剧本 = 全无主、拿来从零涂的那一层 ✓
+    #     它的意义就是"谁都没有"✓ 所以只抄**背景地形**（水域 + 荒地 ✓）
+    #   ⚠ 判据用"那一格的键名是不是 `#` 开头 / 在 `meta.wasteland` 里"✗ ——
+    #     跟 `apply_rows` 那套同一口径 ✓ 别另编 ✗
+    #   ⚠ 抄的是**归属**不是"重新造节点" ✗ —— 节点本身在上一步就有了 ✓
+    #     （`script_tiers` 造的那批 ✓ 空白层只是**指向**它们 ✓）
     blank = np.full(n, no_title, dtype="<u2")
     keep = 0
-    ref = tm[fine]
-    for pid in range(1, n):
-        t = int(ref[pid])
-        if t != no_title and t < len(keys) and is_bg(t):
-            blank[pid] = t
-            keep += 1
-    if keep == 0:
-        say(f"  {D}: 最细那层连一个背景地形都没有，跳过（数据不对吧）")
-        return {"dir": str(D), "skipped": "no-bg"}
+    if k > 0:
+        _prev = tm[k - 1]
+        for pid in range(1, n):
+            t = int(_prev[pid])
+            if t != no_title and t < len(keys) and is_bg(t):
+                blank[pid] = t
+                keep += 1
+    say(f"  {D}: 空白层：背景地形（水域 / 荒地）照抄左边那层 {keep} 格，"
+        f"陆地 {n - 1 - keep} 块全无主 ✓")
 
     new_tm = np.empty((rows + 1, n), dtype="<u2")
     new_tm[:k] = tm[:k]
@@ -134,7 +179,12 @@ def patch(data_dir: Path | str, quiet: bool = False) -> dict:
     _insert("tierKeys", BLANK_NAME)
     _insert("labelZoom", (M.get("labelZoom") or [20])[k if k < len(M.get("labelZoom") or []) else 0])
     _insert("eraDates", "")
-    _insert("wastelandAutoByTier", [])                          # 没有主 → 无从自动上色 ✓
+    # ⚠ **按层的数组都得跟着插** ✗（2026-10-13 踩过的坑）
+    #   `seaNamesByTier` 的下标 = `tiers` 的下标 ✓ 上面插了一层它不插 →
+    #   **整条链错位一格** ✓ 细层的水名会跑到剧本层去、地图上按层查表全错 ✓
+    #   ⚠ 只在"长度跟得上"时才插 ✗ 老缓存压根没这个字段，别凭空造一个 ✓
+    if isinstance(M.get("seaNamesByTier"), list) and len(M["seaNamesByTier"]) == rows:
+        M["seaNamesByTier"].insert(k, None)      # 空白层没有水域 ✓ 给 None ✓
     if isinstance(M.get("bookmarks"), list):
         M["bookmarks"].insert(k, {"date": "", "key": "", "name": BLANK_NAME,
                                   "default": False})

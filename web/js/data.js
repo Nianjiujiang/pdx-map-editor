@@ -129,7 +129,8 @@ async function fetchBytes(url, onProgress) {
   return out;
 }
 
-function b64ToBytes(b64) {
+/*: base64 → 原始字节 ✓（内嵌版、以及 meta 里那几份拍平数据都用它 ✓）*/
+export function b64ToBytes(b64) {
   const bin = atob(b64);
   const out = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);

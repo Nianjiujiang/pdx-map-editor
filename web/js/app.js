@@ -4,13 +4,22 @@
 
 // 开发版是真 ES module（index.html 只加载本文件）——别的模块都得显式 import。
 // 单文件版由 build_standalone.py 剥掉这些行、按序拍平，两边的加载方式都兼容。
-import { DATA, api, decompress, embeddedMapKeys, isEmbedded, setDataDir, setEmbeddedMap, setPackMap, isPackMap } from './data.js';
+import { DATA, api, b64ToBytes, decompress, embeddedMapKeys, isEmbedded, setDataDir, setEmbeddedMap, setPackMap, isPackMap } from './data.js';
 import { MapRenderer } from './gl.js';
 import { LabelLayer, computeLabelZoom } from './labels.js';
 import { TileMap } from './tilemap.js';
 import { importPack, listPacks, getPack, removePack, exportPackBytes, packStoreMode } from './packstore.js';
 
 const $ = (id) => document.getElementById(id);
+
+/*
+ * 水域 / 荒地 = **普通地块** ✓（2026-10-14 定案 ✓）
+ *   原来的"紧急回滚开关"和它旁路的那套专属边界、专属颜色、专属高亮
+ *   **全部拆除** ✓
+ *   水片与荒地片就是普通头衔：涂色 / 悬停 / 边界缝全走普通头衔那条管线 ✓
+ *   认水用的三件小工具（`isWaterKey` / `isWaterPid` / `isWaterHere`）还留着 ✓
+ *     —— 老包海名表、水域名表那几处还要用 ✓
+ */
 
 /**
  * 报错日志（`web/js/log.js` —— 它比本文件先加载 ✓）
@@ -49,10 +58,22 @@ function bindAuthorLinks() {
     el.target = '_blank';
     el.rel = 'noopener';
   }
-  // 启动页角落挂一个版本戳：出问题时一眼能看出"手上是哪份文件" ✓
-  // （以前放在设置页里，用户嫌那句说明占地方 ✓ 挪这儿来，不占正地方 ✓）
+  // 启动页角落挂一个**构建戳**：出问题时一眼看出"手上是哪一份文件" ✓
+  // 🔴 **不能拿 document.lastModified** ✗✗（2026-10-17 用户发现）——
+  //    单文件 / 某些浏览器里它是**当前时间**，看着像"版本戳一直在变" ✓
+  //    现在由 build_standalone.py 把打包时间写进 <meta name="pdx-build">；
+  //    开发版里是 dev → 显示「开发版」✓
   const bv = $('boot-ver');
-  if (bv) bv.textContent = document.lastModified ? '· ' + document.lastModified : '';
+  if (bv) {
+    let build = '';
+    try {
+      const m = document.querySelector && document.querySelector('meta[name="pdx-build"]');
+      build = m && m.content ? String(m.content).trim() : '';
+    } catch (e) { build = ''; }
+    bv.textContent = build
+      ? (build === 'dev' ? '开发版' : '构建 ' + build)
+      : '';
+  }
 }
 bindAuthorLinks();
 
@@ -67,6 +88,32 @@ bindAuthorLinks();
  *   编辑器里压根没做 ✓），留着只会让人以为还有那功能 ✓
  */
 const GAMES = {
+  /* CK2 —— **一个独立的模式** ✗ 不是"CK3 加个别名" ✓（2026-10-15 用户点名的口径 ✓）
+     渲染那一层确实跟 CK3 共用（都是五级头衔那套界面 ✓），但**每一条规矩都各自定** ✓：
+       · **四级**不是五级：帝国 / 王国 / 公爵领 / 伯爵领 ✓ **没有男爵领** ✗
+         —— CK2 的男爵领是伯爵领**里面的地产**、不占地图像素 ✓
+         （层名层数一律读 `meta.tiers` ✓ 前端不写死 ✓ 见 build_ck2.py 顶上那段 ✓）
+       · **名字有中文** ✓ —— 走汉化 mod 那套"自造三字节"编码 ✓
+         （`parsers/ck2/hanhua.py` ✓ 回退链：汉化中文 → 原版英文 → 键名 ✓）
+         所以搜索**中英都认** ✓
+       · **剧本层是 1066** ✓（日期从游戏书签里读的 ✓ 见 `meta.bookmark` ✓）
+         + 一层「空白剧本」✓（跟别的游戏同一个构造 ✓） */
+  ck2: {
+    id: 'ck2',
+    name: 'CK2',
+    brand: 'CK', brandSmall: 'II',
+    title: 'CK2 地图编辑',
+    entity: '头衔',
+    saveKey: 'ck2-map-editor/v1',
+    filePrefix: 'ck2',
+    searchHint: '支持中文名、英文名，以及 c_/d_/k_/e_ 开头的 key',
+    searchPlaceholder: '',
+    pickHint: '这个颜色在数据里归好几个头衔，挑一个当标记',
+    colorTip: '显示头衔自带的颜色',
+    borderTip: '给头衔区域描边（和「填色·边界」二选一）',
+    labelsTip: '在地图上标出头衔名字',
+    notInMap: '这块地不在 CK2 的地图范围内。',
+  },
   ck3: {
     id: 'ck3',
     name: 'CK3',
@@ -133,7 +180,15 @@ const GAMES = {
   },
   vic3: {
     id: 'vic3',
-    name: 'V3',
+    /* 🔴 **2026-10-16 用户定的：显示名写成「VIC3」** ✗（原来是 `V3` ✓）
+     *   原话："之后V3改名叫VIC3吧" ✓
+     *   ⚠ **只改"给人看的名字"** ✗✗ —— 下面这几个一律**不许动**：
+     *     · `id: 'vic3'` / `game: 'vic3'`（数据 meta、存档键、测试都在用 ✓）
+     *     · `dir: '/data_vic3'`（缓存目录 ✓）
+     *     · `saveKey` / `filePrefix`（存档与导出文件名 ✓ 改了老存档就接不上 ✓）
+     *     · `brand` / `brandSmall`（那是**图形化的招牌**：VIC + 上标 3 ✓ 不是文字名 ✓）
+     *   —— 所以这条改动**不碰任何数据 / 存档 / 路径** ✓ 只是换个叫法 ✓ */
+    name: 'VIC3',
     brand: 'VIC', brandSmall: '3',
     title: '维多利亚3 地图编辑',
     entity: '省份',
@@ -159,10 +214,12 @@ let GAME = GAMES.ck3;
  */
 const MAP_CHOICES = [
   { key: 'vanilla', emb: 'vanilla', dir: '/data',        game: 'ck3', label: 'CK3 原版',     note: '9216 × 4608' },
+  // CK2 是 CK3 的前作 ✓ 尺寸见 build_standalone.py 的 MAPS（README 那张表同源 ✓）
+  { key: 'ck2',     emb: 'ck2',     dir: '/data_ck2',   game: 'ck2', label: 'CK2 原版',     note: '3072 × 2048' },
   { key: 'eu4',     emb: 'eu4',     dir: '/data_eu4',    game: 'eu4', label: 'EU4 原版',     note: '5632 × 2048' },
   { key: 'eu5',     emb: 'eu5',     dir: '/data_eu5',    game: 'eu5',  label: 'EU5 原版',   note: '8192 × 4096' },
   { key: 'eu5full', emb: 'eu5full', dir: '/data_eu5_full', game: 'eu5', label: 'EU5 原尺寸', note: '16384 × 8192' },
-  { key: 'vic3',    emb: 'vic3',    dir: '/data_vic3',   game: 'vic3', label: 'V3 原版',     note: '8192 × 3616' },
+  { key: 'vic3',    emb: 'vic3',    dir: '/data_vic3',   game: 'vic3', label: 'VIC3 原版',  note: '8192 × 3616' },
   { key: 'hoi4',    emb: 'hoi4',    dir: '/data_hoi4',   game: 'hoi4', label: 'HOI4 原版',   note: '5632 × 2048' },
   { key: 'hoi4alt', emb: 'hoi4alt', dir: '/data_hoi4_alt', game: 'hoi4', label: 'HOI4 修改边界', note: '5632 × 2048' },
 ];
@@ -207,25 +264,60 @@ const state = {
   // 或者填一个下层级序号（地区 / 省份）。只影响**边界画在哪一级的接缝上**
   // 笔刷涂哪一块** —— 地图配色始终是那年的归属色，不会跟着变
   grain: null,
+  /* 🔴 **"当前是哪一个剧本"**（2026-10-17 ✓ 用户那条取色标准要用 ✓）
+   *   · 停在剧本层时 = `state.tier` ✓
+   *   · 切到地理层（地区 / 省 / 地点）之后 = **上一次停过的那个剧本层** ✓
+   *   ⚠ 为什么非记不可 ✗：切到细层后 `state.tier` 就不是剧本层了 ✓
+   *     而用户那条规矩是"**只要开了剧本、而且剧本颜色开着，就先看剧本**"✓
+   *     —— 得知道"是哪个剧本"才取得出那一层的色 ✓
+   *   ⚠ 它**只给取色用** ✗（荒地自动上色 ✓）别拿它去影响着色器 / 边界 ✓ */
+  lastEraTier: -1,
   tool: 'paint',
   brush: [200, 50, 50],            // 默认颜色：RGB(200, 50, 50) ✓
-  showPowerColor: false,      // 势力（剧本/国家那层）的颜色（默认开：不然 1936 层是空的）
-  showPowerBorder: false,
+  /* 🔴 **剧本那三个开关 2026-10-17 删了** ✗（用户："已经没什么用了"✓）
+   *   · showPowerColor = **固定开**（剧本颜色永远显示，不然开图就是空的 ✓）
+   *   · showPowerBorder = **固定关**（剧本边界不再单独画 ✓ 要边界用「势力 · 边界」✓）
+   *   ⚠ 名字留着 ✗ —— 着色器 / 荒地取色 / 分级边界那几处还在读它 ✓
+   *     只是**没有界面入口**了 ✓ 别当成可调开关再用 ✓ */
+  showPowerColor: true,       // **固定开** ✓（剧本颜色永远显示 ✓）
+  showPowerBorder: false,     // **固定关** ✓（剧本边界不再单独画 ✓）
   showRegionColor: false,     // 地区（更细的那几层）颜色：默认关，画面干净
   showRegionBorder: true,
   showRegionName: false,
   showParentBorderTitle: false,   // 父级边界：默认**关**（要用再勾）
   // 二级设置页里的东西（null = 用各游戏/代码里的原值 ✓）
   set: {
-    bg: null, waste: null, sea: null, lake: null, impass: null,
-  impassSea: null, river: null,
-  /* ⚠ **宽度默认一律 1.0** ✗（用户定的 ✓ 原来 pw/waterW/wasteW 是 1.5 ✓）
-   *   浓度（pa/ra/ca）不动 ✓ 用户说的是"宽度都是 1.0" ✓ */
-  w: 1, pa: 50, ra: 75, ca: 100, pw: 1, font: 1,
+    /* ⚠ **背景色和未上色色是两项** ✗（2026-10-13 用户要求拆开 ✓）
+     *   · bg        = 「背景颜色」（默认 180,180,180 ✓）—— 也是一般说的"空白地区" ✓
+     *   · unpainted = 「未上色区域」—— **只在开着剧本时**给无主地用 ✓
+     *     没开剧本的时候无主地直接用 bg（见 gl.js 里 NONE 那段 ✓）*/
+    bg: null, unpainted: null,
+    /* 🔴 **七行颜色** ✗✗（2026-10-15 ✓ 用户定的口径 ✓）——
+     *   bg      空白区域     180,180,180 ✓（没开剧本时的默认底 ✓）
+     *   unpainted 无归属区域  150,150,150 ✓（开着剧本、没归属的地 ✓ **不进身份标** ✓）
+     *   其余五行 = `NATURE_RGB` 里那份出厂值 ✓（null = 用出厂 ✓）
+     *   ⚠ 这是 `state.set` 那份初值；出厂表在下面 `SET_DEFAULTS` ✓ 两处一起加 ✓ */
+    impass: null, sea: null, isea: null, lake: null, river: null,
+  /* ⚠ **宽度默认一律 1.0** ✗（用户定的 ✓ 老几样当年是 1.5 ✓）
+   *   浓度（pa/ra/ca）不动 ✓ 用户说的是"宽度都是 1.0" ✓
+   * ⚠ **「地方边界宽度」2026-10-13 拆成两条** ✓（用户要求 ✓）：
+   *   · wRegion = 「**地区**边界宽度」→ 管**父级边界**（多级链上层那些线 ✓）
+   *   · wProv   = 「**省份**边界宽度」→ 管**子级边界**（本层那条线 ✓）
+   *   默认都是 1 ✓ 跟原来那一条相等 —— 观感不变 ✓
+   *   ⚠ 老的 `w` 还留着 ✗：老存档只有它，代码里两条都从它继承（见 syncParentBorder ✓）
+   *     删了的话老用户那两根滑条会一夜回到默认 ✓ */
+  wRegion: 1, wProv: 1, w: null,
+  pa: 50, ra: 75, ca: 100, pw: 1,
+  /* 🔴🔴 **字号拆成两块** ✗✗（2026-10-17 用户定的 ✓
+   *   "把字号分开两个，一个给地块，一个给势力"✓）
+   *   · `fontPlace` = 地块名（含海 / 湖 / 河 / 荒地名 ✓）
+   *   · `fontPower` = 势力名（剧本 / 年份那几层 + 涂出来的色块名 ✓）
+   *   ⚠ **老的 `font` 保留但不再读** ✗（老存档只有它 ✓
+   *     迁移收在 `fontSizes()` 那一个口子里 ✓ —— 别在每处各写一遍 ✓）*/
+  fontPlace: 1, fontPower: 1,
   // **背景那两条线各有一套宽度 + 浓度** ✓（用户要求可调 ✓；显示开关去掉了 ✗）
   //   宽度跟「势力线宽」一个口径（格数 ✓ 直接就是粗细）；浓度是百分比 ✓
-  waterW: 1, waterA: 100,                     // 水域（海/湖/河）—— 宽度默认 1 ✓
-  wasteW: 1, wasteA: 100,                     // 荒地 —— 宽度默认 1 ✓
+  //   （水域 / 荒地那两条专属的「内部 / 外部」宽浓已退役 ✓ 水走普通头衔边界 ✓）
     // 导出图例（用户要的：相关设置都放在「设置」这一页 ✓）
     legend: false, legendTitle: '', legendPos: 'tl',
   },
@@ -240,10 +332,48 @@ const state = {
   showLabelsTitle: true,
   showLabelsPaint: false,
   showPaint: true,
-  // 荒地（不可通行）：「荒漠涂色」关着时一律显示灰（跟以前一样）；
-  // 「荒地自动上色」按烘好的接壤边长过半归属给荒地上色。两个都默认关。
-  showWaste: false,
+  // 水域 / 荒地的专属开关全部退役 ✓（边界 / 颜色 / 允许上色 / 自动上色 ✓）
+  //   水片与荒地片就是普通头衔：涂色、悬停全走普通路径 ✓
+  /* 🔴 2026-10-16 **「水域 · 边界」请回来了** ✗✗（用户点名要的 ✓ 见 handover §3.1）
+   *   口径：水域边界开关**负责且仅负责**"水域之间（海洋/湖泊/河流/不可通行海域）的边界"✓
+   *     水 ↔ 陆那条**海岸线不归它** ✓ 照旧归「地区 / 势力 · 边界」✓
+   *   ⚠ 它不是"背景那条线"了 ✗ —— 是**真正一条独立通道**（着色器里那条 ✓）
+   *     独立到"地区 / 势力 / 填色三个开关全关"它**照样在** ✓（想关就关自己那个勾 ✓）
+   *   ⚠ 它跟 `showWaterName` 一样**每帧现读** ✓ —— 这个字段写的是"勾了没" ✓
+   *     真正生效还要 AND 上"这张图算得出水陆"（见 syncLayerSwitches ✓）
+   *   🔴🔴 **2026-10-17 用户改的默认值：默认关闭** ✗✗
+   *     原话："默认关闭水域边界、名称"✓
+   *     （2026-10-16 那版给的是 true ✓ 理由是"默认观感完全不变"✓
+   *      现在用户要它默认关 ✓ → 开图时水与水之间那些缝**不画**、水名**不出** ✓
+   *      想看得自己去勾 ✓ 这是他第二次改这俩的默认值了 ✗ 别再自作主张改回去 ✓）*/
+  showWaterBorder: false,
+  // 「名称」两件事：水那面旗**请回来当界面开关** ✓（2026-10-16 ✓）
+  //   荒地那面旗字段仍保留但恒 false —— 用户这次只点名了水域 ✓（界面上没有它的勾 ✓）
+  //   🔴 **2026-10-17 默认值同样改成关闭** ✗（同上 ✓）
+  showWaterName: false,
+  /* 🔴🔴 **「荒地 · 边界」那个勾**（2026-10-17 ✓ 用户点名要的 ✓）
+   *   原话："给荒地加上边界开关，这个负责的是**荒地与荒地之间**的边界"✓
+   *   ⚠ 跟「荒地 · 名称」**是两件事** ✗ —— 那个管名字，这个管缝 ✓
+   *   ⚠ 默认**关闭** ✓（跟水域那两个一个口径 ✓ 用户 2026-10-17 定的默认值 ✓）*/
+  showWasteBorder: false,
+  showWasteName: false,
+  /* 🔴 **荒地自动上色**（2026-10-17 重做 ✓）—— 用户点名要一个开关 ✓
+   *   开：按「周边陆地最低地块」的显示色加权，严格过半才给这块荒地上色 ✓
+   *   关：全部回退设置里「不可通行区域」那个色 ✓
+   *   ⚠ **默认关闭** ✗（2026-10-17 用户定的 ✓ —— 想要上色自己勾 ✓）
+   *   ⚠ 它只影响**自动算出来的那份色** ✗ —— 玩家直接涂在荒地上的色照旧优先 ✓ */
   wasteAuto: false,
+  /* 荒地上色的运行时缓存（见 `buildWastePidIndex` / `refreshWasteAuto` ✓）
+   *   · wastePidFlag：pid → 是不是荒地（1 = 是）
+   *   · wasteFineTid：pid → 它最细层那个 wl_ 节点号（-1 = 不是荒地）
+   *   · wastePerim：pid → [[邻居 pid, 共享边像素数], …]（只含陆地，水不算）
+   *   · _wastePerimSeq：周长表换了一版就 +1（帧循环靠它重算 ✓）*/
+  wastePidFlag: null,
+  wasteFineTid: null,
+  wastePidList: [],
+  wastePerim: null,
+  _wastePerimSeq: 0,
+  _wasteCfgSeq: 0,
   painted: new Set(),          // **涂过的最细层节点**集合（`recomputePainted` 从每格反推的缓存 ✓）
   brushLabel: '请输入文本',      // 当前画笔的标记：默认就写这五个字 ✓（用户要求 ✓）
   titleName: new Map(),        // 头衔 → 改过的名字（改名工具写的）
@@ -284,6 +414,7 @@ const sameColor = (a, b) => a[0] === b[0] && a[1] === b[1] && a[2] === b[2];
 const hasIn = (arr, v) => !!arr && arr.indexOf(v) >= 0;
 
 function hexToRgb(s) {
+  if (typeof s !== 'string') return null;      // 空输入 / 非字符串：别让 trim 崩掉 ✓
   const m = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(s.trim());
   if (!m) return null;
   let h = m[1];
@@ -307,16 +438,6 @@ function hexToRgb(s) {
 // **原始数组照旧留着**（烘数据的字段、导出、测试都在看它 ✓），
 // 这里只是给它配一张查表 ✓
 
-/** 名字是不是那一类**共享伪节点**（海 / 湖 / 河 / 不可通行 —— 键以 '#' 开头）
- *
- *  判据只有一个：键的第一个字符是 '#'。
- *  以前这段写在 isSpecialTid / 空间那些地方，一共重复了十几处，
- *  而且各写各的（有的还顺手拼了别的条件 ✗）—— 收在这里 ✓ */
-const isSpecialKey = (key) => {
-  const s = key == null ? '' : String(key);
-  return s.charCodeAt(0) === 35;   // '#'
-};
-
 /** 键是不是以某个前缀开头（null 安全） */
 const keyStarts = (key, prefix) => String(key == null ? '' : key).indexOf(prefix) === 0;
 
@@ -339,13 +460,86 @@ const isWaterKey = (key) => {
     || s.indexOf('#sea') === 0 || s.indexOf('#lake') === 0 || s.indexOf('#river') === 0;
 };
 
+/** 🔴🔴 **这一格是不是水 —— 按 pid 查"水域标签"** ✗✗（2026-10-14 ✓ 用户要求 ✓）
+ *
+ *   用户原话："你就不能把水域变成一个**仅仅是不能填色的地块**吗……
+ *     而且**最底层的单位也有自己的 Province id**"
+ *     "只是水域**带一个小标签**来让他在**边界和颜色**等方面听从相关的开关"
+ *
+ *   → 水域**不再有伪头衔**（`#sea_e_0` 那种删了 ✓）——
+ *     所以**不能**再靠"键名前缀"认它 ✓（那正是老办法 ✗）
+ *     现在靠**这个函数**：拿 pid 去 `meta.waterMask` 里查一位 ✓
+ *
+ *   ⚠ 这是水域**唯一**的判据来源 ✗ —— 别的地方（颜色 / 边界 / 高亮）都该调它 ✓
+ *     而不是各自 `startsWith('#sea')` ✓（那种写法在新包里**永远返回 false** ✓）
+ *   ⚠ 老包没有 `waterMask` ✗ → 这个函数返回 false ✓
+ *     调用方要**再退回** `isWaterKey(键)` 那条老路 ✓（见 `isWaterHere` ✓）
+ *   ⚠ pid 无效（0 / NO_TITLE ✓）→ false ✓
+ */
+function isWaterPid(pid) {
+  const wm = state.waterMask;
+  if (!wm || pid == null) return false;
+  const p = pid | 0;
+  return p > 0 && p < wm.length && wm[p] !== 0;
+}
+
+/** **这一格是不是水** —— 新包查表 ✓ 老包退回键名前缀 ✓（两套判据收在一处）
+ *
+ *   ⚠ 顺序很重要 ✗：**先查表** ✓（新包唯一正确的判据 ✓）
+ *     表没有才看键 ✓（老包 ✓）
+ *   ⚠ 键也要判 ✗ —— 因为新包里**荒地**仍然有伪头衔（`#impassable_c_3` ✓）
+ *     而 `isWaterKey` 会把 `#impassable_sea` 认成水 ✓ 那种键在新包里已经没有了 ✓
+ *     留着是为了老包 ✓ 不是多余 ✓ */
+function isWaterHere(pid, tid) {
+  if (isWaterPid(pid)) return true;
+  const T = state.titles || {};
+  const k = (tid == null) ? '' : String((T.keys && T.keys[tid]) || '');
+  return isWaterKey(k);
+}
+
+/** 这个键是不是**「每层一片」的那个伪头衔片**（`#sea_pr_57` / `#impassable_c_3` 那种 ✓）
+ *
+ *  2026-10-13 架构统一之后，海 / 湖 / 河 / 荒地**每一层各有各的节点** ✓
+ *  一层的"片" = **该层同名地块的集合** ✓（见 build_tier_pieces.tier_pieces ✓）
+ *  于是前端只认一条：**当前层那个 tid 是谁** ✓ —— 名字、边界、高亮全跟着层走 ✓
+ *
+ *  ⚠ **`wl_<地块号>` 不算** ✗ —— 那是荒地**最细层逐块**的节点 ✓
+ *    它的名字得走 `meta.wastelandNames`（节点名在 CK3 那边只是类名"不可通行山地"✗，
+ *    拿它当"具体名"会凭空多出悬停第二行 ✓ 用户明确要求去掉过 ✓）
+ *
+ *  ⚠ 老包（每层一片之前打的）里全世界的海共用一个 `#sea` ✗ → 这里判 false ✓
+ *    那批包退回真名表那条老路（见 specificPlaceName / buildSeaLabelPoints ✓）
+ */
+const PIECE_KEY_RE = /^#[a-z_]+_[a-z]+_\d+$/;
+const isTierPieceKey = (key) => PIECE_KEY_RE.test(String(key == null ? '' : key));
+
+/** 伪头衔的**类名** —— 构建期那一层取不到真名时拿来充数的那些 ✓
+ *  （来源是 build_tier_pieces 里 `tier_pieces(..., label)` 的 label ✓
+ *    海 / 湖 / 河 / 不可通行 / 荒地各一个 ✓）
+ *
+ *  ⚠ 这些**不算"具体名"** ✗ —— 地图上的标、悬停的第二行都不该出现它们 ✓
+ *    用户 2026-10-13 明确要求过：CK3 的荒地别拿"不可通行山地"充第二行 ✓
+ *    海 / 湖 / 河同理：一片取不到真名的水域**就叫没名字** ✓ 不该顶着"海洋"两个字 ✓
+ *    （实跑量出来的：TOT 的 rg 层会多出一个 212011 像素的「海洋」标 ✗
+ *      —— 那一片在水名表里本来就没名字 ✓）
+ */
+const PSEUDO_CATEGORY_NAMES = new Set([
+  /* ⚠ 这份名单是照**五个构建脚本的类别表**抄的 ✗（"#xxx" 那几行 ✓）——
+   *   CK3：河流 / 湖泊 / 海洋 / 不可通行海域 / 不可通行山地 / 无归属荒地
+   *   EU4：湖泊 / 海洋 / 不可通行荒地 · HOI4：湖泊 / 海洋
+   *   VIC3：湖泊 / 海洋 / 不可通行 · EU5：湖泊 / 不可通行
+   *   以后哪边加了新类别名，这边跟着补 ✓（漏一个就会有一片顶着类名出标 ✓ 踩过一次）*/
+  '海洋', '湖泊', '河流', '不可通行', '不可通行海域', '不可通行山地',
+  '不可通行区域', '不可通行荒地', '无归属荒地',
+]);
+const isPseudoCategoryName = (nm) => PSEUDO_CATEGORY_NAMES.has(String(nm == null ? '' : nm));
+
 /** 重新给 meta 里那几张名单建快查表（boot 时调一次；meta 不变就一直是它） */
 function buildMetaIndex() {
   const m = state.meta;
   if (!m) return;
   m.wastelandSet = new Set(m.wasteland || []);
   m.degradedSet = new Set(m.degradedBaronies || []);
-  m.wasteSkipSet = new Set(m.wasteAutoSkip || []);
 }
 
 /** 这块地的**最细层节点**是荒地吗（快查表；meta 没建表时退回原来的扫数组） */
@@ -355,23 +549,61 @@ function isWastelandTid(tid) {
   return s ? s.has(tid) : hasIn(state.meta && state.meta.wasteland, tid);
 }
 
-/** 这块地是不是**巨型荒地**（数据里列了"不参与自动填色"的那些） */
-function isWasteSkipPid(pid) {
-  const s = state.meta && state.meta.wasteSkipSet;
-  return s ? s.has(pid) : hasIn(state.meta && state.meta.wasteAutoSkip, pid);
+/** 这个头衔是**荒地还是水域**的伪头衔？返回 'waste' / 'water' / null ✓
+ *
+ *  ⚠ **判据必须包含键名前缀** ✗ —— 只按 isWastelandTid 判会漏（2026-10-13 踩的 ✓）：
+ *    `meta.wasteland` 里存的是**最细层**那些节点的 id ✗
+ *    而标签是按**当前视图层**取的 —— 你在"地区"层看的时候 tid 是地区层的节点，
+ *    拿去 isWastelandTid 一查当然不在名单里 ✗ 于是荒地名照画 ✓
+ *    （用户报的"CK3 仍然会给荒地显示名字，很怪"正是这个 ✓）
+ *  所以：键名（wl_ / #impassable）跟 isWastelandTid **两个都要看** ✓
+ *  跟势力名那条过滤（下面 drawLabels 外头那处）保持同一个口径 ✓
+ */
+function isWasteOrWaterTid(tid) {
+  if (tid == null || tid === NO_TITLE) return null;
+  const k = String((state.titles && state.titles.keys && state.titles.keys[tid]) || '');
+  if (isWaterKey(k)) return 'water';
+  if (isWastelandTid(tid) || keyStarts(k, 'wl_') || keyStarts(k, '#impassable')) return 'waste';
+  return null;
 }
 
-/** 头衔键 → 序号（建一次；以前每帧在 syncLayerSwitches 里 indexOf 全表扫） */
-function titleIndexByKey(key) {
-  if (!state.titles) return -1;
-  if (!state.titles.byKey) {
-    const idx = new Map();
-    const K = state.titles.keys || [];
-    for (let i = 0; i < K.length; i++) if (!idx.has(K[i])) idx.set(K[i], i);
-    state.titles.byKey = idx;
-  }
-  const hit = state.titles.byKey.get(key);
-  return hit === undefined ? -1 : hit;
+/** **要不要给这类伪头衔标名字**（荒地 / 水域 ✓ 2026-10-13 用户定的规矩）
+ *
+ *   · **CK3 一律不标** ✗（2026-10-13 用户当年点名的规矩 ✓ 只对 CK3 ✓）
+ *
+ *   · **CK2 标** ✓（2026-10-15 用户定 ✓ —— CK2 是**独立的模式**，不是"CK3 加个别名" ✗）
+ *     依据（两条，都是游戏数据里的实情 ✓）：
+ *       ① CK2 的 ``default.map`` 里 ``sea_zones`` / ``major_rivers`` 也只是**一串地块号** ✓
+ *          同样没有"每片海叫什么"这一级 ✓ —— **这一点跟 CK3 一样** ✓
+ *          但那正是要点：CK3 那条"没有真名就一个都不标"是**当年只给 CK3 定的** ✓
+ *          不是"P 社游戏通例" ✗ 别顺手扩到别人头上 ✓
+ *       ② 编辑器这边**有东西可标** ✓：每一片水 / 荒地都有节点（``#sea_e_3`` / ``wl_<pid>`` ✓
+ *          名字是 ``#<地块号>`` 占位 ✓），前端会把占位换成**类别名**（海洋 / 河流 / 无归属荒地 ✓
+ *          见 ``isPseudoCategoryName`` 那段 ✓）—— 跟 EU4/EU5/HOI4/VIC3 的待遇一致 ✓
+ *     ⚠ 想改回"跟 EU4 一样听开关的"：把下面 CK2 那一行删掉就行 ✓（那时它就走开关 ✓
+ *       而那两个开关的出厂值是 false ✓ 于是地图上就不标了 ✓）
+ *
+ *   · 其他游戏看各自的「名称」开关 ✓
+ */
+function pseudoNameAllowed(kind) {
+  if (!kind) return true;
+  const _g = String((state.meta && state.meta.game) || '');
+  if (_g === 'ck3') return false;
+  if (_g === 'ck2') return true;          // CK2 独立口径：水与荒地照常标名 ✓
+  if (kind === 'water') return !!state.showWaterName;
+  return !!state.showWasteName;
+}
+
+/** **所有**前缀命中的头衔序号（`#sea` → 每一层的每一片 ✓）——
+ *  建"伪头衔标签位置"那类**要把整类捞全**的地方用 ✓ */
+function titleIndicesByPrefix(prefix) {
+  const out = [];
+  if (!state.titles) return out;
+  const K = state.titles.keys || [];
+  const p = String(prefix == null ? '' : prefix);
+  if (!p) return out;
+  for (let i = 0; i < K.length; i++) if (String(K[i]).indexOf(p) === 0) out.push(i);
+  return out;
 }
 
 /**
@@ -402,9 +634,12 @@ function toast(msg, isErr = false) {
 // ================================================================ 查表
 
 function provinceAt(mx, my) {
+  const meta = state.meta;
+  if (!meta || !(meta.mapWidth > 0) || !(meta.mapHeight > 0)) return 0;
   const x = Math.floor(mx);
   const y = Math.floor(my);
-  if (x < 0 || y < 0 || x >= state.meta.mapWidth || y >= state.meta.mapHeight) return 0;
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return 0;
+  if (x < 0 || y < 0 || x >= meta.mapWidth || y >= meta.mapHeight) return 0;
   // 分块（EU5 原尺寸）：真数据在块里，整图 id 只是个占位 ✗
   if (state.tileMap) {
     if (state.tileMap.has(x, y)) return state.tileMap.at(x, y);
@@ -412,12 +647,110 @@ function provinceAt(mx, my) {
                       Math.floor(x / state.tiles.tileW)).catch(() => {});
     return 0;                       // 这一块还没到，先当空；下一帧就正常
   }
-  return state.provinceIds[y * state.meta.mapWidth + x];
+  return state.provinceIds ? state.provinceIds[y * meta.mapWidth + x] : 0;
 }
 
+/** 取 `(pid, tier)` 那一格的归属 —— **越界一律给 NO_TITLE** ✓
+ *
+ *  它在全图扫 / 悬停 / 标签里被调几千上万次 —— 加几道边界判断很便宜，
+ *  换来的是"数据没齐 / 层数对不上 / 地块号越界"时不会整个功能 TypeError ✓
+ *  （以前直接 `state.titlemap[tier * n + pid]`：越界读到隔壁层的值 = 静默认错归属 ✗）
+ */
 function titleAt(pid, tier) {
-  if (!pid) return NO_TITLE;
-  return state.titlemap[tier * state.meta.numProvinces + pid];
+  if (!(pid > 0)) return NO_TITLE;
+  const meta = state.meta, tm = state.titlemap;
+  if (!meta || !tm) return NO_TITLE;
+  const n = meta.numProvinces | 0;
+  const t = tier | 0;
+  if (n <= 0 || t < 0 || pid >= n) return NO_TITLE;
+  const i = t * n + pid;
+  return i < tm.length ? tm[i] : NO_TITLE;
+}
+
+/** **这一格在"最细层"的头衔号** ✓（2026-10-17 加的 ✓）
+ *
+ *  用途：**荒地名按最细层分组**（用户定的 ✓）
+ *    "所有荒地都应该按**最细层级**分组"✓
+ *
+ *  ⚠ 为什么荒地要单独取一层 ✗✗：它在**粗层是不切的**——
+ *    实测 EU5：那 8 块亚马逊荒地在 `1337 / blank / reg / area / prov`
+ *    **五层上全都是同一个伪头衔**（键 `#impassable` · tid 36188 ✓）
+ *    只有最细的 `loc` 层才分成 8 个（`amazon_jungle` / `madeira_amazon_jungle` … ✓）
+ *    → 用当前层分组的话，8 个地点永远并成一个标 ✓
+ *      （用户原话："明明有很多个叫亚马逊丛林的荒地地点，可是却只显示了一个名字"✓）
+ *
+ *  ⚠ **层数读 `meta.tiers.length`，不许读 `TIER_COUNT`** ✗✗ ——
+ *    那个模块变量初值 5、要等 boot 靠后才是真值 ✓（为它栽过好几次了 ✓）
+ *  ⚠ 越界 / 取不到就回落到"当前层"✓（老包 / 数据不全时不至于整片没标 ✓）
+ *
+ *  @param {number} pid
+ *  @param {number} fallbackTier 取不到最细层时用哪一层
+ *  @returns {number} 头衔号（可能是 `NO_TITLE` ✓）*/
+function titleAtFinest(pid, fallbackTier) {
+  const nt = (state.meta && Array.isArray(state.meta.tiers)) ? state.meta.tiers.length : 0;
+  if (!nt) return titleAt(pid, fallbackTier | 0);
+  const t = titleAt(pid, nt - 1);
+  if (t == null || t < 0 || t === NO_TITLE) return titleAt(pid, fallbackTier | 0);
+  return t;
+}
+
+/** **「标签藏起来」的那批头衔**（2026-10-17 ✓ 用户点名要的"掩耳盗铃"那条 ✓）
+ *
+ *  用户原话："如果一个属于水域的地点的像素位于地图**左右两侧都有**，
+ *            就不要让**它的名字**显示，也不要让**包含这个地点的上层水域**的名字显示"✓
+ *  动机（也是他说的）：EU5 没在日期变更线切，那几块地自己就横跨整幅图 →
+ *    名字的"中心"会落到地图正中央、跟它实际那片水没关系 ✓
+ *    与其把位置算法做复杂，不如**这种名字干脆别显示** ✓（原话："掩耳盗铃"✓）
+ *
+ *  ⚠ **判据只扫左右两列** ✗✗ —— 别看"这个头衔的像素 x 范围是不是 0~W-1" ✓
+ *    原因：**横跨的那一块，在光栅上就是"左列也有它、右列也有它"** ✓（直接指标 ✓）
+ *    而"x 范围 0~W-1"是**间接指标**（别的块凑巧占满两端也会满足 ✓ 会误伤 ✓）
+ *    实测（EU5）：夏威夷那几块 + 白令的 `inchoun_coast` / `kialegak_cape` ✓
+ *    成本：两列 × 图高 ≈ 8000 次读 ✓ 一次性 ✓ 换图才重算 ✓
+ *
+ *  ⚠ **"含它的上层"怎么算** ✗：拿**横跨地的 pid**，把它**每一层**的头衔都收进来 ✓
+ *    —— 上级片的像素本来就是子片的并集 ✓ 所以从最细层往粗层一遍收齐就够 ✓
+ *    这样这个 Set 里既有"横跨的那个地点"，也有**它所有的上级水域** ✓
+ *  ⚠ 收的是**所有**头衔（不分水域 / 陆地）✗ —— 调用方自己按需取 ✓
+ *    （用户点名的是水域 ✓ 陆地那边不查这个 Set ✓）
+ *
+ *  ⚠ **只在算得出像素图时算** ✗（分块模式 `provinceIds` 是占位数组 ✓）
+ *    算不出 → 空 Set → 一个字都不藏 ✓ 行为跟改造前一模一样 ✓
+ *
+ *  @returns {Set<number>} 要藏掉名字的头衔号
+ */
+function buildCrossSeamTids() {
+  const out = new Set();
+  const meta = state.meta, tm = state.titlemap, ids = state.provinceIds;
+  const W = (meta && meta.mapWidth) | 0, H = (meta && meta.mapHeight) | 0;
+  const nT = (meta && Array.isArray(meta.tiers)) ? meta.tiers.length : 0;
+  if (!meta || !tm || !nT || !(W > 1) || !(H > 0)) return out;
+  /* 分块模式：`provinceIds` 是个占位（长度 1）→ 认不出，直接返回空 ✓ */
+  if (!ids || ids.length < W * H) return out;
+
+  /* ① **左右两列都出现过的地块** = 横跨 ✓（一次扫两列 ✓）*/
+  const seenL = new Set(), seenR = new Set();
+  for (let y = 0; y < H; y++) {
+    const a = ids[y * W];
+    if (a) seenL.add(a);
+    const b = ids[y * W + W - 1];
+    if (b) seenR.add(b);
+  }
+  if (!seenL.size || !seenR.size) return out;
+  const crossPid = new Set();
+  for (const p of seenL) if (seenR.has(p)) crossPid.add(p);
+  if (!crossPid.size) return out;
+
+  /* ② 横跨地 **每一层**的头衔全收进来 ✓（`titlemap` 排布 = tid * numProvinces + pid）*/
+  const n = meta.numProvinces | 0;
+  if (!n) return out;
+  for (const p of crossPid) {
+    for (let t = 0; t < nT; t++) {
+      const q = tm[t * n + p];
+      if (q != null && q !== NO_TITLE && q >= 0) out.add(q);
+    }
+  }
+  return out;
 }
 
 function titleInfo(tid) {
@@ -661,12 +994,26 @@ function lutColorOf(tid) {
  * 为什么不直接用 titles.colors[tid]：**EU5 的荒地节点在数据里是给省份位图用的
  * 技术色** —— 1819 块里 1818 块五颜六色，连同一个"代赫纳沙漠"的两块颜色都不一样，
  * 屏幕上从来不该按它显示。CK3/EU4 那份数据本来就写的是这个灰，所以两边行为一致 ✓
- * （用户报的：EU5 剧本视图开「荒地自动上色」，一片荒地冒出莫名其妙的颜色 ✗）
+ * （荒地自动上色那套已退役 ✓ 这份灰现在只当 LUT 的「起手色」用 ✓）
  */
 function wasteGrey() {
-  const s = state.set || {};
-  return s.impass || s.waste || [94, 94, 94];
+  /* 🔴 **改成读设置里那一行** ✗✗（2026-10-15 ✓ 用户要求"七行颜色可调" ✓）
+   *   「不可通行区域」出厂还是 **94,94,94** ✓（跟数据里 wl 节点写的一致 ✓
+   *     所以什么都不动的话，观感跟以前一个字节不差 ✓）
+   *   改设置 → `applySettings()` → `applyNatureColors()` 会把这几类重刷一遍 ✓ */
+  return natureColor('impass');
 }
+
+
+
+
+
+
+
+
+
+
+
 
 /** 把每块荒地的 LUT 刷成"荒地灰"（= 它没上色的样子）✓ */
 function paintWasteGrey() {
@@ -682,19 +1029,446 @@ function paintWasteGrey() {
   return n;
 }
 
+/* ============================================================================
+ * **荒地自动上色**（2026-10-17 推翻重做 ✓）
+ *
+ * 用户口径（原话整理）：
+ *   ① 检查每块荒地周边**所有陆地最低地块**（EU4 是 province，CK3 是男爵领那级）；
+ *   ② 每个邻居按优先级取色：
+ *        · 剧本视图：玩家涂色 → 当前剧本色（**不再看地区色** ✗ 2026-10-17 用户定的）
+ *        · 非剧本视图：玩家涂色 → 当前视图上该地块所属头衔的颜色；
+ *   ③ 按**共享边长**加权，某种颜色**严格过半**才给这块荒地；
+ *   ④ 没有过半 / 一个可用颜色都没有（开关全关）→ 回退设置里「不可通行区域」那个色；
+ *   ⑤ 玩家直接涂在荒地上的色优先显示；
+ *   ⑥ 其他荒地也按已经算出的颜色投票，并**逐圈传染**到稳定。
+ *
+ * 实现要点：
+ *   · 颜色写在**每块荒地自己的最细层节点**（`wl_<pid>`）的 LUT 上 ✓
+ *     粗层荒地块是同名几块共用的，写上去会互相踩 ✗
+ *   · 着色器按 `uFineTier` 读它（见 gl.js 的 colorOfPid ✓）
+ *   · 周长表 = pid → [[邻居, 共享边像素数]]，水不算；没有现成表就在开图时
+ *     从省份 id 图扫一遍（CK3 42M 像素实测 0.08s ✓）
+ *   · **每秒重算不读 LUT** ✗：用上一轮的独立快照做传染，避免"自己上一轮的色
+ *     被当成邻居票"那种自环 ✓
+ * ========================================================================== */
+
+/** 建立"哪些 pid 是荒地"的快查表。返回荒地块数。 */
+function buildWastePidIndex() {
+  state.wastePidList = [];
+  state.wastePidFlag = null;
+  state.wasteFineTid = null;
+  const meta = state.meta, tm = state.titlemap;
+  const n = meta ? (meta.numProvinces | 0) : 0;
+  if (!meta || !tm || !n || !Array.isArray(meta.tiers) || !meta.tiers.length) return 0;
+  const fine = meta.tiers.length - 1;
+  const flag = new Uint8Array(n);
+  const fineTid = new Int32Array(n).fill(-1);
+  const list = [];
+  for (let pid = 1; pid < n; pid++) {
+    const tid = tm[fine * n + pid];
+    if (tid == null || tid === NO_TITLE || !isWastelandTid(tid)) continue;
+    flag[pid] = 1;
+    fineTid[pid] = tid;
+    list.push(pid);
+  }
+  state.wastePidFlag = flag;
+  state.wasteFineTid = fineTid;
+  state.wastePidList = list;
+  return list.length;
+}
+
+/** 这个 pid 是不是水（周长只统计陆地 ✓） */
+function _wasteIsWaterPid(pid) {
+  const wm = state.waterKindArr;
+  if (wm && pid < wm.length) return wm[pid] !== 0;
+  return isWaterPid(pid);
+}
+
+/** 往周长累加器里记一条"两侧地块之间的边"。两个方向各记一次。 */
+function _wasteAddEdge(acc, a, b) {
+  if (!(a > 0) || !(b > 0) || a === b) return;
+  const flag = state.wastePidFlag;
+  if (!flag) return;
+  if (_wasteIsWaterPid(a) || _wasteIsWaterPid(b)) return;
+  if (flag[a]) {
+    let m = acc.get(a);
+    if (!m) { m = new Map(); acc.set(a, m); }
+    m.set(b, (m.get(b) || 0) + 1);
+  }
+  if (flag[b]) {
+    let m = acc.get(b);
+    if (!m) { m = new Map(); acc.set(b, m); }
+    m.set(a, (m.get(a) || 0) + 1);
+  }
+}
+
+/** Map<pid, Map<nb, 边数>> → Map<pid, [[nb, 边数], …]>（边多的排前面） */
+function _wasteFinishPerimeter(acc) {
+  const out = new Map();
+  for (const [pid, m] of acc) {
+    const arr = [];
+    for (const [nb, c] of m) arr.push([nb, c]);
+    arr.sort((x, y) => y[1] - x[1]);
+    if (arr.length) out.set(pid, arr);
+  }
+  return out;
+}
+
+/** 从完整的省份 id 图扫出荒地周长（4 邻接，水边不算） */
+function buildWastePerimeterFromIds(ids, W, H) {
+  const acc = new Map();
+  for (let y = 0; y < H; y++) {
+    const row = y * W;
+    for (let x = 0; x < W - 1; x++) {
+      const a = ids[row + x], b = ids[row + x + 1];
+      if (a !== b) _wasteAddEdge(acc, a, b);
+    }
+  }
+  for (let y = 0; y < H - 1; y++) {
+    const row = y * W;
+    for (let x = 0; x < W; x++) {
+      const a = ids[row + x], b = ids[row + W + x];
+      if (a !== b) _wasteAddEdge(acc, a, b);
+    }
+  }
+  return _wasteFinishPerimeter(acc);
+}
+
+/** 没有像素图时的退路：邻接表，每条边先按 1 计（分块图等真周长算完会替换） */
+function buildWastePerimeterFromAdjacency() {
+  const out = new Map();
+  const adj = state.adjacency;
+  const n = state.meta ? (state.meta.numProvinces | 0) : 0;
+  if (!adj || !n || !state.wastePidList) return out;
+  const offsets = new Uint32Array(adj.buffer, adj.byteOffset, n + 1);
+  const neighbors = new Uint16Array(adj.buffer, adj.byteOffset + (n + 1) * 4);
+  for (const w of state.wastePidList) {
+    const arr = [];
+    for (let k = offsets[w], e = offsets[w + 1]; k < e; k++) {
+      const nb = neighbors[k];
+      if (!(nb > 0) || nb >= n || _wasteIsWaterPid(nb)) continue;
+      arr.push([nb, 1]);
+    }
+    if (arr.length) out.set(w, arr);
+  }
+  return out;
+}
+
+/**
+ * 分块图（EU5 原尺寸）的精确周长：逐行取块，算块内 + 块缝的边。
+ * 一次只留两行块（4×2 块 ≈ 134 MB 解压态），取完就放 ✓
+ */
+async function buildWastePerimeterFromTiles(tm, tiles) {
+  const acc = new Map();
+  const cols = tiles.cols | 0, rows = tiles.rows | 0;
+  const tw = tiles.tileW | 0, th = tiles.tileH | 0;
+  if (!(cols > 0) || !(rows > 0) || !(tw > 0) || !(th > 0)) return acc;
+
+  const loadRow = async (r) => {
+    const row = new Array(cols);
+    for (let c = 0; c < cols; c++) row[c] = await tm.get(r, c);
+    return row;
+  };
+
+  let cur = await loadRow(0);
+  for (let r = 0; r < rows; r++) {
+    const next = (r + 1 < rows) ? await loadRow(r + 1) : null;
+    for (let c = 0; c < cols; c++) {
+      const t = cur[c];
+      if (!t) continue;
+      for (let y = 0; y < th; y++) {
+        const base = y * tw;
+        for (let x = 0; x < tw - 1; x++) {
+          const a = t[base + x], b = t[base + x + 1];
+          if (a !== b) _wasteAddEdge(acc, a, b);
+        }
+      }
+      for (let y = 0; y < th - 1; y++) {
+        const base = y * tw;
+        for (let x = 0; x < tw; x++) {
+          const a = t[base + x], b = t[base + tw + x];
+          if (a !== b) _wasteAddEdge(acc, a, b);
+        }
+      }
+      // 右边缝：本块最后一列 ↔ 右边那块第一列
+      const rt = (c + 1 < cols) ? cur[c + 1] : null;
+      if (rt) {
+        for (let y = 0; y < th; y++) {
+          const a = t[y * tw + tw - 1], b = rt[y * tw];
+          if (a !== b) _wasteAddEdge(acc, a, b);
+        }
+      }
+      // 下边缝：本块最后一行 ↔ 下面那块第一行
+      const bt = next ? next[c] : null;
+      if (bt) {
+        for (let x = 0; x < tw; x++) {
+          const a = t[(th - 1) * tw + x], b = bt[x];
+          if (a !== b) _wasteAddEdge(acc, a, b);
+        }
+      }
+    }
+    cur = next;
+    // 让一让：别把主线程按住几百毫秒
+    await new Promise((res) => setTimeout(res, 0));
+  }
+  return _wasteFinishPerimeter(acc);
+}
+
+/** 开图时把周长表准备好（有像素图立刻算；分块图先给近似，后台再算精确） */
+function setupWastePerimeter() {
+  const nWaste = buildWastePidIndex();
+  state.wastePerim = new Map();
+  state._wastePerimSeq = (state._wastePerimSeq || 0) + 1;
+  if (!nWaste) return 0;
+
+  const meta = state.meta;
+  const ids = state.provinceIds;
+  const W = meta.mapWidth | 0, H = meta.mapHeight | 0;
+
+  // ① 老包/新包如果已经烘了周长表，优先用它（只认确实是荒地的那些 pid）
+  const baked = meta.wastelandPerimeter;
+  if (Array.isArray(baked) && baked.length) {
+    const out = new Map();
+    for (const e of baked) {
+      if (!Array.isArray(e) || e.length < 2) continue;
+      const pid = e[0] | 0;
+      if (!(pid > 0) || !state.wastePidFlag[pid]) continue;
+      const arr = [];
+      for (const pair of (e[1] || [])) {
+        const nb = pair && pair[0] | 0, c = pair && pair[1] | 0;
+        if (nb > 0 && c > 0 && !_wasteIsWaterPid(nb)) arr.push([nb, c]);
+      }
+      if (arr.length) out.set(pid, arr);
+    }
+    state.wastePerim = out;
+    return out.size;
+  }
+
+  // ② 有整张 id 图：直接扫（实测 CK3 42M 像素 0.08s）
+  if (ids && W > 0 && H > 0 && ids.length >= W * H) {
+    state.wastePerim = buildWastePerimeterFromIds(ids, W, H);
+    return state.wastePerim.size;
+  }
+
+  // ③ 分块图：先按邻接表给个近似，开图后再后台算精确的
+  state.wastePerim = buildWastePerimeterFromAdjacency();
+  if (state.tileMap && state.tiles) scheduleTileWastePerimeter();
+  return state.wastePerim.size;
+}
+
+/** 分块图的精确周长放到后台算，算完替换近似表并重算颜色 */
+function scheduleTileWastePerimeter() {
+  const tm = state.tileMap, tiles = state.tiles;
+  if (!tm || !tiles) return;
+  const token = (state._wasteTileToken = (state._wasteTileToken || 0) + 1);
+  setTimeout(async () => {
+    try {
+      const per = await buildWastePerimeterFromTiles(tm, tiles);
+      if (state.tileMap !== tm || state._wasteTileToken !== token) return;
+      if (!per.size) return;
+      state.wastePerim = per;
+      state._wastePerimSeq = (state._wastePerimSeq || 0) + 1;
+      state._wasteSig = null;
+      if (renderer) renderer.dirty = true;
+    } catch (e) {
+      console.warn('荒地周长（分块）计算失败，继续用邻接近似：', e);
+    }
+  }, 600);
+}
+
+/** 一个邻居地块按用户口径该算成什么颜色（null = 这一票没有颜色） */
+function wasteVoteColor(nb, prevAuto, isEra, regionTier) {
+  const pd = renderer && renderer.paintData;
+  // ① 玩家涂色（「填色 · 颜色」开着才算 ✓）
+  if (state.showPaint && pd && nb > 0 && pd[nb * 4 + 3] > 0) {
+    return [pd[nb * 4], pd[nb * 4 + 1], pd[nb * 4 + 2]];
+  }
+  const nReal = (state.meta && state.meta.numRealTitles != null)
+    ? state.meta.numRealTitles : null;
+  /* 老包没有 `numRealTitles` 时，至少把**荒地伪头衔**挡掉 ✓
+   *   不然粗层那片荒地会拿自己的类色来投票，把自动色盖成灰 ✓ */
+  const realTid = (t) => (t != null && t !== NO_TITLE
+    && (nReal != null ? t < nReal : !isWastelandTid(t)));
+  // ② 剧本视图：当前剧本有归属 → 剧本色（「势力 · 颜色」开着才算 ✓）
+  if (isEra && state.showPowerColor) {
+    const t = titleAt(nb, state.tier);
+    if (realTid(t)) return state.titles.colors[t];
+  }
+  /* ③ 地区颜色（「地区 · 颜色」开着才算 ✓）
+   *   🔴 **剧本模式开启时不再检查地区颜色** ✗✗（2026-10-17 用户定的 ✓）
+   *     → 剧本视图里只认：玩家涂色 → 当前剧本色 → 其他荒地的传染色 ✓
+   *       剧本没归属的邻居**不拿地区色来凑**（只进分母 ✓）
+   *   → 非剧本视图里仍旧看当前视图层 ✓ */
+  if (!isEra && state.showRegionColor) {
+    const t = titleAt(nb, regionTier);
+    if (realTid(t)) return state.titles.colors[t];
+  }
+  /* ④ 邻居也是荒地：用上一轮**真的算出了颜色**的那份（逐圈传染 ✓）
+   *   ⚠ 回退灰不算票 ✗ —— 那代表"这块还没颜色"，只进分母 ✓
+   *     （算成灰也投票的话，一大片荒地会互相堵住，颜色永远传不进去 ✓）*/
+  if (state.wasteAuto && state.wastePidFlag && state.wastePidFlag[nb]) {
+    const c = prevAuto.get(nb);
+    if (c) return c;
+  }
+  return null;
+}
+
+/** 重算所有荒地的自动色，写进它们最细层节点的 LUT。返回真正变了的块数。 */
+function refreshWasteAuto() {
+  if (!renderer || !renderer.setLutColor || !state.titles || !state.meta) return 0;
+  if (!state.wastePidList || !state.wastePerim || !state.wasteFineTid) return 0;
+  const grey = wasteGrey();
+  const fineTid = state.wasteFineTid;
+  const lut = renderer.lutData;
+  let n = 0;
+
+  const writeGrey = () => {
+    for (const pid of state.wastePidList) {
+      const tid = fineTid[pid];
+      if (tid < 0) continue;
+      const i = tid * 4;
+      if (lut[i] !== grey[0] || lut[i + 1] !== grey[1] || lut[i + 2] !== grey[2]) {
+        renderer.setLutColor(tid, grey[0], grey[1], grey[2]);
+        n++;
+      }
+    }
+    return n;
+  };
+  if (!state.wasteAuto) return writeGrey();
+
+  const nEra = eraTierCount();
+  const isEra = state.tier >= 0 && state.tier < nEra;
+  const nTier = (state.meta && Array.isArray(state.meta.tiers)) ? state.meta.tiers.length : 0;
+  /* 地区颜色**只在非剧本视图里用** ✓（2026-10-17 用户定的：剧本模式不再检查地区色 ✗）
+   *   → 这里就是当前视图层；粒度不再影响荒地取色 ✓ */
+  let regionTier = state.tier;
+  // 开图早期 `state.tier` 可能还是 -1：别拿它去索引归属表 ✓ 回落最细层 ✓
+  if (!(regionTier >= 0 && regionTier < nTier)) regionTier = Math.max(0, nTier - 1);
+
+  /* 固定点迭代：每一圈都拿**上一圈的快照**投票，避免遍历顺序影响结果。
+   * 每圈最多往外传一环 ✓ 荒地链条可能很长（CK3 的山脉一串几十块 ✓）→ 上限给 32；
+   * 真不收敛（两块互相投）就停在最后一圈 ✓ 正常情况几圈就稳定 ✓ */
+  let prev = new Map();
+  for (let pass = 0; pass < 32; pass++) {
+    const next = new Map();
+    for (const pid of state.wastePidList) {
+      const per = state.wastePerim.get(pid);
+      if (!per || !per.length) { next.set(pid, null); continue; }
+      let total = 0;
+      const votes = new Map();
+      for (const pair of per) {
+        const nb = pair[0], w = pair[1] || 0;
+        total += w;
+        const c = wasteVoteColor(nb, prev, isEra, regionTier);
+        if (!c) continue;
+        const key = ((c[0] & 255) << 16) | ((c[1] & 255) << 8) | (c[2] & 255);
+        let v = votes.get(key);
+        if (!v) { v = { w: 0, rgb: c }; votes.set(key, v); }
+        v.w += w;
+      }
+      let best = null;
+      for (const v of votes.values()) if (!best || v.w > best.w) best = v;
+      // null = 没算出颜色（最终写回灰，但**不参与下一轮投票** ✓）
+      next.set(pid, (total > 0 && best && best.w * 2 > total) ? best.rgb : null);
+    }
+    let same = next.size === prev.size;
+    if (same) {
+      for (const [pid, c] of next) {
+        const p = prev.get(pid) || null;
+        if ((p === null) !== (c === null)) { same = false; break; }
+        if (p && c && (p[0] !== c[0] || p[1] !== c[1] || p[2] !== c[2])) { same = false; break; }
+      }
+    }
+    prev = next;
+    if (same) break;
+  }
+
+  for (const pid of state.wastePidList) {
+    const tid = fineTid[pid];
+    if (tid < 0) continue;
+    const c = prev.get(pid) || grey;
+    const i = tid * 4;
+    if (lut[i] !== c[0] || lut[i + 1] !== c[1] || lut[i + 2] !== c[2]) {
+      renderer.setLutColor(tid, c[0], c[1], c[2]);
+      n++;
+    }
+  }
+  return n;
+}
+
+/** 帧循环里比对签名：层 / 粒度 / 三个颜色开关 / 开关 / 涂色 / 设置色 变了就重算 */
+function wasteWatch() {
+  if (!renderer || !state.meta) return;
+  const imp = state.set && state.set.impass;
+  const sig = [
+    state.tier | 0,
+    state.grain == null ? 'x' : (state.grain | 0),
+    state.showPaint ? 1 : 0,
+    state.showPowerColor ? 1 : 0,
+    state.showRegionColor ? 1 : 0,
+    state.wasteAuto ? 1 : 0,
+    state._paintSeq || 0,
+    state._wastePerimSeq || 0,
+    state._wasteCfgSeq || 0,
+    imp ? imp.join(',') : '',
+  ].join('|');
+  if (state._wasteSig === sig) return;
+  state._wasteSig = sig;
+  refreshWasteAuto();
+}
+
 /** 切「填色·颜色」：LUT 里永远是游戏原色，所以这里只要重画一帧 */
 // ---------------------------------------------------------------- 设置页
 /** 设置页的出厂值（点「恢复默认」就回到这里） */
 const SET_DEFAULTS = {
-  bg: null, waste: null, sea: null, lake: null, impass: null,
+  /* 背景色 / 未上色色 **两项分开** ✓（2026-10-13 用户要求 ✓）
+   *   bg        = 「背景颜色」默认 **180,180,180** ✓
+   *   unpainted = 「未上色区域」默认 150,150,150 ✓（就是原来那层中性灰 ✓）*/
+  bg: null, unpainted: null,
+  /* 🔴 **七行颜色** ✗✗（2026-10-15 ✓ 用户定 ✓）—— 空白区域 / 无归属区域 +
+   *   海 / 不可通行海域 / 湖 / 河 / 不可通行 ✓
+   *   null = 用 `NATURE_RGB`（前三行另在 `_now()` 里给了 180 / 150 ✓）*/
+  impass: null, sea: null, isea: null, lake: null, river: null,
   // 线宽五档 / 浓度四档（默认都取**标准那一档** ✓ 见 W_STEPS / PW_STEPS / CONC_STEPS）
-  /* ⚠ **宽度默认一律 1.0** ✗（用户定的 ✓ 原来 pw/waterW/wasteW 是 1.5 ✓）
-   *   浓度（pa/ra/ca）不动 ✓ 用户说的是"宽度都是 1.0" ✓ */
-  w: 1, pa: 50, ra: 75, ca: 100, pw: 1, font: 1,
+  /* ⚠ **宽度默认一律 1.0** ✗（用户定的 ✓ 老几样当年是 1.5 ✓）
+   *   浓度（pa/ra/ca）不动 ✓ 用户说的是"宽度都是 1.0" ✓
+   * ⚠ **「地方边界宽度」2026-10-13 拆成两条** ✓（用户要求 ✓）：
+   *   · wRegion = 「**地区**边界宽度」→ 管**父级边界**（多级链上层那些线 ✓）
+   *   · wProv   = 「**省份**边界宽度」→ 管**子级边界**（本层那条线 ✓）
+   *   默认都是 1 ✓ 跟原来那一条相等 —— 观感不变 ✓
+   *   ⚠ 老的 `w` 还留着 ✗：老存档只有它，代码里两条都从它继承（见 syncParentBorder ✓）
+   *     删了的话老用户那两根滑条会一夜回到默认 ✓ */
+  wRegion: 1, wProv: 1, w: null,
+  pa: 50, ra: 75, ca: 100, pw: 1,
+  /* 🔴🔴 **字号拆成两块** ✗✗（2026-10-17 用户定的 ✓
+   *   "把字号分开两个，一个给地块，一个给势力"✓）
+   *   · `fontPlace` = 地块名（含海 / 湖 / 河 / 荒地名 ✓）
+   *   · `fontPower` = 势力名（剧本 / 年份那几层 + 涂出来的色块名 ✓）
+   *   ⚠ **老的 `font` 保留但不再读** ✗（老存档只有它 ✓
+   *     迁移收在 `fontSizes()` 那一个口子里 ✓ —— 别在每处各写一遍 ✓）*/
+  fontPlace: 1, fontPower: 1,
+  /* **水域边界那一对**（2026-10-16 ✓ 用户定的 ✓）
+   *   用户原话："新增一对滑条「水域边界宽度 / 浓度」（**不沿用省份/地区那一档**）"✓
+   *   宽度 1（六档表里那一档 ✓ 跟别处同一个口径 ✓）
+   *   🔴🔴 **不透明度默认 25%** ✗✗（2026-10-17 用户定的 ✓
+   *     原话："默认水域边界不透明度是25%"✓
+   *     2026-10-16 那版给的是 100%（实心 ✓ 图个"默认观感不变"），现在改成**淡的 25%** ✓
+   *     跟"默认关闭水域边界"配着看就明白了：这一档默认就是个**很淡的辅助线** ✓
+   *       —— 界面上勾上就能看见一点，但不抢戏 ✓）
+   *   ⚠ **荒地那一对（wasteW / wasteA）不请回来** ✗ ——
+   *     用户只点名了水域 ✓ 荒地仍然"没有专属边界"（见 check_wiring 的退役名单 ✓）*/
+  waterW: 1, waterA: 25,
+  /* **荒地边界那一对**（2026-10-17 ✓ 用户点名要的那条通道 ✓）
+   *   宽度跟水域那对一样是 1 ✓
+   *   🔴 **不透明度默认 100%（实心）** ✗✗（2026-10-17 用户定的 ✓
+   *     原话："荒地边界默认100%"✓）
+   *     ⚠ 它跟水域那条**不再是一个出厂值**了 ✗ —— 水域是 25%（很淡的辅助线 ✓）
+   *       荒地是 100%（实心 ✓）别顺手改成一样 ✗
+   *   ⚠ 它俩仍然是**独立一档** ✗（不沿用省份/地区那一档 ✓）*/
+  wasteW: 1, wasteA: 100,
   // **背景那两条线各有一套宽度 + 浓度** ✓（用户要求可调 ✓；显示开关去掉了 ✗）
   //   宽度跟「势力线宽」一个口径（格数 ✓ 直接就是粗细）；浓度是百分比 ✓
-  waterW: 1, waterA: 100,                     // 水域（海/湖/河）—— 宽度默认 1 ✓
-  wasteW: 1, wasteA: 100,                     // 荒地 —— 宽度默认 1 ✓
+  //（水域 / 荒地的专属宽浓出厂值已随开关一起退役 ✓ 水走普通头衔边界 ✓）
   // **名字显示上限**：按连通域面积**从大到小**取前 N 个 ✓
   // 自从"一个连通域一个名字"之后，全图能有几千坨（EU4 的 1444 有 1863 坨 ✗），
   // 标签层每帧都要过一遍 —— 所以封个顶防卡顿 ✓ **数量 1~20**；
@@ -706,16 +1480,52 @@ const SET_DEFAULTS = {
   //   默认若还是 12，就把门槛放出来的那些**又砍掉一半** ✗ → 看起来"到处都没名字" ✓
   //   → 默认 12：**每个国家**最多留 12 个名字（本土 + 11 块殖民地 ✓ 用户的原意 ✓）
   labelMax: 12,
+  /* **地名上限** ✓（2026-10-16 用户定的 ✓）—— 跟「势力名称上限」**同一套档位**
+   *  （1~21，`21` = 无上限 ✓ 默认 12 ✓），也是**按组**各留 N 个：
+   *   势力的"一组"是**一个国家**；地名的"一组"是**一个头衔** ✓
+   *   ⚠ 为什么要有它：地名也改成"**每个连通域一个标**"之后，
+   *     一个头衔底下可能有一大堆碎块（CK3 的飞地 / EU4 的岛群 / 群岛伯爵领 ✓）
+   *     —— 不封顶的话细层会碎成一片 ✗ */
+  /* **地名上限** ✓（2026-10-16 用户定的 ✓）
+   *  （1~21，`21` = 无上限 ✓）
+   *  ⚠ 2026-10-17 用户："设置里的地名最高上限改为1" ✓ → 默认从 12 改成 **1**
+   *    （每个头衔/连通域只留最大的那一个标；想多显示还能自己拉高 ✓）
+   *    `placeCapV1` 是**一次性迁移标记**：老存档里还是旧默认 12 的迁到 1，
+   *    用户之后自己改的值不再被覆盖 ✓ */
+  labelPlaceMax: 1,
+  placeCapV1: 1,
   /* **两张名字的不透明度**（%）—— **势力名称** = 剧本/年份那几层 · 地名 = 地区/省份/地点 ✓
    *  ⚠ 界面上叫「**势力名称**」✗（用户定的 ✓ 原来写的是"国名" ✓）
    *     它盖的其实是**剧本/年份那几层的势力名**，叫"国名"会把范围说窄 ✓
-   *     变量名 labelAC / alphaCountry 是历史包袱 ✗ 不用改（改了到处都得动 ✓）
+   *  变量名 labelAC / alphaCountry 是历史包袱 ✗ 不用改（改了到处都得动 ✓）
    *  半透明的好处：底下的填色和边界还看得见 ✓（用户定的档位：25 / 50 / 75 / 100 ✓）*/
   labelAC: 50,
   labelAP: 50,
   // **取完色切到哪个画图工具**（涂抹 / 填色 ✓ 用户要求可在设置里选）
   pickTool: 'paint',
 };
+
+/** **两块字号取值的唯一口子** ✓（2026-10-17 加的 ✓）
+ *
+ *  为什么要它：字号拆成"地块 / 势力"两块之后，**老存档里只有一个数字** ✗ ——
+ *  那个数得**同时喂给两块**（不然老用户一升级：要么归 1，要么其中一块被丢掉 ✓）。
+ *  ⚠ **迁移只写这一处** ✗✗ —— 别在"读设置 / 存设置 / 刷界面"各写一遍 ✓
+ *    三处各写一遍就是三个会走偏的口子 ✓（今天已经在别处栽过同款 ✓）
+ *
+ *  认三种形状（按顺序）：
+ *    ① 新格式 `s.fontPlace` / `s.fontPower`（各自生效 ✓）
+ *    ② 老格式 `s.font`（**一个数字** ✓ 两块**都**用它 —— 这就是迁移 ✓）
+ *    ③ 什么都没有 → 1 ✓
+ *  ⚠ 返回值**一定是两个数** ✗（调用方不用再判 null ✓）
+ *  @returns {{place: number, power: number}} */
+function fontSizes(s) {
+  const _one = (v) => ((typeof v === 'number' && isFinite(v) && v > 0) ? v : null);
+  const legacy = _one(s && s.font);
+  const place = _one(s && s.fontPlace);
+  const power = _one(s && s.fontPower);
+  const fallback = legacy != null ? legacy : 1;
+  return { place: place != null ? place : fallback, power: power != null ? power : fallback };
+}
 
 /** 滑杆拉到满 = **无上限** ✓
  *  ⚠ 这个数必须跟 `index.html` 那根 range 的 `max` 一致 —— 测试里有一条断言盯着两边 ✓ */
@@ -731,10 +1541,28 @@ const LABEL_MAX_UNLIMITED = 21;
  *   最细那一档给"看细节时不想被线压住"的场合 ✓ */
 const W_STEPS = [0.5, 1, 1.5, 2, 2.5, 3];    // 地方边界宽度**六档**（默认 1 ✓）
 const PW_STEPS = [0.5, 1, 1.5, 2, 2.5, 3];    // 势力边界宽度**六档**（**就是这个粗细** ✓ 不再是倍率 ✗）默认 1 ✓
-const BG_STEPS = [0.5, 1, 1.5, 2, 2.5, 3];   // 水域/荒地宽度**六档**（默认 1 ✓ 0.5 是最细那档 ✓）         // 水域 / 荒地边界宽度**跟地方边界同一个范围** ✓（用户定的 ✓）
 /* **0% 这一档是用户后来要的** ✗（原来从 25 起 ✓ 现在五档 ✓）
  *   0% = 那条线**完全不画** ✓ 等于"单独关掉这一种边界"而保留其余设置 ✓ */
 const CONC_STEPS = [0, 25, 50, 75, 100];      // 边界浓度**五档** ✓
+
+/** **设置里某个数值项的唯一读法** ✓（2026-10-17 收口）
+ *
+ *  以前每处都写一遍 `(state.set && state.set.xxx != null) ? Number(...) : 默认值` ——
+ *  全仓库十几份，`pa` 那种还要在括号里再包一层除法 ✓
+ *  坏处很实在：万一某一处忘了判 `state.set` 就是 TypeError；
+ *  老存档里存成字符串 / NaN 时，各处的回退口径也会各走各的 ✓
+ *
+ *  @param {string} key  `state.set` 里的键
+ *  @param {number|null} def 缺省值（**原样返回**，包括 null ✓）
+ *  @returns {number|null} 非有限数一律回退到 `def` ✓
+ */
+function setNum(key, def) {
+  const s = state.set;
+  const v = s ? s[key] : null;
+  if (v == null) return def;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : def;
+}
 
 /** 把一个数**吸附到最近的档位**上 ✓
  *  （老存档里存的是滑杆时代的连续值（比如 `w: 1.7` ✗），
@@ -747,15 +1575,25 @@ function snapStep(v, steps) {
 
 /** 设置页那行「名字上限」旁边显示的当前值 ✓（满格写"无上限"） */
 function labelMaxText() {
-  const v = (state.set && state.set.labelMax != null)
-    ? Number(state.set.labelMax) : SET_DEFAULTS.labelMax;
+  const v = setNum('labelMax', SET_DEFAULTS.labelMax);
   return v >= LABEL_MAX_UNLIMITED ? '无上限' : Math.max(1, v) + ' 个';
 }
 
 /** 真正生效的上限（**0 = 不封顶** ✓ 给 `rebuildPaintBlocks` 用） */
 function labelMaxValue() {
-  const v = (state.set && state.set.labelMax != null)
-    ? Number(state.set.labelMax) : SET_DEFAULTS.labelMax;
+  const v = setNum('labelMax', SET_DEFAULTS.labelMax);
+  return v >= LABEL_MAX_UNLIMITED ? 0 : Math.max(1, v);
+}
+
+/** 设置页那行「地名上限」旁边显示的当前值 ✓（跟 `labelMaxText` 一个长相 ✓） */
+function labelPlaceMaxText() {
+  const v = setNum('labelPlaceMax', SET_DEFAULTS.labelPlaceMax);
+  return v >= LABEL_MAX_UNLIMITED ? '无上限' : Math.max(1, v) + ' 个';
+}
+
+/** 真正生效的地名上限（**0 = 不封顶** ✓ 给 `placePointsFor` 用 ✓） */
+function labelPlaceMaxValue() {
+  const v = setNum('labelPlaceMax', SET_DEFAULTS.labelPlaceMax);
   return v >= LABEL_MAX_UNLIMITED ? 0 : Math.max(1, v);
 }
 
@@ -765,19 +1603,29 @@ function labelMaxValue() {
  * 值是**动态插进去的** ✗ 不用在 HTML 里写九遍 span ✓
  */
 const SLIDER_TIPS = [
-  ['set-w', (v) => String(v)],
+  /* ⚠ 2026-10-13：原来这条叫「地方边界宽度」✗ 现在**拆成两条** ✓
+   *   · 地区边界宽度 = 管**父级边界**（多级链上那些上层线 ✓）
+   *   · 省份边界宽度 = 管**子级边界**（本层那条线 ✓）
+   *   所以下面两行替掉了原来那一行 `['set-w', …]` ✓ */
+  ['set-w-region', (v) => String(v)],
+  ['set-w-prov', (v) => String(v)],
   ['set-pw', (v) => String(v)],
-  ['set-water-w', (v) => String(v)],
-  ['set-waste-w', (v) => String(v)],
   ['set-pa', (v) => v + '%'],
   ['set-ra', (v) => v + '%'],
   ['set-ca', (v) => v + '%'],
+  /* **水域边界那一对请回来了** ✓（2026-10-16 ✓ 用户要求"新增一对"✓
+   *   跟别的一模一样：滑条**左边**写当前值 ✓）*/
+  ['set-water-w', (v) => String(v)],
   ['set-water-a', (v) => v + '%'],
+  /* 🔴 **荒地边界那两根**（2026-10-17 ✓ 跟水域那对同一个长相 ✓）*/
+  ['set-waste-w', (v) => String(v)],
   ['set-waste-a', (v) => v + '%'],
   /* **名字这一栏的三根也要**（用户要求：跟边界那些一样，滑条**左边**写当前值 ✓）
    *   漏了这一步的表现就是"别的滑条旁边有数字、名字这几根没有" ✓
    *   ⚠ 「势力名称上限」不在这儿 ✗ 它自己有 set-labelmax-v 那个 span（还要写"无上限" ✓）*/
-  ['set-font', (v) => v + '×'],
+  /* 🔴 **两根字号**（2026-10-17 拆的 ✓ 用户：「把字号分开两个，一个给地块，一个给势力」✓）*/
+  ['set-fontplace', (v) => v + '×'],
+  ['set-fontpower', (v) => v + '×'],
   ['set-labelac', (v) => v + '%'],
   ['set-labelap', (v) => v + '%'],
 ];
@@ -800,47 +1648,74 @@ function buildSliderTips() {
   }
 }
 
-/** 把设置里那几种颜色盖到 LUT 的特殊节点上（海 / 湖 / 不可通行） */
-function applyLutOverrides() {
-  const s = state.set || {};
-  if (!renderer || !state.titles) return;
-  const K = state.titles.keys;
-  // 同一类在不同作品里键不同（EU4 的荒地叫 #wasteland）→ 都列上 ✓
-  const want = { '#sea': s.sea, '#lake': s.lake, '#river': s.river,
-    '#impassable': s.impass, '#impassable_sea': s.impassSea,
-    '#wasteland': s.impass };
-  for (let i = 0; i < K.length; i++) {
-    const c = want[String(K[i])];
-    // 自定义色是 null（「恢复默认」）也要把 LUT 写回**烘数据时的原色** ——
-    // 直接跳过的话，之前盖上去的自定义海/湖/河颜色会一直残留在显存里
-    const o = c || state.titles.colors[i];
-    if (o) renderer.setLutColor(i, o[0], o[1], o[2]);
-  }
-}
-
 /** 设置改了就调它：推到渲染器 / 标签层并重画 */
 function applySettings() {
+  /* 设置一变就让荒地自动色重算一遍 ✓（2026-10-17 ✓）
+   *   `applyNatureColors()` 会按「不可通行区域」把荒地节点的 LUT 刷回类色 ✓
+   *   不跟着重算的话，自动色会被这一趟覆盖掉 ✓ */
+  state._wasteCfgSeq = (state._wasteCfgSeq || 0) + 1;
   /* **两张名字的不透明度**送到标签层 ✓（那边按 tier 分层挑用 ✓）
    *   放到 applySettings 最前面：它不依赖下面任何几何设置 ✓ 早设早生效 ✓ */
   if (labels) {
-    const _ac = state.set.labelAC != null ? Number(state.set.labelAC) : 50;
-    const _ap = state.set.labelAP != null ? Number(state.set.labelAP) : 50;
-    labels.alphaCountry = _ac / 100;
-    labels.alphaPlace = _ap / 100;
+    labels.alphaCountry = setNum('labelAC', 50) / 100;
+    labels.alphaPlace = setNum('labelAP', 50) / 100;
     labelDirty = true;
   }
   const s = state.set || (state.set = Object.assign({}, SET_DEFAULTS));
   if (renderer) {
-    const bg = s.bg || [150, 150, 150];
+    /* **背景色默认 180,180,180** ✓（2026-10-13 用户定的 ✓ 220 → 200 → **180**）
+     *   「未上色区域」另有一项（默认 150 ✓）—— **只在开着剧本时**用它 ✓
+     *   没开剧本的无主地跟着背景色走（gl.js 里 NONE 那段按 uPaintOnly 挑 ✓）*/
+    const bg = s.bg || [180, 180, 180];
     renderer.backdrop = [bg[0] / 255, bg[1] / 255, bg[2] / 255];
-    // 荒地就是不可通行 —— 用同一个颜色（设置里只有「不可通行」这一项）✓
-    const wg = s.impass || s.waste || [94, 94, 94];
-    renderer.wasteGrey = [wg[0] / 255, wg[1] / 255, wg[2] / 255];
+    const up = s.unpainted || [150, 150, 150];
+    renderer.unpainted = [up[0] / 255, up[1] / 255, up[2] / 255];
+    /* 🔴 **每一格按底层身份上色** ✗✗（2026-10-15 ✓ 用户要求 ✓）
+     *   用户原话："解决一下 EU5 的海洋不上色的问题……上不上色看的是**具体的最底层
+     *     单位属于什么东西**" ✓
+     *   → 把这枚身份标与**七行里的五行类色**灌给渲染器 ✓
+     *     着色器那边（gl.js 的 colorOfPid ✓）只看底层 pid 的 kind：
+     *       2/3/4/5/6 → 直接给类色 ✓（**跟哪一层、有没有片、有没有归属都无关** ✓）
+     *       1 陆地     → 老路照旧 ✓（手绘 / 无主兜底 / LUT 头衔色 + 浓度 ✓）
+     *   ⚠ 老包没有 `state.kindMask` → 传 null → `uKindOn = 0` → 整条让开 ✓
+     *     行为一丝不变 ✓
+     *   ⚠ 每次 `applySettings()` 都重灌一遍 ✗ —— 它很便宜（只标脏 ✓
+     *     真正上传在下一帧的 `flushPaint()` 里 ✓）而**改设置立刻生效**靠的就是它 ✓
+     *     （用户要求"实时跟着变、不许重烤包" ✓ 一个字节的包都不用动 ✓）*/
+    renderer.setKindMask(state.kindMask || null);
+    /* **「认得出是水吗」那张表** ✓（2026-10-16 ✓ 给「水域 · 边界」那条通道 ✓）
+     *   ⚠ 传 null（老包 / 一个水都认不出）→ 着色器 `waterIs` 恒 false
+     *     → 水域那条通道 + 两条让位一起退化成现状 ✓ 一个字节都不动 ✓
+     *   ⚠ 跟 kindMask 一样：每次 applySettings() 都重灌一遍 ✗ 很便宜（只标脏 ✓
+     *     真正上传在下一帧的 flushPaint() ✓），改设置立刻生效靠的就是它 ✓ */
+    renderer.setWaterKindMask(state.waterKindArr || null);
+    renderer.setNatureColors([
+      natureColor('sea'), natureColor('lake'), natureColor('river'),
+      natureColor('isea'), natureColor('impass'),
+    ]);
+    // （`renderer.wasteGrey` 一行已退役 ✓ —— gl.js 上没有这个 uniform 了 ✓
+    //   荒地 LUT 起手灰由 `paintWasteGrey()` 在载图时写进 LUT ✓）
     renderer.dirty = true;
   }
   resyncTitleLut();
-  applyLutOverrides();
-  if (typeof window !== 'undefined') window.__CK3_FONT_SCALE = s.font || 1;
+  /* 🔴 **七行颜色刷进 LUT** ✗✗（2026-10-15 ✓ 用户要求"改完立刻生效" ✓）
+   *   —— 放在 `resyncTitleLut()` 后面：那一步只是标脏，真正重画在下一帧 ✓
+   *   开图时也走这条（`openMap` 最后调的就是 `applySettings()` ✓ 不用另挂 ✓）*/
+  applyNatureColors();
+  /* 🔴🔴 **2026-10-17：字号拆成两个全局值** ✗✗（用户："把字号分开两个，一个给地块，一个给势力"✓）
+   *   `__CK3_FONT_PLACE` = 地块名（含海 / 湖 / 河 / 荒地名 ✓）
+   *   `__CK3_FONT_POWER` = 势力名（剧本 / 年份那几层 + 玩家涂出来的色块名 ✓）
+   *   ⚠ **旧的 `__CK3_FONT_SCALE` 仍然写着** ✗ —— 别删 ✓
+   *     它是 `labels.js` 里那两级回退的兜底（老产物 / 测试桩只认它 ✓）
+   *     也省得"哪天别处还读着它"直接崩 ✓ 三个一起维护，成本就一个赋值 ✓
+   *   ⚠ 取值要**兼容老存档**：`s.font` 老格式是**一个数字** ✓
+   *     新格式是 `{ place, power }` ✓ 两种都得认 ✓（`fontSizes()` 那一个口子 ✓）*/
+  if (typeof window !== 'undefined') {
+    const _fo = fontSizes(s);
+    window.__CK3_FONT_SCALE = _fo.place;
+    window.__CK3_FONT_PLACE = _fo.place;
+    window.__CK3_FONT_POWER = _fo.power;
+  }
   state._parentSig = null;
   syncParentBorder();
   labelDirty = true;
@@ -1037,7 +1912,7 @@ function applySide(side) {
 
 /** 从账本重算"哪些头衔算涂过"（撤销之后可能只剩一半了） */
 /**
- * 手绘层变了：喊一声。自动填色（开着的化）会在下一帧重算。
+ * 手绘层变了：喊一声。（原来那半句"自动填色跟着重算"的机制已退役 ✓）
  * 涂色、擦除、撤销、重做、导入、清除 —— 全部走这里。
  */
 function markPaint() {
@@ -1046,7 +1921,7 @@ function markPaint() {
 }
 
 function recomputePainted() {
-  markPaint();   // 手绘层变了 —— 自动填色靠它知道该重算了（实时）
+  markPaint();   // 手绘层变了 —— 先作废缓存再重算 ✓
   if (!state.provTitle) return;
   const pd = renderer && renderer.paintData;
   state.painted.clear();
@@ -1073,24 +1948,32 @@ function recomputePainted() {
   /* **状态栏那个"改动 N"在这里统一刷** ✗ ——
    *   以前是 paintPids() 里自己调 updateStatus()，可那时 state.changed 还是
    *   **旧账本**（重算在它之后才跑）→ 涂完显示的还是上一笔的数（慢一拍 ✗）。
-   *   账本是这里重建的，那就这里刷 —— 涂 / 擦 / 清除 / 清除荒地 / 导入 / 撤销，
+   *   账本是这里重建的，那就这里刷 —— 涂 / 擦 / 清除 / 导入 / 撤销，
    *   所有改手绘层的路最终都汇到这一个函数 ✓ */
   updateStatus();
-  // 撤销/重做/导入之后，荒地那些"自动底色"要重铺一遍
-  // （玩家涂过的地方会被跳过，所以不会盖掉他的笔迹）
 }
 
-/**
- * 荒地自动上色 —— 写成**地图原版颜色**（改那一块荒地自己的节点颜色）。
+/** 把派生值推给渲染器 —— **变了才写、写就置脏** ✓
  *
- * 归属是构建时烘好的（`wastelandAuto`：按"整条陆地周长里贴着某一个国家的比例"算，
- * 严格过半才认）。它属于原版那一层，所以：关掉「填色·颜色」照样看得见、
- * 不进涂色导出、也不进撤销历史；玩家自己涂过的地块仍然以玩家为准
- * （着色器里手绘永远在头衔色之上）。
+ *  这几条每帧都会算一遍（syncLayerSwitches / syncParentBorder ✓），
+ *  以前每一处都手写一遍 `if (renderer.x !== v) { renderer.x = v; renderer.dirty = true; }` ——
+ *  光 app.js 里就十几份，漏写 `dirty = true` 的那份表现是"滑条拖了没反应"✓
  *
- * 每块荒地都在最细那层有自己的节点，所以这里能一块一块改颜色。
- * 关掉开关就把颜色**还回原来的那个灰**（节点自带的 color）。
+ *  @param {string} key 渲染器上的属性名
+ *  @param {*} v        目标值
+ *  @param {number} [eps] 浮点容差（给了才按容差比；布尔/整型别传 ✓）
+ *  @returns {boolean} 有没有真的写进去
  */
+function pushRenderer(key, v, eps) {
+  if (!renderer) return false;
+  const cur = renderer[key];
+  if (eps != null && typeof v === 'number' && typeof cur === 'number') {
+    if (Math.abs(cur - v) <= eps) return false;
+  } else if (cur === v) return false;
+  renderer[key] = v;
+  renderer.dirty = true;
+  return true;
+}
 
 function syncLayerSwitches() {
   const n = (state.meta && state.meta.eraDates && state.meta.eraDates.length) || 0;
@@ -1100,93 +1983,50 @@ function syncLayerSwitches() {
   // **哪一层都画** ✓ —— 细层（地区/省份/地点视图）也要，跟剧本层**同一套规矩**：
   //   浓度 = 势力边界浓度（设置页那一档，内部字段仍叫 ca；实心），粗细 = 链上最粗那一档（见下面 _pw）✓
   //   （以前写死"只在剧本/国家那层"✗ —— 细层里勾了「填色 · 边界」什么都不出来 ✓）
-  const _wantPaintBorder = !!state.showBorderPaint;
-  if (renderer.borderPaint !== _wantPaintBorder) {
-    renderer.borderPaint = _wantPaintBorder;
-    renderer.dirty = true;
-  }
+  pushRenderer('borderPaint', !!state.showBorderPaint);
   // 这条边界**比什么**：
   //   · CK3（没有年代层）和**细层**（地区/省份/地点视图）→ 只管**自己涂出来的那一圈** ✓
   //     （细层要是按"显示颜色"比，原版每个省本身颜色就不同 → 整张图的省界上都会多出
   //      一条又粗又实的涂色线，叠在本层细线上面，看着就是"所有线条都变粗了" ✗）
   //   · 剧本/国家那层 → 按**当前显示颜色**比（原版剧本色也算分界）✓
   const _paintOnly = !(n > 0 && state.tier < n);
-  if (renderer.paintOnly !== _paintOnly) {
-    renderer.paintOnly = _paintOnly;
-    renderer.dirty = true;
-  }
-  /* ---- 水域边界（海洋 / 湖泊 / 河流 ✓ 用户定的四条 ✓）------------------------
-   *   · **一直画** ✓ 只有下面这三个**全关了**才跟着藏 ✓（用户指着截图定的 ✓）
-   *       势力 · 边界 ✓  地区 · 边界 ✓  填色 · 边界 ✓
-   *       （不是"按当前模式挑出来的那一个" ✗ 那样会漏掉另一个 ✓ 父级边界也不算 ✓）
-   *   · 粗细取**势力边界**那个值 ✓（= 链上最粗那条 ✓）
-   *       数值一样 ✓ 但**各是各的** ✗ 不做绑定（以后改一边不会动另一边 ✓）
-   *   · 浓度实心 ✓（着色器那边写死 1，没有浓度 uniform ✓）
-   *   · 三个水域色每帧送上去 ✓ 设置里改了颜色立刻生效 ✓
+  pushRenderer('paintOnly', _paintOnly);
+  /* ---- 水域那条海岸线 + 四个水域色 ------------------------------------------
+   *   · 海岸线（water ↔ 非水）**跟着"还有边界在画"走** ✓
+   *   · 四个水域色（海 / 湖 / 河 / 不可通行海域）每帧送上去 ✓
+   *     设置里改了颜色立刻生效 ✓（认水的判据、老包海名那几处还要用 ✓）
    */
+  /* ---- **水域边界那条独立通道**（2026-10-16 ✓ 用户点名要的 ✓）----------------
+   *  口径（原话见 handover §3.1）：
+   *    水域边界开关**负责且仅负责**「水域之间（海洋 / 湖泊 / 河流 / 不可通行海域）
+   *      的边界」的显示或隐藏 ✓
+   *    同时受管理的这些东西**不再受地区边界、地区名称的管理** ✓
+   *
+   *  ⚠ 三级闸，缺一不可 ✗：
+   *    ① 用户那个勾（`showWaterBorder` ✓ HTML 里默认勾上 ✓）
+   *    ② **这张图算得出水陆**（`state.waterKindArr` 非空 ✓）——
+   *       老包 / 认不出水 → 没有这张表 → 通道整条让开 ✓ 跟改造前一模一样 ✓
+   *    ③ 渲染器上那个值跟它不一样才推（别每帧置脏 ✗）
+   *
+   *  ⚠ **它故意不看** 地区 / 势力 / 填色 三个开关 ✗✗ ——
+   *    这正是用户要的"独立"：水域之间的缝**只认这一个勾** ✓
+   *    （"边界全关"时它照样在 ✓）
+   *  ⚠ 它跟普通头衔边界不是一回事 ✗ 别合并（合并了就又变成"跟着别的开关走"✗）*/
   {
-    /* **当前模式里能关的那几个边界**全关了，才连水域 + 荒地一起藏 ✓
-     *
-     * 界面上的三组是
-     *   · 势力 · 边界（showPowerBorder）—— 剧本层（国家 / 1066 政权）
-     *   · 地区 · 边界（showRegionBorder）—— 帝国 / 王国 / 地区 / 省份那些
-     *   · 填色 · 边界（showBorderPaint）
-     * （八套地图现在都有剧本层了 ✓ 所以这三组**每套都在** ✓
-     *   没有剧本层的数据（留着兜底）走 `else` 那条：头衔 · 边界 + 填色 · 边界 ✓）
-     *
-     * ⚠ 所以**不能写死那三个名字** ✗ —— 以前就是写死的，于是没有剧本层的数据里
-     *   把能关的都关了，水域和荒地那两条线照样画 ✓
-     * 父级边界不算在里头 ✓（它是地区那一组的子选项 ✓）
-     */
-    const _hasSw = !!$('show-power-border') && n > 0;    // 跟 syncParentBorder 里同一个判法 ✓
-    const _anyBorderOn = _hasSw
-      ? !!(state.showPowerBorder || state.showRegionBorder || state.showBorderPaint)
-      : !!(state.showBorderTitle || state.showBorderPaint);
-    if (renderer.showWater !== _anyBorderOn) { renderer.showWater = _anyBorderOn; renderer.dirty = true; }
-    /* **粗细 / 浓度都是这两条线自己的** ✓（用户要求：水域和荒地各有一组开关 + 宽 + 浓 ✓
-     *   以前：水域固定 1 格 × 基准缩放、浓度写死实心 ✗
-     *         荒地借「填色边界」那两个值（uPaintBorderW / uPaintBorderA）✗）
-     *   值都是**格数 / 百分比**，跟「势力线宽」一个口径 ✓ */
-    const _wW = (state.set && state.set.waterW != null) ? Number(state.set.waterW) : 1;
-    const _wA = ((state.set && state.set.waterA != null) ? Number(state.set.waterA) : 100) / 100;
-    const _sW = (state.set && state.set.wasteW != null) ? Number(state.set.wasteW) : 1.5;
-    const _sA = ((state.set && state.set.wasteA != null) ? Number(state.set.wasteA) : 100) / 100;
-    const _showW = _anyBorderOn;          // 没有单独的开关了：只看"当前模式的边界全关了没" ✓
-    const _showS = _anyBorderOn;
-    if (renderer.showWater !== _showW) { renderer.showWater = _showW; renderer.dirty = true; }
-    if (renderer.showWasteBorder !== _showS) { renderer.showWasteBorder = _showS; renderer.dirty = true; }
-    if (Math.abs(renderer.waterW - _wW) > 0.001) { renderer.waterW = _wW; renderer.dirty = true; }
-    if (Math.abs(renderer.waterA - _wA) > 0.001) { renderer.waterA = _wA; renderer.dirty = true; }
-    if (Math.abs(renderer.wasteW - _sW) > 0.001) { renderer.wasteW = _sW; renderer.dirty = true; }
-    if (Math.abs(renderer.wasteA - _sA) > 0.001) { renderer.wasteA = _sA; renderer.dirty = true; }
-    /* 三个水域色：**必须跟 LUT 里真正生效的那个颜色一致** ✓
-     *
-     * ⚠ 两个坑我都踩过 ✗
-     *   ① 不能读 state.special ✗ —— 那是"从地图数据里认出来的默认色"，跟 LUT 没关系 ✓
-     *   ② 光读 state.set 也不行 ✗ —— 它默认是 **null**（用户没改过就没值 ✓）
-     *      而 applyLutOverrides 是 `if (c) 才覆盖` ✓ null 就不覆盖 ✓
-     *      → 那会儿 LUT 里用的是**地图数据烘进去的原色** ✓
-     *
-     * 所以：设置里有就用设置的 ✓ 没有就退回**原色** ✓ 两条合起来才等于 LUT 里的真值 ✓
-     *（诊断打出来的：renderer.seaCol=[0,0,0]、set.sea=null、#sea 在 keys 的索引 17675 ✓
-     *  —— 伪头衔是有的 ✓ 就是颜色没取到 ✓）
-     */
-    const _origCol = (key) => {
-      const t = titleIndexByKey(key);            // 反查表：不再每次 indexOf 扫全表
-      if (t < 0) return null;
-      const c = (state.titles && state.titles.colors && state.titles.colors[t]) || null;
-      return (c && c.length >= 3) ? [c[0] / 255, c[1] / 255, c[2] / 255] : null;
-    };
-    const _effCol = (key) => {
-      const s = (state.set || {})[key.slice(1)];      // '#sea' → state.set.sea ✓
-      if (s && s.length >= 3) return [s[0] / 255, s[1] / 255, s[2] / 255];
-      return _origCol(key);
-    };
-    const _sea = _effCol('#sea'), _lake = _effCol('#lake'), _river = _effCol('#river');
-    const _same = (a, b) => a && b && Math.abs(a[0] - b[0]) < 0.002 && Math.abs(a[1] - b[1]) < 0.002 && Math.abs(a[2] - b[2]) < 0.002;
-    if (_sea && !_same(renderer.seaCol, _sea)) { renderer.seaCol = _sea; renderer.dirty = true; }
-    if (_lake && !_same(renderer.lakeCol, _lake)) { renderer.lakeCol = _lake; renderer.dirty = true; }
-    if (_river && !_same(renderer.riverCol, _river)) { renderer.riverCol = _river; renderer.dirty = true; }
+    const _waterBorderOn = !!state.showWaterBorder && !!state.waterKindArr;
+    pushRenderer('waterBorderOn', _waterBorderOn);
+  }
+  /* 🔴🔴 **「荒地 · 边界」**（2026-10-17 ✓ 照上面水域那段一字不差地抄 ✓）
+   *   ① 用户那个勾（`showWasteBorder` ✓ 默认关 ✓）
+   *   ② **这张图有身份标**（`state.kindMask` 非空 ✓）——
+   *      荒地那条读的就是身份标纹理（着色器里读 uKindTex ✓ 没有第二张表 ✓）
+   *      ⚠ 老包没这枚标 → 通道整条让开 ✓ 观感一点不变 ✓
+   *      ⚠ **不看 `waterKindArr`** ✗ —— 那是水域那条的表，荒地不用它 ✓
+   *   ③ 值不一样才推 ✓
+   *   ⚠ 同样**不看** 地区 / 势力 / 填色 三个开关 ✗（独立 ✓ 用户要的口径 ✓）*/
+  {
+    const _wasteBorderOn = !!state.showWasteBorder && !!state.kindMask;
+    pushRenderer('wasteBorderOn', _wasteBorderOn);
   }
   // 玩家名字要不要**全图重分组**：只在国家/剧本那层 ✓（细层只画涂过的块 ✓）
   // 剧本层的国名（原版那批）现在也由这份分组负责 ✓ —— 以前那个「势力 · 名称」
@@ -1207,7 +2047,7 @@ function syncLayerSwitches() {
    * 它控的三样（原版颜色 / 原版地名 / 原版边界）现在都由「势力 · 地区」那几组
    * 每帧算出来写进 state（见下面 `state.showTitles = col` 那几行 ✓），
    * 所以删掉界面 **运行时一点变化都没有** ✓ */
-  if (!n || !$('show-power-color')) return;   // 没有年代层 / 页面上没有那组开关：不动 ✓
+  if (!n) return;   // 没有年代层：不动 ✓（「剧本」那组开关已删，不再判元素 ✓）
   const isPower = state.tier < n;
   // 边界是照**编辑层**画的（开粒度时就是粒度那一层）→ 听**那一类**的开关
   const _editIsPower = editTier() < n;
@@ -1215,8 +2055,6 @@ function syncLayerSwitches() {
   // 名称按**画的是哪一层**分（跟视图停在哪无关）：
   //   地名画的是编辑层（开粒度时是粒度那层）→ 听「地区 · 名称」
   //   剧本层那批国名 = 玩家地名那份分组         → 听「填色 · 名称」
-  const nm = state.showRegionName;
-  // 签名要把"真正会用到的那几个"都算上：颜色类、编辑类的边界、名称类
   // 解析出来的值写回 state（着色器、标签那些地方照旧读它们）
   state.showTitles = col;
   state.showBorderTitle = _editIsPower ? state.showPowerBorder : state.showRegionBorder;
@@ -1239,10 +2077,17 @@ function syncParentBorder() {
   const nEra = (state.meta.eraDates && state.meta.eraDates.length) || 0;
   // 基准线宽只记一次（下面会按链调细本层，不能拿被改过的值当基准 ✗）
   if (state._borderWidthBase == null) state._borderWidthBase = renderer.borderWidth || 1;
-  const _setW = state.set && state.set.w;
-  const baseW = _setW ? _setW : state._borderWidthBase;   // 设置页改过就用它的 ✓
+  /* ⚠ 2026-10-13：「地方边界宽度」拆成了**地区 / 省份**两条 ✓
+   *   · **省份**那条管**本层**（子级线 ✓ 也就是原来 `_setW` 干的活 ✓）
+   *   · **地区**那条管**父级链** ✓ —— 以前两边取同一个值，拆开才调得动 ✓
+   *   老存档里只有 `w`（语义 = 本层 ✓）→ 两条都从它继承，观感跟以前一模一样 ✓ */
+  const _setW = setNum('w', null);
+  const _setWProv = setNum('wProv', _setW);
+  const _setWRegion = setNum('wRegion', _setW);
+  const baseW = _setWProv != null ? _setWProv : state._borderWidthBase;
   // 「势力/地区」那两套分开关只在**有剧本层的模式**里才有意义（现在每套都有 ✓）
-  const hasSwitches = !!$('show-power-border') && nEra > 0;
+  // ⚠ 「剧本」元素已删（2026-10-17）→ 判据只看有没有年代层 ✓
+  const hasSwitches = nEra > 0;
   // 某一层听哪个开关：剧本层（国家 / 1066 政权）归「势力」，其余（帝国/王国/…）归「地区」✓
   const showOf = (tier) => (hasSwitches
     ? ((nEra > 0 && tier < nEra) ? state.showPowerBorder : state.showRegionBorder)
@@ -1255,7 +2100,10 @@ function syncParentBorder() {
   /* 粗细阶梯（用户定的）：本层 1 / 父层 1.25 / 填色线与多级链 1.5
    *   整体乘「地方边界宽度 / 1」—— 也就是**直接就是那个倍数** ✓（默认 1 → 1 / 1.25 / 1.5，观感不变 ✓）。
    *   势力那一档（势力线 / 填色线）**直接用「势力线宽」** pw，不乘基准缩放 ✓ */
-  const _wScale = ((state.set && state.set.w) ? state.set.w : 1) / 1;
+  /* 两条各自的宽度（以前是一条 `_wScale` 管两边 ✗ 现在分开 ✓）
+   *   默认都取 1 ✓ 老存档只有 w 时两边都跟着 w 走 ✓ */
+  const _wScaleThin = _setWProv != null ? _setWProv : 1;
+  const _wScaleParent = _setWRegion != null ? _setWRegion : 1;
   /* 宽度不再层层加粗（用户定的：父级链 / 涂色边界那个 1.25、1.5 的额外倍率取消掉 ✓）
    *   以前：本层 1.0× · 父层 1.25× · 填色 1.5× —— 都是拿「地方边界宽度」再乘一遍 ✗
    *        于是你在设置里拉 1，画出来却有三档粗细 ✓ 跟设置对不上 ✓
@@ -1265,12 +2113,12 @@ function syncParentBorder() {
    *     它本来就**没被乘过** ✗ 那个 1.5 是设置值本身、不是倍率 ✓
    *   ⚠ W_TOP 更是早就没人用了（死变量 ✗ 只有定义、搜不到任何引用 ✓）
    *     一并删掉 —— 留着迟早被谁当成「填色线该乘 1.5」捡起来用 ✓ */
-  const W_THIN = 1.0 * _wScale;    // 本层
-  const W_PARENT = 1.0 * _wScale;  // 父级链（不再 ×1.25 ✓）
+  const W_THIN = 1.0 * _wScaleThin;      // 本层（子级）—— 听「**省份**边界宽度」✓
+  const W_PARENT = 1.0 * _wScaleParent;  // 父级链 —— 听「**地区**边界宽度」✓（两者不再共用 ✓）
   /* **势力线宽 = 就是这个粗细** ✓（以前是"乘在别人身上的倍率" ✗ 用户说很难理解 ✓）
    *   单位跟「基准线宽」一样是"格"：势力那条线 / 势力层上的本层线 / 填色线 ——
    *   三条都**直接用这个值** ✓（它们本来就该一样粗 ✓），不乘基准缩放 ✗ */
-  const _pwW = (state.set && state.set.pw != null) ? Number(state.set.pw) : 1.5;
+  const _pwW = setNum('pw', 1.5);
   /* **势力那条线的粗细：跟「填色线」同一套规则** ✓（用户要求 ✓）
    *
    * 填色线（下面几行）是这么算的：
@@ -1325,9 +2173,23 @@ function syncParentBorder() {
     for (const e of _keepEra) list.push(e);
   }
   // 浓度：本层 0.45（在下面设）；**有上两层时，上一级 0.75**；更高层实心
-  const _PA = ((state.set && state.set.pa != null ? state.set.pa : 50) / 100);
-  const _RA = ((state.set && state.set.ra != null ? state.set.ra : 75) / 100);
-  const _CA = ((state.set && state.set.ca != null ? state.set.ca : 100) / 100);
+  const _PA = setNum('pa', 50) / 100;
+  const _RA = setNum('ra', 75) / 100;
+  const _CA = setNum('ca', 100) / 100;
+  /* **水域边界那一对**（2026-10-16 ✓ 用户定的：**自己一套**，不沿用省份/地区那一档 ✓）
+   *   ⚠ 挂在 syncParentBorder 里跟别的一起推 ✓ —— 它已经是"边界参数变化的必经之路"✓
+   *     单独找个地方推的话，改设置 / 开图都得记着调一遍，漏一处就是"滑条是死的"✗ */
+  const _WW = setNum('waterW', SET_DEFAULTS.waterW);
+  const _WA = setNum('waterA', SET_DEFAULTS.waterA) / 100;
+  pushRenderer('waterBorderW', _WW, 0.001);
+  pushRenderer('waterBorderA', _WA, 0.001);
+  /* **荒地边界那一对**（2026-10-17 ✓ 跟水域一样**自己一套** ✓
+   *   用户要的是"荒地与荒地之间的边界"✓ 归它自己那两根滑条管 ✓
+   *   ⚠ 出厂值跟水域那对对齐（宽 1 · 不透明度 25% ✓ 都是"很淡的辅助线"✓）*/
+  const _QW = setNum('wasteW', SET_DEFAULTS.wasteW);
+  const _QA = setNum('wasteA', SET_DEFAULTS.wasteA) / 100;
+  pushRenderer('wasteBorderW', _QW, 0.001);
+  pushRenderer('wasteBorderA', _QA, 0.001);
   // 剧本层（国家）那一圈吃「上两层浓度」；中间的父辈吃「父级浓度」✓
   // 剧本国家那一圈 = 「涂色」（100，实心）；其余父辈 = 「地区」✓
   for (let k = 0; k < list.length; k++) {
@@ -1349,10 +2211,7 @@ function syncParentBorder() {
   const _isPowerBase = nEra > 0 && editTier() < nEra;
   const _bs = _isPowerBase ? _CA : _PA;
   if (state._borderStrengthBase == null) state._borderStrengthBase = renderer.borderStrength;
-  if (renderer.borderStrength !== _bs && _bs != null) {
-    renderer.borderStrength = _bs;
-    renderer.dirty = true;
-  }
+  if (_bs != null) pushRenderer('borderStrength', _bs);
   /* 「势力线宽」倍率（用户定的 ✓ 这个滑条**同时管两条线** ✓）
    *   滑条名字原来是「填色线宽」✓ 现在改叫「势力线宽」✓（见 index.html ✓ 内部字段仍叫 pw ✓
    *   免得旧存档和测试崩 ✗）
@@ -1362,23 +2221,14 @@ function syncParentBorder() {
   // **没有链 + 当前就在势力那层 → 这条本层线就是势力线** ✓
   // 要跟填色线同一套（同一个下限 + 乘「势力线宽」倍率）✓ 用户要求 ✓
   const _wBase = _isPowerBase ? _pwW : W_THIN;
-  if (Math.abs(renderer.borderWidth - _wBase) > 0.01) {
-    renderer.borderWidth = _wBase;
-    renderer.dirty = true;
-  }
+  pushRenderer('borderWidth', _wBase, 0.01);
 
   // **填色边界**：它就是链上的**爷爷那一级** —— 粗细按"爷爷档"（基准×0.75 再加 0.5）+ 实心 ✓
   // 注意不能只取"链上最粗那条"：链短的时候（只有父级一级）那样拿到的是**父级档** ✗
   // 所以以"爷爷档"为下限 —— 链本身更粗就跟着链（剧本模式不变）✓
   const _pw = _pwW;             // 填色线：跟势力线**同粗** ✓（同一个设置值 ✓）
-  if (Math.abs(renderer.paintWidth - _pw) > 0.01) {
-    renderer.paintWidth = _pw;
-    renderer.dirty = true;
-  }
-  if (Math.abs(renderer.paintAlpha - _CA) > 0.01) {
-    renderer.paintAlpha = _CA;
-    renderer.dirty = true;
-  }
+  pushRenderer('paintWidth', _pw, 0.01);
+  pushRenderer('paintAlpha', _CA, 0.01);
 
   // 链跟渲染器现值一样就不动它（setExtraBorders 会置脏 ✓，别每帧都置）
   const same = renderer.extraCount === list.length
@@ -1395,193 +2245,10 @@ function syncParentBorder() {
   
 }
 
-function wasteWatch() {
-  // 开关/层级的签名（跟涂色分开）—— 它们一变就得**全量**重算 ✓
-  const sigUI = `${state.tier}|${state.showPaint}|${state.showTitles}|${state.showWaste}`;
-  const sig = sigUI + `|${state._paintSeq || 0}`;   // 手绘层一变就重算（实时）
-  if (state._wasteSig === sig) return;
-  if (state._wasteSigUI !== sigUI) state._wasteDirty = null;   // 全量 ✓
-  state._wasteSigUI = sigUI;
-  if (state.wasteAuto) {
-    // **尾部节流**：连续涂色时最多 ~120ms 一次；停手后会补算（签名这时才记账 ✓）
-    const now = performance.now();
-    if (now - (state._wasteAt || 0) <= 120) return;
-    state._wasteAt = now;
-    state._wasteSig = sig;
-    wasteApply();
-    return;
-  }
-  state._wasteSig = sig;
-  wasteClear();
-}
-
-/** 开关「自动荒地涂色」（处理器与自测都走这里）*/
-function setWasteAuto(on) {
-    state.wasteAuto = on;
-    if (state.wasteAuto) {
-      // 自动色看不见就太蠢了 —— 顺手把「荒漠 · 涂色」打开
-      if (!state.showWaste) {
-        state.showWaste = true;
-        const cb = $('show-waste');
-        if (cb) cb.checked = true;
-        // 推 **true**：荒地显示自己（自动算出来）的颜色 ✓
-        // 原来这里推的是 false = "荒地恒显示灰"，跟上面那句"把荒漠·涂色打开"自相矛盾，
-        // 结果是自动上的色根本看不见 ✗（快照 diff 证实这行不是最近改坏的，是老毛病）
-        renderer.setShowWaste(true);
-      }
-      wasteApply();
-    } else {
-      wasteClear();
-    }
-    labelDirty = true;
-}
-
-function wasteApply() {
-  // **保底**：一次触发就跑到不再变化（最多 8 圈）。
-  // 一圈只往外推一环，跑满几圈才能把该上色的都上完。
-  let total = 0;
-  for (let pass = 0; pass < 8; pass++) {
-    const changed = wastePassOnce();
-    total += changed;
-    if (!changed) break;
-  }
-  state._wasteDirty = null;      // 算完就清 ✓（下次没人标脏 = 全量 ✓）
-  return total;
-}
-
-function wastePassOnce() {
-  if (!renderer || !state.titles || !state.meta) return 0;
-  const per = state.meta.wastelandPerimeter;
-  if (!per || !per.length) return 0;
-  const fine = state.meta.tierNames.length - 1;
-  const paint = renderer.paintData;
-  const lut = renderer.lutData;
-  const GREY = 94;                        // 荒地原版灰 = "还没上色"
-  // 按下去那一刻，各荒地节点此刻的颜色 —— 这一按从头到尾都读这份快照，
-  // 免得"边算边看"导致结果依赖遍历顺序。
-  const snap = new Map();
-  for (const t2 of (state.meta.wasteland || [])) {
-    snap.set(t2, [lut[t2 * 4], lut[t2 * 4 + 1], lut[t2 * 4 + 2]]);
-  }
-  let n = 0;
-  for (const entry of per) {
-    const pid = entry[0], nbrs = entry[1];
-    if (state.provTitle && state.provTitle[pid] >= 0) continue;   // 玩家自己涂的，别动
-    const tid = titleAt(pid, fine);
-    if (tid === NO_TITLE || tid == null) continue;
-    // **不参与自动填色的地块**（数据里列的巨型荒地）：保持荒地灰
-    if (isWasteSkipPid(pid)) {
-      const b0 = wasteGrey();
-      if (lut[tid * 4] !== b0[0] || lut[tid * 4 + 1] !== b0[1] || lut[tid * 4 + 2] !== b0[2]) {
-        renderer.setLutColor(tid, b0[0], b0[1], b0[2]);
-        n++;
-      }
-      continue;
-    }
-    let tot = 0;
-    const votes = new Map();              // "r,g,b" → {w, rgb}
-    for (const pair of nbrs) {
-      const nb = pair[0], w = pair[1];
-      tot += w;
-      let rgb = null;
-      let src = "title";               // 这一票是"原版色"来的，还是"玩家涂的色"来的 ✓
-      if (state.showPaint && paint && paint[nb * 4 + 3] > 0) {
-        rgb = [paint[nb * 4], paint[nb * 4 + 1], paint[nb * 4 + 2]];
-        src = "paint";
-      } else {
-        const nt = titleAt(nb, state.tier);
-        if (nt === NO_TITLE || nt == null) continue;     // 这一层没主：只进分母
-        // **看显示出来的颜色**（跟吸管同一套）：填色·颜色/头衔·颜色/荒漠·涂色 都算数 ✓
-        // 荒地邻居用本圈开始时的快照（它们正是这一圈要改的），别的现取。
-        if (snap.has(nt)) {
-          // 邻居也是荒地：**只有"已经给它算过色"的才算一票** ✓
-          // 没算过的荒地还挂着数据里那个技术色（EU5 的荒地底下五颜六色，屏幕上却是灰的），
-          // 拿它当票投出去 = 凭空继承邻居荒地的私有颜色 —— 用户报的
-          // 「西伯利亚针叶林变成莫名其妙的颜色」就是这么来的 ✗（只进分母）
-          if (!(state.wasteSrc && state.wasteSrc.has(nb))) continue;
-          rgb = snap.get(nt).slice();
-          src = (state.wasteSrc && state.wasteSrc.get(nb)) || "title";
-        } else {
-          rgb = displayedColor(nb, nt).slice();
-        }
-        // 纯灰 = "没有颜色"（荒地灰 / 背景灰）：只进分母，不当票
-        if (rgb[0] === rgb[1] && rgb[1] === rgb[2] && (rgb[0] === GREY || rgb[0] === 150)) {
-          continue;
-        }
-      }
-      const key = `${rgb[0]},${rgb[1]},${rgb[2]}`;
-      let v = votes.get(key);
-      if (v === undefined) { v = { w: 0, rgb, wp: 0, wt: 0 }; votes.set(key, v); }
-      v.w += w;
-      if (src === "paint") v.wp += w; else v.wt += w;
-    }
-    let best = null;
-    for (const v of votes.values()) if (best === null || v.w > best.w) best = v;
-    // 荒地"没上色"的样子 = 荒地灰（**不是**数据里那个技术色）✓
-    const baseC = wasteGrey();
-    // 过半 → 用那个色；**没有任何颜色过半 → 自己变回荒地灰**
-    let want = (tot && best && best.w * 2 > tot) ? best.rgb : baseC;
-    // **来源随开关**：原版色来的看「颜色」开关，玩家色来的看「填色·颜色」开关 ✓
-    if (tot && best && best.w * 2 > tot) {
-      const srcWin = best.wp >= best.wt ? "paint" : "title";
-      state.wasteSrc = state.wasteSrc || new Map();
-      state.wasteSrc.set(pid, srcWin);
-      const srcOn = srcWin === "paint" ? !!state.showPaint : !!state.showTitles;
-      if (!srcOn) want = baseC;        // 对应开关关着 → 回荒地原版灰 ✓
-    } else if (state.wasteSrc) {
-      state.wasteSrc.delete(pid);
-    }
-    if (!want) continue;
-    if (lut[tid * 4] === want[0] && lut[tid * 4 + 1] === want[1] && lut[tid * 4 + 2] === want[2]) {
-      continue;                       // 颜色没变 → 不写、也不计（免得空转）
-    }
-    renderer.setLutColor(tid, want[0], want[1], want[2]);
-    n++;
-  }
-  renderer.dirty = true;
-  return n;
-}
-
-/**
- * 「清除荒地填色」——**只清玩家自己涂在荒地上的笔迹**。
- *
- * 自动填色写的是"原版色"那一层（LUT），跟玩家的手绘层是两回事 ✓，
- * 所以这个按钮只动玩家那一层：走 restoreTitle（跟擦除工具同一套，带撤销历史）。
+/* 「荒地自动上色」整套已删（2026-10-14 ✓ 水域 / 荒地 = 普通地块 ✓
+ *   要给荒地上色就用普通手涂那条路，跟别的地块一样 ✓
+ *   「清除荒地填色 / 自动涂色」两个按钮连同处理器一起退役 ✓）
  */
-function wasteClearPlayerPaint() {
-  if (!state.titles || !state.meta) return 0;
-  const fine = state.meta.tierNames.length - 1;
-  const n = state.meta.numProvinces;
-  const seen = [];
-  const pids = [];
-  for (let pid = 1; pid < n; pid++) {
-    if (!(state.provTitle && state.provTitle[pid] >= 0)) continue;   // 不是玩家涂的
-    const tid = titleAt(pid, fine);
-    if (tid === NO_TITLE || tid == null) continue;
-    if (!isWastelandTid(tid)) continue;                              // 不是荒地
-    if (seen.indexOf(tid) < 0) seen.push(tid);
-    pids.push(pid);
-  }
-  paintPids(pids, null);       // 按地块清（清的还是这些荒地 ✓，只是不再绕头衔那一圈）
-  /* **账本要跟着重算** ✗ —— 不清的话 state.changed / painted 里还留着这些
-   * 荒地的"幽灵记录"：状态栏改动数不降、导出涂色多出几条、离开页面还提醒
-   * 你"有改动没存" ✓（跟「清除全部」那边同一个收尾 ✓） */
-  recomputePainted();
-  return seen.length;
-}
-
-/** 「清除自动涂色」：荒地全部还原成**荒地灰**（你手涂的地块不受影响）。 */
-function wasteClear() {
-  if (!renderer || !state.titles || !state.meta) return 0;
-  const w = wasteGrey();
-  let n = 0;
-  for (const t2 of (state.meta.wasteland || [])) {
-    renderer.setLutColor(t2, w[0], w[1], w[2]);
-    n++;
-  }
-  renderer.dirty = true;
-  return n;
-}
 
 /**
  * 找"同一族"的头衔（**同色 + 同标签**）—— 给"以玩家为准"的涂色用。
@@ -1595,7 +2262,7 @@ function wasteClear() {
  */
 function playerGroupTids(tid, rgb, label) {
   // **从地块出发认族**：颜色 + 标记都一样的地块算一族 ✓（不查"头衔 → 颜色/名字"那两张表 ✗）
-  const want = [rgb[0] | 0, rgb[1] | 0, rgb[2] | 0].join(',');
+  const wr = rgb[0] | 0, wg = rgb[1] | 0, wb = rgb[2] | 0;
   const wantName = String(label || '');
   const et = editTier();
   const n = state.meta ? state.meta.numProvinces : 0;
@@ -1604,7 +2271,7 @@ function playerGroupTids(tid, rgb, label) {
   const seen = new Set();
   for (let q = 1; q < n; q++) {
     if (!pd || pd[q * 4 + 3] === 0) continue;
-    if ((pd[q * 4] + ',' + pd[q * 4 + 1] + ',' + pd[q * 4 + 2]) !== want) continue;
+    if (pd[q * 4] !== wr || pd[q * 4 + 1] !== wg || pd[q * 4 + 2] !== wb) continue;
     const lq = state.provLabel ? (state.provLabel[q] | 0) : -1;
     if ((lq >= 0 ? String(state.labelNames[lq] || '') : '') !== wantName) continue;
     const t0 = titleAt(q, et);
@@ -1635,13 +2302,13 @@ function playerGroupTidsAt(pid) {
   if (!pid || !pd) return [];
   const et = editTier();
   const tm = state.titlemap;
-  const want = paintIdentAt(pid, et);      // 身份串就在这一处算（见 paintIdentAt ✓）
+  const want = identWantAt(pid, et);       // 身份内核只此一套（见 identFieldsAt ✓）
   if (!want) return [];
   // ⚠ 身份**只能逐格算** ✗ —— 同一个头衔底下的地块可以涂成不同颜色/不同标记，
   //   身份是按"这块地"算的，不能按头衔缓存（缓存过一版，结果整片认错族 ✓）
   const out = new Set();
   for (let q = 1; q < n; q++) {
-    if (paintIdentAt(q, et) === want) out.add(tm[et * n + q]);
+    if (samePaintIdent(q, et, want)) out.add(tm[et * n + q]);
   }
   return Array.from(out);
 }
@@ -1652,10 +2319,10 @@ function playerGroupPidsAt(pid) {
   const n = state.meta.numProvinces;
   if (!pid || !pd) return [];
   const et = editTier();
-  const want = paintIdentAt(pid, et);
+  const want = identWantAt(pid, et);
   if (!want) return [];
   const out = [];
-  for (let q = 1; q < n; q++) if (paintIdentAt(q, et) === want) out.push(q);
+  for (let q = 1; q < n; q++) if (samePaintIdent(q, et, want)) out.push(q);
   return out;
 }
 
@@ -1712,6 +2379,14 @@ function sameOwner(a, b) {
  * 「点这一下该动哪些地块」—— **涂色和还原共用这一个范围** ✓
  * 只在**剧本视图 + 没开粒度**时用得上（那个条件调用方判 ✓）。
  *
+ * 🔴 **优先级**（2026-10-16 用户定的 ✓ —— **分两种模式** ✗）：
+ *   · 「势力 · 边界」**开着** → **先看剧本归属**，没有就**最低粒度** ✓
+ *     ⚠ **不看填色** ✗（用户原话："先看剧本再看最低粒度，不看填色"✓）
+ *   · 「势力 · 边界」**关着**（= 填色那条路 ✓）→ **先看所指处的填色** ✓，
+ *     没填色再看**剧本归属**，剧本也没归属（无主地 / 空白剧本那种）→ **最低粒度** ✓
+ *     （用户原话："填色应优先看鼠标所指处的填色，无填色再剧本，
+ *       剧本无归属再最低粒度"✓）
+ *
  * 规则（用户给的，两个开关两条路）：
  *
  * **「势力 · 边界」开着**（而「填色 · 边界」没开）→ 按**剧本归属**整块 ✓
@@ -1748,21 +2423,49 @@ function paintTargetsAt(pid) {
     const _fineTid = titleAt(pid, TIER_COUNT - 1);
     if (_fineTid != null && _fineTid !== NO_TITLE && isWastelandTid(_fineTid)) return [pid];
   }
+  /* **剧本层 + 无粒度：没主的地块一律单格涂** ✓（2026-10-15 用户定的口径——
+   *   "是不是有一个更简单的操作，把没有主的地块在剧本层无粒度时统一按单格涂色" ✓）
+   *   · 剧本层的格子分两类，**归属说了算**：
+   *     · **有主**（真头衔，`1444_MNG` 那种 ✓）→ 照旧走下面的 A/B/C 归属匹配 ✓
+   *       （点一笔涂整国 —— 那是"涂归属"的本意 ✓）
+   *     · **没主**（无主陆地 NO_TITLE / 海·湖·河·不可通行·荒地的类片 ✓ tid ≥ 真头衔数）
+   *       → **一律单格** ✓ —— 悬停已经单格（applyHoverHighlight 同一判定 ✓），
+   *       涂色同一个口径 ✓ 擦除走同一个函数 ✓ 一起成立 ✓
+   *   · 判据 = **编辑层那一行的 tilemap 有没有主**（titleAt(pid, editTier) ✓）
+   *     —— 上一刀用最细层判水，用户提的这把更简单更全 ✓
+   *   · 粒度层（开了粒度 / 地理层）不在此列 ✓ —— 真名海片整片涂的老规矩保留 ✓ */
+  {
+    const _nEraP = (state.meta && state.meta.eraDates && state.meta.eraDates.length) || 0;
+    if (_nEraP > 0 && state.grain == null && editTier() < _nEraP) {
+      const _tid0 = titleAt(pid, editTier());
+      const _real = state.meta && state.meta.numRealTitles != null
+        ? state.meta.numRealTitles : 1e9;
+      /* 🔴 **"填色优先"那条路上，所指处有填色就不吃这一刀** ✗✗
+       *   （2026-10-16 用户报的 ✓）
+       *   用户原话："在剧本+无粒度时，**填色应优先看鼠标所指处的填色**，
+       *     无填色再剧本，剧本无归属再最低粒度"✓
+       *
+       *   ⚠ 这一刀本身是给"**没涂过的**无主地"用的（2026-10-15 定的：无主地按单格 ✓）——
+       *     而**空白剧本那一层全是无主** ✗ → 这一刀对每一格都成立 →
+       *     玩家涂出来的那块色块**永远只能单格** ✗（整块涂色动不了 ✓）
+       *   涂过的地**在手绘层上有身份**（标记名 + 颜色 ✓ 见 paintIdentAt ✓）→
+       *   放它过这一刀，交给下面按**填色归属**整块认 ✓
+       *
+       *   ⚠ 2026-10-17：「剧本 · 边界」那个勾删了 → 不再有"先剧本、不看填色"的分支 ✓
+       *     现在**永远先看填色** ✓ */
+      const _pdP = renderer && renderer.paintData;
+      const _paintedP = !!(_pdP && _pdP[pid * 4 + 3] > 0);
+      if (!_paintedP
+          && (_tid0 == null || _tid0 === NO_TITLE || _tid0 >= _real || isWastelandTid(_tid0))) {
+        return [pid];
+      }
+    }
+  }
   const eraT = countryTier();                    // 「最近的**有主**剧本层」✓
   const mine = provInfoAt(pid, eraT);
   if (!mine) return null;
 
-  // A. 「势力 · 边界」开着 → 剧本归属那一整块 ✓
-  if (state.showPowerBorder && !state.showBorderPaint) {
-    const out = [];
-    for (let q = 1; q < n; q++) {
-      const o = provInfoAt(q, eraT);
-      if (o && sameOwner(o.owner, mine.owner)) out.push(q);
-    }
-    if (out.length) return out;
-  }
-
-  // B. 填色那条（填色开着 / 两个都没开 ✓）
+  // 填色那条（「势力 · 边界」开着/关着都走它 ✓）
   const myFill = mine.fill;
   const wantName = myFill ? String(myFill.name || '')
                           : (mine.owner ? String(mine.owner.name || '') : '');
@@ -1826,7 +2529,6 @@ function paintPids(pids, rgb) {
       if (state.provTitle) state.provTitle[q] = -1;
     }
   }
-  state._wasteDirty = null;      // 头衔重刷会影响显示颜色 → 荒地那套全量重算 ✓
   blocksDirty = true;
   labelDirty = true;
   scheduleSave();
@@ -1871,38 +2573,62 @@ function paintIdentOf(q) {
 // 而需要真颜色数组的地方（画图、取色）仍旧用 stableColor ✓
 
 /**
- * 一块地的"身份串"（显示名 | r,g,b）。**这是认族唯一的判据** ✓
+ * 一块地的"身份"内核（显示名 + 显示色）—— **认族唯一的判据** ✓
  *
- * 不分配任何数组 —— 它在全图扫里被调用，每次分配一个 [r,g,b] 就是 4 万次垃圾 ✓
- * @param {number} q     地块号
- * @param {number} tier  看哪一层的头衔（**名字取这一层**）
+ * 写进一张**复用**的临时表，返回值只在"调完立刻比"的时候有效 ✓
+ * 全图扫（V3 4 万格）时一格一个 `[r,g,b]` / 一个 `"名字|r,g,b"` 字符串
+ * 就是几万次短命分配 ✗ —— 这里一个都不分 ✓
+ *
+ * 判据（跟改造前逐字一致 ✓）：
+ *   涂过的 → 手绘色 + 那一笔的标记名（跟这一层有没有主无关 ✓）
+ *   没涂的 → 原版色 + 该层头衔名；两者都没有 → null（海 / 无主地）
+ *
+ * @returns {?Array} `[name, r, g, b]`（**共用数组** ✓ 要留着就拷一份，见 `identWantAt`）
  */
-function paintIdentAt(q, tier) {
+const _identTmp = [null, 0, 0, 0];
+function identFieldsAt(q, tier) {
   if (!q) return null;
   const pd = renderer && renderer.paintData;
   const q4 = q * 4;
   const painted = !!(pd && pd[q4 + 3] > 0);
   const t0 = titleAt(q, tier);
-  const noOwn = t0 == null || t0 === NO_TITLE;
   // **没涂过的无主地：没有身份** ✓（不参与认族）
   // **涂过的照旧有** ✓ —— 名字和颜色都在手绘层上，跟这一层有没有主无关 ✓
   // （空白剧本那一层全是无主地，涂出来的色块就靠这一条才能"同色同标记算一族" ✓）
-  if (noOwn && !painted) return null;
+  if ((t0 == null || t0 === NO_TITLE) && !painted) return null;
 
   const lq = state.provLabel ? (state.provLabel[q] | 0) : -1;
-  const name = painted
-    ? (lq >= 0 ? String(state.labelNames[lq] || '') : '')
-    : String((state.titles.names[t0]) || '');
-
-  let r, g, b;
+  _identTmp[0] = painted
+    ? (lq >= 0 ? (state.labelNames[lq] || '') : '')
+    : (state.titles.names[t0] || '');
   if (painted) {
-    r = pd[q4]; g = pd[q4 + 1]; b = pd[q4 + 2];
+    _identTmp[1] = pd[q4]; _identTmp[2] = pd[q4 + 1]; _identTmp[3] = pd[q4 + 2];
   } else {
     const c = state.titles.colors[t0];
-    if (!c) { r = 150; g = 150; b = 150; }
-    else { r = c[0]; g = c[1]; b = c[2]; }
+    if (!c) { _identTmp[1] = 150; _identTmp[2] = 150; _identTmp[3] = 150; }
+    else { _identTmp[1] = c[0]; _identTmp[2] = c[1]; _identTmp[3] = c[2]; }
   }
-  return name + '|' + r + ',' + g + ',' + b;
+  return _identTmp;
+}
+
+/** 身份串（`名字|r,g,b`）—— 给"要拿它当 Map 键 / 比相等"的地方用 ✓ */
+function paintIdentAt(q, tier) {
+  const f = identFieldsAt(q, tier);
+  return f ? f[0] + '|' + f[1] + ',' + f[2] + ',' + f[3] : null;
+}
+
+/** 把当前这一格的身份**拷成快照** ✓（临时表会被下一次调用覆盖 ✗） */
+function identWantAt(q, tier) {
+  const f = identFieldsAt(q, tier);
+  return f ? [f[0], f[1], f[2], f[3]] : null;
+}
+
+/** 跟 `paintIdentAt(q,tier) === want` 等价，但**不拼字符串** ✓（全图扫专用）
+ *  @param {string[]} want `identWantAt` 给的快照 */
+function samePaintIdent(q, tier, want) {
+  const f = identFieldsAt(q, tier);
+  return !!f && f[0] === want[0] && f[1] === want[1]
+    && f[2] === want[2] && f[3] === want[3];
 }
 
 // ── 悬停用：满足「停在国家那几层 + 无粒度 + 填色·边界开」时，
@@ -1914,24 +2640,11 @@ function liveHoverOn() {
 function liveColorOf(pid, tid) {
   return liveHoverOn() ? stableColor(pid || 0, tid) : null;
 }
-function liveNameOf(pid, tid) {
-  if (!liveHoverOn()) return null;
-  // **这一格自己的填色归属**（名字就在手绘层上：标记编号 → 名字 ✓）——
-  // 以前是"翻遍各层头衔、去 `paintColor`/`titleLabel` 那两张表里找哪一笔涂的" ✗
-  // （同一个头衔下可以有好几笔、好几个名字，按头衔找本来就会找错 ✓）
-  const here = provInfoAt(pid);
-  if (here && here.fill && here.fill.name) return String(here.fill.name);
-  const lq = state.provLabel ? (state.provLabel[pid] | 0) : -1;
-  if (lq >= 0) {
-    const nm = String(state.labelNames[lq] || '');
-    if (nm) return nm;
-  }
-  return null;
-}
 
 function paintAt(pid, tid) {
     // 没头衔 / 越界：不涂（界面上走不到这儿 —— actAt 会把无主地换到最细那层 ✓，
     // 但外部直接调它（脚本 / 测试）时别崩 ✗）
+    if (!state.titles) return;
     if (tid == null || tid === NO_TITLE || tid < 0 || tid >= (state.titles.keys || []).length) return;
     const to = state.brush.slice();
     /* **"要不要真的动手"看这一格自己**（`provInfoAt` 解析出来的三样 ✓），
@@ -1945,11 +2658,7 @@ function paintAt(pid, tid) {
     if (_here && _here.fill) {
       if (sameColor(_here.fill.rgb, to) && String(_here.fill.name || '') === _wantLabel) return;
     }
-    // 荒地：只有「荒漠 · 涂色」开着时才给涂。
-    // 关着 = 不对荒地做任何填色（这是用户要的语义：那个开关是荒地填色的总闸）
-    if (isWastelandTid(tid) && !state.showWaste) {
-      return;   // 静静地不涂就行，别弹东西打扰
-    }
+    //（荒地的"允许上色"总闸已删 ✓ —— 水片 / 荒地片跟普通头衔一样可涂 ✓）
     // **剧本视图下的口径**：一笔涂哪些地块，由 `paintTargetsAt` 统一算 ✓
     //   势力边界 → 剧本归属整块；否则 → 涂过的看填色归属、没涂过的看剧本归属 ✓
     //   还原那边（actAt 的 erase 支线）用的是**同一个函数** ✓ 涂了什么就还原什么
@@ -1974,7 +2683,7 @@ function paintAt(pid, tid) {
  */
 function paintTitle(tid, rgb, noHistory) {
   const pids = pidsOf(tid);
-  if (!pids.length) return;                 // 锁住的伪头衔（海 / 荒地那种）涂不上 ✓
+  if (!pids.length) return;                 // 没头衔的头衔号：动作等于没做 ✓（涂色单位本来就是地块 ✓）
   const c = [rgb[0] | 0, rgb[1] | 0, rgb[2] | 0];
   const _snap = noHistory ? null : snapshotPidsList(pids);
   paintPids(pids, c);
@@ -2001,21 +2710,42 @@ function viewRect() {
   return { x: state.cam.cx - w / 2, y: state.cam.cy - h / 2, w, h };
 }
 
+/* **能缩到多小** ✓（2026-10-13 用户要求："缩放时我希望允许画面出现地图的边界以外的一部分"）
+ *
+ *  ⚠ 以前这里是"**刚好把整张图放进视口**"✗ —— 缩到那个比例就顶死了 ✓
+ *    于是你永远看不到地图外面的东西：地图边缘永远贴着视口边 ✓
+ *  ✅ 现在再多给 **30%** 的余量（能缩得比"刚好放下"更小一点 ✓）——
+ *    缩到底的时候，四周会露出一圈**地图边界以外的空地**（背景色 ✓）
+ *    看全貌 / 截图留白 / 确认某块地在图上的位置都用得上 ✓
+ *  ⚠ 只放 30% 不是无限 ✗ —— 放开了地图会缩成屏幕中间一小块，反而不好操作 ✓ */
 function minScale() {
-  // 刚好把整张图放进视口的比例，再小就只会在边上留出地图外的空地
-  return Math.min($('stage').clientWidth / state.meta.mapWidth,
-                  $('stage').clientHeight / state.meta.mapHeight);
+  const stage = $('stage');
+  const fit = Math.min(stage.clientWidth / state.meta.mapWidth,
+                       stage.clientHeight / state.meta.mapHeight);
+  return fit * 0.7;
 }
 
-/** 相机不许跑出地图：哪一边地图比视口小就居中，比视口大就不许把边缘拖进来 */
+/** 相机允许**露出一部分地图外面** ✓（2026-10-13 用户要求 ✓）
+ *
+ *  ⚠ 以前是硬夹在地图内 ✗：哪边地图比视口小就居中、比视口大就不许把边缘拖进来 ✓
+ *    结果是**边缘永远顶在视口边上**，一点地图外的空地都看不到 ✓
+ *  ✅ 现在允许两边各露出 **30% 视口**的余量：
+ *    · 地图比视口大 → 能多拖出去一截，看到边界外的空地 ✓
+ *    · 地图比视口小 → 不再强行居中，能挪到旁边去（方便对着别的东西看 ✓）
+ *  ⚠ 但不能**无限**拖 ✗ —— 留 30% 是"不至于把地图整个拖出视野、还能找回来" ✓
+ *  ⚠ 那个 `_clampC`：`vw >= W` 时上下限会**反过来** ✗ 直接 clamp 会给出个诡异值 ✓
+ *    所以上下限交叉时取**中点**（＝居中 ✓），跟以前那个三目表达式一个效果 ✓ */
 function clampCamera() {
   const stage = $('stage');
   const vw = stage.clientWidth / state.cam.scale;
   const vh = stage.clientHeight / state.cam.scale;
   const W = state.meta.mapWidth;
   const H = state.meta.mapHeight;
-  state.cam.cx = vw >= W ? W / 2 : clamp(state.cam.cx, vw / 2, W - vw / 2);
-  state.cam.cy = vh >= H ? H / 2 : clamp(state.cam.cy, vh / 2, H - vh / 2);
+  const mx = vw * 0.3;
+  const my = vh * 0.3;
+  const _clampC = (c, lo, hi) => (lo > hi ? (lo + hi) / 2 : clamp(c, lo, hi));
+  state.cam.cx = _clampC(state.cam.cx, vw / 2 - mx, W - vw / 2 + mx);
+  state.cam.cy = _clampC(state.cam.cy, vh / 2 - my, H - vh / 2 + my);
 }
 
 function invalidate() {
@@ -2097,11 +2827,11 @@ function updateHover(clientX, clientY) {
     state.hover.pid = pid;
     state.hover.tids = Array.from({ length: TIER_COUNT }, (_, i) => titleAt(pid, i));
     renderHoverCard(pid);
-    const hl = hoverTargetTid(pid, state.hover.tids[editTier()]);
+    const hl = hoverTargetTid(pid, state.hover.tids[viewTierFor(pid)]);
     // 海 / 山是背景板，不给选中，也不高亮
     applyHoverHighlight(pid, hl);
     labelDirty = true;
-    updateCursor(hl);
+    updateCursor(hl, pid);
   }
   state.hover.inside = true;
 
@@ -2182,40 +2912,61 @@ function hoverTargetTid(pid, tierTid) {
 }
 
 function isSpecialTid(tid) {
-  return tid !== NO_TITLE && tid != null && state.titles.keys[tid].charCodeAt(0) === 35;
+  if (tid == null || tid === NO_TITLE) return false;
+  const K = state.titles && state.titles.keys;
+  const k = K ? K[tid] : null;
+  return typeof k === 'string' && k.charCodeAt(0) === 35;
 }
 
-/** 能不能对这块地动手：没头衔、或者只是背景地形，都算锁住
+/** 🔴🔴 **能不能涂这一格 —— 一句话判据** ✗✗（2026-10-16 用户定的 ✓）
  *
- * **荒地例外**：开了「荒地可上色」（state.showWaste）时，荒地是可以动手的 ✓
- *   以前这里一律按伪头衔锁住 ✗ → 那个开关打开也涂不上去 ✓
- *   （用户报的：开了允许上色但是无法上色 ✓）
- *   荒地 = meta.wasteland 里列的那些 ✓ 或者最细层那个 #impassable* 节点 ✓
- *   （跟悬停卡片那边的判法保持一致 ✓）
+ *  用户原话："**鼠标所指处的最低单位的身份 id 是否为陆地 or 荒地，是则涂色，否则不涂色**"✓
  *
- * **但「不可通行海域」不算荒地**（用户要求 ✓）—— 它是**水**，跟海一个待遇：
- *   开着「允许」也不给涂。以前那句"`#impassable` 开头就放行"把海也放了 ✗ →
- *   光标是十字、点下去还会在历史和「改动 N」里记一笔（syncPaint 因为它是 `@`
- *   层，最后并没上色，只留下一笔脏状态 ✗）。
- *   判法照抄别处那两处（悬停卡片 / 水域判据）：`#impassable` 开头 **且** 含 sea ✓
+ *  → 就这么判 ✓ 别搞复杂 ✗
+ *    · 身份标（`kindMask` ✓ 底层地块身份 ✓）**1 = 陆地 · 6 = 不可通行区域** → 能涂 ✓
+ *    · 其余（2 海洋 / 3 湖泊 / 4 河流 / 5 不可通行海域）→ **不许涂** ✓
+ *
+ *  ⚠ 老包（没有 `kindMask`）退回**最细层的键前缀** ✓ 一格一个身份 ✓ 结论一样 ✓
+ *  ⚠ **"逐块荒地"是个例外** ✗ —— 那批（`wl_<地块号>` ✓）在身份标里写的是 **1** ✓
+ *    可它们明明是不可通行 ✓ 光看码会把它们误判成"陆地、能涂" ✓
+ *    （那正是 10-14 定的"荒地要能一块块涂"✓ 不能丢 ✓）→ 补一句 `isWastelandTile` 即可 ✓
+ *  ⚠ 两个判据都**只看地块号** ✓ 跟"现在停在哪一层、那个 tid 是谁"无关 ✓
+ *    （粗层那片水共用一个 `#sea_*` 伪头衔 ✓ 光看 tid 认不出"这一格到底是不是水"✗）
  */
-function isLocked(tid) {
-  if (tid === NO_TITLE || tid == null) return true;
-  if (!isSpecialTid(tid)) return false;
-  if (state.showWaste) {
-    const _key = String((state.titles.keys && state.titles.keys[tid]) || '');
-    // 不可通行**陆地**：允许时可涂；不可通行**海域**不算（它是水，跟海一个待遇）
-    if (keyStarts(_key, '#impassable') && !isImpassSeaKey(_key)) return false;
-    if (isWastelandTid(tid)) return false;                             // 荒地：同上
-  }
+function isPaintable(pid) {
+  if (!pid) return false;
+  const k = kindOfPid(pid);
+  /* 身份标就说是"河 / 湖 / 海 / 不可通行海域"（码 2~5）→ **不许涂** ✓ 别的都好说 ✓ */
+  if (k >= 2 && k <= 5) return false;
+  /* 码 1（陆地）/ 6（不可通行区域）/ 老包认不出来的 → **能涂** ✓
+   * ⚠ 逐块荒地（`wl_<地块号>` ✓）在身份标里写的是 **1** ✗ 但它本来就该能涂 ✓
+   *   所以这里**不用再判荒地** ✓（那批进了码 2~5 的只有"不可通行海域"✓ 那个该锁 ✓）
+   *   —— 一句话就是用户那句："**是陆地 or 荒地就涂，否则不涂**" ✓ */
   return true;
 }
 
+/** 能不能对这块地动手
+ *
+ * 🔴 **2026-10-16 用户改的口径**："为填色做 id 区分，**河流 / 海洋 / 不可通行海域 /
+ *    湖泊禁止上色**"✓ —— 判据收成一句话：**身份 id 是陆地 or 荒地才给涂** ✓
+ *
+ * ⚠ 跟 10-14 那条**相反** ✗（那天定的是"水片 / 荒地片 = 普通头衔，想涂就涂"✓）——
+ *   以**现在**这条为准 ✓
+ * ⚠ 只有"压根没头衔"照旧锁（那种地动手时该落到更细一层 ✓ 见 actAt ✓）
+ *
+ * @param tid 头衔号（可空 —— 调用方有时只拿得到地块号 ✓）
+ * @param pid 地块号（**给了才判得了身份** ✓ 不给就只按头衔判 ✓）
+ */
+function isLocked(tid, pid) {
+  if (pid) return !isPaintable(pid);
+  return tid === NO_TITLE || tid == null;
+}
+
 /** 能编辑的地块给十字光标，锁住的给禁止符 */
-function updateCursor(tid) {
+function updateCursor(tid, pid) {
   const el = $('map');
   if (state.tool === 'view') { el.style.cursor = 'grab'; return; }
-  el.style.cursor = isLocked(tid) ? 'not-allowed' : 'crosshair';
+  el.style.cursor = isLocked(tid, pid) ? 'not-allowed' : 'crosshair';
 }
 
 /** 这个省份是不是**没有男爵领、拿伯爵领色块顶**的那种（快查表） */
@@ -2227,7 +2978,18 @@ function isDegradedBaron(pid) {
 function renderHoverCard(pid) {
 
   const box = $('hover-chain');
-  $('hover-pid').textContent = pid ? `#${pid}` : '';
+  /* 🔴 **那个小方格 = 所指地块的"最低级别号码"** ✗✗（2026-10-16 用户第二次拍 ✓）
+   *
+   *   用户原话："悬停时左侧栏的那个方块的左上角，有一个小字，那边**被你改成显示地名了**，
+   *     应当**始终显示所指地块的最低级别的号码**"✓
+   *
+   *   ⚠ 我 2026-10-15 把它改成了"真名 → 类别名"那套 ✗（理由是"任何一行都不许出现编号"✓）——
+   *     那条口径说的是**卡片那两行** ✓ 这个小格子是**另一回事** ✓ 用户现在点明了：
+   *     这里**就是要号码** ✓（它是给"这块地到底是多少号"用的定位信息 ✓）
+   *   ⚠ 前一轮的 `#` 前缀也该撤 ✗ —— 原话是"**号码**" ✓ 就是光秃秃的数字 ✓
+   *   ⚠ 最低级别 = 最细那一层的**地块号** = pid 本身 ✓（不是头衔号 ✗）
+   *     —— 这跟 `hoverTileLines` 的"最低单位"是同一个东西 ✓ 两处口径一致 ✓ */
+  $('hover-pid').textContent = pid ? String(pid | 0) : '';
 
 
   if (!pid) {
@@ -2236,50 +2998,60 @@ function renderHoverCard(pid) {
   }
   box.innerHTML = '';
 
-  // 海、湖、荒地：背景地块，不列层级、不给取色
-  const special = state.hover.tids[editTier()];
+  /* 海 / 湖 / 河 / 荒地：背景地块 —— 侧栏**不列层级**，只给那两行 ✓
+   * 🔴 跟悬停卡片**同一个出处**（`hoverTileLines` ✓ 用户 2026-10-16 的规格表 ✓）——
+   *   以前这儿自己拼了一套（`_hideName` / `_typeLabel` / `_realName` 那一大堆 ✗），
+   *   跟卡片各说各的 ✓ 规格一改就只改到一边 ✓ 现在收口了 ✓
+   * ⚠ 只有两类走这儿：
+   *   ① 伪头衔地块（键以 `#` 开头 ✓ 海 / 湖 / 河 / 不可通行 ✓）
+   *   ② 荒地（`wl_*` / `#wasteland_*` / `isWastelandTid` ✓）
+   *   —— 普通有主陆地照旧走下面那条**层级链** ✓（那是侧栏的本职 ✓）*/
+  const special = state.hover.tids[viewTierFor(pid)];
   const _fineTid0 = state.hover.tids[TIER_COUNT - 1];
   const _fineKey0 = _fineTid0 != null ? String(state.titles.keys[_fineTid0] || '') : '';
-  const _isWasteTile = isWastelandTid(special);
+  const _isWasteTile = isWastelandTile(pid, _fineTid0);
   const _isImpass = keyStarts(_fineKey0, '#impassable');
-  if (isSpecialTid(special) || _isWasteTile || _isImpass) {
-    // 这一块自己的名字（数据里存各地块名；CK3 存键名，认不出来就不显示）
-    const raw = state.provinceNames ? state.provinceNames[pid] : null;
-    const _fineTid = state.hover.tids[TIER_COUNT - 1];
-    // 有些数据里 provinceNames 只是代号（EU4 的不可通行是 'RNW' 这种 ✗），
-    // 真正的名字在最细层那个节点上（昆仑山）→ 优先用它 ✓
-    const _fineName = _fineTid != null ? String(state.titles.names[_fineTid] || '') : '';
-    const _key = _fineTid != null ? String(state.titles.keys[_fineTid] || '') : '';
-    // **荒地就是不可通行** —— 同一件事，数据里从两处进来：
-    //   最细层的 #impassable 节点（海域那类）· 荒地名册（陆地屏障，键多为 wl_<pid>）
-    const _isImpassable = keyStarts(_key, '#impassable') || isWastelandTid(_fineTid);
-    const _ck3 = (typeof GAME !== 'undefined' && GAME && GAME.id === 'ck3');
-    const _dataName = state.titles.names[special] || '';
-    // 陆地统一叫「不可通行区域」；海域保留原本的类型名（不可通行海域）✓
-    // （海分区/逐块海块那套已经删了：现在海就是共享的 #sea 节点，名字本来就叫「海洋」✓）
-    const _typeLabel = _isImpassable ? (_dataName.includes('海域') ? _dataName : '不可通行区域')
-      : _dataName;
-    // **CK3 的湖泊与不可通行都不显示名字**（用户要求）；别的游戏照显示 ✓
-    // 海洋、河流不显示名字；湖泊显示 ✓
-    // ⚠ 这里**不写成 isWaterKey(_key)** ✗ —— 那个把「不可通行海域」也算成水 ✓
-    //   而它是有意义的类型名、卡片上要显示出来（下面 _isImpassable 那条走它 ✓）
-    const _isSeaKey = keyStarts(_key, '#sea') || keyStarts(_key, '#seaname_');
-    const _noName = _isImpassable || _isSeaKey || keyStarts(_key, '#lake') || keyStarts(_key, '#river');
-    const manual = manualWaterName(raw);
-    // 代号（RNW / wl_1231 这类）先换成最细层的真名；真名也没有才退回代号 ✓
-    const _nameSrc = (manual || raw);
-    // 回退时**不要**拿共享节点的泛称（湖泊/海洋/河流）当名字 ✗
-    const _generic = ['湖泊', '海洋', '河流', '不可通行'];
-    const _fineOk = _fineName && !_generic.includes(_fineName);
-    const pn = readablePlaceName(_nameSrc) ? _nameSrc
-      : (readablePlaceName(_fineName) && _fineOk ? _fineName : _nameSrc);
-    // **有真名就显示** ✓（CK3 除外 —— 那边是你之前定过"不可通行不显示名字"✓）
-    // 原尺寸那份数据把某些地块挂到了荒地节点上 → 以前会只剩「不可通行区域」✗
-    // 现在跟原版一样：有名字（俄罗斯针叶林那种）就把名字放出来 ✓
-    const readable = readablePlaceName(pn) && (!_noName || (_isImpassable && !_ck3));
+  /* 🔴 **"背景地块"的判据不能只看"键以 `#` 开头"** ✗✗（2026-10-16 修 ✓）
+   *   伪头衔那套前缀（`#sea_*` / `#lake_*` ✓）是**别的游戏**的写法 ✓
+   *   **EU5 的水键没有 `#`**（`siberian_lakes_1` / `chukchi_sea` ✓）
+   *   → 只认前缀的话，EU5 的湖会**掉进层级链**里 ✗（用户口径是"湖泊：照旧"✓）
+   *   补两条与键无关的判据：`isWaterPid`（那枚小标签 ✓）和 `kindOfPid`（身份标 ✓）
+   *   两者任一说是水 / 不可通行，就当背景地块 ✓ */
+  const _kind0 = kindOfPid(pid);
+  const _isWaterTile = isWaterPid(pid) || (_kind0 >= 2 && _kind0 <= 5);
+  if ((isSpecialTid(special) || _isWasteTile || _isImpass || _isWaterTile)
+      && !sidebarUsesChain(pid, special)) {
+    const lines = hoverTileLines(pid);
+    const a = lines.a || '—';
+    /* 🔴 **第二行 = 这一格"是什么"** ✗✗（2026-10-16 用户第二次拍 ✓）
+     *
+     *   用户原话："左侧栏的那个方块的**第二行**，那边**遇到非陆地 且 非EU4/EU5 的海域**时
+     *     都显示**海洋啊不可通行荒地啊这样的称呼**"✓
+     *
+     *   读法（把两个"非"拆开 ✓）：
+     *     · **陆地** → 不给称呼 ✗（那是层级链那边的事 ✓ 走不到这个分支 ✓）
+     *     · **EU4 / EU5 的海域** → 不给称呼 ✗（它第二行是**最低单位名** ✓
+     *       由 `hoverTileLines` 给出 ✓ 正是 `lines.b` ✓ 别抢它的位置 ✓）
+     *     · 其余一切水 / 荒地（河 / 湖 / 海 / 不可通行 ✓ **含 EU4/EU5 的湖** ✓）
+     *       → 第二行写类别名：海洋 / 湖泊 / 河流 / 不可通行海域 / 不可通行区域 ✓
+     *
+     *   ⚠ 这一条**只管左侧栏那个方块** ✗ —— 悬停小卡片的第二行还是按 `hoverTileLines`
+     *     那套"你之前定为空"的口径 ✓ 两处本来就分开 ✓（见 `positionHoverCard` ✓）
+     *   ⚠ 类别名从 `CATEGORY_NAME[kind]` 拿 ✓ 别按名字内容猜 ✗
+     *     （判序天然"先不可通行海域再不可通行区域" ✓ 见那张表 ✓）
+     *   🔴 **荒地那几块 `kindMask` 给的码不是 6** ✗✗（实测：CK2/EU4/CK3 都是 1 ✓）
+     *     —— `wl_*` / `#wasteland_*` 那批是构建期兜底塞进去的，身份标那边还当地 ✓
+     *     → 判出"是荒地"就**直接给「不可通行区域」** ✓ 别指望那枚标 ✓
+     *     （`#impassable*` 那种真带码 6 的，`CATEGORY_NAME` 那条照样对 ✓）
+     *   ⚠ EU4 / EU5 的海**进不来这个分支** ✗ —— 上面那句 `&& !sidebarUsesChain(...)`
+     *     已经把它们让给层级链了 ✓（用户："EU4/EU5 的海域：和陆地一样显示其层级"✓
+     *      那边第二行是最低单位名 ✓ 本来就符合"不给类别称呼"✓）*/
+    const _cat2 = CATEGORY_NAME[_kind0]
+      || ((_isWasteTile || _isImpass) ? '不可通行区域' : '');
+    const _sub2 = _cat2 || lines.b || '';
     box.innerHTML =
-      `<p class="empty"><b style="color:var(--text-dim)">${_typeLabel}</b>`
-      + (readable ? `<br><b style="color:var(--text)">${pn}</b>` : '')
+      `<p class="empty"><b style="color:var(--text-dim)">${_escHtml(a)}</b>`
+      + (_sub2 ? `<br><b style="color:var(--text)">${_escHtml(_sub2)}</b>` : '')
       + `<br>这类地块在游戏里没有归属，颜色是固定的</p>`;
     return;
   }
@@ -2305,13 +3077,24 @@ function renderHoverCard(pid) {
     } else {
       const col = state.titles.colors[tid];
       const changed = isChanged(tid) ? ' ' : '';
-      // 荒地（键是 wl_<省份号>）：名字后面挂上编号 —— 便于指认"这一块"到底是哪块
-      const wid = (info.key && info.key.indexOf('wl_') === 0)
-        ? ` <span style="color:var(--text-faint)">#${info.key.slice(3)}</span>` : '';
+      /* 🔴🔴 **链条行也不许出现编号** ✗✗（2026-10-15 ✓ 用户口径 ✓）
+       *   原来这里给荒地**故意挂了个 `#<省份号>`** ✗（注释写的是"便于指认哪块"✓）——
+       *   用户明确不许："第二行不许有编号" ✓ → **撤掉** ✓
+       *   另一头：HOI4 pr 层水域的 `info.name` **本身就是占位号**（构建期取的 `#2581` ✗）
+       *     → 占位名一律换成**类别名** ✓（`kindOfPid` ✓ = 按 kind 判 ✓
+       *       先判不可通行海域再判不可通行区域是 CATEGORY_NAME 表的天然顺序 ✓）
+       *   ⚠ 真名照旧原样 ✓（陆地地名 / 中文水名一字不动 ✓）*/
+      let _rowName = String(info.name || '');
+      if (isPlaceholderName(_rowName)) {
+        /* ① 先取真名 ✓（CK2 的 259 条水名 / 20 条荒地名就在这张表里 ✓）
+         * ② 真名也没有 → 才退类别名 ✓（先判不可通行海域 ✗ 见 CATEGORY_NAME ✓）
+         * ③ 任何一行都不许出现 `#<数字>` ✗（下面 `impassLabel` 也不会造编号 ✓）*/
+        _rowName = realNameFromTables(pid) || CATEGORY_NAME[kindOfPid(pid)] || TIER_BADGE[tier] || '';
+      }
       row.innerHTML =
         `<span class="dot" style="background:${rgbToHex(col)}"></span>
          <span class="tier">${TIER_BADGE[tier]}</span>
-         <span class="name">${impassLabel(info.name)}${wid}${changed}</span>
+         <span class="name">${impassLabel(_rowName)}${changed}</span>
          <span class="pick">取色</span>`;
       row.onclick = () => {
         gotoLevel(tier);
@@ -2345,15 +3128,29 @@ function impassLabel(nm) {
  *   —— 可它本身是有名字的（比如「俄罗斯针叶林」✓）
  *   原版显示什么，这儿就显示什么 ✓ 不再自作主张换成「不可通行区域」✗
  *   只有**真的没有名字**时，才退回类型名 ✓
+ *   ⚠ **水域的真名也走这儿** ✓（2026-10-14：原来是塞在卡片**第二行**的 ✗
+ *     用户要求"跟地块一样" → 挪到第一行 ✓ 见 waterSpecificName ✓）
  */
 function specialTileLabel() {
   const pid = state.hover.pid;
   const fine = state.hover.tids[TIER_COUNT - 1];
   const key = fine != null ? String(state.titles.keys[fine] || '') : '';
-  const dn = String(state.titles.names[state.hover.tids[editTier()]] || '');
-  // CK3 的「不可通行海域」= 键 #impassable_sea ✓ 它是**水**，跟别的海一个待遇 ✓
-  const _impSea = isImpassSeaKey(key);
-  const _isWater = isWaterKey(key);
+  const dn = String(state.titles.names[state.hover.tids[viewTierFor(pid)]] || '');
+  /* 🔴🔴 **水的类别问 `waterKindByPid`** ✗✗（2026-10-17 收口 ✓）
+   *   原话（用户）："既然是如何判别水，那不是还有现成的东西嘛"✓ —— 就是它 ✓
+   *
+   *   以前这儿是拿**键前缀**挨个判（`#sea` / `#lake` / `#river` / `#impassable` ✓）：
+   *     · `#sea` 那三句在 **EU5 上永远不成立** ✗ —— EU5 的水键不带 `#`
+   *       （实测：`isWaterKey` 在 EU5 认出水 **0** 块 ✓ 见 `_local/probe_water_predicates.js` ✓）
+   *       → 于是 EU5 的水被当陆地走上面那条分支 ✓ 悬停显示的是地块名不是水域名 ✓
+   *     · `#impassable` 那一句还把**不可通行陆地**跟**不可通行海域**混在一起 ✓
+   *
+   *   现在：**有 pid 就按 pid 问** ✓（身份标最权威 → 老包退回 `#` 键，这条链在
+   *   `waterKindByPid` 里本来就写好了 ✓ 一处都不用另写 ✓）
+   *   `w = 0` 不是水 / 2 海 / 3 湖 / 4 河 / 5 不可通行海域 ✓（6 = 不可通行陆地 ✗ 那是荒地那一侧 ✓）*/
+  const w = waterKindByPid(pid);
+  const _isWater = w !== 0;
+  const _impSea = w === 5;
   // 这一块自己的名字：优先各地块名册，其次最细层那个节点的名字 ✓
   if (!_isWater) {
     const raw = state.provinceNames ? state.provinceNames[pid] : null;
@@ -2364,29 +3161,636 @@ function specialTileLabel() {
     // 节点自己的名字也认（「俄罗斯针叶林」就在这层 ✓）
     if (readablePlaceName(dn) && !/^不可通行/.test(dn)) return dn;
   }
+  /* 荒地 / 不可通行（含 CK3 那种"不可通行海域"那种叫法 ✓）——
+   * ⚠ 判据仍是"键前缀 + 荒地名册"✗ 那是**荒地**那一侧的事 ✓ 这一轮只收水的口 ✓ */
   if (keyStarts(key, '#impassable') || isWastelandTid(fine)) {
-    if (_impSea) return '不可通行海域';                 // CK3 那种：就叫海域 ✓
+    if (_impSea) return '不可通行海域';                 // 身份标 5 = CK3 那种海域 ✓
     return impassLabel(dn.indexOf('海域') >= 0 || key.indexOf('sea') >= 0 ? (dn || '不可通行海域') : '不可通行区域');
   }
-  if (key.indexOf('#sea') === 0) return '海洋';
-  if (key.indexOf('#lake') === 0) return '湖泊';
-  if (key.indexOf('#river') === 0) return '河流';
+  /* 水：类别名从 `waterKindByPid` 来 ✓（不再看键 ✓）*/
+  if (w === 2) return waterSpecificName(pid, state.hover.tids[viewTierFor(pid)]) || '海洋';
+  if (w === 3) return waterSpecificName(pid, state.hover.tids[viewTierFor(pid)]) || '湖泊';
+  if (w === 4) return waterSpecificName(pid, state.hover.tids[viewTierFor(pid)]) || '河流';
   return impassLabel(dn);
+}
+
+/** **这一层的水名表** ✓（那一层没名字就是**没有** ✗ 不许拿别层充数 —— 2026-10-14 ✓）
+ *
+ *  🔴 用户点破的口径（原话）："每个水域不同的层级按游戏内容给名字，反正是
+ *    **遵循陆地那样的思路**，只不过 Hoi4 的省份级水域和地区级是同一个东西，
+ *    而且**没有名字**而已" ✓
+ *  → 于是这张表只有两种拿法：
+ *    · `seaNamesByTier` **在**（这份数据本来就**按层**给表 ✓）→ 就用 `bt[tier]` ✓
+ *      **那一层是 null = 这一层没名字** ✓ 返回 null ✓ **别退回 `meta.seaNames`** ✗
+ *      （`meta.seaNames` 是**最粗那层**的口径 ✓ 拿它填细层 = 拿别层的名字充数 ✗
+ *       正是用户点破的"拿战略区名去填" ✓）
+ *    · 表**压根没有** / 比层数还短（老包、VIC3 那种只有一张 `seaNames` ✓）→ 退回它 ✓
+ *      （那是"没有分层"，不是"这一层没名字" ✗ 两回事 ✓）
+ */
+function waterNameTable(bt, tier) {
+  const meta = state.meta || {};
+  const nT = (meta.tiers && meta.tiers.length) || 0;
+  if (Array.isArray(bt) && nT > 0 && bt.length >= nT) return bt[tier] || null;
+  return meta.seaNames || null;
+}
+
+/** **水域那一格的真名** ✓（悬停卡片**第一行**用 —— 2026-10-14 ✓）
+ *
+ *  用户 2026-10-14 的要求："**水域和其他地块一样**，仅仅是不能填色"✓ ——
+ *  普通地块的卡片就是**一行**：这块地叫什么 ✓
+ *  水域原来把真名塞在**第二行** ✗（第一行固定是"海洋"那种类名 ✓）——
+ *  第二行一去（见 specificPlaceName ✓）那个名字就**没地方显示了** ✗
+ *  → 挪到第一行 ✓ 跟陆地**同一个位置** ✓ 这才叫"一样" ✓
+ *
+ *  两条来源（跟高亮 / 跟标签**同一个来源** ✓ 都看 `editTier()` ✓）：
+ *   ① **每层一片的包** → **当前层那个片自己的名字** ✓（`#sea_pr_57` ✓
+ *      见 isTierPieceKey ✗）—— 它在那一层没名字就是没名字 ✓
+ *      拿**别的层**的名字来填是错的 ✗（用户点破过：HOI4 的省份级水域
+ *      本来就没有名字 ✓ 那儿就该空着、退回笼统名 ✓）
+ *   ② **老包**（整个世界的海共用一个 `#sea` ✗ 不是片 ✓）→ 构建期那张真名表
+ *      （见 waterNameTable ✓ 那一层是 null 就是"这层没名字" ✓ 不退 ✓）
+ *  ⚠ 取到**类名**（"海洋"/"湖泊" ✓）或空 → 返回空串 ✓ 调用方退回笼统名 ✓
+ *    （CK3 的海就是这样 ✓ 它本来就没名字 ✓）
+ */
+function waterSpecificName(pid, tid) {
+  if (!pid) return '';
+  const T = state.titles || {};
+  const key = (tid != null) ? String((T.keys && T.keys[tid]) || '') : '';
+  /* ① **每层一片的那片**：片名就是这一格的真名 ✓（跟标签、跟高亮同一个来源 ✓）*/
+  if (isTierPieceKey(key)) {
+    const nm = String((T.names && T.names[tid]) || '');
+    return (nm && !isPseudoCategoryName(nm)) ? nm : '';
+  }
+  /* ② **老包**：真名表（键是**地块 id** ✓ JSON 会变成字符串 ✓ 两种都试 ✓）
+   *   ⚠ 看的是**动手那一层**（`editTier` ✓）不是视图层 —— 跟高亮 / 跟标签
+   *     同一个来源 ✓（剧本层下没开粒度时 editTier 就是最低层 ✓
+   *     拿视图层的表 = 名字跟高亮的那一片对不上 ✗）*/
+  const meta = state.meta || {};
+  const bt = meta.seaNamesByTier;
+  const tbl = waterNameTable(bt, labelTier() | 0);
+  if (!tbl) return '';
+  const v = (tbl[pid] != null) ? tbl[pid]
+          : (tbl[String(pid)] != null ? tbl[String(pid)] : null);
+  return v ? String(v) : '';
+}
+
+/** **这块地的"具体名字"** —— 只剩**荒地名** ✓（水域名 2026-10-14 移走了 ✓）
+ *
+ *  🔴 **水域不再有第二行了** ✗（2026-10-14 用户要求："水域和其他地块一样，
+ *    仅仅是不能填色"✓）—— 普通地块的悬停卡片就是**一行**：这块地叫什么 ✓
+ *    水域原来把"丹麦海峡 / 波罗的海"那种真名塞在**第二行** ✗（第一行固定是
+ *    "海洋"那种类名 ✓）—— 那正是**区别对待** ✗ 现在真名回第一行 ✓
+ *    （见 `specialTileLabel` / `waterSpecificName` ✓ 按"当前层那个 tid"取 ✓）
+ *
+ *  **荒地**这条**保留** ✓（用户点名要过："EU4 和 EU5 的荒地有自己的名字，
+ *    你怎么还是隐藏了"✓）—— 荒地的第一行常常是"不可通行区域 / 不可通行荒地"
+ *    那种类名 ✓，真名（热那亚 / 波尔多 ✓）就得靠第二行 ✓
+ *    来源：构建期把每个荒地块的真名收在 `meta.wastelandNames` 里
+ *    （EU4 87 / VN 329 / EU5 1971 条 ✓ 见 docs/水域名调研.md ✓）
+ *  返回空串 = "没有额外的具体名" ✓
+ */
+function specificPlaceName(pid) {
+  if (!pid) return '';
+  const meta = state.meta || {};
+  const T = state.titles;
+  const _tier = labelTier();
+  /* ① **每层一片的荒地片：这片自己的名字就是具体名** ✓（2026-10-13 架构统一 ✓）
+   *
+   *   "片" = **该层同名地块的集合** ✓（见 build_tier_pieces.tier_pieces ✓）
+   *   片名天然就是**这一层**的名字 ✓ —— 跟地图上标的、跟悬停高亮的那一整片
+   *   **同一个来源** ✓ 再也不会对不上 ✓
+   *
+   *   ⚠ 只认"每层一片"的那种键（`#wasteland_rg_0` ✓ 见 isTierPieceKey ✗）
+   *     `wl_<地块号>`（荒地最细层逐块）**不算** ✗ —— 它的节点名在 CK3 那边
+   *     只是类名"不可通行山地"，拿它当具体名会**凭空多出第二行** ✓（用户去掉过 ✓）
+   *     → 那批走下面的真名表 ✓（EU4/VN 那边真名表本来就有同一份名字 ✓ 结果一样 ✓）
+   *   ⚠ **水域片不走这儿** ✗（`#sea_*` / `#lake_*` ✓）见上面那段：水域没有第二行 ✓ */
+  const _tid = titleAt(pid, _tier);
+  const _key = (T && _tid != null) ? String(T.keys[_tid] || '') : '';
+  if (isTierPieceKey(_key) && !isWaterKey(_key)) {
+    const nm = (T && T.names && T.names[_tid]) || '';
+    /* ⚠ **片名是类名（"不可通行山地"/"无归属荒地"）的不算具体名** ✗ ——
+     *   那说明这一片在**这一层**根本没名字 ✓
+     *   拿它充第二行就是"跟第一行说同一个词" ✓ 用户明确要求过去掉 ✓ */
+    if (!nm || isPseudoCategoryName(nm)) return '';
+    return String(nm);
+  }
+  /* ② **荒地名**（2026-10-13 用户要求："EU4 和 EU5 的荒地有自己的名字，
+   *   你怎么还是隐藏了"✓）
+   *   构建期把每个荒地块的**真名**收在 `meta.wastelandNames` 里
+   *   （EU4 87 / VN 329 / EU5 1971 条 ✓ 出处是本地化的 `PROV<id>`，
+   *    跟海名同一套读法 ✓ 见 docs/水域名调研.md）
+   *   ⚠ 它比"节点名字"准 ✗ —— 节点名可能是 `Unused19` 这种占位垃圾 ✓
+   *     所以**先查它**，查不到才退到节点自己的名字 ✓ */
+  const _wl = meta.wastelandNames;
+  if (_wl) {
+    const v = (_wl[pid] != null) ? _wl[pid]
+            : (_wl[String(pid)] != null ? _wl[String(pid)] : null);
+    if (v) return String(v);
+  }
+  // ③ **退路：去掉** ✗（2026-10-13 用户报："CK3 的荒地悬停时会显示'不可通行山地'，
+  //    去掉第二行" ✓）
+  //   这里原来退到"最细层节点自己的名字" ✗ —— 而那是**类名**（"不可通行山地"
+  //   "海洋""湖泊"那种 ✓）**第一行已经在显示了** ✓ 第二行再写一遍纯属重复 ✓
+  //   第二行存在的意义是"**这一格具体叫什么**"（波罗的海 / 热那亚 ✓）——
+  //   只有构建期那两张真名表（`seaNames` / `wastelandNames` ✓）配得上 ✓
+  //   查不到就**老老实实不显示** ✓ 别拿类名充数 ✓
+  return '';
+}
+
+/** **悬停卡片第二行**（"这一格具体叫什么"）—— 真名 → 类别名 → 空 ✓
+ *
+ *  🔴 2026-10-16：**占位号一律不许上屏** ✗✗
+ *    用户看到的（A 线 dump 的原始 HTML，pid=281 悬停）：
+ *
+ *        <div class="hc-title">…不可通行区域</div><div class="hc-sub">#281</div>
+ *
+ *    —— 第一行**是对的** ✅，漏出来的是**第二行** ✗
+ *    根因：CK3 的不可通行"片"是**逐块**建的、构建期没有名字表 ✓
+ *      片名落在 `tier_pieces` 的 `#<地块号>` 兜底上 ✓
+ *      而 `specificPlaceName` 只按"是不是**类名**"过滤（`isPseudoCategoryName` ✓）
+ *      → `#281` 既不是类名、也不是空 ✓ 就**原样上了屏** ✗
+ *      （同一个坑我在 CK2 那边也踩过 ✓ 见 `build_ck2` 的 11b ✓ 那边是拿真名盖掉的 ✓
+ *        通用这一侧得靠这道过滤 ✓）
+ *    → 判据统一走 **`isPlaceholderName`**（`#…` / `#u12` / 纯数字 / 空 ✓ 一律不算名字 ✓）
+ *      跟 `realNameFromTables` 里那把尺**同一把** ✓ 别各写各的 ✗
+ *
+ *  ⚠ 2026-10-16 起**实际那两行不再走这里** ✗ —— 悬停卡片自己按
+ *    「第一行 = 目前层级 / 第二行 = 最低层级」拼（见 `positionHoverCard` ✓）
+ *    这个函数留着当**同口径的第二行**（老调用方 / 探针还能用 ✓）
+ */
+function hoverSubName(pid) {
+  if (!pid) return '';
+  const fine = titleAt(pid, TIER_COUNT - 1);
+  return realNameAtTier(pid, fine, TIER_COUNT - 1) || categoryNameOf(kindOfPid(pid), '');
+}
+
+/** **某一层的这一格叫什么** ✓（悬停那两行都走它）
+ *
+ *  用户口径（原话）：陆地"**第二行显示鼠标所指处最低层级的相关信息**"✓
+ *   → 最细层（CK3 男爵领 / EU4 省份 / HOI4 省份 / VIC3 省份 / EU5 地点）那个节点自己的名字 ✓
+ *
+ *  🔴 **水域的"地名"归构建期的真名表** ✗✗ —— 逐块节点自己的名字**不是**地名：
+ *    EU4 的 `#lake_pr_185` 名是"喀拉海"（细层才有 ✓），更细的逐块节点反而叫 `#1888` ✗；
+ *    CK3 的 `#sea_b_2218` 干脆就是 `#8613` ✗ —— 所以先查
+ *    `waterNameTable(seaNamesByTier, 最细层)`（**那一层**的表 ✓ 表里是 null = 这一层没名字 ✗
+ *    不许拿别层充数 ✓ 见那个函数 ✓），查不到才退回节点自己的名字 ✓
+ *  ⚠ 顺序不能反 ✗：先看节点名的话，EU4 的湖会从"喀拉海"掉回 `#1888` ✓ 又把编号放上屏 ✓
+ *
+ *  过滤走 `nameIsMeaningful`（占位 / 类名 / 机器串一律不算 ✓）
+ */
+function realNameAtTier(pid, tid, tier) {
+  if (!pid || tid == null || tid === NO_TITLE) return '';
+  const T = state.titles || {};
+  /* 🔴 **"这一格是不是水"问 `waterKindByPid`** ✗✗（2026-10-17 收口 ✓）
+   *   原来这儿是 `isWaterKey(键)` ✗ —— 有 pid 在手却去看键 ✓
+   *   在 EU5 上那句**恒为假**（EU5 的水键不带 `#`）→ 水名的真名表**根本不查** ✓
+   *     直接退回逐块节点名（`#1888` 那种占位号）✓ 正是这段注释上面写的那个坑 ✓ */
+  if (waterKindByPid(pid) !== 0) {
+    const meta = state.meta || {};
+    const tbl = waterNameTable(meta.seaNamesByTier, tier | 0);
+    if (tbl) {
+      const v = (tbl[pid] != null) ? tbl[pid]
+              : (tbl[String(pid)] != null ? tbl[String(pid)] : null);
+      if (nameIsMeaningful(v)) return String(v);
+    }
+  }
+  const own = String((T.names && T.names[tid]) || '');
+  return nameIsMeaningful(own) ? own : '';
+}
+
+/** 四类**类别名**（河 / 湖 / 海 / 不可通行那几样 ✓）——
+ *  用户口径："没有名字的就说它是什么" ✓ 两个字那种 ✓ */
+const TYPE_LABEL = { 2: '海洋', 3: '湖泊', 4: '河流', 5: '不可通行海域', 6: '不可通行区域' };
+
+/** 🔴🔴 **名字显示方案** ✗✗（用户 2026-10-16 点名 —— 管的是**地图上那个名字** ✓
+ *   跟悬停卡片那套是**两件事** ✗ 别混 ✓）
+ *
+ *  原话：
+ *    陆地：照旧
+ *    湖泊：EU4/EU5 显示，其他不显示
+ *    河流：CK2/CK3 不显示，其他无此设定
+ *    海域：CK2/EU4/EU5/VIC3 显示，CK3 不显示，
+ *          HOI4 **只有战略区显示**而 state 和 prov 不显示
+ *    不可通行区域：CK3 不显示，EU4/EU5 显示，其他无此设定
+ *
+ *  读法（"无此设定"= 那几作压根没这一类 ✓ 所以不显示 ✓）：
+ *    · 湖：EU4 / EU5 ✓ **加上 CK2**（2026-10-16 第二次更变 ✓
+ *      用户原话："**CK2 的湖泊和河流其实是有名字的**……CK2 的湖泊和河流应当显示名字"✓
+ *      CK2 那份数据里的"湖"是构建期算出来的（四邻全陆地 ✓ 见 `build_ck2.find_enclosed_lakes` ✓）
+ *      以前没有这一档 → 湖被并进 `#sea` ✓ 所以那一条本来就是**分类错了**，不是规则 ✓）
+ *    · 河：**CK2 显示**（同一句原话 ✓）✓ CK3 不显示 ✓ 别的游戏无此设定 → 当海办 ✓
+ *      （"无此设定"= 那几作压根不分河这种类别 ✓ 它们是水，但落到 `kind=2` 那条 ✓
+ *       见 `labelZoneOf` ✓）
+ *    · 荒地（不可通行）：只有 EU4 / EU5 ✓
+ *    · 海：CK2 / EU4 / EU5 / VIC3 ✓
+ *
+ *  ⚠ HOI4 那半条**不用在这儿特判** ✗ —— "只有战略区显示"是**数据本身**决定的：
+ *    那两作的海名只挂在 `#sea_sr_*` / `#lake_sr_*` 上 ✓
+ *    state / prov 两层是 `#<地块号>` 占位 ✓ 真名表里也没有 ✓
+ *    `drawLabels` 里"占位名不出标"那道闸自动把它挡住了 ✓
+ *  ⚠ VIC3 没进过 `#sea_all_*` 那种整类名之外的名字表？不 —— 它三层都有真名 ✓ 照出 ✓
+ */
+const NAME_POLICY = {
+  land: { ck3: true, ck2: true, eu4: true, eu5: true, hoi4: true, vic3: true },
+  sea: { ck3: false, ck2: true, eu4: true, eu5: true, hoi4: true, vic3: true },
+  lake: { ck3: false, ck2: true, eu4: true, eu5: true, hoi4: false, vic3: false },
+  river: { ck3: false, ck2: true, eu4: false, eu5: false, hoi4: false, vic3: false },
+  waste: { ck3: false, ck2: false, eu4: true, eu5: true, hoi4: false, vic3: false },
+};
+
+/** 这一个**标签节点**属于哪一类（跟 `waterKindOf` 同一口径 ✓ 只是不看 hover ✓）
+ *
+ *  ⚠ 判据必须**按键名 + 地图规模**来 ✗ —— 标签这条路上没有 `state.hover` ✓
+ *    （`waterKindOf` 读的是悬停那几个 tid ✓ 这儿拿不到 ✓）
+ *  ⚠ CK3 的 `#impassable_sea` 算**荒地**那条 ✓（用户："不可通行区域"✓ 它是屏障不是海 ✓）
+ */
+function labelZoneOf(key, tid) {
+  const k = String(key == null ? '' : key);
+  /* ⚠ **EU5 的荒地键上看不出来** ✗（`arctic_archipelago` 那种真头衔名 ✓）
+   *   → 先拿 `meta.wasteland` 那张名单查一下 tid ✓（跟别处 `isWastelandTid` 同一份 ✓）*/
+  if (tid != null && tid >= 0 && isWastelandTid(tid)) return 'waste';
+  if (keyStarts(k, '#impassable') || keyStarts(k, 'wl_') || keyStarts(k, '#wasteland')) return 'waste';
+  if (keyStarts(k, '#river')) return 'river';
+  if (keyStarts(k, '#lake') || k.indexOf('_lake') >= 0) return 'lake';
+  if (keyStarts(k, '#sea') || k.indexOf('_sea') >= 0) return 'sea';
+  return 'land';
+}
+
+/** 这类名字在这个游戏里**要不要显示**（`NAME_POLICY` 那张表的取用口 ✓）
+ *  ⚠ 别在别处再写一遍 game 判断 ✗ —— 要改就改那张表 ✓ */
+function nameShown(kind) {
+  const row = NAME_POLICY[kind] || NAME_POLICY.land;
+  const g = String((state.meta && state.meta.game) || '');
+  return row[g] !== false;
+}
+
+/** **这一格是不是荒地**（水 / 山那种"没归属的屏障地" ✓ 跟真正的陆地分开）
+ *
+ *  四个来源，一个都不能漏 ✗：
+ *    · `meta.wasteland` 那张名单（**EU5 的荒地序号混在真头衔里** ✓ 只能靠它 ✓
+ *      VIC3 的也在这张名单里 —— 但 VIC3 那条按用户规格**不当荒地办** ✗ 见调用处 ✓）
+ *    · 最细层那个 `wl_<地块号>`（EU4 / CK2 / EU5 的逐块荒地 ✓）
+ *    · 每层一片的 `#wasteland_*` / `#impassable_*` 片 ✓
+ *    · 类别码 6（不可通行 ✓）
+ */
+function isWastelandTile(pid, fineTid) {
+  const T = state.titles || {};
+  /* 🔴 **先按地块号自己查** ✗✗（2026-10-16 修 ✓）——
+   *   原来只扫 `state.hover.tids` ✗（那是**悬停那一刻**的链条 ✓）：
+   *   没悬停 / 悬停在别处时，链条是空的或别人的 ✓ → 荒地判不出来 ✓
+   *   而我拿它当"能不能涂"的判据（`isPaintable` ✓）→ **逐块荒地被误锁** ✗
+   *   （实测 CK2 / EU4 / CK3 的 `wl_*` 全被锁了 ✓ 正是这个原因 ✓）
+   *   → 现在**按 pid 取最细层那个节点**就够了 ✓ 跟悬停状态无关 ✓
+   *   （悬停那条链照旧扫 ✓ 它多兜一层"粗层的片"✓ 留着 ✓）*/
+  const _own = (fineTid != null) ? fineTid : titleAt(pid, TIER_COUNT - 1);
+  const _ownKey = (_own != null && _own >= 0) ? String((T.keys && T.keys[_own]) || '') : '';
+  if (keyStarts(_ownKey, 'wl_') || keyStarts(_ownKey, '#wasteland')
+      || keyStarts(_ownKey, '#impassable')) return true;
+  const chain = (state.hover && state.hover.tids) || [];
+  for (const t of chain) {
+    const k = (t == null || t < 0) ? '' : String((T.keys && T.keys[t]) || '');
+    if (keyStarts(k, 'wl_') || keyStarts(k, '#wasteland') || keyStarts(k, '#impassable')) return true;
+  }
+  if (_own != null && isWastelandTid(_own)) return true;
+  return kindOfPid(pid) === 6;
+}
+
+/** 这一格是**哪一类水**（湖 / 河 / 海 ✓ 判不出来回 2 ✓）
+ *
+ *  ⚠ **不能只看最细层那把键** ✗（那正是 2026-10-16 踩过的坑 ✓）：
+ *    CK3 最细层是 `#sea_b_2218`、EU5 是 `chukchi_sea`（连 # 都没有 ✓）
+ *    → 得**从最细层往粗层找**，认得出"河 / 湖"就停 ✓
+ *  ⚠ 顺序：**先河后湖** ✗（CK2 那条"奥涅加湖"就在 `#river_*` 里 ✓ 按游戏的口径算河 ✓）
+ *  ⚠ EU5 是 `_lake` / `lake` **后缀**（`siberian_lakes_1` / `..._region_lake` ✓）
+ *    别拿 `#lake` 那个前缀去套它 ✓
+ */
+function waterKindOf(pid) {
+  const T = state.titles || {};
+  const k0 = String((T.keys && T.keys[state.hover.tids[state.hover.tids.length - 1]]) || '');
+  if (kindOfPid(pid) === 4 || k0.indexOf('#river') === 0) return 4;
+  for (let t = state.hover.tids.length - 1; t >= 0; t--) {
+    const tid = state.hover.tids[t];
+    if (tid == null || tid < 0) continue;
+    const k = String((T.keys && T.keys[tid]) || '');
+    if (k.indexOf('#river') === 0) return 4;
+    if (k.indexOf('#lake') === 0 || k.indexOf('_lake') >= 0) return 3;
+  }
+  return 2;
+}
+
+/** HOI4 的水：名字挂在**战略区**那一层（`#sea_sr_65` ✓ 州 / 省份那两层是占位号 ✗）
+ *  用户口径："HOI4：悬停时显示其**所属的战略区**的名称，第二行无"✓ */
+function hoi4WaterName(pid) {
+  const T = state.titles || {};
+  for (let t = 0; t < state.hover.tids.length; t++) {
+    const tid = state.hover.tids[t];
+    if (tid == null || tid < 0) continue;
+    if (!/_sr_/.test(String((T.keys && T.keys[tid]) || ''))) continue;
+    const nm = realNameAtTier(pid, tid, t);
+    if (nm) return nm;
+  }
+  return '';
+}
+
+/** 把某一格的**逐层链条**查出来（`{ tid, key }[]` ✓）
+ *  ⚠ 按需现查 ✗ —— **别依赖 `state.hover.tids`** ✓（那个只在"鼠标停在它上面"时才是这一格 ✓
+ *   而右键取色的下半场、导出、重算标签都可能在别的时机调进来 ✓）*/
+function chainOfPid(pid) {
+  const T = state.titles || {};
+  const hov = (state.hover && state.hover.pid === pid && Array.isArray(state.hover.tids))
+    ? state.hover.tids : null;
+  const out = [];
+  for (let t = 0; t < TIER_COUNT; t++) {
+    const tid = hov ? hov[t] : titleAt(pid, t);
+    out.push({
+      tid: (tid == null) ? NO_TITLE : tid,
+      key: (tid == null || tid < 0) ? '' : String((T.keys && T.keys[tid]) || ''),
+    });
+  }
+  return out;
+}
+
+/** 这一格是**哪一类水**（2 海 · 3 湖 · 4 河 · 5 不可通行海域 ✓ 不看悬停状态 ✓）
+ *
+ *  🔴 为什么不能只看最细层那把键 ✗（2026-10-16 踩过 ✓）：
+ *    · CK3 最细层是 `#sea_b_2218`（认得出海 ✓）、荒地是 `wl_1464`（不是水 ✓）
+ *    · **HOI4 的键一个 `#` 都没有** ✗ —— 靠**身份标**（`kindMask` ✓ 码 2/3 ✓）才分得出 ✓
+ *  ⚠ 判序：**先身份标（码 2~5 最权威）→ 再 `#` 开头的键** ✓
+ *
+ *  🔴🔴 **绝对不许拿"键名里含某个词"去认水** ✗✗（2026-10-16 当场炸过 ✓）
+ *    我第一版写了 `/_sea_/` 这类宽松匹配 → 挪威那块陆地 `d_duortno**sea**tnu`
+ *    里带 `sea` ✓ 被认成海 ✓ 于是"右键取陆地"给出了「海洋」✗（用户一眼就会看到 ✓）
+ *    → 现在**只认 `#` 开头的那几把键**（编辑器自己造的伪头衔才长这样 ✓
+ *      `#sea_*` / `#lake_*` / `#river_*` / `#impassable_sea_*` ✓）
+ *    真人头衔的键（`d_*` / `c_*` / `b_*` / `k_*` / `e_*` ✓）**一个都不会带 `#`** ✓
+ *  ⚠ 老包（没身份标）真遇到水又认不出来时，宁可回 **2**（类别名会显示"海洋"）
+ *    也别乱猜 —— 那条路只在"已经是水"的分支里走 ✓ 不会碰到陆地 ✓
+ */
+function waterKindByPid(pid) {
+  if (!pid) return 0;
+  const k = kindOfPid(pid);
+  if (k >= 2 && k <= 5) return k;
+  /* 身份标说不出话来（老包 / 每层一片）→ **只认 `#` 开头那几把键** ✓ */
+  const chain = chainOfPid(pid);
+  for (let t = chain.length - 1; t >= 0; t--) {
+    const key = chain[t].key;
+    if (!key || key.charCodeAt(0) !== 35) continue;        // 不是 `#` 开头 → 不是伪头衔 ✓ 跳过 ✓
+    const m = /^#(impassable_sea|sea|lake|river)(_|$)/.exec(key);
+    if (!m) continue;
+    return m[1] === 'impassable_sea' ? 5 : m[1] === 'sea' ? 2 : m[1] === 'lake' ? 3 : 4;
+  }
+  return 0;                                                // 认不出来 = 不是水 ✓
+}
+
+/** 🔴🔴 **右键取色拿到的"标记名"** ✗✗（用户 2026-10-16 点名的三条 ✓）
+ *
+ *  原话：
+ *    ① "右键取 **CK3 的水域或荒地**时，得到的标记不应该是具体的 `#多少`，而是**不给予标记**"✓
+ *    ② "右键取 **EU4/EU5/CK2 之外的湖泊**时，……**不给予标记**"✓
+ *    ③ "右键取 **HOI4 的 prov 或 state 水域**时，……应该**给予战略级名称标记**"✓
+ *
+ *  读法（三句合起来就是一张小表 ✓）：
+ *    · **CK3**：水 / 荒地一律**不给标记** ✓（`#10228` 那种占位号一个都不许上笔）
+ *    · **HOI4**：水 → **战略区名**（`#sea_sr_65` = 白令海 ✓）拿不到就类别名 ✓
+ *    · **湖**：只有 **EU4 / EU5 / CK2** 给名字 ✓ 其余（CK3 / HOI4 / VIC3）**不给标记** ✓
+ *    · 其余水（海 / 河 / 不可通行海域）→ 按**真名表 → 类别的名字**
+ *      （EU4 的海给"白令海峡"✓ CK2 的海给"冰岛西海岸"✓ 无名 → "海洋"✓）
+ *
+ *  ⚠ `#<地块号>` / `#u12` / 纯数字**任何情况都不许当标记** ✗
+ *    （拿不到人话名就退回类别名「海洋 / 湖泊 / 河流 / 不可通行区域」✓ 再不济就空 ✓）
+ *  ⚠ 这一条**只管右键取色那支笔** ✗ —— 地图上的标签点 / 涂色分族走的是原路 ✓
+ *    所以只改 `pickTitle` ✓ 不动 `displayedLabel` 的那些调用方 ✓
+ *
+ * @returns 标记名（`''` = **真的不给标记** ✓）；**不是**水 / 荒地时返回 `null`（调用方走原路 ✓）
+ */
+function pickMarkerName(pid, tid) {
+  if (!pid) return null;
+  const g = String((state.meta && state.meta.game) || '');
+  const chain = chainOfPid(pid);
+  const fineKey = chain.length ? chain[chain.length - 1].key : '';
+  const _fineTid = chain.length ? chain[chain.length - 1].tid : NO_TITLE;
+  const isWaste = isWastelandTile(pid, _fineTid)
+    || keyStarts(fineKey, 'wl_')
+    || /^#(wasteland|impassable)(_|$)/.test(fineKey);     // ⚠ 只认 `#` 开头 ✓ 别子串匹配 ✗
+  if (isWaste) return g === 'ck3' ? '' : (realNameFromTables(pid) || categoryNameOf(6, ''));
+
+  const wk = waterKindByPid(pid);
+  if (!wk) return null;                     // 不是水（陆地）→ 交给原路 ✓
+  if (g === 'ck3') return '';               // ① CK3 的水：不给予标记 ✓
+  if (g === 'hoi4') {                       // ③ HOI4 的 prov / state 水域 → 战略区名 ✓
+    const nm = hoi4WaterName(pid);
+    if (nameIsMeaningful(nm)) return String(nm);
+    return categoryNameOf(wk, '') || '';
+  }
+  if (wk === 3 && !(g === 'ck2' || g === 'eu4' || g === 'eu5')) return '';   // ② 那三家之外的湖 ✓
+  const real = realNameFromTables(pid);
+  if (nameIsMeaningful(real)) return String(real);
+  return categoryNameOf(wk, '') || '';
+}
+
+/** **悬停那两行的唯一出处** ✓✓（卡片和侧栏都走它 —— 用户 2026-10-16 的规格表）
+ *
+ *  规格表（原话，一类一类点的名；**2026-10-16 第二轮把 CK2 的水改了** ✓）：
+ *    荒地：CK3 → 第一行「不可通行区域」· 第二行无
+ *          CK2 / EU4 / EU5 → **以最低单位为单位显示名称** → 第一行其名称 · 第二行无
+ *          VIC3 / HOI4 → **无此设定** → 走陆地那条（目前层级 + 最低层级）
+ *    河流：**CK2 / CK3 → 第一行「河流」· 第二行无**（第一轮）
+ *          🔴 **第二轮更变**："CK2 的湖泊和河流应当显示名字，悬停时同理"✓
+ *          → **CK2 的河改成"它的名字"**（跟它的湖一个待遇 ✓）；**CK3 不变**（还是「河流」✓）
+ *          其他游戏无此设定 → 走水域
+ *    湖泊：**除 EU4 / EU5 外都不显示**（第一轮）
+ *          🔴 **第二轮更变**：CK2 的湖也显示名字 ✓ → 现在 = **CK2 名字 · EU4/EU5 名字 ·
+ *          CK3/HOI4/VIC3「湖泊」** ✓
+ *    水域：CK2 / VIC3 → 最低单位名称 → 第一行其名称 · 第二行无
+ *          CK3 → 第一行「海洋」· 第二行无
+ *          EU4 / EU5 → **根据层级**显示第一行，第二行给最低单位名称
+ *          HOI4 → 第一行**所属战略区**的名称 · 第二行无
+ *
+ *  返回 `{ a, b, kind }`：a = 第一行，b = 第二行（'' = 不显示 ✓）
+ *  ⚠ 占位号（`#281` / `#8613`）**任何一行都不许出现** ✗（走 realNameAtTier 那把尺 ✓）
+ *  ⚠ **左侧栏**那边另有一步：EU4 / EU5 的海要走**层级链** ✓ 见 `sidebarUsesChain` ✓
+ */
+function hoverTileLines(pid) {
+  const none = { a: '', b: '', kind: '' };
+  if (!pid) return none;
+  const T = state.titles || {};
+  const meta = state.meta || {};
+  const _g = String(meta.game || '');
+  const fineTid = state.hover.tids[TIER_COUNT - 1];
+
+  /* ---- 先判类别，再决定"目前层级"是哪一层 ---- */
+  const isWaste = isWastelandTile(pid, fineTid);
+  const isWater = !isWaste
+    && (isWaterHere(pid, fineTid) || kindOfPid(pid) >= 2);
+  /* 水 / 荒地 → **剧本 / 粒度**那一层（用户："根据层级"✓ —— 就直接看 `state.tier` ✓）
+   * 陆地       → `viewTierFor` ✓（有主按视图层 / 无主按最低层 ✓）
+   * ⚠ 别拿一个 tier 通吃 ✗ —— 用户 2026-10-16 实测点破：
+   *   水的 `viewTierFor` 会把剧本层**拉到最低层** → "根据层级"那条直接失效 ✓
+   * ⚠ 也别用 `editTier()` ✗ —— 它把**粒度**优先了（粒度=省份时水就不跟层级了 ✓）
+   *   而用户要的是"跟**层级**"（实验：逐层扫第一行，得一层一个名字 ✓）*/
+  let t = (isWaste || isWater) ? (state.tier | 0) : (viewTierFor(pid) | 0);
+  if (t < 0 || t >= TIER_COUNT) t = TIER_COUNT - 1;
+
+  const curName = realNameAtTier(pid, state.hover.tids[t], t) || '';
+  const fineName = realNameAtTier(pid, fineTid, TIER_COUNT - 1) || '';
+  const typeLabel = (k) => TYPE_LABEL[k] || '陆地';
+  /* 类别名（河 / 湖 / 海 / 不可通行那几样 ✓）：
+   * ⚠ 水 / 荒地的 kind 得**按它们那条口径**再定一次 ✗ —— `kindOfPid` 是"底层身份标"，
+   *   而"每层一片"之后最细层的键可能是 `wl_<地块号>`（荒地 ✓）或 `#sea_b_*`（海 ✓）；
+   *   老包没那枚标时它认不出来 ✓ 所以先按最细层的键补一刀 ✓（跟 `waterKindOf` 同一套 ✓）
+   * ⚠ **不可通行海域（码 5）和不可通行区域（码 6）是两回事** ✗✗
+   *   `CATEGORY_NAME` 表的天然顺序就是先 5 后 6 ✓ 直接查表最准 ✓ */
+  const _fineKey = String((T.keys && T.keys[fineTid]) || '');
+  let _kind = kindOfPid(pid);
+  if (isWaste || isWater) {
+    /* 身份标认不出来（码 1）或本来就没这枚标 → 按类别那条口径定一次 ✓ */
+    if (_kind === 1) _kind = isWaste ? (isImpassSeaKey(_fineKey) ? 5 : 6) : waterKindOf(pid);
+    /* ⚠ 荒地还得再核一道 ✗ —— 有的包给逐块荒地的码是 1（实测 CK2/EU4/CK3 都是 ✓）
+     *   而它明明是不可通行 ✓ 别让它退成"陆地"那种类别名 ✓ */
+    if (isWaste && _kind < 5) _kind = isImpassSeaKey(_fineKey) ? 5 : 6;
+  }
+  const kindLabel = typeLabel(_kind);
+
+  /* ---- ① 荒地 ---- */
+  if (isWaste) {
+    /* 🔴 **CK3 那块不可通行也按类别给名字** ✗✗（2026-10-16 用户抓到 ✓）
+     *   用户原话："为什么**不可通行海域**那边写的是**第一行不可通行区域、第二行不可通行海域**，
+     *     判据是什么"✓
+     *   —— 判据就是 `CATEGORY_NAME[码]`：**不可通行海域是码 5、不可通行区域是码 6** ✓
+     *     两边本来就该是**同一个词** ✓ 我上一版第一行写死了「不可通行区域」✗
+     *     → 不可通行海域那一格第一行成了"区域"、第二行成了"海域"，自相矛盾 ✓
+     *   现在两边都走 `kindLabel` ✓（CK3 的不可通行海域 = 不可通行海域 ✓
+     *   普通荒地 = 不可通行区域 ✓） */
+    if (_g === 'ck3') return { a: kindLabel, b: '', kind: 'waste' };
+    if (_g === 'ck2' || _g === 'eu4' || _g === 'eu5') {
+      /* 以**最低单位**为单位显示名称 ✓ —— 最低单位没名字才往粗层退 ✓
+       * （EU5 的"北极群岛"就在最细层那个真头衔上 ✓ 靠 `fineName` 拿 ✓
+       *   `curName` 那条备用：万一这一格在最低层没节点 ✓）*/
+      return { a: fineName || curName || kindLabel, b: '', kind: 'waste' };
+    }
+    // VIC3 / HOI4：无此设定 → 掉到下面陆地那条 ✓
+  }
+
+  /* ---- ② 水（河 / 湖 / 海）---- */
+  if (isWater) {
+    const wk = waterKindOf(pid);
+    const label = typeLabel(wk);
+    if (wk === 4) {                                   // 河
+      /* 🔴 **第二轮更变**（2026-10-16）：CK2 的河**显示它的名字** ✓
+       *   用户原话："CK2 的湖泊和河流其实是有名字的……应当显示名字，悬停时同理"✓
+       *   → CK2 跟它的湖一个待遇（名字）✓ **CK3 不变**（还是「河流」✓ 那条没人动过 ✓）*/
+      if (_g === 'ck2') return { a: fineName || curName || label, b: '', kind: 'river' };
+      if (_g === 'ck3') return { a: '河流', b: '', kind: 'river' };
+    } else if (wk === 3) {                            // 湖
+      /* 有名字就出名字（**CK2 这一轮加进来** ✓ EU4 / EU5 本来就有 ✓）；
+       * 其余（CK3 / HOI4 / VIC3）照旧只给类别名「湖泊」✓ */
+      if (_g === 'ck2' || _g === 'eu4' || _g === 'eu5') {
+        return { a: fineName || curName || label, b: '', kind: 'lake' };
+      }
+      return { a: '湖泊', b: '', kind: 'lake' };
+    } else {                                          // 海 / 湾
+      if (_g === 'hoi4') return { a: hoi4WaterName(pid) || label, b: '', kind: 'sea' };
+      if (_g === 'eu4' || _g === 'eu5') {
+        const a = curName || label;
+        const b = (fineName && fineName !== a) ? fineName : '';
+        return { a, b, kind: 'sea' };
+      }
+      if (_g === 'ck3') return { a: label, b: '', kind: 'sea' };
+      return { a: fineName || curName || label, b: '', kind: 'sea' };   // CK2 / VIC3
+    }
+  }
+
+  /* ---- ③ 陆地（含 VIC3 / HOI4 的"荒地"）：第一行 = 目前层级，第二行 = 最低层级 ---- */
+  const fine = realNameAtTier(pid, fineTid, TIER_COUNT - 1) || '';
+  const a = curName || fine || typeLabel(kindOfPid(pid));
+  let b = '';
+  if (curName) {
+    /* 第一行是**目前层级**的名字 → 第二行给**最低层级** ✓ 同词不重复 ✓
+     * ⚠ 最细层没名字（HOI4 的 `p_*` / CK3 的某些格子 ✓）→ **就空着** ✗
+     *   别往下退到粗层充数 ✓ —— 那会冒出 `韦斯特比格德/丹麦` 这种**反的**
+     *   （第一行成了最低单位、第二行成了国家 ✗ 实测踩到 ✓） */
+    b = (fine && fine !== a) ? fine : '';
+  } else {
+    /* 第一行本来就是"最低层级"那个名字（目前层级没名字 ✓）
+     * → 第二行只可能在"更细"的方向上补，没有更细的了 ✓ 空着 ✓ */
+    b = '';
+  }
+  return { a, b, kind: 'land' };
+}
+
+/** 拼 innerHTML 前把游戏数据里的尖括号引号挡一下（名字是外部数据 ✓ 顺手防一手）*/
+function _escHtml(s) {
+  return String(s == null ? '' : s).replace(/[&<>"]/g, (c) => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+}
+
+/** **左侧栏这一格要不要列层级链** ✓（用户 2026-10-16 的方案）
+ *
+ *  原话："悬停时左侧栏 —— 荒地、湖泊、河流：照旧；EU4/EU5 之外的海域：照旧；
+ *        **EU4/EU5 的海域：和陆地一样显示其层级**"
+ *
+ *  → 只有 **EU4 / EU5 的海**（`waterKindOf === 2` ✓ 河 / 湖不算 ✓ 它们是"照旧"那条 ✓）
+ *    走下面那条**层级链** ✓；其余背景地块走 `hoverTileLines` 那两行 ✓
+ *
+ *  ⚠ 判据用 `waterKindOf(pid) === 2` ✗ 别直接看 `kindMask` 的码 ✓
+ *    —— 老包没有那枚标 ✓ `waterKindOf` 两个来源都兜得住（键前缀 + 身份标 ✓）
+ *  ⚠ 不可通行海域（CK3 的 `#impassable_sea`）算**荒地**那条 ✗ 不是海 ✓
+ *    （`isWastelandTile` 已经把它归进去了 ✓ 这儿先判它一步 ✓）
+ */
+function sidebarUsesChain(pid, special) {
+  const _g = String((state.meta && state.meta.game) || '');
+  if (_g !== 'eu4' && _g !== 'eu5') return false;
+  const fineTid = state.hover.tids[TIER_COUNT - 1];
+  if (isWastelandTile(pid, fineTid)) return false;
+  return waterKindOf(pid) === 2;
 }
 
 function positionHoverCard(clientX, clientY) {
   const card = $('hover-card');
   if (!state.hover.inside || !state.hover.pid) { card.hidden = true; return; }
-  const info = titleInfo(state.hover.tids[editTier()]);
+  /* ⚠ 这个函数**没有 pid 参数** ✗ —— 用 `state.hover.pid` ✓
+   *   （我批量替换时写成了裸 `pid` → `ReferenceError: pid is not defined` ✓
+   *    用户当场抓的 ✓ 整个悬停卡片直接崩 ✓）*/
+  const info = titleInfo(state.hover.tids[viewTierFor(state.hover.pid)]);
   const rect = $('stage').getBoundingClientRect();
   // 背景地块（海/湖/河/不可通行）也**照显示** ✓ 不再直接隐藏（用户要求：不要区别对待 ✓）
   const _special = !info || isSpecialTid(info.tid);
-  const col = _special ? state.titles.colors[state.hover.tids[TIER_COUNT - 1]]
-                       : (liveColorOf(state.hover.pid, info.tid) || state.titles.colors[info.tid]);
-  const nm = _special ? specialTileLabel()
-                      : impassLabel(liveNameOf(state.hover.pid, info.tid) || info.name);
+  const _fineHoverTid = state.hover.tids[TIER_COUNT - 1];
+  /* 荒地的悬停色块也读**自动上色写进 LUT 的那份** ✓（2026-10-17 重做 ✓）
+   *   EU5 的 `titles.colors` 是省份位图技术色（1818 块五颜六色），直接取会跟画面不一致 ✗ */
+  const col = _special
+    ? ((isWastelandTid(_fineHoverTid) && renderer && renderer.lutData)
+      ? [renderer.lutData[_fineHoverTid * 4], renderer.lutData[_fineHoverTid * 4 + 1],
+         renderer.lutData[_fineHoverTid * 4 + 2]]
+      : state.titles.colors[_fineHoverTid])
+    : (liveColorOf(state.hover.pid, info.tid) || state.titles.colors[info.tid]);
+  /* 🔴 **那两行整个交给 `hoverTileLines`** ✗✗（2026-10-16 用户把规格一类一类点全了 ✓）
+   *
+   *   以前这儿自己拼了一套（"有名字给名字、水给类别名"那种 ✓）——
+   *   用户随后给的是**逐类逐游戏**的表 ✓ 再散着写就对不上了 ✗
+   *   → 现在只有**一处**出处：`hoverTileLines`（那张规格表就在它的注释里 ✓）
+   *     卡片、侧栏、以后别的地方都走它 ✓
+   *
+   *   ⚠ 这里只负责**颜色 + 位置** ✗；两层文字一个字都不许在这儿改 ✓
+   *   ⚠ 两个坑当年踩过，判据留在 `nameIsMeaningful` / `isWastelandTile` /
+   *     `waterKindOf` 里了（编号不许上屏 · 类别要逐层找键 ✓）*/
+  const _hpid = state.hover.pid;
+  const lines = hoverTileLines(_hpid);
+  const nm = lines.a || '—';
+  const sub = lines.b || '';
+  /* 🔴 **类别判据必须"从最细层往粗层找键"** ✗✗（2026-10-16 踩的坑）
+   *   CK3 的数据里**没有 `kindMask`**（那份包是 kindMask 之前烤的 ✓），
+   *   于是只能按键名前缀判 —— 可最细层的键是 `wl_<地块号>`（荒地 ✓）
+   *   或 `#sea_b_2218`（海 ✓）、**都不是类别前缀** ✗
+   *   只判最细层那一把键的话：海判成陆地、荒地也判成陆地 ✓
+   *    → 第一行漏出 `#1464` 那种编号 ✓
+   *   往粗层找到第一个类别键（`#sea` / `#lake` / `#river` / `#impassable*` ✓）
+   *   或 `wl_` 就算数 ✓ —— 这段现在收在 `isWastelandTile` / `waterKindOf` 里 ✓
+   *   （老包那条 `kindByKey` 只认最细层 ✓ 那儿补上了"逐层找" ✓）*/
   card.innerHTML =
-    `<div class="hc-title"><span class="dot" style="background:${rgbToHex(col || [120, 120, 120])}"></span>${nm}</div>`;
+    `<div class="hc-title"><span class="dot" style="background:${rgbToHex(col || [120, 120, 120])}"></span>${_escHtml(nm)}</div>`
+    + (sub ? `<div class="hc-sub">${_escHtml(sub)}</div>` : '');
   card.hidden = false;
 
   const cw = card.offsetWidth;
@@ -2401,6 +3805,338 @@ function positionHoverCard(clientX, clientY) {
 
 // ================================================================ 工具动作
 
+/** `meta.provColors` → RGBA8 字节（**每块地自己的原色** ✓ 2026-10-14 ✓）
+ *
+ *  base64 的 `numProvinces × 4` 字节（第 4 个字节 = 这块地有没有登记色 ✓）
+ *  ⚠ 没这个字段 / 长度对不上 → **null**（老包、还没接线的游戏 ✓）——
+ *    只解进 state 备查 ✓ 前端不再拿它做水域显示特判 ✓ */
+function decodeProvColors(meta) {
+  const b64 = meta && meta.provColors;
+  if (!b64) return null;
+  const want = (meta.numProvinces | 0) * 4;
+  try {
+    const out = b64ToBytes(String(b64));
+    if (!want || out.length !== want) {
+      console.warn(`provColors 长度对不上：${out.length} ≠ ${want}（当"没有这份数据"处理）`);
+      return null;
+    }
+    return out;
+  } catch (e) {
+    console.warn('provColors 解不出来（当"没有这份数据"处理）：', e);
+    return null;
+  }
+}
+
+/**
+ * **水域标签**（`meta.waterMask` 解出来的 Uint8Array ✓）
+ *
+ *   base64 的 `numProvinces` 字节（每地块 1 字节：1 = 水 ✓ 0 = 不是 ✓）
+ *   ⚠ **现在只解进 `state.waterMask` 备查** ✓（2026-10-14 定案：水域 = 普通地块 ✓）
+ *     原来它给着色器当"认水"的小标签（颜色 / 边界特判）✗ 那套都退役了 ✓
+ *     前端这边 `isWaterPid` 还会从它查 ✓（认水的判据留着 ✓ 拆的只是特判的用场 ✓）
+ *   ⚠ 没这个字段 / 长度对不上 → **null**（老包 ✓）
+ */
+function decodeWaterMask(meta) {
+  const b64 = meta && meta.waterMask;
+  if (!b64) return null;
+  const want = meta.numProvinces | 0;
+  try {
+    const out = b64ToBytes(String(b64));
+    if (!want || out.length !== want) {
+      console.warn(`waterMask 长度对不上：${out.length} ≠ ${want}（当"没有这份数据"处理）`);
+      return null;
+    }
+    return out;
+  } catch (e) {
+    console.warn('waterMask 解不出来（当"没有这份数据"处理）：', e);
+    return null;
+  }
+}
+
+/**
+ * **底层地块身份标**（`meta.kindMask` 解出来的 Uint8Array ✓ 2026-10-15 用户定 ✓）
+ *
+ *   base64 的 `numProvinces` 字节（每地块 **1 字节** ✓ —— 跟当年 `waterMask` 一个口径 ✓）
+ *   码：1 陆地（兜底 ✓）/ 2 海洋 / 3 湖泊 / 4 河流 / 5 不可通行海域 / 6 不可通行区域 ✓
+ *
+ *   ⚠ **无归属区域不在里面** ✗✗（用户明确交代：无归属是**剧本 / 归属**决定的，
+ *     不是地块身份 ✓ 它继续按运行时算 —— 见设置里那行 `set-unpainted` ✓）
+ *   ⚠ 没这个字段 / 长度对不上 → **null**（老包 ✓）
+ *     → 类别判据退回**键名前缀**那条老路 ✓ 一个字节都不动 ✓
+ */
+function decodeKindMask(meta) {
+  const b64 = meta && meta.kindMask;
+  if (!b64) return null;
+  const want = meta.numProvinces | 0;
+  try {
+    const out = b64ToBytes(String(b64));
+    if (!want || out.length !== want) {
+      console.warn(`kindMask 长度对不上：${out.length} ≠ ${want}（当"没有这份数据"处理）`);
+      return null;
+    }
+    return out;
+  } catch (e) {
+    console.warn('kindMask 解不出来（当"没有这份数据"处理）：', e);
+    return null;
+  }
+}
+
+/** 类别码 → 设置里那一行的键 ✓（1 陆地没有颜色行：陆地照旧用**它自己的**颜色 ✓） */
+const KIND_SETTING = { 1: null, 2: 'sea', 3: 'lake', 4: 'river', 5: 'isea', 6: 'impass' };
+
+/** 七行的**出厂色** ✓（跟 `index.html` 那七行、跟 `build_data.py` 的类色一字不差 ✓） */
+const NATURE_RGB = {
+  impass: [94, 94, 94], sea: [32, 57, 92], isea: [26, 46, 71],
+  lake: [47, 110, 150], river: [62, 136, 181],
+};
+
+/** 某一行的当前颜色（设置里没设过 → 出厂色 ✓） */
+function natureColor(key) {
+  const c = (state.set || {})[key];
+  return c || NATURE_RGB[key] || [150, 150, 150];
+}
+
+/** **老包那条路**：按键名前缀认类别 ✓（没有 kindMask 的时候才走 ✓）
+ *   ⚠ `#impassable_sea` 必须判在 `#impassable` **前面** ✗（它俩是前缀关系 ✓）*/
+function kindByKey(key) {
+  const s2 = String(key == null ? '' : key);
+  if (s2.indexOf('#impassable_sea') === 0) return 5;
+  if (s2.indexOf('#impassable') === 0) return 6;
+  if (s2.indexOf('#river') === 0) return 4;
+  if (s2.indexOf('#lake') === 0) return 3;
+  if (s2.indexOf('#sea') === 0) return 2;
+  return 1;                                   // 其余都算陆地 ✓（兜底 ✓ 不许有空洞 ✗）
+}
+
+/** `kindMask` → **头衔号 → 类别码**（懒建一次、换图重建 ✓）
+ *   ⚠ 同一片水在**不同层是不同节点** ✗ → 每层都登记 ✓（同一个 tid 只记一次 ✓）
+ *
+ *  🔴🔴 **层数必须读 `meta.tiers.length`，不许读 `TIER_COUNT`** ✗✗（2026-10-17 修 ✓）
+ *    这是 `TIER_COUNT` 那个坑的**第四次**了 ✗ ——
+ *      `TIER_COUNT` 是模块变量，初值 5（照 CK3 那五级写的 ✓），
+ *      要等 boot 靠后那句 `TIER_COUNT = TIER_KEYS.length` 才变成真值 ✓
+ *    后果（实测，`_local/_dbg_kindoftid.js` 打出来的）：
+ *      · **EU5**（6 层）→ 循环只跑到第 4 层 ✗ **最细的 `loc` 层 5709 个 tid 一个都没登记** ✓
+ *      · **CK3**（7 层）→ 只跑到第 4 层 ✗ `c` / `b` 那两层漏 ✓
+ *    表现：**最细层的水名被判成陆地** ✗ —— 正是"关掉水名开关还剩一堆水名"那个老症状 ✓
+ *    ⚠ `titleAt(p, t)` 自己是按 `state.meta.numProvinces` 索引的 ✓ 它没问题 ✗
+ *      **只有这个循环上界**读错了变量 ✓（所以症状是"少了后面几层"，不是"全错位"✓）
+ *    ⚠ 「老包没 kindMask」不归这条管 ✗ —— 那种情况 `m` 是空的，
+ *      `kindOfTid` 会退回 `kindByKey(键)` ✓ 那条路一直在 ✓ */
+function kindTidMap() {
+  const _k = ((state.meta && state.meta.numTitles) | 0) + '|'
+    + ((state.kindMask && state.kindMask.length) | 0);
+  if (state._kindMap && state._kindMapKey === _k) return state._kindMap;
+  const m = new Map();
+  const km = state.kindMask;
+  const n = (state.meta && state.meta.numProvinces) | 0;
+  const nT = Math.max(1, ((state.meta && state.meta.tiers && state.meta.tiers.length)
+    || TIER_COUNT || 1) | 0);
+  if (km) {
+    for (let p = 1; p < n; p++) {
+      const k = km[p];
+      if (!k || k === 1) continue;            // 陆地不登记（兜底 ✓ 颜色不动 ✓）
+      for (let t = 0; t < nT; t++) {
+        const q = titleAt(p, t);
+        if (q != null && q !== NO_TITLE && !m.has(q)) m.set(q, k);
+      }
+    }
+  }
+  state._kindMap = m;
+  state._kindMapKey = _k;
+  return m;
+}
+
+/** **类别名表**（身份标码 → 中文类别名 ✓ 2026-10-15 ✓）
+ *   ⚠ 顺序天然是**先不可通行海域（5）再不可通行区域（6）** ✗（用户点名的那条 ✓）
+ *   ⚠ 1 = 陆地：**没有类别名** ✓（陆地照旧显示自己的头衔名 ✓）*/
+const CATEGORY_NAME = { 2: '海洋', 3: '湖泊', 4: '河流', 5: '不可通行海域', 6: '不可通行区域' };
+
+/** 类别码 → 这一类的**名字**（悬停卡片 / 侧栏走同一处 ✓ `label` 那张表跟类别名同源 ✓）
+ *   ⚠ `label` 只在 `_dataName` **合格**（不是占位 / 不是空 ✓）时才用 ✓ ——
+ *     CK3 的逐块节点名那一列里躺着 `#10228` 这种占位号 ✗，拿它兜底 = 把编号放上屏 ✓ */
+function categoryNameOf(kind, label) {
+  return CATEGORY_NAME[kind] || (!isPlaceholderName(label) ? String(label || '') : '');
+}
+
+/** **这个名字值不值得上屏** ✓（2026-10-16 收口 —— 悬停第一行 / 第二行 / 侧栏共用一把尺）
+ *
+ *  三条判据（少一条都会漏东西上屏 ✓）：
+ *    ① `readablePlaceName` —— 机器串 / 全大写 / 纯小写键名不算人名地名 ✓
+ *       （CK3 的 `Siberian Wastes` · HOI4 的 `p_13254` 都栽在这一条上 ✓）
+ *    ② `isPlaceholderName` —— `#281` / `#u12` / 纯数字 ✗（用户口径：任何一行都不许出现编号 ✓）
+ *    ③ `isPseudoCategoryName` —— "海洋""不可通行山地"那种**类名**不算**这一格的名字** ✓
+ *       地形节点（`#sea_all_1066` ✓）的名字就是它 ✓ 拿它当"最低层级的信息"没意义 ✗
+ *       要用类别名的地方走 `categoryNameOf` ✓（那儿是另一条路，不受这把尺管 ✓）
+ *   ⚠ 不再另外判"有没有中文" ✗ —— CK2 的 259 条水名里混着拉丁字母的，
+ *     那种是**真名**（基克拉格斯群岛那种地名），不该被当成机器串扔掉 ✓
+ *  ⚠ **别拿它去筛类别名** ✗✗（2026-10-16 踩的坑 ✓）：`categoryNameOf` 的结果
+ *    本来就该原样用 ✓ 我上一版让 `nameIsMeaningful` 放行类名、结果
+ *    "海洋"那一格的第一行从"海洋"掉成了 `#114514` 那种编号 ✓
+ *    （现在这条尺**挡类名**、`categoryNameOf` **给类名**，各管一头 ✓）
+ */
+function nameIsMeaningful(nm) {
+  const s = String(nm == null ? '' : nm).trim();
+  if (!s) return false;
+  if (isPlaceholderName(s) || isPseudoCategoryName(s)) return false;
+  return readablePlaceName(s);
+}
+
+/** **占位名**（`#6586` / `#u12` / 纯数字 / 空 ✓）—— 任何一行都不许原样出现 ✗
+ *   用户口径（2026-10-15 ✓）："第二行不许有编号" ✓ · "HOI4 st/pr 不许出现 `#3004`" ✓
+ *   ⚠ 只判"是不是占位"✓ —— **不判名字内容像不像中文** ✗（那种判据作废 ✓）*/
+function isPlaceholderName(nm) {
+  const t = String(nm == null ? '' : nm).trim();
+  return !t || t.charAt(0) === '#' || /^u?\d+$/i.test(t);
+}
+
+/** **从真名表里取这一块的真名** ✓（2026-10-15 ✓ 用户口径 ✓）
+ *
+ *   `meta.seaNames` / `meta.wastelandNames` / `meta.seaNamesByTier[]` ——
+ *   键是**地块号的字符串** ✓（`"936"` 那种 ✓ 两种写法都试一遍 ✓ 别只试一种 ✗）
+ *   ⚠ CK2 就是这条救回来的 ✓：数据里 259 条水名 / 20 条荒地名都在 ✓
+ *     可 `titles.names` 里那一片只剩 `#936` 占位 ✗ → 不查表就显示占位号 ✗
+ *   ⚠ 占位名 / 类名（"海洋"那种泛称 ✓）都不算真名 ✗ */
+function realNameFromTables(pid) {
+  const M = (state && state.meta) || {};
+  const keys = [String(pid)];
+  /* ⚠ 有的包里表按 **节点号** 存（`titles.names` 那套 ✓）—— 那种不在这儿管 ✓
+   *   这儿只管"地块号 → 名字"的表 ✓（用户点的那两张 ✓）*/
+  for (const tb of [M.seaNames, M.wastelandNames, M.waterNames, M.lakeNames, M.riverNames]) {
+    if (!tb) continue;
+    for (const k of keys) {
+      const v = tb[k];
+      if (v && !isPlaceholderName(v) && !isPseudoCategoryName(String(v))) return String(v);
+    }
+  }
+  for (const tb of (M.seaNamesByTier || [])) {
+    if (!tb) continue;
+    for (const k of keys) {
+      const v = tb[k];
+      if (v && !isPlaceholderName(v) && !isPseudoCategoryName(String(v))) return String(v);
+    }
+  }
+  return '';
+}
+
+/** **一个地块属于哪一类**（底层 pid 的身份 ✓ 跟在哪一层 / 有没有归属无关 ✓）
+ *   有 `state.kindMask` → 查它（权威 ✓）
+ *   老包 → 退到**最细层那个节点的键前缀**（`kindByKey` ✓ 那里
+ *     `#impassable_sea` 判在 `#impassable` 之前 ✓ 判序也是对的 ✓）*/
+function kindOfPid(pid) {
+  if (!pid) return 1;
+  if (state.kindMask && pid < state.kindMask.length && state.kindMask[pid]) {
+    return state.kindMask[pid];
+  }
+  const t = state.titles;
+  if (!t || !state.meta) return 1;
+  const fine = TIER_COUNT - 1;
+  const tid = titleAt(pid, fine);
+  return (tid != null && tid !== NO_TITLE) ? kindByKey(t.keys[tid]) : 1;
+}
+
+/** 🔴 **「每省是不是水」那张表**（给「水域 · 边界」那条通道用 ✓ 2026-10-16 ✓）
+ *
+ *  用户口径（见 handover §3.1 ✓）：水域边界管的是**水域之间**的缝 ✓
+ *  着色器那边是**逐像素**判的 ✗ —— 它拿不到 pid 的键名 / 也读不了 meta ✓
+ *  所以 CPU 侧先把 `numProvinces` 走一遍存成 `Uint8Array`，再传成一张纹理 ✓
+ *
+ *  ⚠ 判据**只用 `waterKindByPid`** ✗（别在这儿另写一套 ✓）：
+ *     它本身就是"身份标最权威 → 老包退回 `#` 开头的键"那条完整口径 ✓
+ *     （0 = 不是水 / 2 海 / 3 湖 / 4 河 / 5 不可通行海域 ✓）
+ *  ⚠ **不缓存** ✓ —— 它只在换图（开一份新 meta）时算一次，
+ *     一个 Uint8Array 走 numProvinces 而已（EU5 四万多个也就几毫秒 ✓）
+ *     缓存反而会带来"换了图还拿着旧表"的坑 ✗
+ *  ⚠ 与 `kindMask` **不是一回事** ✗：那是"最底层是什么"（含陆地 1 / 荒地 6 ✓）
+ *     这张是"**认不认得出它是水**"（含老包那条键前缀退路 ✓）
+ *     `waterKindByPid` 里头正是先查 kindMask、再退回键 ✓ 两级都对上 ✓
+ *
+ *  @returns {Uint8Array|null} 长度 = numProvinces（第 0 格不用 ✓ 恒 0）
+ *
+ *  ⚠ **2026-10-17：不再顺带收「哪些头衔沾水」那张表了** ✗✗（用户点破的 ✓）
+ *    原来这里会顺手收一张 `state.waterKindSet`（所有层的 tid 并集 ✓）——
+ *    可项目里**本来就有**按 tid 问的那条：`kindOfTid(tid)` ✓
+ *    （`kindTidMap()` 扫每一层 + 老包退回键前缀 ✓ 判据比那张 Set 还全 ✓
+ *      而且自带缓存 ✓）见 `_isWaterLabel` 那段 ✓
+ */
+function buildWaterKindMask() {
+  const n = (state.meta && state.meta.numProvinces) | 0;
+  const T = state.titles;
+  if (!n || !T || !T.keys || !T.keys.length) return null;
+  const out = new Uint8Array(n);
+  let any = 0;
+  for (let pid = 1; pid < n; pid++) {
+    const k = waterKindByPid(pid);
+    if (!k) continue;
+    out[pid] = k;
+    any++;
+  }
+  /* 🔴🔴 **2026-10-17：这一趟只出"纹理那张表"了** ✗✗（用户点破的 ✓）
+   *   原来这儿**顺手还收一张 `state.waterKindSet`**（所有层的 tid 并集 ✓）——
+   *   目的是"标签闸按 tid 问一句：这个头衔沾不沾水" ✓
+   *   我甚至为了收全还加了一圈**逐层循环**（`for t < nTier` ✓ 见下头那段历史 ✓）
+   *
+   *   ⚠ **那个 Set 是白造的** ✗✗ —— 项目里**本来就有** `kindOfTid(tid)` ✓
+   *     （`kindTidMap()` 扫每一层 + 老包退回键前缀 ✓ 判据比这个 Set 还全 ✓）
+   *   用户原话："既然是如何判别水，那不是还有现成的东西嘛"✓ —— 就是这个 ✓
+   *   → Set 连同那圈内层循环**一起删了** ✓ 标签闸改问 `kindOfTid` ✓
+   *     （省掉：每块水 × 层数 次 `titleAt` + 一个几千条的 Set 内存 ✓
+   *       而且少一处"两份 tid→水 的表可能不一致"的隐患 ✓）
+   *   ⚠ `out` 这张纹理表**还得留着** ✗ —— 着色器逐像素判、拿不到 tid ✓
+   *     它是 `waterKindArr` 的唯一来源（见 setWaterKindMask ✓）*/
+  /* ⚠ **一个水都没有 → 当"这张图算不出水陆"** ✓（跟老包一个待遇 ✓）
+   *   于是 `waterIs` 恒 false → 水域通道 + 两条让位一起退化成现状 ✓
+   *   （正常地图不可能全陆地，走到这儿基本就是"认水的判据全落空"✓
+   *     那种图上再画"水域边界"只会画出假缝 ✗ 宁可让它整条让开 ✓）*/
+  if (!any) return null;
+  return out;
+}
+
+/** **一个头衔属于哪一类** —— 判据就收口在这一处 ✓（用户要求"别散着写" ✓）
+ *   有 `state.kindMask` → 查它（权威 ✓ 底层 pid 的身份，切层 / 切剧本都不变 ✓）
+ *   老包 → 退回键名前缀（`#sea` / `#lake` / `#river` / `#impassable_sea` / `#impassable` ✓）*/
+function kindOfTid(tid) {
+  if (tid == null || tid === NO_TITLE || !state.titles) return 1;
+  if (state.kindMask) {
+    const k = kindTidMap().get(tid);
+    if (k) return k;
+  }
+  return kindByKey(state.titles.keys[tid]);
+}
+
+/** **把七行颜色刷进 LUT** ✓（2026-10-15 用户要求 ✓）
+ *
+ *   走 LUT（`renderer.setLutColor` ✓ 跟 `paintWasteGrey()` 同一手法 ✓）——
+ *   所以**改设置立刻生效，不用重烤包** ✓✓（用户点名要求 ✓）
+ *   只刷有颜色行的几类（海 / 湖 / 河 / 不可通行海域 / 不可通行 ✓）；
+ *   **陆地照旧用它自己的颜色** ✓ —— 用户要的"陆地标记"是指 `kindMask` 里那一码 1 ✓
+ *   （身份标 ✓），不是把陆地涂成一个色 ✗
+ *   ⚠ 老包（没有 kindMask）→ 按键名前缀扫一遍节点 ✓ 行为跟以前一模一样 ✓ */
+function applyNatureColors() {
+  if (!renderer || !renderer.setLutColor || !state.titles) return 0;
+  const t = state.titles;
+  let n = 0;
+  if (state.kindMask) {
+    for (const [tid, kind] of kindTidMap()) {
+      const sk = KIND_SETTING[kind];
+      if (!sk) continue;
+      const c = natureColor(sk);
+      renderer.setLutColor(tid, c[0], c[1], c[2]);
+      n++;
+    }
+  } else {
+    for (let i = 0; i < t.keys.length; i++) {
+      const sk = KIND_SETTING[kindByKey(t.keys[i])];
+      if (!sk) continue;
+      const c = natureColor(sk);
+      renderer.setLutColor(i, c[0], c[1], c[2]);
+      n++;
+    }
+  }
+  if (n) renderer.dirty = true;
+  return n;
+}
+
 /**
  * 一个地块此刻在屏幕上显示的颜色
  *
@@ -2410,31 +4146,40 @@ function positionHoverCard(clientX, clientY) {
  */
 function displayedColor(pid, tid) {
   // 跟着色器**同一个优先级**，取"这块地此刻显示的颜色"。
-  // 顺序：荒地灰(开关) → 手绘层(开关) → 头衔色/地形 → 背景色。
+  // 顺序：手绘层(开关) → 未上色兜底 → 头衔色 / 背景。
   const fine = state.meta.tierNames.length - 1;
   const own = pid ? titleAt(pid, fine) : NO_TITLE;
 
-  // 🔴 **顺序必须跟着色器的 colorOfPid 逐条对齐** ✗（用户报：涂了色却取不到 ✓）
-  //   着色器是：**手绘层 → 荒地灰 → 无归属 → 头衔色**
-  //   ⚠ 这里以前是"荒地灰 → 手绘层" ✗ 反的 ✓
-  //     后果：荒地被涂过之后，**画面显示你的涂色**（着色器手绘优先 ✓）
-  //           而**吸管吸出来是灰的**（这里先撞上荒地那条 ✓）→ 取色跟画面不一致 ✓
-  //   ⚠ 这个坑在着色器那边**修过一次**（注释写着"荒地灰排在手绘前面 → 涂了也是灰"✗）
-  //     但那次只改了着色器 ✗ 取色这边漏了 ✓ → 两个函数口径分岔 ✓
-  //   💡 **displayedColor 和 colorOfPid 是同一个函数的两份实现** ✗
-  //     改任何一边都必须同时看另一边 ✓
-  // ① 手绘层：**最优先** ✓ 连荒地那层灰都压得住
-  //    （荒地只有开着「荒地可上色」才涂得上去 → "涂过"就等于"允许涂" ✓）
+  /* 🔴 **顺序必须跟着色器的 colorOfPid 逐条对齐** ✗（用户报：涂了色却取不到 ✓）
+   *   ⚠ 这个坑在着色器那边**修过一次**？但那次只改了着色器 ✗ 取色这边漏了 ✓
+   *   💡 **displayedColor 和 colorOfPid 是同一个函数的两份实现** ✗
+   *     改任何一边都必须同时看另一边 ✓
+   * ① 手绘层：**最优先** ✓（水片 / 荒地片现在跟普通头衔一样可涂 ✓ 涂了就显示涂色 ✓）*/
   const pd = renderer && renderer.paintData;
   if (state.showPaint && pd && pid && pd[pid * 4 + 3] > 0) {
     return [pd[pid * 4], pd[pid * 4 + 1], pd[pid * 4 + 2]];
   }
-  // ② 「荒漠 · 涂色」关着：荒地一律显示原版灰（连自动色一起藏）
-  //    ⚠ 必须放在手绘**后面** ✗（放前面就又把涂色盖掉了 ✓）
-  if (isWastelandTid(own) && !state.showWaste) {
-    return [94, 94, 94];
+  /* ①″ 🔴 **荒地自动色**（2026-10-17 重做 ✓ 跟着色器那段逐字对齐 ✓）
+   *   荒地读的是**最细层那个 wl_ 节点**的 LUT（粗层是同名几块共用的 ✗）
+   *   ⚠ 必须排在下面 `kindMask` 那条**之前** ✗：
+   *     有些图里荒地的底层身份是 6 → 先走身份那条就变成类色了 ✓
+   *   ⚠ LUT 的 alpha = 255 才是荒地标记 ✓ 跟 `setWasteFixed` 对齐 ✓ */
+  if (pid && isWastelandTid(own) && renderer && renderer.lutData) {
+    const l = renderer.lutData;
+    return [l[own * 4], l[own * 4 + 1], l[own * 4 + 2]];
   }
-  // ③ 没有头衔的地块：固定灰
+  /* ①′ 🔴 **底层身份那条覆盖** ✗✗（2026-10-15 ✓ 跟着色器 `colorOfPid` 里那段逐字对齐 ✓）
+   *   用户原话："上不上色看的是**具体的最底层单位属于什么东西**" ✓ ——
+   *   水 / 不可通行那几类（kind 2~6 ✓）**不管在哪一层、有没有片、有没有归属**都给类色 ✓
+   *   ⚠ **必须跟着色器同步** ✗ —— `displayedColor` 跟 `colorOfPid` 是同一个函数的
+   *     两份实现（上面那条血泪注释记着 ✓）；只改一边 = 吸管 / 悬停取色跟画面不一致 ✗
+   *   ⚠ `kind == 1`（陆地）→ `KIND_SETTING[1]` 是 null → 往下走老路 ✓ 一个字节不动 ✓
+   *   ⚠ 老包没有 `state.kindMask` → 整条让开 ✓ 行为一丝不变 ✓ */
+  if (state.kindMask && pid) {
+    const _ksk = KIND_SETTING[state.kindMask[pid]];
+    if (_ksk) return natureColor(_ksk).slice();
+  }
+  // ② 没有头衔的地块：固定灰
   if (tid === NO_TITLE || tid == null || !state.titles.colors[tid]) {
     return [150, 150, 150];
   }
@@ -2442,27 +4187,20 @@ function displayedColor(pid, tid) {
   //    真实头衔在「头衔 · 颜色」关着时是透明的 → 露出背景色
   const real = state.meta.numRealTitles || 0;
   if (state.showTitles || tid >= real) {
-    // **荒地取 LUT 里那份** ✓ —— "荒漠 · 涂色"开着时画面上就是它：
-    //   没自动上色 = 荒地灰、上过 = 那个色。不能取 titles.colors，EU5 那份是
-    //   省份位图的技术色（1818 块五颜六色），取到它 = 吸管吸出一个莫名其妙的色 ✗
-    if (isWastelandTid(own) && renderer && renderer.lutData) {
-      const l = renderer.lutData;
-      return [l[own * 4], l[own * 4 + 1], l[own * 4 + 2]];
-    }
     const c = state.titles.colors[tid];
     return [c[0], c[1], c[2]];
   }
-  const bd = (renderer && renderer.backdrop) || [150 / 255, 150 / 255, 150 / 255];
+  const bd = (renderer && renderer.backdrop) || [200 / 255, 200 / 255, 200 / 255];
   return [Math.round(bd[0] * 255), Math.round(bd[1] * 255), Math.round(bd[2] * 255)];
 }
 
 /**
  * **分组/身份**用的稳定色：涂过就用涂色，否则用头衔自己的颜色。
  *
- * 为什么不直接用 displayedColor：那个会跟着「头衔·颜色 / 荒漠·涂色」这些**显示开关**变。
+ * 为什么不直接用 displayedColor：那个会跟着「头衔·颜色」这些**显示开关**变。
  * 一旦用它拼身份串，关掉国家颜色就会让原版国家统统变成背景灰，和玩家涂的同一块地
  * 分成两组 —— 表现就是"同一个国家名冒出两个" ✗（乌兹别克那次就是这么来的）。
- * 吸管、荒地自动涂色那些要"看到什么取什么"的地方仍旧用 displayedColor ✓
+ * 吸管那些要"看到什么取什么"的地方仍旧用 displayedColor ✓
  */
 function stableColor(pid, tid) {
   const pd = renderer && renderer.paintData;
@@ -2519,8 +4257,16 @@ function pickTitle(tid, switchToPaint = false, pid = 0) {
    * `tid` 是 `actAt` 按**视图层**取的（吸管看的永远是眼前这一眼 ✓），
    * 所以上面两条不用自己分情况 —— `displayedLabel` 就是按这个顺序给的 ✓
    *（它顺带把"改名工具改过的头衔"也放在前面 ✓）
+   *
+   * 🔴 **水 / 荒地那几类另有一套** ✗✗（2026-10-16 用户点名 ✓ 见 `pickMarkerName`）：
+   *   · CK3 的水与荒地 → **不给标记** ✗（不拿 `#10228` 那种占位号当标记 ✓）
+   *   · 湖：只有 EU4 / EU5 / CK2 给名字，其余**不给标记** ✓
+   *   · HOI4 的水 → 给**战略区名**（白令海那种 ✓）
+   *   · 其余水 → 真名表 → 类别名（海洋 / 湖泊 / 河流 / 不可通行区域 ✓）
+   *   ⚠ 判据收在 `pickMarkerName` 一处 ✗ 别在这儿再写一遍 ✓
    */
-  setBrushLabel(String(displayedLabel(pid, tid) || '').trim());
+  const _mk = pickMarkerName(pid, tid);
+  setBrushLabel(String((_mk != null ? _mk : displayedLabel(pid, tid)) || '').trim());
 
   // 不弹提示 —— 左边画笔卡片实时显示着颜色和标记，那才是反馈
   // 这里原本每次都弹一条，右键连点取色时糊一屏
@@ -2610,11 +4356,10 @@ function actAt(clientX, clientY) {
   // 涂色和还原才是按粒度落笔的
   let tid = titleAt(pid, state.tool === 'pick' ? state.tier : editTier());
   // **粗层点到荒地**：换掉这个共享伪头衔，改成"光标底下这一块"自己的节点。
-  // 每块荒地只在最细那层有自己的节点（粗层是共享的灰 + 锁住），
-  // 不这么换的话，在伯爵领/省份视图里点沙漠会被 isLocked 挡掉 ✗。
+  // 每块荒地只在最细那层有自己的节点（粗层共享一片 ✓），
+  // 不这么换的话，粗层那一笔会把整片荒地一起涂上 ✗。
   // 手绘层是按省份记的，所以这一笔在**所有层级**都能看见 ✓。
   {
-    const _wl = state.meta.wasteland || [];   // 只为下面那句「数据里有没有荒地」兜底
     if (state.tool !== 'pick' && isWastelandTid(tid)) {
       const _own = titleAt(pid, state.meta.tierNames.length - 1);
       if (_own !== NO_TITLE && isWastelandTid(_own)) tid = _own;
@@ -2628,8 +4373,10 @@ function actAt(clientX, clientY) {
     if (_own2 != null && _own2 !== NO_TITLE) tid = _own2;
   }
   /* ⚠ **取色例外** ✗ —— 见 pickAt 里那段说明 ✓
-   *   其余工具（涂色/还原/改名）该锁还是锁 ✓ */
-  if (state.tool !== 'pick' && isLocked(tid)) return;   // 山/海那些是背景，不给改
+   *   水那四类**禁止上色**（2026-10-16 用户定的 ✓ 见 `isLocked` 那段 ✓）——
+   *   判据按**地块号**走 ✓ 所以 pid 一定要传进去 ✓
+   *   （拿到的是粗层那个 `#sea_*` 片的 tid 也照样锁得住 ✓）*/
+  if (state.tool !== 'pick' && isLocked(tid, pid)) return;
 
   if (state.tool === 'rename') { openRename(pid); return; }
   if (state.tool === 'pick') {
@@ -2757,7 +4504,97 @@ function countryTier() {
 function editTier() {
   const n = eraTierCount();
   if (n === 0 || state.tier < 0 || state.tier >= n) return state.tier;
-  return state.grain == null ? state.tier : state.grain;
+  if (state.grain != null) return state.grain;
+  /* 🔴🔴 **改回"视图层"** ✗✗（2026-10-14 ✓ 用户报的第三个问题 ✓）
+   *
+   *   用户原话："还有一个引申出的更严重的问题，**只开剧本不开粒度时的
+   *     有主地块也出现了，他们以最低单位出现**"✓
+   *
+   *   ⚠ 我上一版把这里改成了"没粒度 → **最低层**"✗ ——
+   *     那是冲着用户另一句话改的（"剧本下**高亮范围和名字**应该跟随粒度，
+   *     没有粒度就是最低"✓）—— **可那句话只说高亮和名字** ✗
+   *     而 `editTier()` 管的东西**远不止那两样** ✓：
+   *       · 边界（`uEditTier` ✓ 见 gl.js）→ 剧本模式下按**最低单位**画 ✗
+   *         （用户看到的"有主地块以最低单位出现"✓ 就是它 ✓）
+   *       · 笔刷 / 涂色落点 / 各种"跟动手那一层有关"的判断 ✓
+   *   → 所以 `editTier()` **必须回到"跟视图层一样"** ✓
+   *     而"高亮和名字要最低层"那件事，**另开一个函数** ✓ 见 `labelTier()` ✓
+   *
+   *   ⚠ 两者分工（别再混 ✗）：
+   *     `editTier()`  = **动手那一层**（边界 / 笔刷 / 涂色 ✓）→ 默认 = 视图层 ✓
+   *     `labelTier()` = **显示那一层**（高亮 / 名字 ✓）→ 没粒度时 = 最低层 ✓
+   */
+  return state.tier;
+}
+
+/** 🔴 **这一格该按哪一层看** ✗✗（2026-10-14 ✓ 用户澄清后重写 ✓）
+ *
+ *   用户原话："我这里所谓的这些东西都针对的是**在剧本时没有归属具体国家
+ *     或涂色的东西**"✓
+ *
+ *   ⚠ 所以"没粒度就是最低"那句**不是给所有人定的** ✗ ——
+ *     它是给"**剧本时无主**的那些东西"（水域 / 荒地 ✓）定的特例 ✓
+ *   正确规则 = **按这一格自己有没有归属分** ✗：
+ *     · **有主**（属于某个国家 ✓ 或者被玩家涂过色 ✓）→ **视图层** ✓
+ *       剧本模式下就是**国家** ✓ 悬停显示国家、高亮亮整国 ✓
+ *     · **无主**（水域 / 荒地那类 ✓）→ **最低层** ✓
+ *       高亮只亮一格、卡片显示细的 ✓（不然它在剧本层只有"整类"✓ 没法看 ✓）
+ *
+ *   ⚠ 开了粒度就一律用粒度 ✗ —— 那是用户明确选的 ✓
+ *   ⚠ **别把它当成"全局最低层"** ✗ —— 我上一版就是这么错的 ✓：
+ *     一律最低 → 有主地块也按最低单位显示 ✗（用户报的"有主地块以最低单位出现"✓）
+ *     而且**高亮永远对不上国家** ✗（用户报的 ✓）
+ */
+function viewTierFor(pid, tid) {
+  const n = eraTierCount();
+  if (n === 0 || state.tier < 0 || state.tier >= n) return state.tier;
+  if (state.grain != null) return state.grain;      // 开了粒度：一律听它的 ✓
+  /* **这一格有没有"归属具体国家或涂色"** ✗ —— 三个条件（跟用户那句一致 ✓）：
+   *   ① 视图层上它有头衔 ✓
+   *   ② **而且那不是伪头衔** ✗✗ —— 水域 / 荒地那些是**编辑器造的**
+   *      （`tid >= numRealTitles` ✓ 或者 `waterMask` 说是水 ✓）
+   *      它们**不是"归属具体国家"** ✓ 用户明确点名要排除 ✓
+   *   ③ 或者玩家**涂过**它（涂过就算"有主"✓ 见 paintData 的 alpha ✓）
+   *
+   *   ⚠ 实跑踩到的 ✗：CK3 的河流 pid 456 在**剧本层**拿到了 `#river_e_136`
+   *     （伪头衔 ✓）→ 只看 ① 的话会判成"有主"→ 走视图层 ✗
+   *     而用户要的是它按**最低层**（高亮一格 ✓）✓
+   *   ⚠ `waterMask` 是最直接的判据 ✗（那个"小标签"✓ 见 `isWaterPid` ✓）
+   *     伪头衔那个判断是**兜底**（老包没有 waterMask ✓ 荒地也没有 ✓）*/
+  const t = (tid == null) ? titleAt(pid, state.tier) : tid;
+  const _real = (state.meta && state.meta.numRealTitles != null)
+    ? state.meta.numRealTitles : 1e9;
+  const _isPseudo = (t != null && t !== NO_TITLE && t >= _real);
+  const _isWater = isWaterPid(pid);
+  const hasOwner = (t != null && t !== NO_TITLE && !_isPseudo && !_isWater);
+  const pd = renderer && renderer.paintData;
+  const painted = !!(pd && pid && pd[pid * 4 + 3] > 0);
+  if (hasOwner || painted) return state.tier;        // 有主 → 视图层 ✓
+  /* 无主（水域 / 荒地）→ **最低层** ✓（那儿才是"每块各自一片"✓）*/
+  const _nt = (state.meta && Array.isArray(state.meta.tiers)) ? state.meta.tiers.length : n;
+  return Math.max(0, _nt - 1);
+}
+
+/** **显示那一层** —— 高亮 / 名字看它（`editTier` 看边界 / 笔刷 ✓）
+ *
+ *  ⚠ 现在它只是 `viewTierFor` 的"无 pid 版" ✗ —— 拿不到具体地块时退回最低层 ✓
+ *    （调用方大多有 pid ✓ 优先用 `viewTierFor(pid)` ✓）
+ *
+ *  为什么"最低层"是它的兜底：
+ *    · 剧本层是"**国家**"那一层 ✗ 水域 / 荒地在那儿只有"整类"（没有"片"✓）
+ *      → 高亮只能亮一格、名字也只能是"海洋"这种类名 ✓
+ *    · 最低层才是"**每一块地各自一片**"那一层 ✓ 高亮 / 名字都准 ✓
+ *
+ *  ⚠ 取 `tiers.length - 1` ✗ 别硬编码层号 —— 每个游戏层数不一样 ✓
+ *    （CK3 7 层、EU5 6 层、HOI4 6 层 ✓）
+ *  ⚠ 开了粒度就用粒度 ✗ —— 那是用户选的 ✓
+ */
+function labelTier() {
+  const n = eraTierCount();
+  if (n === 0 || state.tier < 0 || state.tier >= n) return state.tier;
+  if (state.grain != null) return state.grain;
+  const _nt = (state.meta && Array.isArray(state.meta.tiers)) ? state.meta.tiers.length : n;
+  return Math.max(0, _nt - 1);
 }
 
 function setGrain(t) {
@@ -2770,12 +4607,25 @@ function setGrain(t) {
 function applyEditTier() {
   const e = editTier();
   renderer.setEditTier(e);
+  //（「水域内部边界」那套 uniform 已随专属边界一起退役 ✓）
   const hl = hoverTargetTid(state.hover.pid, state.hover.tids[e]);
   applyHoverHighlight(state.hover.pid, hl == null ? null : hl);
-  updateCursor(hl);
+  updateCursor(hl, state.hover.pid);
   refreshTierButtons();
-  updateBrushTarget();
   renderHoverCard(state.hover.pid);
+  /* 🔴🔴 **换粒度必须重算海名标** ✗✗
+   *   （2026-10-13 用户："水域名称好像也是这样，开剧本的时候显示的反而是最高层"✓
+   *     实跑量到的：剧本层 + 粒度=4 时 `editTier()` 已经是 4 ✓
+   *     可海名标还是 **561 个**（该是 98 个、跟 rg 层一致 ✗））
+   *
+   *   原因：`state.seaLabelPoints` 是**预先算好的一整份** ✓
+   *     `labelDirty = true` 只会让 `drawLabels` **重画**它 ✗ 不会重算 ✓
+   *     而它原来只在 `setTier()` 里算过一次 ✓ → 换粒度就停在旧那份 ✓
+   *
+   *   ⚠ 高亮 / 边界**不用**在这儿补 ✗ —— 它们每帧都读 `uEditTier` ✓
+   *     只有"海名标"是**算一次存起来**的那种 ✓ 所以只有它需要重算 ✓
+   *   ⚠ 包在 try 里 ✗ —— 没载地图时 `state.titles` 还没有 ✓ 不能让它把切层弄崩 ✓ */
+  try { state.seaLabelPoints = buildSeaLabelPoints(); } catch (err) { /* 没载图就跳过 ✓ */ }
   labelDirty = true;
   invalidate();
 }
@@ -2862,6 +4712,13 @@ function setTier(tier) {
     state.tier = tier;
     renderer.setTier(tier);
     renderer.setEditTier(editTier());
+    /* **记下"当前是哪个剧本"** ✓（取色阶梯②要用 ✓ 见 `wasteColorTiers` ✓）
+     *   ⚠ 只记**剧本层**那几次 ✗ —— 地理层不覆盖它 ✓
+     *     不然切到 pr 层就把"1444"冲掉了 ✓ ②又取不到色 ✓ */
+    {
+      const _nEra = (state.meta && state.meta.eraDates && state.meta.eraDates.length) || 0;
+      if ((tier | 0) >= 0 && (tier | 0) < _nEra) state.lastEraTier = tier | 0;
+    }
   }
   /* **换层当场把跟层级绑的那几个开关也同步过来** ✓
    *   （颜色 / 本层边界 / 名称那几个的值是按"当前视图属于哪一类"解析出来的 ✓）
@@ -2872,6 +4729,14 @@ function setTier(tier) {
   syncLayerSwitches();
   syncParentBorder();
   refreshTierButtons();
+  /* **换层要重算水域名标签** ✓（2026-10-13 用户要求：
+   *   "HOI4 的海域在 province 和 state 下应该每个地块一个名字，战略视图是合并的"
+   *   "EU4/5 在不同的视图下，海域包括的范围也不一样" ✓）
+   *   构建期给了 `seaNamesByTier`（下标 = tier ✓），换层 = 换一张表 ✗
+   *   所以这里按新层重聚一次（那张表不存在就退回旧的 `seaNames` ✓ 见函数里 ✓）
+   *   ⚠ 别漏了这一句 ✗ —— 只在加载时算一次的话，换层后海名还是**老那层**的 ✓ */
+  try { state.seaLabelPoints = buildSeaLabelPoints(); }
+  catch (e) { state.seaLabelPoints = []; }
   // **换层 = 换了一批色块** ✓ 分组要重算 ✓
   //（图例列表本身不去当场刷 ✗ —— 按用户的主意：只在"点图例 / 导出"时才更新 ✓）
   blocksDirty = true;
@@ -2880,7 +4745,6 @@ function setTier(tier) {
   applyHoverHighlight(state.hover.pid, hl == null ? null : hl);
   labelDirty = true;
   renderHoverCard(state.hover.pid);
-  updateBrushTarget();
 }
 
 function setTool(id) {
@@ -2889,18 +4753,9 @@ function setTool(id) {
     b.classList.toggle('on', b.dataset.tool === id);
   }
   const t = TOOLS.find((x) => x.id === id);
-  updateCursor(state.hover.tids[editTier()]);
-  updateBrushTarget();
+  updateCursor(state.hover.tids[editTier()], state.hover.pid);
 }
 
-function updateBrushTarget() {
-  // 显示的是**有效编辑层**：年份视图里换了粒度就写粒度那一级，
-  // 一眼能看出这笔按国家涂还是按省份涂
-  const e = editTier();
-  const tierName = state.meta.tierNames[e];
-  const t = TOOLS.find((x) => x.id === state.tool);
-  $('brush-target').textContent = `${tierName} · ${t ? t.label : ''}`;
-}
 
 /**
  * 把界面里写死的中文换成当前游戏的说法
@@ -2918,22 +4773,24 @@ function applyGameText() {
   /* 各模式的默认开关（**八套地图都一样** ✓ —— CK3 原来是个例外（只有「头衔」那一组、
    * 颜色边界全开 ✗），用户点名的"取消 CK3 的特立独行、和其他模式一样" ✓ 见 build_data
    * 里 eraDates 那段：CK3 现在也是"剧本层 + 地区层"的结构 ✓）：
-   *   势力：只留上色 ✓
-   *   地区：默认**显示地名**（颜色按需自己开 ✓ 画面干净 ✓）
-   *   填色：开边界 + 开地名（颜色本来就开）✓
+   *   势力（玩家涂色那组）：开边界 + 开地名 + 开颜色 ✓
+   *   地块：默认**显示地名**（颜色按需自己开 ✓ 画面干净 ✓）
+   *   剧本颜色：**固定开** · 剧本边界：**固定关** ✓（「剧本」那组 2026-10-17 删了 ✓）
    * 注意要改"来源"开关 —— 那几个派生值由 syncLayerSwitches 每帧按来源重算 ✓ */
   {
-    state.showPowerColor = true;       // 势力·上色：默认开 ✓
-    state.showRegionName = true;       // 地区·名称：默认**开**（用户要求：默认显示地名 ✓）
-    state.showPowerBorder = false;
+    state.showPowerColor = true;       // **剧本颜色固定开** ✓（那个勾已删 ✓）
+    state.showRegionName = true;       // 地块·名称：默认**开**（用户要求：默认显示地名 ✓）
+    state.showPowerBorder = false;     // **剧本边界固定关** ✓（那个勾已删 ✓）
     state.showPaint = true;
     state.showBorderPaint = true;
     state.showLabelsPaint = true;
     state.showTitles = true;
     state.showBorderTitle = false;
     state.showLabelsTitle = true;       // 地名：**默认开** ✓（用户要求 ✓）
+    state.wasteAuto = false;            // 荒地自动上色：**默认关** ✓（用户定的 ✓）
     state._layerSig = null;
     state._parentSig = null;
+    state._wasteSig = null;             // 换了图/重置了开关：让帧循环重算一遍 ✓
   }
   // 状态 → 界面上的勾（HTML 里的 checked 只是初值，这里统一过来）
   // 注意：**别把 state 里不存在的字段塞进来** ✗ —— `el.checked = undefined`
@@ -2941,15 +4798,20 @@ function applyGameText() {
   const _sw = [
     ['show-paint', state.showPaint],
     ['show-labels-paint', state.showLabelsPaint],
-    ['show-power-names', state.showLabelsPaint],   // 势力那组的镜像开关 ✓ 跟上面同一个状态 ✓
+    /* ⚠ 「剧本」那三个（show-power-names / color / border）2026-10-17 删了 ✗
+     *   → 这里不再有那三行 ✓ 名字那个状态只剩 #show-labels-paint 独家管 ✓ */
     ['show-border-paint', state.showBorderPaint],
     ['show-parent-border', state.showParentBorderTitle],
-    ['show-waste', state.showWaste],
-    ['show-power-color', state.showPowerColor],
-    ['show-power-border', state.showPowerBorder],
     ['show-region-color', state.showRegionColor],
     ['show-region-border', state.showRegionBorder],
     ['show-region-name', state.showRegionName],
+    /* 水域那两个（2026-10-16 新加的 ✓）+ 荒地那个（2026-10-17 新加的 ✓）——
+     *  它们每帧现读、**不写 state** ✗ 但界面上的勾也得跟 state 对齐 ✓
+     *  （存过的偏好 / 换图重置都算 ✓）*/
+    ['show-water-border', state.showWaterBorder],
+    ['show-water-name', state.showWaterName],
+    ['show-waste-border', state.showWasteBorder],
+    ['show-waste-name', state.showWasteName],
     ['waste-auto', state.wasteAuto],
   ];
   for (const [_id, _v] of _sw) {
@@ -2961,9 +4823,6 @@ function applyGameText() {
   if (typeof renderer !== 'undefined' && renderer) {
     renderer.setShowTitles(state.showTitles);
     renderer.setShowPaint(state.showPaint);
-    // 同一处 bug 的另一个入口：程序化恢复状态（换图/导入）也会走到这里，
-    // 无条件推 false 会把荒地涂色藏掉 —— 口径与下面的 change 处理器一致
-    renderer.setShowWaste(state.showWaste || state.wasteAuto);
     /* 原版边界（原来是从「头衔 · 边界」那个复选框读的 ✗ 那组已经删了）——
        现在从 state 读；有年代层的话，下一帧 `syncLayerSwitches` 会按
        「势力/地区 · 边界」重算一遍 ✓ */
@@ -2977,22 +4836,34 @@ function applyGameText() {
     if (_bp) renderer.setBorderPaint(_bp.checked);
     renderer.setMix(1.0);
   }
-  // 没有荒地数据的模式（比如还没做这块的 CK3）把这两个开关收起来
-  {
-    const _hasWaste = !!(state.meta && state.meta.wasteland && state.meta.wasteland.length);
-    for (const _id of ['waste-label', 'waste-row', 'waste-auto-row', 'waste-clear']) {
-      const _row = $(_id);
-      if (_row) _row.style.display = _hasWaste ? '' : 'none';
-    }
-  }
-  /* 「势力 / 地区」两组要有年代层才出现 ✓
-     （原来这里还管过「头衔」那一组 —— 那组删了，见 syncLayerSwitches 上面那段注释 ✗；
-      现在八套地图都有剧本层，所以这两组一直显示着 ✓） */
+  /* 「地块」那一组要有年代层才出现 ✓
+     （「剧本」那一组 2026-10-17 整组删了 ✗ —— 用户说那三个开关没用了 ✓
+       「势力 / 水域 / 荒地」三组默认都在 ✓
+       🔴 荒地那一组例外：**没有荒地设定的游戏（VIC3 / HOI4）整组藏掉** ✓
+          设置页里的「荒地」小节 + 清除荒地按钮也跟着藏 ✓） */
   {
     const _hasEra = !!(state.meta && state.meta.eraDates && state.meta.eraDates.length);
-    for (const _id of ['power-group', 'region-group']) {
+    for (const _id of ['region-group']) {
       const _el2 = $(_id);
       if (_el2) _el2.style.display = _hasEra ? '' : 'none';
+    }
+    /* 荒地 UI：有没有荒地只看**数据里的名单** ✓（VIC3 / HOI4 原版是空的 ✓）
+       ⚠ 清除按钮另看 `wastePidList`（索引建没建好），没有索引时禁用而不是藏掉 ✓ */
+    const _hasWaste = !!(state.meta && state.meta.wasteland && state.meta.wasteland.length);
+    const _wg = $('waste-group');
+    if (_wg) _wg.style.display = _hasWaste ? '' : 'none';
+    for (const _wid of ['set-waste-sub', 'set-waste-w-row', 'set-waste-a-row']) {
+      const _wel = $(_wid);
+      if (_wel) _wel.style.display = _hasWaste ? '' : 'none';
+    }
+    const _cw = $('btn-clear-waste');
+    if (_cw) {
+      _cw.style.display = _hasWaste ? '' : 'none';
+      const _hasWastePids = !!(state.wastePidList && state.wastePidList.length);
+      _cw.disabled = !_hasWastePids;
+      _cw.title = _hasWastePids
+        ? '清除荒地上的涂色，并关闭「荒地 · 自动上色」'
+        : (_hasWaste ? '这张图的荒地块还没建好索引' : '这张图没有荒地');
     }
   }  // 有年代层的模式（非 CK3）能查TAG，标题就别写死"省份"了 ✓
   $('hdr-search').textContent = ((state.meta.eraDates || []).length) ? '查找' : `查找${g.entity}`;
@@ -3060,22 +4931,6 @@ function jumpToResult(tid) {
  * 按 tag 找**当前年代**里那个国家节点（1444_SWE / 1936_XSM 这种 key）。
  * 找不到返回 -1 —— 那说明它当前年代没地盘（就只取色、不跳 ✓）。
  */
-function findTitleByTag(tag) {
-  const t = state.titles;
-  const nEra = (state.meta.eraDates && state.meta.eraDates.length) || 0;
-  if (nEra > 0) {
-    const i = t.keys.indexOf(`${state.tier}_${tag}`);
-    if (i >= 0) return i;
-    for (let k = 0; k < t.keys.length; k++) {
-      if (t.tiers[k] < nEra && String(t.keys[k]).endsWith('_' + tag)) return k;
-    }
-  }
-  for (let k2 = 0; k2 < t.keys.length; k2++) {
-    if (String(t.keys[k2]) === tag) return k2;
-  }
-  return -1;
-}
-
 function runSearch() {
   const q = $('search').value.trim().toLowerCase();
   const box = $('results');
@@ -3256,7 +5111,6 @@ function exportViewPNG() {
   // （preserveDrawingBuffer 是关的，隔一帧就取不到了）
   renderer.dirty = true;
   renderer.render();
-  const pts = paintedPoints();
   // 两套地名各自独立：原有的（头衔/地区名）和玩家的（手绘色块名），
   // 谁开着画谁，两套都开就合并成一张名单一次画完
   drawLabels(viewRect());
@@ -3266,6 +5120,8 @@ function exportViewPNG() {
   out.width = glCanvas.width;
   out.height = glCanvas.height;
   const ctx = out.getContext('2d');
+  // 画布太大 / 设备内存不够时 getContext 会给 null —— 别让后面 drawImage 变成 TypeError ✓
+  if (!ctx) return toast('导出失败：画布太大，这台设备画不出来', true);
   ctx.drawImage(glCanvas, 0, 0);
   ctx.drawImage($('overlay'), 0, 0);
   // 导出图例：勾了「画进导出的图」就画上去 ✓
@@ -3324,6 +5180,7 @@ async function exportFullPNG(scale = 1) {
   out.width = W * scale;
   out.height = H * scale;
   const ctx = out.getContext('2d');
+  if (!ctx) return toast('导出失败：输出画布太大，这台设备画不出来', true);
 
   renderer.fixedSize = true;
   // 关掉抗锯齿：整图导出时一个像素 = 一个地图像素，四点超采样会在两个色块
@@ -3435,6 +5292,8 @@ function loadMapPrefs(meta) {
         try { box[k] = legacy; localStorage.setItem(SET_KEY, JSON.stringify(box)); } catch (e) { /* ✓ */ }
       }
     }
+    // （水域那套专属边界宽浓的老存档搬迁已删 ✓ 老存档里多出来的那些键
+    //   会被 Object.assign 拼进 state.set、谁也不读 ✓ 下次保存自然挤掉 ✓）
     return (v && typeof v === 'object') ? v : null;
   } catch (e) { return null; }
 }
@@ -3578,7 +5437,10 @@ function loadProject() {
  * 同时兼容图省事手写的 { "e_xxx": [r,g,b] } 这种扁平格式
  */
 function applyProject(data) {
+  // **外部文件 / 暂存区里读回来的东西不可信** ✗ —— 不是对象就直接当"没有可识别内容"✓
+  if (!data || typeof data !== 'object') return 0;
   const t = state.titles;
+  if (!t || !t.index) return 0;
   const colors = data.titles || data.colors || data;
   // 导入：图例设定也还原回来 ✓
   if (data.legend) {
@@ -3668,10 +5530,17 @@ function exportProject() {
  * 但按钮就在眼前 ✓
  */
 function exportLog() {
-  LOG.event('导出日志');        // 先记再导：这一条也该出现在文件里 ✓
-  const ok = LOG.download(`${(GAME && GAME.filePrefix) || 'pdx'}_日志_${stamp()}.txt`);
-  if (!ok) return toast('日志导不出来（日志模块没加载？）', true);
-  toast('已导出日志：出问题时把它发给作者就行。');
+  LOG.event('导出诊断报告', state.meta ? '顶栏 / 文件菜单' : '启动页');
+  // 还没选图时用中性前缀；选了图就带上游戏（方便在附件里一眼认出来 ✓）
+  const prefix = (state.meta && GAME && GAME.filePrefix)
+    ? GAME.filePrefix : 'pdx-map-editor';
+  const ok = LOG.download(`${prefix}_诊断报告_${stamp()}.txt`);
+  if (!ok) {
+    toast('诊断报告导不出来（日志模块没加载？）', true);
+    return false;
+  }
+  toast('已导出诊断报告：出问题时把它发给作者就行。');
+  return true;
 }
 
 function importJSON(file) {
@@ -3688,7 +5557,7 @@ function importJSON(file) {
     } catch (e) {
       toast('导入失败' + e.message, true);
     }
-    recomputePainted();      // 手绘层变了：让自动填色跟着重算
+    recomputePainted();      // 手绘层变了：账本重算一遍 ✓
   };
 
   // 两种入口：拖进来给的是 File/Blob，别处给的可能已经是文本
@@ -3713,7 +5582,45 @@ function resetAll() {
   updateHistoryUI();
   renderHoverCard(state.hover.pid);
 
-  recomputePainted();   // 手绘层变了：让自动填色跟着重算
+  recomputePainted();   // 手绘层变了：账本重算一遍 ✓
+}
+
+/**
+ * **清除荒地涂色**（2026-10-17 用户要的按钮 ✓）
+ *
+ * 干两件事：
+ *   ① 把**荒地块上玩家手绘的色**清掉（走正常擦除那条路，算一步撤销 ✓）
+ *   ② 关掉「荒地 · 自动上色」，并把荒地节点的 LUT 刷回荒地灰 ——
+ *      不关的话下一帧 `wasteWatch` 会按周围颜色又算回来，看着就像"按钮没生效" ✗
+ *
+ * ⚠ 只动**荒地** ✗：普通地块一格都不碰；地图没有荒地（VIC3 / HOI4 原版）时按钮是禁用的 ✓
+ */
+function clearWastePaint() {
+  if (!state.meta) return;
+  const list = state.wastePidList || [];
+  const pd = renderer && renderer.paintData;
+  const pids = [];
+  for (const pid of list) {
+    if (pid > 0 && pd && pd[pid * 4 + 3] > 0) pids.push(pid);
+  }
+  const autoWas = !!state.wasteAuto;
+  if (pids.length) {
+    paintPidsAsOne(pids, null);      // 一次点击 = 一步撤销 ✓
+  }
+  // ② 自动上色：关掉它，否则清完立刻又被算回来
+  state.wasteAuto = false;
+  const autoEl = $('waste-auto');
+  if (autoEl) autoEl.checked = false;
+  state._wasteSig = null;
+  try { refreshWasteAuto(); } catch (e) { /* 算不出来也别拖垮清除 ✓ */ }
+  if (renderer) renderer.dirty = true;
+  // 色块 / 图例 / 悬停都跟着变
+  blocksDirty = true;
+  labelDirty = true;
+  renderHoverCard(state.hover.pid);
+  LOG.event('清除荒地涂色',
+    `${pids.length} 格手绘${autoWas ? ' · 自动上色已关' : ''}`);
+  toast(pids.length || autoWas ? '已清除荒地涂色' : '荒地上本来就没有涂色');
 }
 
 // ================================================================ 事件
@@ -3826,7 +5733,7 @@ function bindEvents() {
   });
 
   window.addEventListener('mouseup', () => {
-    if (panning) { panning = null; updateCursor(state.hover.tids[editTier()]); }
+    if (panning) { panning = null; updateCursor(state.hover.tids[editTier()], state.hover.pid); }
     if (painting) state._blocksForce = true;    // 松手：把拖动期间欠下的那次重算补上 ✓
     painting = false;
   });
@@ -3937,42 +5844,83 @@ function bindEvents() {
     resyncTitleLut();
     labelDirty = true;
   });
-  $('show-waste').addEventListener('change', (e) => {
-    state.showWaste = e.target.checked;
-    // 勾着「允许」（或「自动」还开着）就该显示荒地的涂色 —— 着色器里
-    // uShowWaste==0 会把手绘色也一起盖成灰，推 false 的老写法让用户涂了
-    // 也看不见（跟 setWasteAuto 里那条推 true 的路自相矛盾，README 也承诺
-    // 允许之后"像普通地块一样涂"）。自动开着时取消勾选不藏自动色。
-    renderer.setShowWaste(state.showWaste || state.wasteAuto);
-    labelDirty = true;
-  });
-  // 「清除自动填色」：把自动涂的颜色还原（开关开着也没关系，下次触发会重算）
-  $('waste-clear').addEventListener('click', () => { wasteClearPlayerPaint(); });
-  // 「自动」开关：开着就一直自动涂，关掉全部还原
-  // 势力 / 地区 那几个开关：勾了写回状态（下一帧 syncLayerSwitches 会解析生效）
-  // **二选一互斥**：边界那条（势力·边界 ↔ 填色·边界）
-  // （名字那条已经不需要了：势力名和填色·地名本来就是同一批点，开关删了一个 ✓）
-  for (const [a, b] of [['show-power-border', 'show-border-paint']]) {
-    const ea = $(a), eb = $(b);
-    if (!ea || !eb) continue;
-    const tie = (x, y) => x.addEventListener('change', () => { if (x.checked && y.checked) { y.checked = false; y.dispatchEvent(new Event('change')); } });
-    tie(ea, eb); tie(eb, ea);
+  // （荒地 / 水域的「允许上色 / 颜色 / 边界 / 清除 / 自动」监听器全删了 ✓
+  //   水片与荒地片 = 普通头衔 ✓ 不再有专属开关 ✓）
+  /* 🔴🔴 **「水域 · 边界 / 名称」两个开关请回来了** ✗✗（2026-10-16 ✓ 用户点名要的 ✓）
+   *   ⚠ 写法**故意不跟上面那批一样** ✗（不往 `state` 里写、不调 syncXXX ✓）：
+   *     两个都是**每帧现读**的字段 ✓（`state.showWaterBorder` / `state.showWaterName` ✓）——
+   *     边界那条由 `syncLayerSwitches()` 每帧解析成渲染器上的派生值 ✓；
+   *     名称那条由 `drawLabels()` 每帧取点前判一次 ✓
+   *   ⚠ 那为什么还要监听器？—— 因为要**立刻置脏重画** ✓：
+   *     主循环只"看不脏"就不画 ✗（`draw()` 里 `if (!this.dirty) return false;` ✓）
+   *     不置脏的话，你勾掉之后画面要等到下一次别的操作才变 ✓（看着就是"点了没反应"✗）
+   *   ⚠ 勾「水域 · 名称」还要把**标签重算** ✓（`labelDirty` ✓ 别只置渲染器脏 ✗）*/
+  if ($('show-water-border')) {
+    $('show-water-border').addEventListener('change', (e) => {
+      state.showWaterBorder = !!e.target.checked;
+      syncLayerSwitches();          // 立刻解析成渲染器上的 waterBorderOn ✓
+      renderer.dirty = true;
+    });
   }
-
-  for (const [id, key] of [['show-power-color', 'showPowerColor'],
-                           ['show-power-border', 'showPowerBorder'],
-                           ['show-region-color', 'showRegionColor'],
+  if ($('show-water-name')) {
+    $('show-water-name').addEventListener('change', (e) => {
+      state.showWaterName = !!e.target.checked;
+      labelDirty = true;            // 水名那一批点要在下一次取点时重判 ✓
+      renderer.dirty = true;
+    });
+  }
+  /* 🔴 **「荒地 · 名称」**（2026-10-17 用户要的 ✓ 显示区新加那一行 ✓）
+   *   跟水域那个一模一样的写法 ✗（都是每帧现读、都只置脏 ✓）
+   *   ⚠ 注意：荒地**没有**「边界」那一条 ✗ —— 它 2026-10-15 就没有专属边界了 ✓
+   *     用户这次点名的也只是**名称** ✓（别顺手给它加个边界勾 ✗）*/
+  if ($('show-waste-name')) {
+    $('show-waste-name').addEventListener('change', (e) => {
+      state.showWasteName = !!e.target.checked;
+      labelDirty = true;
+      renderer.dirty = true;
+    });
+  }
+  /* 🔴 **「荒地 · 边界」**（2026-10-17 ✓ 照水域边界那个一模一样的写法 ✓）
+   *   ⚠ 它走 `syncLayerSwitches()`（跟水域边界同一处 ✓）——
+   *     "勾 + 这张图有身份标"那个 AND 在里面 ✓ 别在这儿自己 AND 一遍 ✗ */
+  if ($('show-waste-border')) {
+    $('show-waste-border').addEventListener('change', (e) => {
+      state.showWasteBorder = !!e.target.checked;
+      syncLayerSwitches();
+      renderer.dirty = true;
+    });
+  }
+  /* 🔴 **「荒地自动上色」开关**（2026-10-17 重做 ✓ 用户点名要的 ✓）
+   *   ⚠ 只写 state ✗ —— 真正重算由帧循环的 `wasteWatch()` 按签名做 ✓
+   *     这里顺手置脏，保证下一帧立刻看得见 ✓ */
+  if ($('waste-auto')) {
+    $('waste-auto').addEventListener('change', (e) => {
+      state.wasteAuto = !!e.target.checked;
+      state._wasteSig = null;
+      if (renderer) renderer.dirty = true;
+    });
+  }
+  /* 「地块」那几个开关：勾了写回状态（下一帧 syncLayerSwitches 会解析生效）✓
+   * ⚠ 「剧本」那三个 2026-10-17 删了 ✗ —— 不再有互斥绑定 / 不再有它们的监听器 ✓ */
+  for (const [id, key] of [['show-region-color', 'showRegionColor'],
                            ['show-region-border', 'showRegionBorder'],
                            ['show-region-name', 'showRegionName']]) {
     const el = $(id);
-    if (el) el.addEventListener('change', (e) => { state[key] = e.target.checked; });
+    if (el) el.addEventListener('change', (e) => {
+      state[key] = e.target.checked;
+      /* 🔴 **「地区 · 颜色」一变，荒地自动色就得重算** ✗✗（2026-10-17 ✓）
+       *   自动色的取色来源之一就是它（见 `wasteVoteColor` ✓）——
+       *   关了 → 该**退回荒地色**；只改状态不重算的话，上一轮那份色会赖在 LUT 上 ✓
+       *   ⚠ 剧本颜色现在是**固定开**（那个勾删了 ✓）→ 不用再听它 ✓ */
+      if (key === 'showRegionColor') {
+        try { refreshWasteAuto(); } catch (err) { /* ✓ */ }
+      }
+    });
   }
 
-  $('waste-auto').addEventListener('change', (e) => setWasteAuto(e.target.checked));
-  /* 边界：**原版那条现在没有开关了**（原来在「头衔」那组里 ✗）——
-     有年代层的模式由「势力 · 边界」/「地区 · 边界」算出来（那两个跟填色边界互斥 ✓）；
-     这里只剩「填色 · 边界」这个复选框要听 ✓
-     （原来两条边界的说明留在 git 历史里；填色那条按**当前显示的颜色**画 ✓） */
+  /* 边界：**原版那条现在没有开关了**（「剧本」那组 2026-10-17 删了 ✓）——
+     有年代层的模式由「地区 · 边界」管；这里只剩「势力 · 边界」这个复选框要听 ✓
+     （「势力 · 边界」= 玩家涂色块的边界；按**当前显示的颜色**画 ✓） */
   const borderBox = $('show-border-paint');
   const applyBorders = () => {
     if (borderBox) {
@@ -4002,29 +5950,29 @@ function bindEvents() {
   // （原来这里还有一个「填色 · 边界」的监听器 —— 跟上面 applyBorders 是同一件事的
   //   死副本 ✗ 顺手删了 ✓）
 
-  /* 「名称」有两个开关：填色那组的 #show-labels-paint（哪一代都有 ✓）
-     和势力那组的 #show-power-names（只有有国家/年代层时才看得见 ✓）
-     —— 它们写的是**同一个状态**、互相镜像 ✓ 因为 CK3 没有国家层，
-        势力那一整组在 CK3 里是隐藏的，只留那一个的话 CK3 就点不到 ✗ */
+  /* 「名称」只剩「势力 · 名称」这一个入口 ✓
+     （「剧本 · 名称」那个镜像勾 2026-10-17 随整组一起删了 ✓ 用户："已经没什么用了"✓）
+     它同时管：玩家涂出来的色块名 + 剧本层那批国名 ✓（本来就是同一份分组 ✓）*/
   const _setLabelPaint = (on) => {
     blocksDirty = true;      // 玩家名字 = 全图实时重分组 ✓
     state.showLabelsPaint = on;
     labelDirty = true;
-    const a = $('show-labels-paint'), b = $('show-power-names');
-    if (a && a.checked !== on) a.checked = on;
-    if (b && b.checked !== on) b.checked = on;
+    const _el = $('show-labels-paint');
+    if (_el && _el.checked !== on) _el.checked = on;
   };
-  if ($('show-labels-paint')) {
-    $('show-labels-paint').addEventListener('change', (e) => _setLabelPaint(e.target.checked));
-  }
-  if ($('show-power-names')) {
-    $('show-power-names').addEventListener('change', (e) => _setLabelPaint(e.target.checked));
+  {
+    const _el = $('show-labels-paint');
+    if (_el) _el.addEventListener('change', (e) => _setLabelPaint(e.target.checked));
   }
 
   // 按钮
   $('btn-undo').onclick = undo;
   $('btn-redo').onclick = redo;
   $('btn-reset').onclick = resetAll;
+  {
+    const _cw = $('btn-clear-waste');
+    if (_cw) _cw.onclick = clearWastePaint;
+  }
 
   // 右上角「导出 ▾」：点开下拉，选完就收起来（省地方）
   const _menu = $('export-menu');
@@ -4067,41 +6015,62 @@ function bindEvents() {
     const _open = () => {
       if (!_panel) return;
       const s = state.set || {};
-      const _now = (key, tidGuess) => {
+      const _now = (key) => {
         const c = s[key];
         if (c) return rgbToHex(c);
-        if (key === 'bg') return rgbToHex([150, 150, 150]);
-        if (key === 'waste') return rgbToHex([94, 94, 94]);
-        const i = state.titles.keys.indexOf(tidGuess);
-        if (i >= 0) { const lc = lutColorOf(i); if (lc) return rgbToHex(lc); }
+        /* 两项默认色（2026-10-13 拆开 ✓）：
+         *   bg        「背景颜色」—— **180,180,180** ✓（用户定的 ✓ 220 → 200 → **180**）
+         *   unpainted 「未上色区域」—— 150,150,150 ✓（就是原来那层中性灰 ✓）*/
+        if (key === 'bg') return rgbToHex([180, 180, 180]);
+        if (key === 'unpainted') return rgbToHex([150, 150, 150]);
+        /* 🔴 **海 / 不可通行海域 / 湖 / 河 / 不可通行** 五行 ✓（2026-10-15 ✓）
+         *   出厂色跟 `index.html` 那七行、跟 `build_data.py` 的类色一字不差 ✓ */
+        if (NATURE_RGB[key]) return rgbToHex(NATURE_RGB[key]);
         return '#808080';
       };
       const put = (id, v) => { const el = $(id); if (el && v != null) el.value = v; };
       put('set-bg', _now('bg'));
-      put('set-sea', _now('sea', '#sea'));
-      put('set-lake', _now('lake', '#lake'));
-      put('set-impass', _now('impass', '#impassable'));
-      put('set-impass-sea', _now('impassSea', '#impassable_sea'));
-      put('set-river', _now('river', '#river'));
+      put('set-unpainted', _now('unpainted'));
+      // 七行里的另外五行 ✓（海 / 不可通行海域 / 湖 / 河 / 不可通行区域 ✓）
+      for (const _k5 of ['sea', 'isea', 'lake', 'river', 'impass']) {
+        put('set-' + (_k5 === 'impass' ? 'impass' : _k5), _now(_k5));
+      }
       // 线宽五档 / 浓度四档：**回填时吸附到最近的档位** ✓
       //（老存档里是滑杆时代的连续值，下拉里没有那一项会显示成空白 ✗）
-      put('set-w', snapStep(Number(s.w != null ? s.w : (state._borderWidthBase || 1)), W_STEPS));
+      /* 「地方边界宽度」拆成了**地区 / 省份**两条 ✓（2026-10-13 用户要求 ✓）
+       *   老存档只有 `w` → **两条都按它回填** ✓（那时两边就是同一个值 ✓ 观感不变 ✓）*/
+      const _wOld = Number(s.w != null ? s.w : (state._borderWidthBase || 1));
+      put('set-w-region', snapStep(Number(s.wRegion != null ? s.wRegion : _wOld), W_STEPS));
+      put('set-w-prov', snapStep(Number(s.wProv != null ? s.wProv : _wOld), W_STEPS));
       put('set-pw', snapStep(Number(s.pw != null ? s.pw : 1), PW_STEPS));
       put('set-pa', snapStep(Number(s.pa != null ? s.pa : 50), CONC_STEPS));
       put('set-ra', snapStep(Number(s.ra != null ? s.ra : 75), CONC_STEPS));
       put('set-ca', snapStep(Number(s.ca != null ? s.ca : 100), CONC_STEPS));
-      put('set-font', s.font || 1);
+      /* **水域边界那一对**（2026-10-16 ✓ 请回来了 ✓）
+       *   老存档没这两项 → 出厂值（宽 1 / 浓 100% ✓）—— 跟改造前那条
+       *   "水域线一直画、实心"的口径对得上 ✓ 观感不变 ✓ */
+      put('set-water-w', snapStep(Number(s.waterW != null ? s.waterW : SET_DEFAULTS.waterW), W_STEPS));
+      put('set-water-a', snapStep(Number(s.waterA != null ? s.waterA : SET_DEFAULTS.waterA), CONC_STEPS));
+      /* 🔴 **荒地那一对**（2026-10-17 ✓ 老存档没这两项 → 出厂值 1 / 25% ✓）*/
+      put('set-waste-w', snapStep(Number(s.wasteW != null ? s.wasteW : SET_DEFAULTS.wasteW), W_STEPS));
+      put('set-waste-a', snapStep(Number(s.wasteA != null ? s.wasteA : SET_DEFAULTS.wasteA), CONC_STEPS));
+      /* 两块字号都从 `fontSizes()` 取 ✓（老存档那个数字两块都用 ✓ 迁移只那一处 ✓）*/
+      const _fo0 = fontSizes(s);
+      put('set-fontplace', _fo0.place);
+      put('set-fontpower', _fo0.power);
     put('set-labelac', s.labelAC != null ? s.labelAC : SET_DEFAULTS.labelAC);
     put('set-labelap', s.labelAP != null ? s.labelAP : SET_DEFAULTS.labelAP);
-      // 背景那两条线：宽度 + 浓度 ✓（老存档没这几项 → 用出厂值 ✓）
-      put('set-water-w', snapStep(Number(s.waterW != null ? s.waterW : 1), BG_STEPS));
-      put('set-water-a', snapStep(Number(s.waterA != null ? s.waterA : 100), CONC_STEPS));
-      put('set-waste-w', snapStep(Number(s.wasteW != null ? s.wasteW : 1), BG_STEPS));
-      put('set-waste-a', snapStep(Number(s.wasteA != null ? s.wasteA : 100), CONC_STEPS));
+      // 背景那两条线：宽度 + 浓度 ✓（老存档没这几项 → 用出厂值 ✓
+      //   水域 / 荒地的专属宽浓那六格已随开关一起退役 ✓）
       // 名字上限：range（1~20，**拉满 = 无上限** ✓）+ 旁边那个数值 ✓
       put('set-labelmax', s.labelMax != null ? s.labelMax : SET_DEFAULTS.labelMax);
       const _lmv0 = $('set-labelmax-v');
       if (_lmv0) _lmv0.textContent = labelMaxText();
+      // 地名上限：另一根（同款"拉满 = 无上限"✓）；回填 + 刷旁边那个数值 ✓
+      put('set-labelplacemax',
+        s.labelPlaceMax != null ? s.labelPlaceMax : SET_DEFAULTS.labelPlaceMax);
+      const _lpmv0 = $('set-labelplacemax-v');
+      if (_lpmv0) _lpmv0.textContent = labelPlaceMaxText();
       // 取色后切到哪个画图工具（涂抹 / 填色 ✓）
       put('set-picktool', s.pickTool === 'fill' ? 'fill' : 'paint');
       // 导出图例那一栏：回填勾选/标题/位置，并把条目列表刷出来 ✓
@@ -4129,10 +6098,12 @@ function bindEvents() {
     };
     if ($('btn-clear-recent')) $('btn-clear-recent').onclick = clearRecent;   // 清空记忆颜色 ✓
     bindColor('set-bg', 'bg');
-    bindColor('set-sea', 'sea');
-    bindColor('set-lake', 'lake');
+    bindColor('set-unpainted', 'unpainted');
+    // 七行里另外五行 ✓（改完 `applySettings()` → `applyNatureColors()` 立刻重刷 LUT ✓）
     bindColor('set-impass', 'impass');
-    bindColor('set-impass-sea', 'impassSea');
+    bindColor('set-sea', 'sea');
+    bindColor('set-isea', 'isea');
+    bindColor('set-lake', 'lake');
     bindColor('set-river', 'river');
     const bindRange = (id, key) => {
       const el = $(id);
@@ -4146,16 +6117,22 @@ function bindEvents() {
     /* **边界那一栏全是滑条** ✓（用户定的）——
      * 档位本来就是等距的（线宽 0.5 一档、浓度 25% 一档 ✓），
      * 所以 `min/max/step` 在 HTML 里一锁就天然只有那几档 ✓ 不用再靠下拉兜着 ✓ */
-    bindRange('set-w', 'w');
+    bindRange('set-w-region', 'wRegion');
+    bindRange('set-w-prov', 'wProv');
     bindRange('set-pw', 'pw');
-    bindRange('set-water-w', 'waterW');
-    bindRange('set-waste-w', 'wasteW');
     bindRange('set-pa', 'pa');
     bindRange('set-ra', 'ra');
     bindRange('set-ca', 'ca');
+    /* **水域边界那一对**（2026-10-16 ✓ 请回来了 ✓ 走 bindRange，别手写 ✗
+     *   —— 手写那版会漏掉旁边那个数值 / 落盘 / applySettings，正是当年踩过的坑 ✓）*/
+    bindRange('set-water-w', 'waterW');
     bindRange('set-water-a', 'waterA');
+    /* 🔴 **荒地边界那一对**（2026-10-17 ✓ 走 bindRange：数值 / 落盘 / applySettings 一条龙 ✓）*/
+    bindRange('set-waste-w', 'wasteW');
     bindRange('set-waste-a', 'wasteA');
-    bindRange('set-font', 'font');
+    /* 两块字号各绑各的 ✓（走 bindRange：旁边数值 / 落盘 / applySettings 一条龙 ✓）*/
+    bindRange('set-fontplace', 'fontPlace');
+    bindRange('set-fontpower', 'fontPower');
     /* **两个不透明度**：直接走 bindRange ✓（别手写 ✗）
      *   用户报的"滑块旁边的字不跟着变"—— 就是因为手写的这版**没调 buildSliderTips()** ✗
      *   而 bindRange 里那句一直在（旁边那个数值就是它刷的 ✓）
@@ -4171,6 +6148,22 @@ function bindEvents() {
         const v = $('set-labelmax-v');
         if (v) v.textContent = labelMaxText();      // 拉满那一格会写"无上限" ✓
         blocksDirty = true;     // 名字要按新上限重算 ✓
+        labelDirty = true;
+        scheduleSave();
+        if (typeof invalidate === 'function') invalidate();
+      });
+    }
+    // **地名上限**（同款 1~21，拉满 = 无上限 ✓）：跟势力那根**分开** ✓
+    //   ⚠ 这里**只重截断**（`_placeCapped` 作废 ✓）—— 连通域那趟并查集**不重跑** ✓
+    //   ⚠ 千万别顺手置 `blocksDirty` ✗ 那是势力名的账，跟地名无关 ✓
+    {
+      const el = $('set-labelplacemax');
+      if (el) el.addEventListener('input', () => {
+        state.set.labelPlaceMax = Number(el.value);
+        const v = $('set-labelplacemax-v');
+        if (v) v.textContent = labelPlaceMaxText();   // 拉满那一格会写"无上限" ✓
+        state._placeCapped = null;   // 重截断（见 placePointsFor ✓）
+        state._placeKept = null;
         labelDirty = true;
         scheduleSave();
         if (typeof invalidate === 'function') invalidate();
@@ -4321,6 +6314,23 @@ function frame() {
   requestAnimationFrame(frame);
 }
 
+/** 帧里的一步 —— **单独兜底** ✓（某一步坏了别把整帧的 render 一起拖下水）
+ *
+ *  以前 syncLayerSwitches / syncParentBorder 是裸调的：它们一抛，
+ *  后面的 render() 根本轮不到 → 画面冻住，而 frame() 那层只会上屏一次 ✗
+ *  现在（跟 wasteWatch 同一个待遇）每步各自 catch：错了记一次、下一帧照常跑 ✓
+ *  ⚠ 同一个步骤只记第一条 ✗ —— 一帧一条会把控制台刷爆 ✓ */
+function frameStep(name, fn) {
+  try { fn(); }
+  catch (e) {
+    if (!state._frameStepErr) state._frameStepErr = new Set();
+    if (!state._frameStepErr.has(name)) {
+      state._frameStepErr.add(name);
+      console.error(`帧步骤「${name}」出错（本帧跳过，之后照常继续）：`, e);
+    }
+  }
+}
+
 function frameBody() {
     /* **标记表必须在这里写** - 全项目原来只有 applyHoverHighlight 里调过一次，
      * 那是悬停高亮那条路：没悬停 -> 永远不写 -> 没涂过的地标记全是 0，
@@ -4346,9 +6356,12 @@ function frameBody() {
   //   "**新层的归属表 + 旧层的颜色开关**" ✗：切到剧本、或从剧本切回细层时，
   //   屏幕上会闪一帧**另一层原版的五颜六色**（省份位图那种图）✗
   //   （现在 setTier() 也会当场同步一次 ✓ 这里再兜一道：别让任何状态变更晚一帧 ✓）
-  wasteWatch();
-  syncLayerSwitches();
-  syncParentBorder();
+  frameStep('开关同步', syncLayerSwitches);
+  frameStep('边界链', syncParentBorder);
+  /* **荒地自动色**：签名变了才重算 ✓（层 / 粒度 / 三个颜色开关 / 开关 / 涂色 /
+   *   周长表版本 / 设置里那个荒地色 ✓）—— 必须在 render() 之前 ✓
+   * ⚠ 这三步各自兜底 ✗ —— 一步坏了不该让这一帧的 render 也轮不到 ✓（见 frameStep）*/
+  frameStep('荒地自动色', wasteWatch);
   // ---- 分块（EU5 原尺寸）：按视野补齐缺的块、离开视野的自然被缓存淘汰 ----
   // 半尺寸那套 state.tileMap 是 null → 这段整个跳过 ✓
   if (state.tileMap && renderer && renderer.provArrTex && renderer.tileInfo) {
@@ -4388,13 +6401,12 @@ function frameBody() {
   }
 
   if (drew || labelDirty) {
-    const pts = paintedPoints();
     // 两套地名各自独立：原有的（头衔/地区名）和玩家的（手绘色块名），
     // 谁开着画谁，两套都开就合并成一张名单一次画完
     drawLabels(viewRect());
     labelDirty = false;
   }
-  // 上面那三条（wasteWatch / syncLayerSwitches / syncParentBorder）
+  // 上面那两条（syncLayerSwitches / syncParentBorder）
   // **已经挪到 render() 之前了** ✓ —— 放这儿会让画面晚一帧才跟上 ✗
   // （下一帧的排队在 frame() 那层做 —— 出错了也要接着排 ✓）
 }
@@ -4426,7 +6438,10 @@ function hoverGroupRgb(pid) {
   // 海 / 湖 / 不可通行 / 荒地 / 无主地：**不做整族高亮** ✓
   //（它们共用同一个伪节点，整族高亮会把一整片海都点亮 ✗）
   const _real = state.meta.numRealTitles != null ? state.meta.numRealTitles : 1e9;
-  const _t0 = titleAt(pid, editTier());
+  /* ⚠ 层用 `viewTierFor(pid)` ✗（2026-10-14 ✓ 用户澄清 ✓）——
+   *   有主的地 → 视图层（剧本模式 = 国家 ✓ 整族亮整国 ✓）
+   *   无主的水 / 荒地 → 最低层 ✓（那儿才逐块 ✓）*/
+  const _t0 = titleAt(pid, viewTierFor(pid));
   if (_t0 == null || _t0 === NO_TITLE || _t0 >= _real) return null;
   if (isWastelandTid(_t0)) return null;
   // **按显示色**：没涂过的地 → 原版色（着色器配"标记"一起判，等价于同色同名 ✓）
@@ -4441,24 +6456,86 @@ function applyHoverHighlight(pid, hl) {
   renderer.setEditTier(editTier());
   const _real = state.meta.numRealTitles != null ? state.meta.numRealTitles : 1e9;
   const _t0 = titleAt(pid, editTier());
+  /* **背景（无主地 / 伪头衔 / 荒地）：按「同一片」整片亮** ✓（2026-10-13 用户追加要求 ——
+   *   原话："HOI4 的战略地图的高亮显示是**海域一起来**而不是分开，EU 同理" ✓）
+   *  ⚠ 新包现在每层一片了（`#sea_pr_57` 那种 ✓）—— **同一个 tid 就是同一片** ✓
+   *     水片多半是伪头衔（`tid >= numRealTitles` ✓）→ 落进这条 ✓ 跟荒地一个待遇 ✓
+   *     直接把 **tid** 交给着色器（uHoverTid ✓ 它比的就是
+   *     `titleAt(pid, uEditTier)` ✓）→ 名字 / 边界 / 高亮**同一个来源** ✓
+   *     换层之后高亮范围**自己就跟着变** ✓ 不用再编组 ✓
+   *  ⚠ **老包**（每层一片之前打的）还是共享 `#sea` ✗ —— 那批包比 tid 就等于
+   *     "全世界的海一起亮" ✗ 所以它们**退回编组表那条老路** ✓
+   *     （`isTierPieceKey` 一判就知道新旧 ✓ 新包传 0 = 不编组 ✓
+   *       着色器里编组优先（uHoverGroupId != 0 就走编组 ✓）→ 两条不会打架 ✓）
+   *
+   *  ⚠ **水域单独那支高亮已删** ✓（2026-10-14 定案：水域 = 普通地块 ✓）
+   *     —— 原来那支走 `isWaterHere` / 「水域 · 颜色」开关搞特殊（"整片亮"还是
+   *     "只亮一格"跟着色源变 ✗）；现在无主的水跟荒地一样：
+   *     新包 = 板片 tid、老包 = 真名编组、涂过的 = 玩家涂色一族 ✓ */
   const _k0 = _t0 == null ? '' : String(state.titles.keys[_t0] || '');
-  // 水域（海/湖/河）一律不高亮 —— 不亮整片、也不亮单块 ✓
-  // **CK3 的「不可通行海域」也是水** ✓（键是 #impassable_sea 那种 + 开头是 #impassable ✗
-  //   只认 #sea 开头的话它就漏进"陆地不通行"→ 会被单块高亮 ✗ 别的海都不亮 = 区别对待 ✓）
-  const _isWaterHere = isWaterKey(_k0);
-  const _isBg = !_isWaterHere && (_t0 == null || _t0 === NO_TITLE || _t0 >= _real
+  const _isBg = (_t0 == null || _t0 === NO_TITLE || _t0 >= _real
     || isWastelandTid(_t0));
-  if (_isWaterHere) {
-    renderer.setHoverState(0, 0, null, 0, null);      // 水：不亮 ✓
-    return;
-  }
+  const _pieceHere = isTierPieceKey(_k0) ? _t0 : 0;
+  const _gidHere = (_isBg && !_pieceHere) ? renderer.hoverGroupIdOf(pid) : 0;
+  /* ⚠ **走 tid 那条时必须把 pid 传 0** ✗✗ —— 着色器里那三条的先后是
+   *   `uHoverGroupId` → **`uHoverPid`** → `uHoverPaintOn` → `uHoverTid` ✓
+   *   两个都传的话 `uHoverPid > 0` **先命中** ✓ → 永远只亮光标底下那一格，
+   *   tid 那条路根本轮不到 ✗（我这一版实跑量出来的：海里还是只亮 1 格 ✓）
+   *   —— 组号 / tid 任一有效就不再传 pid ✓ 都没有才退回"只亮一格" ✓ */
+  const _hp = (_pieceHere || _gidHere) ? 0 : (pid || 0);
   // **涂过的无主地**（空白剧本那种一层全无主的）也按"一族"亮 ✓ ——
-  // 别的背景（海/湖/荒地）照旧只亮光标底下这一块 ✓
+  // 没"片"的老包水节点（组号 0）→ 照旧只亮光标底下这一块 ✓
+  // ⚠ 荒地有真名（meta.wastelandNames）→ 同名的那些也整片亮 ✓ 没名字的还是只亮一格 ✓
   const _noOwnHere = (_t0 == null || _t0 === NO_TITLE);
   const _paintNoOwn = _noOwnHere
     && !!(renderer.paintData && pid && renderer.paintData[pid * 4 + 3] > 0);
   if (_isBg && !_paintNoOwn) {
-    renderer.setHoverState(pid || 0, 0, null, 0, null);   // 背景：只亮这一块 ✓
+    /* **剧本层（含空白）海/湖全部单格** ✓（2026-10-15 用户报的两连：
+     *   "空白剧本鼠标指着海洋和湖泊一下亮一片" → "正常剧本也有这种问题" ✓）
+     *   · 成因 = 剧本层的海 / 湖格 tilemap 全指着**类片**（`#sea_all_<年份>` ✓
+     *     整层共享一个 tid）→ 传 tid 给着色器（uHoverTid ✓ 它比 titleAt(h,uEditTier)）
+     *     → **所有海域同时亮** ✗（用户原话 ✓ —— 空白和正常剧本全是这一个成因 ✓）
+     *   · 陆 / 荒在剧本层**一格一个节点**（wl_<pid> ✓）→ 单格亮；海没有理由特殊 ✓
+     *   → **剧本层悬停海/湖也单格** ✓：tid / 编组都不传、只传 pid ✓（uHoverPid 单格路 ✓）
+     *   · 粒度层（地理层）的海片是真名片（`#sea_pr_57` ✓）→ 走 tid 整片亮那一条
+     *     （普通头衔规则：hover 一片海区亮那一片 —— 不变 ✓）
+     *   —— 涂过的格（_paintNoOwn ✓）照旧走后面的玩家涂色一族 ✓ 一个字节都不变 ✓*/
+    /* **类名片格一律单格** ✓（2026-10-15 用户报的：EU5 的不可通行区域
+     *   **本来是几块**、但名字全是"不可通行"（类名 ✓）→ 悬停把它们全都亮起来 ✗
+     *   —— 涂色 / 边界都正常 ✓（它们本来就是普通地块、独立片 ✓ 分色不共享 ✓））
+     *   · EU5 的数据形状查过了：**一个 `#impassable` 节点**（名字"不可通行" ✓）
+     *     在 1337 / 区域 / 地区 / 省份四层各管 **1818 格**（整层一件 ✓）
+     *     → hover 一格 = tid 匹配 = 全部不可通行区一块儿亮 ✗（用户所见 ✓）
+     *   · **推广成统一口径**：**片自己的名字是类名**（走 isPseudoCategoryName ✓）
+     *     = 它只是"同一类的格"，不是"一个地理单元" ✓ → hover 单格 ✓
+     *     剧本层的海/湖（名字全是"海洋/湖泊" ✓）本来就落在这条里 ✓
+     *     —— 上一把"剧本层全单格"的刀被这一条**收编**（判据更普适 ✓），
+     *     真名海片（东太平洋等 ✓）不命中 → 照旧整片亮 ✓ 一个字节都没丢 ✓ */
+    const _bgName = (_t0 != null && _t0 !== NO_TITLE)
+      ? String((state.titles.names && state.titles.names[_t0]) || '') : '';
+    /* 🔴🔴 **一格一片的背景（逐块真名的荒地 / 水）也单格** ✗✗
+     *   （2026-10-15 用户报的："地点视图下悬停于荒地而同名荒地都同时高亮" ✓）
+     *   成因：地点层的荒地是**逐块真名节点**（约顿海姆那种 ✓ `provCount` = 1 ✓）——
+     *     名字不是类名 ✓ 于是掉到下面"同一片整片亮"那条 ✓
+     *     可那条给的是**同名编组**（`hoverGroupIdOf` ✓ 按 `wastelandNames` 的
+     *     **名字**分族 ✓）→ **同名的几块荒地一起亮** ✗
+     *     （那本是给"整类共用一个伪节点"的老包留的 ✓ 新包每块自己一个节点 ✓）
+     *   判据：这一片**自己就一块地**（`provCount <= 1` ✓）→ 直接按 pid 单格 ✓
+     *   ⚠ 粗层的类片（一"片"上百格 ✓ `#impassable` 那种）不命中 →
+     *     照旧走上面"类名 / 编组"那两条 ✓ 一个字节都没丢 ✓
+     *   ⚠ 只收**无主 / 荒地**那类背景 ✗ —— 水片跟陆片一样是普通头衔 ✓
+     *     它们有真名就该整片亮（用户要的"海域一起来" ✓ 见 `hoverGroupRgb` ✓）*/
+    const _pc = state.titles.provCount;
+    const _oneCellBg = (_t0 == null || _t0 === NO_TITLE || isWastelandTid(_t0))
+      && !!(_pc && (_pc[_t0] | 0) <= 1);
+    if (editTier() < eraTierCount()
+        || (_bgName && isPseudoCategoryName(_bgName))
+        || _oneCellBg) {
+      renderer.setHoverState(pid || 0, 0, null, 0, null, 0);
+      return;
+    }
+    // 背景：同一片整片亮 ✓（无主的水片 / 荒地片 ✓ 新包 = 比 tid ✓ 老包 = 比组号 ✓）
+    renderer.setHoverState(_hp, 0, null, 0, _pieceHere || null, _gidHere);
     return;
   }
   /* 高亮跟**涂色 / 还原同一套口径**（悬停看到的 = 点下去会动的 ✓）——
@@ -4517,6 +6594,8 @@ function rebuildPaintBlocks(all = false, unpainted = false) {
 
   const parent = new Int32Array(n);
   const painted = [];
+  // 涂没涂的表 —— **在下面收集那一遍里顺手标掉** ✓（以前这里又全图扫了一遍 ✗）
+  const isPainted = new Uint8Array(n);
   // all=true：**全图每省都参与**（身份用现成的显示逻辑算 ✓），不再只挑涂过的
   const nEra = (state.meta.eraDates && state.meta.eraDates.length) || 0;
   const cTier = countryTier();       // 无主地的身份 / 国名落点都按「最近的**有主**剧本层」✓
@@ -4531,27 +6610,41 @@ function rebuildPaintBlocks(all = false, unpainted = false) {
     const incUnpainted = unpainted || (nEra > 0 && state.tier < nEra);
     // 身份串**按头衔缓存** —— 同一个国家几万个省，没必要每省拼一遍字符串。
     // （V3 4 万省时，正是这一遍把全图重分组顶到 108 ms ✗）
-    const identOfTid = new Map();
+    // 🔴 **能按头衔缓存的别按省算** ✗（2026-10-17）：`_noOwn` / hideLabel / 伪头衔判定
+    //   全都只看 tid —— 以前每省都跑一遍 `isWasteOrWaterTid`（键名 + 名单 + 前缀），
+    //   4 万次里有 3.9 万次是同一批国家的重复劳动 ✓ 现在一格头衔只算一次 ✓
+    const tidInfo = new Map();
     for (let pid = 1; pid < n; pid++) {
       const tid = titleAt(pid, cTier);
-      const p4 = pid * 4;
-      const _paintedPid = paint[p4 + 3] > 0;
+      let info = tidInfo.get(tid);
+      if (info === undefined) {
+        const noOwn = (tid === NO_TITLE || tid == null || tid >= nReal);
+        const allowed = !(!noOwn && state.titles.hideLabel && state.titles.hideLabel[tid])
+          && pseudoNameAllowed(isWasteOrWaterTid(tid));
+        let key = null;
+        if (allowed) {
+          // 没涂过的地只能靠**原版那一层的名字**（它没有标签）✓
+          const nm0 = state.titles.names[tid] || '';
+          const c0 = state.titles.colors[tid] || [150, 150, 150];
+          key = nm0 ? (nm0 + "|" + c0[0] + "," + c0[1] + "," + c0[2]) : null;
+        }
+        info = { noOwn, allowed, key };
+        tidInfo.set(tid, info);
+      }
+      const _paintedPid = paint[pid * 4 + 3] > 0;
+      if (_paintedPid) isPainted[pid] = 1;
       // **只收真头衔** —— 海、湖、河、山那些是伪头衔（第勒尼安海之类 ✗），不该当势力名画 ✓
       // **无主地也是**（空白剧本那一层全是无主地 ✓）：它本身没有归属/名字 ✗
       //   —— 但**玩家涂过的无主地**例外 ✓：那块的色块名/图例得照画 ✓（见下面 _paintedPid 那一段 ✓）
-      const _noOwn = (tid === NO_TITLE || tid == null || tid >= nReal);
-      if (_noOwn && !_paintedPid) continue;
-      // **数据里标了 hideLabel 的（荒地那些）不显示名字** ✓（平常那套也是这么筛的 ✓）
-      if (!_noOwn && state.titles.hideLabel && state.titles.hideLabel[tid]) continue;
+      if (info.noOwn && !_paintedPid) continue;
+      /* **荒地 / 水域那类伪头衔不画成势力名** ✓（2026-10-13）
+       *   ⚠ 这里原来只靠上面那条 hideLabel ✗ —— 而 hideLabel 只标在**最细层**的
+       *     荒地上，换个视图层（cTier 跟着视图走）就漏 ✓
+       *   所以补一道**按键名**的判据：CK3 一律不标，别的游戏看「名称」开关 ✓
+       *   （跟 drawLabels 里那条用同一个函数 ✓ 口径一致 ✓）*/
+      if (!info.allowed) continue;
       if (!incUnpainted && !_paintedPid) continue;
-      let key = identOfTid.get(tid);
-      if (key === undefined) {
-        // 没涂过的地只能靠**原版那一层的名字**（它没有标签）✓
-        const nm0 = state.titles.names[tid] || '';
-        const c0 = state.titles.colors[tid] || [150, 150, 150];
-        key = nm0 ? (nm0 + "|" + c0[0] + "," + c0[1] + "," + c0[2]) : null;
-        identOfTid.set(tid, key);
-      }
+      const key = info.key;
       // **原版名是空的不等于这块地没名字** ✗ —— 涂过的地名字在标签层 ✓
       // （导入带 clearEraNames 的配色时，原版国名被整层清掉；以前这里一律 continue
       //   → 涂过的地也一起跳过 → 全图一个国名都画不出来
@@ -4573,17 +6666,16 @@ function rebuildPaintBlocks(all = false, unpainted = false) {
     }
   } else {
     for (let pid = 1; pid < n; pid++) {
-      if (paint[pid * 4 + 3] > 0) { parent[pid] = pid; painted.push(pid); }
+      if (paint[pid * 4 + 3] > 0) {
+        parent[pid] = pid;
+        painted.push(pid);
+        isPainted[pid] = 1;
+      }
     }
   }
   // 一块都没涂：没有色块可分（**这句必须在"建 isPainted 表"之前** ✓
   // —— 不然 4 万格的空图也要白扫一遍数组）
   if (!painted.length) return;
-
-  // 涂没涂先过一遍（0/1），并查集那一遍要用
-  const isPainted = new Uint8Array(n);
-  for (let q = 1; q < n; q++) if (paint[q * 4 + 3] > 0) isPainted[q] = 1;
-
   const find = (x) => {
     let r = x;
     while (parent[r] !== r) r = parent[r];
@@ -4652,21 +6744,26 @@ function rebuildPaintBlocks(all = false, unpainted = false) {
   for (let pid = 1; pid < n; pid++) {
     const _ownIdent = all ? ident.get(pid) : null;        // 每个邻居都取一次等于白算 ✗
     const _ownPidIdent = all ? null : identOfPid(pid);
+    /* **pid 的根一进循环就取一次** ✓ —— 以前每个邻居都 find(pid) 一遍（4 万格 × 4 邻 = 16 万次 ✗）
+     * 并完之后 `parent[ra] = rb`，pid 的根就变成 rb ✓ 后面接着用这个 ra 就行 ✓ */
+    let ra = -1;
     for (let k = offsets[pid], e = offsets[pid + 1]; k < e; k++) {
       const nb = neighbors[k];
       if (nb <= 0) continue;
       if (all) {
         if (ident.get(nb) !== _ownIdent) continue;
-        const ra0 = find(pid), rb0 = find(nb);
-        if (ra0 !== rb0) parent[ra0] = rb0;
+        if (ra < 0) ra = find(pid);
+        const rb0 = find(nb);
+        if (ra !== rb0) { parent[ra] = rb0; ra = rb0; }
         continue;
       }
       // **同显示色 + 同显示名/标签**才并 ✓
       // 没涂过的地按它的原版色 + 原名算 ✓，而且**没涂过的邻居也要能并进来** ✓
       // （陕北那块没被涂过 ✗，只按涂色层判就永远并不到这一族里 ✗）
       if (identOfPid(nb) !== _ownPidIdent) continue;
-      const ra = find(pid), rb = find(nb);
-      if (ra !== rb) parent[ra] = rb;
+      if (ra < 0) ra = find(pid);
+      const rb = find(nb);
+      if (ra !== rb) { parent[ra] = rb; ra = rb; }
     }
   }
 
@@ -4736,16 +6833,9 @@ function rebuildPaintBlocks(all = false, unpainted = false) {
     // 不再区分"涂没涂" ✗（以前只认涂色标签，没涂过的族一律没名字 ✗）
     const _p0n = g.pids[0];
     let name = String(displayedLabel(_p0n, nameTidOf(_p0n)) || '');
-    // 水面的共享节点（湖泊/海洋/河流）、**荒地**、不可通行 —— 都是**伪头衔**，不当国家名画 ✗
+    // 旧包共享水节点的**类名**（"海洋"/"湖泊"那种）不是具体名 ✗ 别当国家名画 ✓
+    //（具体的片名 / 荒地名跟普通头衔一样可以进名册 ✓ 那条按键名的特判已删 ✓）
     if (name === '湖泊' || name === '海洋' || name === '河流' || name === '不可通行') name = '';
-    // 荒地也会被当成"一族"✗（它的显示名就是荒地名 ✓）→ 在这儿一并滤掉 ✓
-    {
-      const _p0w = g.pids[0];
-      const _tW = titleAt(_p0w, (typeof editTier === 'function') ? editTier() : cTier);
-      const _kW = (_tW != null && _tW !== NO_TITLE) ? String(state.titles.keys[_tW] || '') : '';
-      if (isWastelandTid(_tW) || isWaterKey(_kW)
-          || keyStarts(_kW, '#impassable') || keyStarts(_kW, 'wl_')) name = '';
-    }
     if (all && g.key) name = g.key.split('|')[0];
     // 落点 = **这一坨连通域自己**的几何中心与像素数 ✓
     //   以前取的是"挑中的那一片"（首都/本土）—— 于是吞并全国之后，名字还只有老家那么大 ✗
@@ -4942,6 +7032,569 @@ function retintCountryLabels() {
   return out.length;
 }
 
+/* ================================================================ 地名的取点
+ *
+ * **一个连通域一个标** ✓（2026-10-16 用户定的 ✓ —— 跟势力名**同一套**口径 ✓）
+ *
+ * 以前地名是"**一个头衔一个标**"✗：坐标直接取 `titles.lx/ly`
+ * （构建期算的**最大连通域**的重心 ✓ 见 build_data.py 的 centroids_for_titles）。
+ * 于是跨不相连区域的头衔（CK3 王国/公爵领的飞地、EU4 的岛群、跨 180° 经线的那片海）
+ * **只会出一个名** ✗ —— 那个名落在最大的那块上，别的块上什么都没有。
+ *
+ * 现在照 `rebuildPaintBlocks`（势力名那条 ✓）抄：
+ *   按地块邻接做并查集 → **每个连通域一个点** ✓ → 再按头衔截断（「地名上限」✓）
+ *
+ * 🔴 **顺带退役了「跨接缝」那整套** ✗✗（2026-10-16 用户定的 ✓）：
+ *   `build_adjacency` 只连**图内 4 邻域** ✗ 没有跨左右边界的边 ✓
+ *   → 跨 180° 经线的那片海在邻接图上**本来就是两块** ✓
+ *   → 这里自然就"左右各出一枚"（而且分几块就出几个 ✓ 不止两个 ✓）——
+ *     于是 `titles.wrapLabel` / `buildWrapLabelPoints()` / 圆均值那套**全都不需要了** ✓
+ *     （它们本来就是在给"全体像素求几何中心 → 名字落中部"打补丁 ✓ 现在那个问题没有了 ✓）
+ */
+
+/** 把"每块地一个身份"打成**连通域**（并查集 ✓ 跟 `rebuildPaintBlocks` 同一套口径）
+ *
+ *  @param {Int32Array} ident  pid → 身份号（**相同身份 + 相邻**才算一块 ✓；
+ *                             `-1` = 这块地不参与 —— 由调用方先排掉 ✓）
+ *  @param {number} n          numProvinces
+ *  @returns {Array<{id:number,x:number,y:number,area:number}>}
+ *           每个连通域一项；`id` 就是身份号；`x/y` 是**像素加权质心** ✓
+ *
+ *  🔴 **x 是普通加权平均，不是圆均值** ✗✗（2026-10-16 用户定的 ✓）——
+ *     `build_adjacency` 只连**图内 4 邻域**、没有跨左右边界的边 ✓
+ *     → 跨 180° 经线的那片海在邻接图上**本来就是两块** ✓
+ *      每一块自己都落在它那半边 ✓ 于是"把 x 当角度"那套（`cos/sin/atan2`）
+ *      连同 `wrapLabel` / 左右各一枚 **整套退役** ✓
+ */
+function groupComponents(ident, n) {
+  const out = [];
+  const adj = state.adjacency, pos = state.provPos;
+  if (!adj || !pos || !n) return out;
+  const offsets = new Uint32Array(adj.buffer, adj.byteOffset, n + 1);
+  const neighbors = new Uint16Array(adj.buffer, adj.byteOffset + (n + 1) * 4);
+
+  const parent = new Int32Array(n);
+  for (let pid = 1; pid < n; pid++) parent[pid] = pid;
+  const find = (x) => {
+    let r = x;
+    while (parent[r] !== r) r = parent[r];
+    while (parent[x] !== r) { const p = parent[x]; parent[x] = r; x = p; }
+    return r;
+  };
+  for (let pid = 1; pid < n; pid++) {
+    const id = ident[pid];
+    if (id < 0) continue;
+    for (let k = offsets[pid], e = offsets[pid + 1]; k < e; k++) {
+      const nb = neighbors[k];
+      if (nb <= 0 || nb >= n || ident[nb] !== id) continue;
+      const ra = find(pid), rb = find(nb);
+      if (ra !== rb) parent[ra] = rb;
+    }
+  }
+
+  const acc = new Map();          // 根 → { id, x, y, area }
+  for (let pid = 1; pid < n; pid++) {
+    const id = ident[pid];
+    if (id < 0) continue;
+    const r = find(pid);
+    let a = acc.get(r);
+    if (!a) { a = { id, x: 0, y: 0, area: 0 }; acc.set(r, a); }
+    const w = pos[pid * 3 + 2] || 1;
+    a.x += (pos[pid * 3] || 0) * w;
+    a.y += (pos[pid * 3 + 1] || 0) * w;
+    a.area += w;
+  }
+  for (const a of acc.values()) {
+    if (!(a.area > 0)) continue;
+    out.push({ id: a.id, x: a.x / a.area, y: a.y / a.area, area: a.area });
+  }
+  return out;
+}
+
+
+/** 某一层上**所有头衔的连通域点**（未截断 ✓ 全局按面积降序 ✓）
+ *
+ *  @param {number} tier
+ *  @returns {Array<{tid:number,x:number,y:number,area:number,tier:number}>}
+ *
+ *  ⚠ 点的 `name` **不在这儿存** ✗ —— 改名要实时生效，名字留到每帧取用时现读
+ *    （见 `placePointsFor` ✓ 这样改个名不用把这趟并查集重跑一遍 ✓）
+ *  ⚠ 料跟 `rebuildPaintBlocks` 一模一样 ✓：`state.adjacency` / `state.provPos` /
+ *    `titleAt(pid, tier)` —— **数据格式一个字节都不动** ✓
+ */
+function buildPlaceComponents(tier) {
+  const idx = tier | 0;
+  const m = state.meta;
+  const T = state.titles;
+  const n = (m && m.numProvinces) | 0;
+  if (!state._placeCache) state._placeCache = new Map();
+  const key = idx + '|' + n + '|' + ((T && T.keys && T.keys.length) | 0);
+  const hit = state._placeCache.get(key);
+  if (hit) return hit;
+
+  const out = [];
+  if (state.adjacency && state.provPos && T && n) {
+    const names = T.names || [];
+    const hide = T.hideLabel;
+    /* 身份 = 这一层这一格属于哪个头衔 ✓
+     * 两道闸跟旧的 `byTier` 收人判据 + `pointsFor` 的 `!names[i]` **等价** ✓ */
+    const ident = new Int32Array(n).fill(-1);
+    for (let pid = 1; pid < n; pid++) {
+      const t = titleAt(pid, idx);
+      if (t == null || t < 0 || t === NO_TITLE || t >= names.length) continue;
+      if (!names[t]) continue;         // 没名字的不出标 ✓
+      if (hide && hide[t]) continue;   // 标了"不上地名"的（海/湖/河/山那类伪头衔）✓
+      ident[pid] = t;
+    }
+    for (const c of groupComponents(ident, n)) {
+      out.push({ tid: c.id, x: c.x, y: c.y, area: c.area, tier: idx });
+    }
+    // **大的在前** ✓ —— `placePointsFor` 的"每个头衔留最大的 N 个"直接靠这个顺序 ✓
+    out.sort((a, b) => b.area - a.area);
+  }
+  state._placeCache.set(key, out);
+  return out;
+}
+
+/** 某一层**真正要画**的地名点：按「地名上限」**按头衔**截断 ✓
+ *
+ *  ⚠ 每帧都会调 ✓ 所以这里只做两件便宜事：
+ *    ① 上限 / 层没变就直接返回上次那份（**并查集不重跑** ✓）
+ *    ② 把 `name` **现读一遍**（改名实时生效 ✓ 也不用重建连通域 ✓）
+ *  （以前 `labels.pointsFor()` 每帧新建 m 个对象 ✗ 现在连对象都复用 ✓）
+ */
+function placePointsFor(tier) {
+  const all = buildPlaceComponents(tier);
+  const cap = labelPlaceMaxValue();          // 0 = 不封顶
+  if (state._placeCapped !== all || state._placeCapUsed !== cap) {
+    let kept = all;
+    if (cap > 0) {
+      const per = new Map();                 // 头衔 → 这个头衔已经留了几个
+      kept = [];
+      for (const p of all) {                 // all 已按面积降序 ✓ 留下的自然是最大的那几块 ✓
+        const c = per.get(p.tid) || 0;
+        if (c >= cap) continue;
+        per.set(p.tid, c + 1);
+        kept.push(p);
+      }
+    }
+    state._placeCapped = all;
+    state._placeCapUsed = cap;
+    state._placeKept = kept;
+  }
+  const kept = state._placeKept || all;
+  const names = (state.titles && state.titles.names) || [];
+  for (const p of kept) p.name = names[p.tid] || '';
+  return kept;
+}
+
+/** **给荒地 / 水域节点补上标签位置** ✓（2026-10-13 用户要求 ✓）
+ *
+ *  这两类节点在缓存里**有名字、没有 lx/ly、也没有 area** ——
+ *  于是 LabelLayer 压根不收它们（它要求 lx/ly/area 三个都有 ✓）。
+ *  名字本身是齐的：荒地名是"热那亚""波尔多"这种**真地名**、
+ *  水域是"海洋 / 湖泊 / 河流 / 不可通行海域"✓（用户说的"各游戏剧本里都有"就是它们 ✓）
+ *
+ *  算法：拿**最细那一层**把省份按头衔归堆，用**像素数当权重**求质心 ✓
+ *  （跟构建时给真头衔算位置同一套口径，只是这里现算 —— 各省质心在 provPos 里 ✓）
+ *  area 就用这一堆的像素总数（字号门槛看它 ✓）。
+ *
+ *  ⚠ **CK3 按规则不标** ✗（用户 2026-10-13 定的：CK3 不给荒地和水域标名字，
+ *    别的游戏标 ✓）—— CK3 直接不算，LabelLayer 也就收不到它们 ✓
+ *    配套：那两个「名称」开关在 CK3 里是藏起来的（见 syncLayerSwitches ✓）
+ *
+ *  🔴 2026-10-16 用户把"**名字显示方案**"点全之后（见 `NAME_POLICY` ✓）：
+ *    CK3 唯一要出标的是**河流** ✓（海 / 湖 / 荒地全不出 ✓）
+ *    → 这儿不能再整块 `return` ✗：CK3 走**只认河流**那条窄路（`_ck3` 那个分支 ✓）
+ *      别的游戏照旧全算 ✓（谁出谁不出由 `drawLabels` 按那张表判 ✓）
+ */
+function buildPseudoLabelPositions() {
+  const t = state.titles, pp = state.provPos, meta = state.meta || {};
+  if (!t || !pp) return;
+  const _ck3onlyRiver = String(meta.game) === 'ck3';   // CK3：只给河流补位置 ✓
+  const n = meta.numProvinces | 0;
+  const tiers = (meta.tiers && meta.tiers.length) || 5;
+  const fine = tiers - 1;
+  const nNames = (t.names || []).length;
+
+  // 要找的两类：荒地（meta.wasteland）+ 水域那四个伪头衔
+  // ⚠ 键现在是**每层一片**（`#sea_pr_57` 那种 ✗ 精确查 `'#sea'` 一个都命不中 ✓）
+  //   → 分**两条路**：
+  //     ① **每层一片的那种片**（`#sea_pr_57` / `#lake_ar_3` ✓ 见 isTierPieceKey）
+  //        —— 2026-10-14 起**走普通头衔那套**（用户要求："水域和其他地块一样，
+  //           仅仅是不能填色，其他绘制规则什么的都一样"✓）：
+  //           位置 / 折线全写进 `titles` 那几本数组 ✓ LabelLayer 当普通头衔
+  //           收进 byTier ✓ 名字 / 缩放门槛 / 那两个「名称」开关全跟地名一条路 ✓
+  //           ⚠ 这就是"一片一个标"的来源：**一个 tid 就是一片** ✓（不再另发一组点 ✓）
+  //     ② **老包那个共享节点**（整个世界的海共用一个 `#sea` ✗）+ 最细层逐块的荒地
+  //        （`wl_<地块号>` ✓）—— 它们**不是片**（一个 tid 底下几百个不同名字 ✗）
+  //        → 照旧只补一个位置 ✓ 名字交给 buildSeaLabelPoints 按真名表出 ✓
+  //          （那片共享的海在图上还是只有一个"海洋"标 ✓ 跟改造前一模一样 ✓）
+  const K = t.keys || [];
+  const want = new Set(_ck3onlyRiver ? [] : (meta.wasteland || []));
+  for (const k of (_ck3onlyRiver ? ['#river'] : ['#sea', '#lake', '#river', '#impassable_sea', '#impassable'])) {
+    for (const i of titleIndicesByPrefix(k)) {
+      if (isTierPieceKey(K[i])) continue;
+      want.add(i);
+    }
+  }
+
+  /* **一个 tid 一个点，但这个点取它"最大那一块"的质心** ✓（2026-10-16 用户定的 ✓）
+   *   ⚠ 数组一个 tid 只能存**一个**坐标 ✗ —— 所以只能挑一块当代表：
+   *     挑**最大**的那块 ✓（`flyTo` / 搜索落到那一块里，不会落地图中部 ✓）
+   *   ⚠ 圆均值那套退了 ✗：邻接表只连图内 4 邻域、没有跨左右边界的边 →
+   *     跨 180° 经线的海本来就是**两块** ✓ 各自都落在自己那半边 ✓ */
+  const cAcc = new Map();          // tid → { 最大那块的 x/y + 总面积 }
+  {
+    const ident = new Int32Array(n).fill(-1);
+    for (let pid = 1; pid < n; pid++) {
+      const tid = titleAt(pid, fine);
+      if (tid == null || tid === NO_TITLE || !want.has(tid)) continue;
+      ident[pid] = tid;
+    }
+    for (const c of groupComponents(ident, n)) {
+      let a = cAcc.get(c.id);
+      if (!a) { a = { x: 0, y: 0, best: -1, total: 0 }; cAcc.set(c.id, a); }
+      if (c.area > a.best) { a.best = c.area; a.x = c.x; a.y = c.y; }
+      a.total += c.area;
+    }
+  }
+
+  /* ② **水域：每层一片的那种片** ✓（`#sea_pr_57` / `#lake_ar_3` ✓ 见 isTierPieceKey）
+   *   ⚠ 按**层**扫 ✗ 不能只扫最细层（片是**每层各有一份**的 ✓
+   *     最细层的 tid 跟粗层的 tid 不是一个节点 ✓）
+   *   ⚠ 片名是**类名**的（"海洋"/"湖泊" ✓ 见 PSEUDO_CATEGORY_NAMES）
+   *     **不给位置** ✗ —— 那一层的水名表里这一片根本没名字 ✓
+   *     给它位置 = 地图上凭空多出一个「海洋」大标 ✓（用户 2026-10-13 报过去掉过一次 ✓）
+   *     —— 跟普通头衔那边的 `hideLabel` 一个意思：**没名字就不该出标** ✓ */
+  const wAcc = new Map();          // tid → { 最大那块的 x/y + 总面积 }
+  for (let ti = 0; ti < tiers; ti++) {
+    const ident = new Int32Array(n).fill(-1);
+    for (let pid = 1; pid < n; pid++) {
+      const tid = titleAt(pid, ti);
+      if (tid == null || tid === NO_TITLE) continue;
+      const key = String(K[tid] || '');
+      if (!isTierPieceKey(key) || !isWaterKey(key)) continue;
+      /* CK3 只补**河流**的片 ✓（别的按方案不出标 ✓ 连位置都不必算 ✓ 省内存 ✓）*/
+      if (_ck3onlyRiver && !keyStarts(key, '#river')) continue;
+      const nm = String((t.names && t.names[tid]) || '');
+      if (!nm || isPseudoCategoryName(nm)) continue;
+      ident[pid] = tid;
+    }
+    for (const c of groupComponents(ident, n)) {
+      let a = wAcc.get(c.id);
+      if (!a) { a = { x: 0, y: 0, best: -1, total: 0 }; wAcc.set(c.id, a); }
+      if (c.area > a.best) { a.best = c.area; a.x = c.x; a.y = c.y; }
+      a.total += c.area;
+    }
+  }
+  if (!cAcc.size && !wAcc.size) return;
+  if (!t.lx || t.lx.length < nNames) t.lx = new Array(nNames).fill(null);
+  if (!t.ly || t.ly.length < nNames) t.ly = new Array(nNames).fill(null);
+  if (!t.area) t.area = (t.provCount || []).map((x) => x * 3300);
+  if (!t.blockArea) t.blockArea = t.area;
+  let done = 0;
+  for (const [tid, a] of cAcc) {
+    if (!(a.total > 0)) continue;
+    t.lx[tid] = Math.round(a.x);       // **最大那块**的质心 ✓（不再是圆均值 ✗）
+    t.ly[tid] = Math.round(a.y);
+    t.area[tid] = a.total;             // 面积仍是**总和** ✓（字号门槛看它 ✓）
+    t.blockArea[tid] = a.total;
+    done++;
+  }
+  /* 水域片：质心 ✓（名字一律**横着写在质心上** ✓ —— 不再算铺排折线 ✓）*/
+  let wDone = 0;
+  for (const [tid, a] of wAcc) {
+    if (!(a.total > 0)) continue;
+    t.lx[tid] = Math.round(a.x);
+    t.ly[tid] = Math.round(a.y);
+    t.area[tid] = a.total;
+    t.blockArea[tid] = a.total;
+    wDone++;
+  }
+  LOG.event('伪头衔补位置', `荒地/水域 ${done} 个节点 + 水域片 ${wDone} 个补上了标签位置`);
+}
+
+/** **荒地名 / 老包的水域名标签点** —— 一个名字一个标 ✓（2026-10-13 架构统一之后 ✓）
+ *
+ *  🔴 **每层一片的水域片已经不走这儿了** ✗✗（2026-10-14 用户要求：
+ *    "水域和其他地块一样，仅仅是不能填色"✓）—— 它们归 `buildPseudoLabelPositions`
+ *    + `labels.byTier` 那套**普通头衔**的路 ✓（见那边的注释 ✓）
+ *    这里留下的是**两类没有片的伪头衔**：
+ *      · **老包的水域**（整个世界的海共用一个 `#sea` ✗ 不是片 ✓）→ 按真名表出 ✓
+ *        一个名字一个标（波罗的海那种 ✓）—— 不是片就没法按 tid 聚 ✓ 只能这样 ✓
+ *      · **荒地**（`wl_<地块号>` 逐块 + `#wasteland_*` 片 ✓）→ 一个名字一个标 ✓
+ *        （用户点名过"EU4 和 EU5 的荒地有自己的名字"✓ 这一块**先别动** ✓）
+ *
+ *  每组一个标：用**像素数加权求质心**（跟 buildPseudoLabelPositions 同一套算法 ✓）
+ *    x 走**圆均值**（不然跨 180° 经线的那片名字会跑到地图正中 ✓ 见下面那段 ✓）
+ *    名字**横着写在质心上** ✓（不再算铺排折线 ✓）
+ *    粗层聚成一大片、细层聚成小片，**同一套算法** ✓
+ *
+ *  ⚠ **老包**（每层一片之前打的）退回 `meta.seaNames` 那几张真名表 ✓
+ *    （那种包里全世界的海共用一个 `#sea` ✗，按 tid 聚只会剩一个"海洋" ✓）
+ *
+ *  ⚠ `tid` 给 null ✗ —— 这些点不属于任何头衔，是"凭空多出来的一层"，
+ *    标签层只用 name/x/y/area/tier，不看 tid ✓
+ *  ⚠ CK3 不给水域 / 荒地标名字 ✗（那两个开关在 CK3 里强制 false ✓
+ *    drawLabels 那边还有一道 ✓）
+ */
+function buildSeaLabelPoints() {
+  const meta = state.meta || {}, pp = state.provPos;
+  if (!pp) return [];
+  /* ⚠ 用**视图层**（state.tier）✗ 不是编辑层 —— 标签画的是"这一层看到的水域" ✓
+   *   （悬停高亮那边用的是 editTier ✓ 两边都是"当前层那个片" ✓ 指向同一批地块 ✓）
+   *
+   * **一个名字一个组** ✓ 组键两种来源，按包的**新旧**分流：
+   *   ① **每层一片的包** → 组 = **当前层那个 tid** ✓（**只剩荒地走这条** ✓
+   *      水域片在上面那句 `if (_isWater && _piece) continue;` 就让开了 ✓）
+   *      （同一个 tid 的地块就是一片 ✓ 名字取该 tid 的 ✓）
+   *   ② **老包**（每层一片之前打的）→ 组 = 真名表里的**名字** ✓
+   *      ⚠ 老包全世界的海共用一个 `#sea` ✗：按 tid 聚只会聚出**一个**"海洋" ✓
+   *        表里那几百个真海名（波罗的海那种）**全丢** ✗ → 那批包非得走表不可 ✓
+   *     ⚠ 两种包的组键**故意不同**（`t123` / `n波罗的海`）✗ 别合成一个 Map 的键 ✓
+   */
+  const T = state.titles || {};
+  /* 🔴 **用"编辑层"（= 粒度），不是视图层** ✗✗
+   *   （2026-10-13 用户："剧本下**高亮范围和名字应该跟随粒度**，
+   *     **没有粒度就是最低**"✓）
+   *   原来这里是 `state.tier`（**视图层** ✓）——
+   *   在剧本模式下它停在剧本层 ✗ 而那一层的水域只有"整类"（`#sea_1444_xx` ✓）
+   *   → 名字只能是"海洋"这种类名、整类挤成一个标 ✓
+   *   ⚠ `editTier()` 已经改好了：**没开粒度 = 最低层** ✓ 开了 = 那一层 ✓
+   *     于是名字 / 高亮 / 边界**同一个来源** ✓ 三处一致 ✓ */
+  const _vt = labelTier() | 0;
+  /* ⚠ **这一层没名字就是没名字** ✗（2026-10-14 用户点破的口径 ✓ 见 waterNameTable ✓）——
+   *   以前写成 `_bt[_vt] || meta.seaNames` ✗ → HOI4 的省份级水域明明没名字，
+   *   却拿战略区名填上了 ✓（用户原话："没有名字而已"✓）*/
+  const _waterTbl = waterNameTable(meta.seaNamesByTier, _vt);
+  const _wlTbl = meta.wastelandNames;
+  const n = meta.numProvinces | 0;
+  /* 表里的键是**地块 id**（JSON 会变成字符串 ✓ 两种都试 ✓）*/
+  const _tblName = (tbl, pid) => {
+    if (!tbl) return '';
+    const v = (tbl[pid] != null) ? tbl[pid] : (tbl[String(pid)] != null ? tbl[String(pid)] : null);
+    return v ? String(v) : '';
+  };
+  /* **一个连通域一个标** ✓（2026-10-16 用户定的 ✓ —— 跟地名那条同一套 ✓）
+   *   组身份 `gk` 照旧（有片的包 → `t<tid>`；老包 → 类别字 + 名字 ✓），
+   *   ⚠ 但**同名不等于同一块** ✗：一个名字的像素可能分处地图两头
+   *     （太平洋被 180° 经线切开 ✓）→ 聚完组还要过一趟**连通域** ✓
+   *     两块就出两个标 ✓（用户原话："一个太平洋会变成两块，从而有两个名字"✓）
+   *   ⚠ 圆均值那套退了 ✗：邻接表没有跨左右边界的边 →
+   *     每一块自己都落在它那半边 ✓ 普通像素加权平均就对了 ✓ */
+  const gidOf = new Map();         // 组身份 → 数字号（并查集要整数 ✓）
+  const gInfo = new Map();         // 数字号 → { name, waste }
+  const ident = new Int32Array(n).fill(-1);
+  for (let pid = 1; pid < n; pid++) {
+    let tid = titleAt(pid, _vt);
+    if (tid == null || tid === NO_TITLE) continue;
+    let key = String(T.keys[tid] || '');
+    /* 🔴 **水按 pid 问 `waterKindByPid`** ✗✗（2026-10-17 收口 ✓）
+     *   原来这儿也是 `isWaterKey(key)` ✗ —— 这一层的水片键（`#sea_pr_57` ✓）在
+     *   CK3/CK2/EU4/HOI4 上确实带 `#` ✓ 可 **EU5 不带** → 那一整套（名字 / 位置 /
+     *   连通域）在 EU5 上**一块水都不进** ✓（用户："那不是还有现成的东西嘛"✓ 就是它 ✓）
+     *   荒地那一侧照旧：键前缀 + `isWastelandTid` ✓（这一轮只收水的口 ✓）*/
+    const _isWater = waterKindByPid(pid) !== 0;
+    const _isWaste = !_isWater && (keyStarts(key, 'wl_') || keyStarts(key, '#impassable')
+      || keyStarts(key, '#wasteland') || isWastelandTid(tid));
+    /* 🔴🔴 **荒地换到最细层那一个头衔** ✗✗（2026-10-17 用户定的 ✓
+     *   原话："所有荒地都应该按**最细层级**分组。"✓）
+     *
+     *  ⚠ 为什么非换不可 ✗✗：荒地在**粗层是不切的** ✓
+     *    实测 EU5：那 8 块亚马逊荒地在
+     *      `1337 / blank / reg / area / prov` **五层上全都是同一个伪头衔**
+     *      （键 `#impassable` · tid 36188 ✓）
+     *    只有最细的 `loc` 层才分成 8 个
+     *      （`amazon_jungle` / `madeira_amazon_jungle` / `negro_amazon_jungle` … ✓）
+     *    → 用当前层分组 = 8 个地点永远并成一个标 ✓
+     *      （用户原话："明明有很多个叫亚马逊丛林的荒地地点，可是却只显示了一个名字"✓
+     *        还有一句更关键："可以**统一一下**吗，你看看**海域和陆地都不会这样**"✓
+     *        —— 它们就是**一个头衔一个标** ✓ 荒地现在也照这个口径 ✓）
+     *
+     *  ⚠ **只动荒地** ✗ —— 水域有自己的"每层一片"（`#sea_pr_57` 那种 ✓
+     *    它在**每一层**都有自己的片 ✓ 换层反而会串 ✓ 所以水一个字都不动 ✓
+     *  ⚠ 老包（键 `wl_<地块号>` ✓）在最细层本来就有逐块的头衔 ✓ 换了也一样 ✓ */
+    if (_isWaste) {
+      const _ft = titleAtFinest(pid, _vt);
+      if (_ft != null && _ft !== NO_TITLE && _ft >= 0) {
+        tid = _ft;
+        key = String(T.keys[tid] || '');
+      }
+    }
+    if (!_isWater && !_isWaste) continue;
+    /* ⚠ 「每层一片」的那片才从**节点**取名字（`#sea_pr_57` ✓ 见 isTierPieceKey）
+     *   别的（老包的共享 `#sea` / 最细层逐块的 `wl_<地块号>` ✓）名字在**真名表**里 ✓
+     *   ⚠ 荒地没有分层表（游戏里就一张 ✓）→ 每个地理层都拿它分片 ✓ 结果一样 ✓ */
+    const _piece = isTierPieceKey(key);
+    /* 🔴 **每层一片的水域片不再走这儿** ✗✗（2026-10-14 用户要求：
+     *   "水域和其他地块一样，仅仅是不能填色"✓）
+     *   它们的 lx/ly/path 已经由 `buildPseudoLabelPositions` 补进 `titles` 数组 ✓
+     *   LabelLayer 拿它们**当普通头衔**收进 byTier ✓（名字 / 缩放门槛 /
+     *   「地名」与「水域·名称」两个开关全跟地名一条路 ✓）
+     *   ⚠ 两边都发 = **同一个名字在图上叠两层字** ✗ 所以这里必须让开 ✓
+     *   ⚠ **老包**（整个世界的海共用一个 `#sea` ✗ 不是片 ✓）照旧留在这儿 ✓ ——
+     *     它们的海名只有 `meta.seaNames` 那张真名表里有 ✓
+     *     （按 tid 聚只能聚出一个"海洋" ✓ 几百个真海名全丢 ✗ 那批包非走表不可 ✓）*/
+    /* 🔴🔴 **有片就一片一标** ✗✗（2026-10-15 ✓ 用户口径 ✓）
+     *   原来只让**水**片走开（`_isWater && _piece` ✗）—— 荒地片还留在这儿按名字合组 ✓
+     *   现在放宽成**只要有片就让开** ✓：水片 / 荒地片一律交给**普通头衔那条**
+     *   （`drawLabels` ✓ 一个 tid 一个标 ✓ 名字就是它自己那片的名字 ✓）
+     *   ⚠ **老包**（整类共用一个共享节点 ✗ 压根没有片 ✓）照旧留在这儿 ✓ ——
+     *     它们的真名只在 `meta.seaNames` / `meta.wastelandNames` 那两张表里 ✓
+     *     按 tid 聚只能聚出一个"海洋" ✗ 那批包非走表不可 ✓
+     *   ⚠ 片名是**类名 / 占位号 / 空**的照旧不出标 ✓（下面那道闸不动 ✗）*/
+    if (_piece) continue;
+    let nm = _piece ? String((T.names && T.names[tid]) || '')
+                    : _tblName(_isWater ? _waterTbl : _wlTbl, pid);
+    /* ⚠ **片名是类名的不出标** ✗（"海洋" / "不可通行山地" 那种 ✓）
+     *   片名是构建期取的：那一层的水名表里没这个名字时，节点名就是**类名** ✓
+     *   那种片本来就没有具体名 → 跟老路一样**不出标** ✓ 别拿类名充数 ✓
+     *   ⚠ 只判**片名** ✗ —— 真名表那条路（老包 / wl_ 逐块）一字不动 ✓ */
+    /* 🔴 **片名是占位号的一律出真名、再没有就不出标** ✗✗（2026-10-15 ✓ 用户口径 ✓）
+     *   CK2 的 259 个水片 / 20 个荒地片：`titles.names` 里可能只剩 `#936` 占位 ✗
+     *   → 先查 `meta.seaNames` / `meta.wastelandNames` ✓ 拿到真名就出标 ✓
+     *   真名也没有（或名字是"海洋"那种类名 ✓）→ **不出标** ✓ 绝不把 `#936` 画到图上 ✗ */
+    if ((_piece || _isWaste) && isPlaceholderName(nm)) nm = realNameFromTables(pid);
+    if ((_piece || _isWaste) && isPseudoCategoryName(nm)) nm = '';
+    /* ⚠ **荒地那一列在最细层可能没名字** ✗（EU5 的 `loc` 层就是这样 ✓）——
+     *   那就退一步用**真名表**（`meta.wastelandNames` ✓ 逐地块的 ✓）
+     *   实测那 8 块：细层头衔自己也是有名字的 ✓ 这条只是兜底 ✓ */
+    if (_isWaste && !nm) nm = _tblName(_wlTbl, pid);
+    if (!nm) continue;         // 表里没有 → 这一格不给标（老包 / CK3 没有真名 ✓）
+    /* ⚠ 组键要把**水 / 荒地**也编进去 ✗✗ ——
+     *   水面和荒地的名字**会撞**（VN 那个包里湖的名字就叫 "x" ✓
+     *   而荒地真名表里**也有一条 "x"** ✓）—— 只按名字当键的话两条会并成一组 ✓
+     *   然后后到的那个地块就被算进**先到的那个的** waste 标记里 ✓
+     *   （实跑量出来的：120 块湖的水名整批变成了荒地名标 ✗）
+     *   改造前是**两张 Map 各扫一遍表**（水一张、荒地一张 ✓）所以不会撞 ✓
+     *   现在合成一趟了 → 键里必须带类别 ✓ */
+    /* 🔴🔴 **组键一律按头衔** ✗✗（2026-10-17 用户报的"亚马逊丛林只出一个名字"✓）
+     *
+     *  改之前是：`_piece ? ('t' + tid) : ((_isWater ? 'w' : 'j') + nm)` ——
+     *    **没有片**（键不带 `#`）的那批按**名字**分组 ✓ → **同名就并成一组** ✗
+     *
+     *  ⚠ 而 `PIECE_KEY_RE = /^#[a-z_]+_[a-z]+_\d+$/` **要求键以 `#` 开头** ✗✗ ——
+     *    **EU5 的键不带 `#`**（`amazon_jungle` / `lake_baikal` 那种 ✓）
+     *    → EU5 的荒地**全部**掉进"按名字分组"那条 ✓
+     *    实测：`loc` 层有 **8 个**不同的亚马逊荒地地点
+     *      （`amazon_jungle` / `madeira_amazon_jungle` / `negro_amazon_jungle` … ✓
+     *       每个都是独立的一块 ✓ `meta.wastelandNames` 里也是 8 条真名 ✓
+     *       只是名字恰好都叫「亚马逊丛林」✓）
+     *    → 按名字一并 → 8 个地点只剩一个标 ✓（用户原话：
+     *      "明明有很多个叫亚马逊丛林的荒地地点，可是却只显示了一个名字"✓）
+     *
+     *  ⚠ 用户那句"**海域和陆地都不会这样**"正是这个道理 ✗：
+     *    它们的键在一层上是 `t<tid>` ✓ 一个头衔一组 ✓ 天然不会同名相并 ✓
+     *    → 荒地现在也照这个口径 ✓ 跟代码里那句注释「**一个 tid 一个标**」对上 ✓
+     *
+     *  ⚠ **同名但不相邻的两块，仍然会出两个标** ✗ —— 下面还有一趟连通域 ✓
+     *    （那正是"同名不等于同一块"那条老规矩 ✓ 见 `groupComponents` ✓）
+     *  ⚠ 老那个"水名 / 荒地名会撞"的担心（VN 那个包里湖和荒地都叫 "x" ✓）
+     *    **按头衔分组之后自然就没了** ✓ 头衔本来就不会撞 ✓ */
+    /* ⚠ 组键：**有片按头衔、没片按「类别 + 名字」** ✗
+     *   实测（2026-10-17）：**EU5 的荒地全部共用一个伪头衔**
+     *     （键 `#impassable` · tid 36188 · 全世界荒地都是它 ✓）
+     *     → 荒地**没法**按头衔分组 ✓ 只能按名字 ✓
+     *   而 `meta.wastelandNames` 是**逐地块**的（EU5 有 1971 条 ✓）
+     *     837 = 亚马逊丛林 · 65 = 阿比蒂比高地 · 82 = 阿布丛林 … ✓
+     *     → 同名的一组 = 一片 ✓ 这正是要的 ✓
+     *   ⚠ 类别字（`w` / `j`）**必须留着** ✗：水面和荒地的名字会撞
+     *     （VN 那个包里湖和荒地都叫 "x" ✓ → 120 块湖的水名整批变成荒地名标 ✓）
+     *   ⚠ 我中间把它改成过 `'t' + tid` ✗ —— 那等于把全世界荒地并成一组 ✓
+     *     实测**标签直接归零** ✓ 别再往那个方向走 ✓ */
+    /* 🔴🔴 **荒地按"地点"分组** ✗✗（2026-10-17 用户定的 ✓）
+     *   原话："他们的**地点的颜色**是不一样的，我是说那张 EU5 的原图，
+     *          他会**映射每一个颜色给每一个地点**"✓
+     *   → 最细层**一个头衔 = 一个地点 = 一种颜色** ✓ 那就一个头衔一个标 ✓
+     *
+     *  ⚠ 荒地这一行的 `tid` 在上面已经被换成**最细层的头衔**了 ✗（见 `if (_isWaste)` ✓）
+     *    所以 `'t' + tid` 就是"按地点"✓
+     *  ⚠ **水域 / 荒地片**仍然用 `'t' + tid`（`_piece` 那条 ✓）一个字没动 ✓
+     *  ⚠ **别退回"按名字"** ✗✗：同名**且相邻**的一整片会并成一个 ident ✓
+     *    下面那趟连通域就再也切不开它 ✓
+     *    实测亚马逊那 8 块互相都是邻居（837↔14565↔24236↔27523↔25043 ✓）
+     *      → 按名字 = **1 个标** ✗（用户要 8 个 ✓）
+     *    而塔克拉玛干那 5 块彼此不相邻 → 按名字也能出 5 个 ✓
+     *      → "塔克拉玛干行、亚马逊不行"的差别**全在数据里**（相邻与否）✗ */
+    const gk = (_piece || _isWaste) ? ('t' + tid) : (('w') + nm);
+    let gid = gidOf.get(gk);
+    if (gid === undefined) {
+      gid = gidOf.size;
+      gidOf.set(gk, gid);
+      gInfo.set(gid, { name: nm, waste: _isWaste });
+    }
+    ident[pid] = gid;
+  }
+  const out = [];
+  /* ⚠ **水先、荒地后** ✗（跟改造前同一个叠放顺序 ✓ 荒地标压在水名标上面 ✓） */
+  const _comps = groupComponents(ident, n)
+    .sort((a, b) => ((gInfo.get(a.id) || {}).waste ? 1 : 0)
+                  - ((gInfo.get(b.id) || {}).waste ? 1 : 0));
+  /* 🔴 **这个连通域是不是"横跨左右"** ✗✗（2026-10-17 ✓ 用户点名的那条 ✓）
+   *   原话："如果一个属于水域的地点的像素位于地图左侧和右侧都有，
+   *          就不要让它的名字显示，也不要让包含这个地点的上层水域的名字显示"✓
+   *  ⚠ **判据拿成员地块的 x 跨度** ✗：跨度 > 半幅图宽 = 左右两侧都有它 ✓
+   *    —— 跟"扫左右两列"是同一件事 ✓ 只是这儿手里只有 `provPos` 的质心 x ✓
+   *    （连通域的成员一定相邻 ✓ 所以"最左那块"和"最右那块"的差就是它的跨度 ✓）
+   *  ⚠ 这一段的点是**聚合过的** ✗（`tid: null` ✓）→ 后面那道闸查不了 ✓
+   *    所以**必须在建点时就判** ✓ 判完挂在 `_pt.cross` 上 ✓
+   *  ⚠ 只给**水**标 ✗ —— 用户点名的范围就是水域 ✓ 荒地那条不动 ✓
+   *
+   *  🔴 **跨度一次扫出来** ✗✗（2026-10-17 体检改的）——
+   *    以前 `_crossOf(c)` 每个组都把全图 pid 扫一遍 ✗
+   *    （EU5 几千个水 / 荒地组 × 4 万格 = 上千万次白扫 ✓）
+   *    现在先 O(n) 一趟收每个组的 min/max x ✓ 之后每组 O(1) ✓ */
+  const _W = (meta && meta.mapWidth) | 0;
+  const _halfW = _W / 2;
+  const _nG = gidOf.size;
+  const _xMin = new Float64Array(_nG).fill(Infinity);
+  const _xMax = new Float64Array(_nG).fill(-Infinity);
+  for (let p = 1; p < n; p++) {
+    const g = ident[p];
+    if (g < 0 || g >= _nG) continue;
+    const x = pp[p * 3] || 0;
+    if (x < _xMin[g]) _xMin[g] = x;
+    if (x > _xMax[g]) _xMax[g] = x;
+  }
+  const _crossOf = (c) => _W > 0 && c.id >= 0 && c.id < _nG
+    && (_xMax[c.id] - _xMin[c.id]) > _halfW;
+  for (const c of _comps) {
+    const g = gInfo.get(c.id);
+    if (!g || !g.name || !(c.area > 0)) continue;
+    const _pt = {
+      tid: null, sea: true, name: String(g.name),
+      x: Math.round(c.x), y: Math.round(c.y),
+      /* ⚠ **不要再给面积铺下限** ✗✗（2026-10-13 用户要求："湖泊那个巨大的最低地名
+       *   太诡异了，马上去掉" ✓）
+       *   我上一版为了让小湖看得见，写了 `Math.max(a.w, 6000)` ✗ ——
+       *   结果**小湖的字号跟大湖一个样**（马尔马拉海才 6 像素却按 6000 算 ✓
+       *   字号 14px，比它整片海还大 ✓ 用户说"诡异"就是这个 ✓）
+       * 现在：**字号就是真实面积算出来的** ✓ 小的就该小 ✓
+       *   （想让小水域也看得清该去调 `_fontSize` 的 `FONT_RATIO`，不是在这儿造假面积 ✗）*/
+      area: c.area,
+      /* ⚠ **tier 千万不能给 0** ✗（2026-10-13 用户报"还是看不见水域名称"✓ 就是它）
+       *   `drawPoints` 里每个点按**自己那一层**过缩放门槛（`open()` ✓）：
+       *     第 0 层是"国家 / 剧本层"，门槛**最高** ✗
+       *   → 给 0 就等于"把海名锁到最深缩放下才显示" ✓ 平时一个都看不见 ✓
+       *   海名点不属于任何头衔 ✗ 本来就不该吃任何一层的门槛 ✓
+       *   所以给一个**层表之外的号**（99 ✓）：`zoom[99]` 是 undefined，
+       *   `open()` 里 `n == null` 直接放行 ✓（比改 drawPoints 安全 ✗ 那函数别人也在用 ✓）*/
+      tier: 99,
+    };
+    /* 荒地那一组多一个标记 ✓（drawLabels 按它挑「荒地 · 名称」还是「水域 · 名称」✓）
+     *   ⚠ CK3 没有荒地名表 → 上面名字那一步就取不到 → **本来就不会有荒地标** ✓
+     *     （用户定的：CK3 不给荒地和水域标名字 ✓）*/
+    if (g.waste) _pt.waste = true;
+    /* 🔴 **横跨左右的水点：挂个标记，名字一个都不出** ✗✗（2026-10-17 ✓ 用户点名的那条 ✓）
+     *   只给**水**标是故意的 ✗ —— 用户点名的范围就是水域 ✓ 荒地那条不动 ✓
+     *   ⚠ 判据在 `_crossOf(c)` 里（拿成员地块的 x 跨度 ✓ 见上面那段 ✓）*/
+    if (!g.waste && _crossOf(c)) _pt.cross = true;
+    out.push(_pt);
+  }
+  return out;
+}
+
 function drawLabels(view) {
   // 视口粗筛（边距跟 drawPoints 里那套一致 ✓）——省下大量入列与建对象 ✓
   const _padC = Math.max(64, 900 / labels.scale);
@@ -4961,28 +7614,202 @@ function drawLabels(view) {
   const nEra = (state.meta.eraDates && state.meta.eraDates.length) || 0;
   const viewTier = state.tier;
   const isCountryView = viewTier < nEra;
+  /* **这层名字用哪一层的门槛** ✓（普通地名 / 水名 / 荒地名**同一个**值 ✓
+   *   剧本层就是 editTier，地理层就是视图层 —— 提到这里，②′ 那段水名点也用它 ✓）
+   *   2026-10-15 用户定："作为地名，缩放到何比例才显示**应该按规定是统一的**" ✓ */
+  const nameTier = isCountryView ? editTier() : viewTier;
+
+  /* 🔴🔴 **哪些头衔"是水"** ✗✗（2026-10-16 ✓「水域 · 名称」那个闸的判据 ✓）
+   *
+   *  ⚠ 判据**不能只看键名** ✗✗（现场实跑栽过一次 ✓）：
+   *    `isWaterKey` 只认 `#` 开头的伪头衔 ✓ —— CK3 / CK2 的水是 `#sea_b_2218` ✓ 认得出 ✓
+   *    可 **EU5 的水键压根不带 `#`**（`chukchi_sea` / `siberian_lakes_1` ✓）→ 全认成陆地 ✓
+   *    实测：EU5 关掉水名开关之后**还剩 5709 个水名点** ✓（开关看着就是坏的 ✓）
+   *  → 正解是走**认水的唯一出处** `waterKindByPid` ✓（身份标最权威 → 老包退回 `#` 键 ✓
+   *    跟「水域 · 边界」那张纹理**同源** ✓ 两个开关不会各认一套 ✓）
+   *
+   *  🔴🔴 **2026-10-17：不再自建那张 Set** ✗✗（用户点破的 ✓）
+   *    原来这儿是 `state.waterKindSet`（我在 `buildWaterKindMask` 里顺手收的 tid 并集 ✓），
+   *    理由是"标签点只有 `tid`，而认水是按 pid 问的" ✗ ——
+   *    **可项目里本来就有按 tid 问的那条** ✓：`kindOfTid(tid)` ✓
+   *      （走 `kindTidMap()`：扫每一层 + 老包退回键前缀 ✓ 判据比我那张 Set 还全 ✓
+   *        而且它自己带缓存 `state._kindMap` ✓ 换图按 `numTitles|kindMask长度` 作废 ✓）
+   *    用户原话："既然是如何判别水，那不是还有现成的东西嘛"✓ —— 就是它 ✓
+   *    → 那张 Set 连同"逐层收 tid"那圈循环一起删了 ✓ 这里直接问现成的 ✓
+   *    ⚠ **纹理那张表（`state.waterKindArr`）仍然要** ✗ —— 着色器逐像素、问不了 tid ✓
+   *      两张表的分工没变，只是"逐头衔"那一张改用现成的了 ✓ */
+  /** 这个标签点算不算"水域"✓（给「水域 · 名称」那个闸用 ✓）
+   *
+   *  🔴🔴 **两道，顺序不能反** ✗✗（2026-10-17 现场量出来的 ✓）
+   *    ① **键先说**：`isWaterKey(键)` —— `#sea` / `#lake` / `#river` / `#impassable_sea` ✓
+   *       CK3/CK2/EU4/HOI4 的水片键都长这样 ✓ 一眼就是水 ✓
+   *    ② 键**说不出话**（EU5 那种不带 `#` 的 ✓）→ 问现成的 `kindOfTid(tid)` ✓
+   *       （内部走 `kindTidMap()` + 老包退回键 ✓）
+   *
+   *  ⚠ **为什么不能只留 ②** ✗：实测 CK3 有 **2 块**地（pid 1080 / 1088 ✓）——
+   *     键是 `#lake_k_83` / `#lake_b_308`（**明摆着是湖** ✓），
+   *     可 `kindMask` 给的是 **6（不可通行陆地）** ✓
+   *     根因在构建期：`kind_mask()` 按 `KIND_CODES` 的次序填，
+   *       `#impassable` 排在 `#lake` **后面** → 同时落进两类的省被覆写成 6 ✓
+   *     → 只按身份标判就会把这 2 块湖算成陆地 ✗（"关掉水名还剩 2 个湖名"✓）
+   *     而**键自己就先说了答案** ✓ —— 这也正是 `kindOfTid` 给老包留的那条退路的意思 ✓
+   *  ⚠ 反过来"只留 ①"也不行 ✗：EU5 的键一块水都认不出来（实测 0 块 ✓）见下 ✓
+   *
+   *  ⚠ 判据**收在这一处** ✗ —— 别在调用点各写一遍 ✓
+   *  ⚠ 6 = 不可通行**陆地**，那是荒地那一侧 ✗ 不算水 ✓（5 = 不可通行**海域**算 ✓）*/
+  const _isWaterLabel = (tid, key) => {
+    if (isWaterKey(key)) return true;
+    if (tid == null || tid < 0) return false;
+    const k = kindOfTid(tid);
+    return k >= 2 && k <= 5;
+  };
 
   // ① 地名（先入列 = 在下面）：勾了「地名」就画**当前选中的那一层**。
-  if (state.showLabelsTitle) {
-    /* **选哪层就画哪层** ✓（用户定的：粒度设成地区 / 州 / 战略区时，地名也得跟着出来 ✓）
-     *
-     * 以前剧本视图下**只放行"最细的两层"**（省份 + 它更细的那层 ✗），别的层一律 -1 ✗ ——
-     * 于是把粒度选成"地区"，地图上**一个地名都没有** ✓（用户报的 ✓）
-     * 当年的顾虑是"一开门一堆名、把势力名压住"✗ 但那该交给**用户自己**：
-     * 嫌挤就关掉「地名」那个开关 ✓ 替用户做主反而不对 ✓
-     *
-     * ⚠ 但**剧本层本身不算地名** ✗ —— 那一层是国家 / 势力，归下头那一套管
-     *   （`paintedPoints` / 势力名 ✓）。所以只放行 `>= nEra` 的**地理层** ✓
-     */
-    const _et = editTier();
-    const nameTier = isCountryView ? _et : viewTier;
-    if (nameTier >= nEra) {
-      for (const q of _cull(labels.pointsFor(nameTier))) list.push(q);
+  /* 🔴 2026-10-16：**「水域 · 名称」是独立一闸** ✗✗（用户定的 ✓ 见 handover §3.1）
+   *   原话："水域名称开关同理 … 同时受管理的这些东西**不再受地区名称的管理**"✓
+   *   → 所以**不能**把这个 if 整个包住（包住 = 关掉「地区 · 名称」水名也没了 ✗）
+   *   → 下面**按点分家**：
+   *       · 水域那几类（这一层的键走 isWaterKey ✓）→ 只听 state.showWaterName ✓
+   *       · 其余（陆地 / 荒地 ✓）→ 跟以前一模一样，**没有任何新闸** ✓
+   *   ⚠ **河与湖算"水域"** ✓（用户点名的四类就是"海洋、湖泊、河流、不可通行海域"✓
+   *     它们本来就被 isWaterKey 收在内 ✓ 一切照旧 ✓）
+   *   ⚠ 荒地（不可通行区域）**现在也有自己的开关了** ✓（2026-10-17 用户加的 ✗
+   *     "显示区加一行，关于荒地的名称开关"✓）——
+   *     在这之前它是跟着「地块 · 名称」走的 ✓ 现在独立 ✓
+   *     （这条注释 2026-10-16 时写的是"荒地没有开关"✗ 那一轮确实没有 ✓ 别当它还有效 ✓）
+   *   ⚠ 「地块 · 名称」关着 + 「水域 · 名称」开着 → **只剩水名** ✓（正是用户要的独立 ✓）
+   *   ⚠ **荒地 / 河那一批仍然只听「地区 · 名称」** ✗（实跑量出来的口径 ✓）：
+   *     用户原话是"**水域**名称开关同理"，而"水域"在他点名的那四类（海洋/湖泊/河流/不可通行海域）里
+   *     —— 河流**算**水域 ✓（isWaterKey 收着它 ✓）；**荒地不算** ✗
+   *     所以关掉「地区 · 名称」之后：河名还得跟着水名开关活着 ✓
+   *     荒地（不可通行区域）该跟陆地一起消失 ✓ —— 它没有自己的开关（用户没要 ✓）*/
+  /* ① 地名 / 水名 / 荒地名 —— **三类各听各的开关** ✓
+   *   · 地块名（陆地）→ 「地块 · 名称」
+   *   · 水那几类（海 / 湖 / 河 / 不可通行海域）→ 「水域 · 名称」
+   *   · 荒地 → 「荒地 · 名称」
+   *   ⚠ **不能用一个 if 把整段包在「地块 · 名称」里** ✗ ——
+   *     那样关掉地块名，水名 / 荒地名也会跟着没了（用户要的是各管各的 ✓）
+   *   ⚠ **剧本层本身不算地名** ✗ —— 那一层是国家 / 势力，归 ③ 那套管；
+   *     剧本层只放行"自己那个名称开关开着"的水 / 荒地 ✓
+   */
+  if ((state.showLabelsTitle || state.showWaterName || state.showWasteName)
+      && (nameTier >= nEra || state.showWaterName || state.showWasteName)) {
+    const K = state.titles.keys || [];
+    /* **取点：一个连通域一个标** ✓（2026-10-16 用户定的 ✓ 见 buildPlaceComponents ✓）
+     *   以前是 `labels.pointsFor(nameTier)` ✗ —— 一个头衔只出一个标 ✓ */
+    for (const q of _cull(placePointsFor(nameTier))) {
+      const _key = String(K[q.tid] || '');
+      /* 🔴 **这一格是水吗** ✗✗（2026-10-16 ✓「水域 · 名称」那个独立闸的判据 ✓）
+       *   ⚠ 判据收在 `_isWaterLabel` 那一处 ✗（别在这儿另写一套 ✓
+       *     那正是"EU5 的水不带 `#`"那个坑的来源 ✓）
+       *   ⚠ 判在 _cull 之后 —— 被剔除的点才不用查，省一笔 ✓ */
+      const _isWaterPt = _isWaterLabel(q.tid, _key);
+      const _isWastePt = !_isWaterPt && isWasteOrWaterTid(q.tid) === 'waste';
+      /* 🔴🔴 **横跨左右的水地点：名字一个都不出** ✗✗（2026-10-17 用户点名的 ✓）
+       *   `state.crossSeamTids` 里**上层也收进来了** ✓（见 buildCrossSeamTids ✓）
+       *   所以这一句同时管住"它自己"和"它的上级"✓；**只加水** ✗ 陆地一个字不动 ✓ */
+      if (_isWaterPt && state.crossSeamTids && state.crossSeamTids.has(q.tid)) continue;
+      // 剧本层只出水 / 荒地（且要各自开关开着）；陆地名归 ③ 那套势力名 ✓
+      if (nameTier < nEra && !_isWaterPt && !_isWastePt) continue;
+      /* **一个名称开关管一类** ✓（判序：先水、再荒地、其余陆地 ✓）——
+       *   ⚠ 荒地 2026-10-17 之前是跟着「地块 · 名称」走的 ✗ 现在独立 ✓ */
+      if (_isWaterPt ? !state.showWaterName
+          : _isWastePt ? !state.showWasteName
+          : !state.showLabelsTitle) continue;
+      /* 游戏规则：哪一代出哪一类名（`NAME_POLICY` 那张表 ✓）——
+       *   `labelZoneOf` 要**键**（它判的是"键上看是哪一类"✓ 跟 `kindOfTid` 两条路 ✓）*/
+      const _zone = labelZoneOf(_key, q.tid);
+      if (!nameShown(_zone)) continue;
+      const _nm = String((state.titles.names && state.titles.names[q.tid]) || '');
+      if (!_nm || isPseudoCategoryName(_nm)) continue;
+      /* **占位片名**（tier_pieces 的 `#<地块号>` 兜底 ✓）—— 没有真名就别出字 ✗
+       *   （HOI4 的 pr 层 3259 片 / V3 的多数湖泊都在这一档 ✓ ——
+       *     显示出来就是一排 "#3004" 那种乱码地名 ✗ 按类名的同一口径不出 ✓）*/
+      if ((_isWaterPt || _isWastePt) && _nm.startsWith('#')) continue;
+      list.push(q);
     }
   }
-  // ③ 玩家涂出来的色块名：最上层（半透明）
+  /* ②′ **水域名单独一层** ✓（2026-10-13 ✓）
+   *   ⚠ 这一段**不能塞在上头那个 `if (nameTier >= nEra)` 里** ✗，
+   *     （2012-10-13 那时它是独立一层的点）——
+   *   **2026-10-15 全改统一** ✓：
+   *     · 「水域/荒地 · 名称」两个开关退役 ✓
+   *     · 门槛也统一：点的 tier 用 **nameTier** —— `labels.drawPoints` 的
+   *       `open(p)` 拿 **zoom[nameTier]** 跟普通地名**同一个值** ✓
+   *       （以前 tier=99 = 恒显 ✗ —— 那正是「空白剧本也冒荒地名」的推手 ✓）
+   *     · **剧本层（含空白）一个名字都不显示** ✓ —— **跟普通地名同一道 gate**：
+   *       `nameTier >= nEra`（普通地名在剧本层整层不画 → 水名/荒地名也不画 ✓）
+   *       ⚠ 名单只受这个门 ✗ —— `buildSeaLabelPoints` 里扫的是**最细层**
+   *         （`labelTier()` 没开粒度 = 最细层 ✓）—— 它跟 nameTier 不是一个层 ✓
+   *         （细层的荒地名顶着剧本层门槛冒出的正是它 · 悬停区域对应放飞 ✓）*/
+  {
+    /* **只有 CK3 被排除** ✓ —— CK2 要照常把水域名点推进名单里 ✓（独立模式 ✓
+     *   见 `pseudoNameAllowed` 那段：CK2 给水与荒地标名 ✓ 2026-10-15 用户定 ✓）
+     * 🔴 2026-10-16 用户把"名字显示方案"点名之后，这里改成**按类别查表** ✗：
+     *   CK3 只出**河流**（海 / 湖 / 荒地都不出 ✓）→ 不能再整块 `if (!isCk3)` 一刀切 ✓ */
+    /* ⚠ **2026-10-17：外闸也要带上荒地那一面旗** ✗✗
+     *   原来这儿是 `nameTier >= nEra && state.showLabelsTitle` ✓
+     *   可荒地现在**有自己的开关**了 ✓ → 只勾「荒地 · 名称」时这一整段也得跑 ✓
+     *   （不然"勾了荒地名称却一个荒地名都不出" ✗ —— 那开关就是死的 ✓
+     *    ⚠ 同理，水那面旗 2026-10-16 就加进外闸了 ✓ 这一轮把荒地也补上 ✓）*/
+    if (nameTier >= nEra
+        && (state.showLabelsTitle || state.showWaterName || state.showWasteName)) {
+      /* 🔴 **一条一条按类别过** ✗✗（`NAME_POLICY` 那张表 ✓）
+       *   `buildSeaLabelPoints` 聚出来的点带 `sea` 标记 ✓ 但它分不出海 / 湖 / 河 ✗
+       *   （老包那边名字是从**真名表**取的，表里没类别 ✓）——
+       *   所以按**这一格自己的键**判类别 ✓ 跟 `drawLabels` 上面那条同一个口径 ✓ */
+      const _K = state.titles.keys || [];
+      for (const p of (state.seaLabelPoints || [])) {
+        const _z = labelZoneOf(String(_K[p.tid] || ''), p.tid);
+        if (!nameShown(_z)) continue;
+        /* 🔴 **水域那个独立闸** ✗✗（2026-10-16 ✓ 用户定的 ✓）
+         *   这一段吐出来的点**全是"没有片的老包"**（有片的那批在上头
+         *   `if (_piece) continue;` 就让开了 ✓ 它们走 ① 那条普通头衔路 ✓）——
+         *   可这一批过不了 ①（① 只收 LabelLayer 认的"有头衔的点"，
+         *   而它们 `tid: null` ✗）→ 所以水名 / 荒地名各留一条路在这儿 ✓
+         *   ⚠ 「水域 · 名称」关着 → **带 sea 标记的点一个都不加** ✓
+         *     这正是用户要的："水域名称开关负责且仅负责水域名称的显示或隐藏"✓
+         *   ⚠ 荒地那些**不归它** ✓（`sea: true` 水、`waste: true` 荒地 ✓ 分开判 ✓
+         *     用户 2026-10-16 只点名了水域 ✓ 荒地照旧看它自己那面旗 / 游戏规则 ✓）
+         *   ⚠ 顺序：**先过游戏规则那张表、再让开关说话** ✗ 反过来会在
+         *     CK3 上"勾了水名开关就冒出「海洋」两个字" ✓（正是用户点名不要的 ✓）*/
+        if (p.sea && !p.waste && !state.showWaterName) continue;
+        /* 🔴🔴 **横跨左右的水点：名字一个都不出** ✗✗（2026-10-17 用户点名的 ✓）
+         *   原话："如果一个属于水域的地点的像素位于地图左右两侧都有，
+         *          就不要让**它的名字**显示，也不要让**包含这个地点的上层水域**的名字显示"✓
+         *   动机（原话）："掩耳盗铃"✓ —— EU5 没切日期变更线，
+         *     那几块横跨图宽的地会让名字的"中心"落到地图正中 ✓ 与其把位置算法做复杂，
+         *     不如这种名字干脆别显示 ✓
+         *   ⚠ 这个标记是 `buildSeaLabelPoints` 建点时判好的 ✗（那儿的点是聚合过的、
+         *     `tid: null` ✓ 到这儿已经查不出它含哪些地块了 ✓）
+         *   ⚠ **"上层水域"也一起藏** ✗：`state.crossSeamTids` 里收了横跨地的**每一层**头衔 ✓
+         *     所以走 ① 那条"普通头衔"路的水片（含上级）由那句 `has(q.tid)` 挡掉 ✓
+         *     两条路各挡各的，合起来正好覆盖"它自己 + 它的上级"✓ */
+        if (p.cross) continue;
+        /* 🔴 **荒地那一批听它自己那面旗** ✗✗（2026-10-17 ✓ 用户给荒地加了开关 ✓）
+         *   `buildSeaLabelPoints` 聚出来的荒地真名点带 `waste: true` ✓
+         *   ⚠ 在这之前它们是跟着「地块 · 名称」走的 ✓ 现在独立 ✓ */
+        if (p.waste && !state.showWasteName) continue;
+        list.push({ ...p, tier: nameTier });
+      }
+    }
+  }
+  /* ③ 色块名：最上层（半透明）。
+   *   🔴 **一律归「势力名」那一档** ✗✗（2026-10-16 用户定的 ✓）——
+   *     剧本层上是原版国名 + 玩家涂出来的国 ✓；细层上就是玩家自己涂的色块名 ✓
+   *     两者都算"势力名" ✓ 跟真正的地名（`①` / `②′` 那两路）分开管 ✓
+   *   → 给 `tier: 0`（最粗那层）就落进 `tier < nEra` ✓ 走「势力名称不透明度」✓
+   *   ⚠ 以前挂了个 `fade` 标记把这批压进**地名档** ✗ ——
+   *     结果剧本层的国名跟着「地名不透明度」走、
+   *     「势力名称不透明度」那根滑条**怎么拖都没反应** ✓（用户报的就是这个 ✓）*/
   if (state.showLabelsPaint) {
-    for (const p of (paintedPoints(true) || [])) list.push({ ...p, tier: 0, fade: true, layer: 2 });
+    /* ⚠ **这里什么都不用加** ✗✗（2026-10-17 差点画蛇添足 ✓）
+     *   字号拆成"地块 / 势力"两块之后，看着好像得给这点标个"我是哪一类" ——
+     *   **不用** ✓：`layer: 2` 就是"玩家涂出来的色块名"这个身份 ✓
+     *   `labels.js` 的 `_fontSize` 拿 `tier < nEra || layer === 2` 就分得清 ✓
+     *   （年份层那些国名走 `tier < nEra` ✓ 同一套判据 ✓ 见 `_fontSize` 那段注释 ✓）
+     *   → 我第一版给这儿加了个 `kind: 'power'` ✗ 那是**新造字段** ✓ 用户当场点破 ✓ */
+    for (const p of (paintedPoints(true) || [])) list.push({ ...p, tier: 0, layer: 2 });
   }
   if (!list.length) { labels.clear(); return; }
 
@@ -5561,11 +8388,6 @@ async function importPackFlow(blob, onDone) {
   }
 }
 
-/** 卡片数到这儿就**另起一列** ✓（用户 2026-10-12 要求："导入的地图太多就另起一列"）
- *  —— 一列的话十几张得往下滚半天，两列并行直接短一半 ✓
- *  想改就改这一个数：调大 = 更晚分列 ✓ */
-const TWO_COL_AT = 10;
-
 /** 让玩家挑一张。只有一套、而且没有导入入口时才直接进 */
 function pickMap(maps) {
   return new Promise((resolve) => {
@@ -5573,20 +8395,6 @@ function pickMap(maps) {
     const list = $('map-pick-list');
     const fileInput = $('pack-file');
     let current = maps.slice();
-
-    /** 卡片多的时候：**列表排两列 + 面板放宽** ✓（少的时候一切照旧一列 ✓）
-     *  ⚠ 离开选图界面必须**收回来** ✗ —— `.boot-inner` 放宽之后，
-     *    紧接着那条"读取元数据…"的进度条也会跟着被撑成 760px 宽 ✓
-     *  （手机上不分列也不放宽：mobile_css 里把这两条都按 !important 钉回去了 ✓）*/
-    const setPickWide = (wide) => {
-      if (list && list.classList) {
-        if (wide) list.classList.add('two-col'); else list.classList.remove('two-col');
-      }
-      const inner = $('boot-inner');       // 别用 parentNode —— 桩里解析出来的节点没有它 ✓
-      if (inner && inner.classList) {
-        if (wide) inner.classList.add('wide-pick'); else inner.classList.remove('wide-pick');
-      }
-    };
 
     /* 这行平时**不显示** ✗ —— 只有"这台浏览器存不下东西"的时候才跳出来警示：
        不说的话玩家会以为存上了，第二天发现没了还以为是编辑器坏的 ✓ */
@@ -5685,7 +8493,9 @@ function pickMap(maps) {
           setPackMsg('', '请点击导入按钮，或将 .pdxmap 文件直接拖进这一页。');
         }
       }
-      setPickWide(current.length >= TWO_COL_AT);   // 卡片一多就另起一列 ✓
+      /* 🔴 **一律一列** ✓（2026-10-17 用户："统一变成列表形式，多的时候塞进列表
+       *   而不是塞进两列"）—— 卡片多就**列表自己滚**（CSS 的 max-height ✓），
+       *   不再改列数、也不再放宽启动面板 ✓ */
       for (const m of current) {
         const b = document.createElement('button');
         b.className = 'map-card' + (m.imported ? ' imported' : '');
@@ -5747,7 +8557,6 @@ function pickMap(maps) {
         }
         b.onclick = () => {
           box.hidden = true;
-          setPickWide(false);      // 面板收回原宽 ✓（别把后面那条加载进度条也撑宽 ✓）
           dropOff();
           resolve(m);
         };
@@ -5859,11 +8668,25 @@ function showFatal(msg) {
       const btn = document.createElement('button');
       btn.id = 'fatal-log';
       btn.type = 'button';
-      btn.textContent = '导出日志（发给作者）';
+      btn.textContent = '导出诊断报告';
       btn.style.cssText = 'padding:5px 14px;cursor:pointer;'
         + 'background:#fff;color:#7a0a0a;border:0;border-radius:4px;font:inherit';
       btn.onclick = (ev) => { ev.stopPropagation(); exportLog(); };
       bar.appendChild(btn);
+      /* 🔴 **「刷新重试」那颗** ✗✗（2026-10-17）
+       *   显卡上下文丢失 / 显存紧张这类失败，**刷新一次经常就好了** ✓
+       *   以前这个红条只有"导出日志"和"关掉"，玩家只能自己想起来按 F5 ✓ */
+      const reload = document.createElement('button');
+      reload.id = 'fatal-reload';
+      reload.type = 'button';
+      reload.textContent = '刷新重试';
+      reload.style.cssText = 'padding:7px 20px;cursor:pointer;font:inherit;'
+        + 'background:#fff;color:#7a0a0a;border:0;border-radius:4px';
+      reload.onclick = (ev) => {
+        ev.stopPropagation();
+        try { window.location.reload(); } catch (e) { /* 测试桩 / 特殊环境 ✓ */ }
+      };
+      bar.appendChild(reload);
       /* 「关掉」那颗 ✓ —— 手机上手指粗，按钮做大一点 ✓ */
       const close = document.createElement('button');
       close.id = 'fatal-close';
@@ -5988,9 +8811,16 @@ async function uploadMapToGpu(tick) {
     tiles: state.tiles || null,
   });
   say('上传地图纹理');
-  // 荒地标记（LUT 的 alpha 通道）+ 自动上色（写手绘层）。
-  // 两个都在 setData 之后做：LUT 和手绘层都是那时才建好的。
-  renderer.setWasteland((state.meta && state.meta.wasteland) || []);
+  // （`renderer.setProvColors` / `setWaterMask` 两句已删 ✓
+  //   「水域 · 颜色」色源与水域标签都不再喂给渲染器 ✓ 数据留在 state 备查 ✓
+  //   —— gl.js 那边的对应 uniform / API 由另一位同步拆，两边口径一致 ✓）
+  /* **最细层层号**要告诉渲染器（2026-10-17 重做 ✓）——
+   *   荒地自动色记在每块荒地自己的 `wl_<pid>` 节点上，着色器按 `uFineTier` 查 ✓
+   *   ⚠ 别用 `uEditTier` ✗：剧本视图没开粒度时它 = 剧本层，荒地在那儿根本没有节点 ✓ */
+  try {
+    const _nt = (state.meta && Array.isArray(state.meta.tiers)) ? state.meta.tiers.length : 0;
+    if (_nt > 0 && renderer && renderer.setFineTier) renderer.setFineTier(_nt - 1);
+  } catch (e) { /* ✓ */ }
   // **每块荒地的 LUT 起手 = 荒地灰** ✓（那才是它"没上色"的样子）
   paintWasteGrey();
   say('荒地起手灰');
@@ -5999,6 +8829,40 @@ async function uploadMapToGpu(tick) {
    *   刷新/回主菜单后那份设置得在**开图时**就生效 ✓）*/
   applySettings();
   syncAllPaintLabels();
+  /* 🔴🔴 **荒地：不管哪个视图都显示"荒地色"** ✗✗（2026-10-17 ✓ 用户定的 ✓）
+   *   原话："**荒地不管什么视图都是荒地颜色**，就这样"✓
+   *
+   *   ⚠ **必须排在这儿** ✗✗（我第一版放在 `openMap` 里、栽了）：
+   *     `openMap` 那条链上 `renderer` 是**后面**才 `new MapRenderer(...)` 的 ✓
+   *     我提前几十行就调 `setWasteFixed` → 那时 `renderer` 还是 **null** ✓
+   *     那句 `if (renderer && ...)` 直接跳过 → **一块都没打上** ✓
+   *     （而 `renderer.setData` 就是本函数第一句 ✓ LUT 到这儿已经建好 ✓）
+   *   ⚠ 放这儿还白赚一件事 ✗：**上下文丢失恢复**时这个函数会再跑一遍 ✓
+   *     标记跟着重建的 LUT 一起补回来 ✓（不然切个后台回来标记就没了 ✓）
+   *
+   *   ⚠ 靠什么生效 ✗：把标记打在 **LUT 的 alpha 通道**上 ✓
+   *     着色器在 `tid == NONE` 那道早退**之前**先查它 ✓
+   *     （剧本层荒地永远没归属 → 不查就被 `uUnpainted`(150,150,150) 盖掉 ✗
+   *       —— 用户报的"剧本模式把荒地颜色覆盖了，明明画好了却还是 150,150,150"✓）
+   *   ⚠ 名单用**现成的** `meta.wasteland` ✗（`isWastelandTid()` 读的就是它 ✓）——
+   *     别自己拿 `kindTidMap()` 筛 kind 6 ✗：实测 EU4 那份身份标里
+   *     **kind=6 一条都没有**（只有海 / 湖 ✓）→ 清单空 → 一块都打不上 ✓
+   *     （用户点破的："你自己看看为什么**海洋都是蓝色**，抄一份代码过去不就好了吗"✓）
+   *   ⚠ 那份色就是设置里「不可通行区域」那一行的颜色 ✓
+   *     `applySettings()`（上一句）刚按它刷过 LUT ✓ 这里只打"认它"的标记 ✓ */
+  try {
+    const _wl = new Set((state.meta && state.meta.wasteland) || []);
+    /* 再补上**我们自己认出来的**逐块节点 ✓（有的包 meta.wasteland 只登记了粗层那片，
+     *   最细的 wl_<pid> 没进去 → 只按名单打会漏标 ✓）*/
+    if (state.wasteFineTid) {
+      for (const t of state.wasteFineTid) if (t >= 0) _wl.add(t);
+    }
+    if (renderer && renderer.setWasteFixed) renderer.setWasteFixed(_wl);
+  } catch (e) { /* 打不上标记不该拖垮开图 ✓ */ }
+  /* 标记打好之后立刻算一遍自动色（第一帧之前就位 ✓）
+   *   ⚠ 顺序不能反 ✗：先 setWasteFixed 打 alpha，再把 RGB 写成算出来的色 ✓
+   *     `setLutColor` 只改 RGB、不动 alpha ✓ 标记不会丢 ✓ */
+  try { state._wasteSig = null; refreshWasteAuto(); } catch (e) { /* ✓ */ }
   reuploadTiles();
   say('设置 + 标签同步');
 }
@@ -6079,6 +8943,196 @@ function onEnterForeground() {
   }, 3000);
 }
 
+/** 等显卡上下文恢复 / 给重试留一点时间 ✓（2026-10-17）
+ *  · 上下文丢了的恢复靠 `webglcontextrestored` 事件；有的浏览器会晚几百毫秒
+ *  · 超时也往下走 —— 下一轮 `getContext` 会自己判断恢复没有 ✓ */
+function waitForGpuRestore(ms) {
+  return new Promise((resolve) => {
+    const cv = $('map');
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      if (cv && cv.removeEventListener) cv.removeEventListener('webglcontextrestored', onRestored);
+      resolve();
+    };
+    const onRestored = () => finish();
+    if (cv && cv.addEventListener) cv.addEventListener('webglcontextrestored', onRestored);
+    setTimeout(finish, ms);
+  });
+}
+
+/** 建渲染器，**遇到"上下文丢了 / 显存紧张"自动重试** ✓（2026-10-17）
+ *
+ *  为什么值得重试：这两种都是**暂时性**失败（显卡刚被重置、别的页面刚吃掉显存、
+ *  手机刚切过后台）—— 等一等、重来一次经常就好了 ✓
+ *  `no-webgl2` 也试一次：GPU 进程忙 / 上下文创建超时是暂时性的 ✓
+ *  ⚠ 着色器真的编译不过 **不重试** ✗（重试一百次也一样）✓
+ */
+async function createRendererWithRetry(meta, opts) {
+  const o = opts || {};
+  const make = (typeof o.make === 'function') ? o.make : () => new MapRenderer($('map'), meta);
+  const wait = (typeof o.wait === 'function') ? o.wait : waitForGpuRestore;
+  let lastErr = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      return make();
+    } catch (err) {
+      lastErr = err;
+      const stage = (err && err.stage) || '';
+      const retryable = stage === 'context-lost' || stage === 'out-of-memory'
+        || stage === 'no-webgl2';
+      try {
+        LOG.event('渲染器创建失败',
+          `${stage || 'unknown'} · 第 ${attempt} 次 · ${(err && err.message) || err}`);
+      } catch (e) { /* 日志坏了别影响主流程 ✓ */ }
+      if (!retryable || attempt >= 3) throw err;
+      if (stage === 'no-webgl2' && attempt >= 2) throw err;   // 这一类只试一次 ✓
+      setBoot(stage === 'context-lost'
+        ? `显卡上下文丢了，正在重试（${attempt}/2）…`
+        : stage === 'no-webgl2'
+          ? `显卡上下文没建起来，正在重试（${attempt}/2）…`
+          : `显存紧张，正在重试（${attempt}/2）…`, 90);
+      await wait(attempt === 1 ? 700 : 1500);
+    }
+  }
+  throw lastErr;
+}
+
+/**
+ * **把渲染器初始化失败翻译成人话** ✓（2026-10-17）
+ *
+ *  管理员报的那条"着色器连接失败"就是这里以前的毛病 ✗：
+ *  `new MapRenderer()` 的**任何**异常都套一句"着色器编译失败" ✓
+ *  可真正的原因常常是 **WebGL 上下文创建失败 / 建到一半丢了** ——
+ *  跟着色器源码一个字的关系都没有 ✓
+ *
+ *  @param {Error} err 带 `stage` / `detail` 的 `RendererSetupError`（见 gl.js）
+ *  @returns {{code:string,title:string,body:string,steps:string[],facts:string}}
+ */
+function describeRendererFailure(err) {
+  const stage = (err && err.stage) || 'renderer';
+  const d = (err && err.detail) || {};
+  const raw = String((err && err.message) || err || '');
+  const facts = [
+    d.unmaskedRenderer ? '显卡 ' + d.unmaskedRenderer
+      : (d.renderer ? '渲染器 ' + d.renderer : ''),
+    d.version ? 'GL ' + d.version : '',
+    d.contextLost ? '上下文已丢失' : '',
+    d.creationError ? '创建失败原因：' + d.creationError : '',
+    d.glError ? 'glError=' + d.glError : '',
+    d.maxTex ? '贴图上限 ' + d.maxTex + 'px' : '',
+  ].filter(Boolean).join(' · ');
+
+  if (stage === 'no-webgl2') {
+    return {
+      code: 'WEBGL2_UNAVAILABLE',
+      title: '这个浏览器没能创建 WebGL2（不是地图数据的问题）',
+      body: '编辑器需要 WebGL2 才能画地图。常见原因：浏览器关掉了硬件加速、'
+        + '显卡驱动太旧、远程桌面 / 虚拟机 / 旧显卡，或者浏览器策略禁用了 WebGL。',
+      steps: [
+        '在浏览器设置里打开「使用硬件加速」，重启浏览器再试',
+        '更新显卡驱动；关掉远程桌面 / 虚拟机再试',
+        '换最新版 Chrome / Edge（Firefox 也行）',
+        '都不行 → 点下面「导出日志」发给作者',
+      ],
+      facts,
+    };
+  }
+  if (stage === 'context-lost') {
+    return {
+      code: 'WEBGL_CONTEXT_LOST',
+      title: '显卡上下文在启动时丢失了（不是着色器写错了）',
+      body: '浏览器 / 显卡把 WebGL 上下文收走了。常见于：显存紧张、显卡驱动重置、'
+        + '刚切过后台、手机省电，或者同时开了太多大页面。编辑器已经自动重试过，'
+        + '两次都没等到上下文回来，才停在这里。',
+      steps: [
+        '点「刷新重试」再开一次 —— 最常见的情况刷新就好了',
+        '关掉其他吃显存的标签页 / 游戏 / 视频，再刷新',
+        '手机：先回桌面再切回来，或者换 Chrome / Edge 试试',
+        '仍然失败 → 导出日志发给作者（里面带着显卡型号和 GL 版本）',
+      ],
+      facts,
+    };
+  }
+  if (stage === 'out-of-memory') {
+    return {
+      code: 'GPU_OUT_OF_MEMORY',
+      title: '显存不够，渲染器没能建起来',
+      body: '这张地图的纹理和着色器把显存吃满了。常见于手机、老旧集显，'
+        + '或者浏览器同时开了很多大页面。',
+      steps: [
+        '关掉其他标签页 / 游戏 / 视频，再点「刷新重试」',
+        '换一张小一点的地图（例如 EU5 原版而不是原尺寸）',
+        '还是不行就换台设备，或把日志发给作者',
+      ],
+      facts,
+    };
+  }
+  if (stage === 'shader-compile' || stage === 'shader-link') {
+    const log = String(d.log || '').trim();
+    return {
+      code: stage === 'shader-compile' ? 'SHADER_COMPILE_FAILED' : 'SHADER_LINK_FAILED',
+      title: stage === 'shader-compile' ? '着色器在这台设备上编译失败' : '着色器在这台设备上链接失败',
+      body: (log ? '驱动给的日志：' + log : '驱动没有给出日志（常见于指令数 / 寄存器超限）。')
+        + '\n这条才是真的着色器问题；如果日志里看不出语法错，多半是这台设备的显卡 / 驱动撑不住。',
+      steps: [
+        '更新显卡驱动 / 换最新版浏览器',
+        '老显卡或手机可能显存 / 指令数不够，换台设备试试',
+        '导出日志发给作者，里面带着显卡型号和 GL 版本',
+      ],
+      facts,
+    };
+  }
+  if (stage === 'texture-limit') {
+    return {
+      code: 'TEXTURE_LIMIT',
+      title: '这台设备的贴图上限太小，放不下地图切片',
+      body: '显卡报告的单张纹理上限只有 ' + (d.maxTex || '?') + 'px，连最小的一块地图切片都放不下。',
+      steps: ['换一台设备 / 换最新版浏览器', '把日志发给作者（这属于设备限制，不是地图坏了）'],
+      facts,
+    };
+  }
+  return {
+    code: 'RENDERER_INIT_FAILED',
+    title: '渲染器初始化失败',
+    body: raw || '没有拿到更具体的原因。',
+    steps: ['点「刷新重试」再开一次', '仍然失败 → 导出日志发给作者'],
+    facts,
+  };
+}
+
+/** 把分类后的渲染器失败上屏（带步骤 + 技术信息）✓ */
+function showRendererFailure(fail) {
+  const lines = ['✗ ' + fail.title, '', fail.body];
+  if (fail.steps && fail.steps.length) {
+    lines.push('');
+    fail.steps.forEach((s, i) => lines.push(`  ${i + 1}. ${s}`));
+  }
+  if (fail.facts) lines.push('', '技术信息：' + fail.facts);
+  showFatal(lines.join('\n'));
+}
+
+/** 启动时渲染器失败的统一出口 ✓（建渲染器 / 灌数据两处共用）
+ *  上屏 + 写日志 + 把启动屏停在人话上 ✓ */
+function handleBootRendererFailure(err) {
+  const fail = describeRendererFailure(err);
+  state._rendererFail = fail;
+  bootMark('✗渲染器失败[' + fail.code + ']');
+  console.error('渲染器创建 / 初始化失败：', err);
+  try {
+    LOG.env('渲染器状态', fail.code + ' · ' + fail.title);
+    if (fail.facts) LOG.env('渲染器详情', fail.facts);
+    LOG.event('渲染器初始化失败',
+      fail.code + ' · ' + fail.body + (fail.facts ? ' · ' + fail.facts : ''));
+  } catch (e) { /* ✓ */ }
+  showRendererFailure(fail);
+  setBoot(fail.title, 100);
+  const _bs = $('boot-step');
+  if (_bs) _bs.style.color = 'var(--danger)';
+  return fail;
+}
+
 async function boot() {
   try {
     // 启动屏那条**静态兜底提示**：脚本跑起来了就藏掉（它只在"脚本没跑"时才有意义 ✓）
@@ -6111,6 +9165,26 @@ async function boot() {
     const meta = await api.meta();
     if (!meta || !meta.numTitles) throw new Error('data/ 里还没生成好缓存，先跑 python build_data.py');
     state.meta = meta;
+    /* **每块地自己的原色** ✓（数据保留备用 ✓）
+     *   meta.provColors = base64 的 RGBA8，长度 = numProvinces × 4 ✓
+     *   （第 4 个字节 = "这块地有没有登记色" ✓ 构建期打的 ✓ 见 build_data.py ✓）
+     *   ⚠ 前端不再拿它做"水域显示地块原色"的那套特判 ✓ 解出来只进 state 备查 ✓ */
+    state.provColors = decodeProvColors(meta);
+    /* **水域标签** ✓（数据保留备用 ✓ —— 不再传给渲染器 ✓）
+     *   `meta.waterMask` 解出来存 state ✓ 万一后面还有别的读水者 ✓
+     *   isWaterPid / isWaterHere 仍会从它查 ✓（认水判据没拆 ✓ 拆的只是使用场 ✓） */
+    state.waterMask = decodeWaterMask(meta);
+    /* **身份标**（底层 pid 的类别 ✓ 七行颜色的唯一判据 ✓ 2026-10-15 ✓）
+     *   ⚠ 老包没有 → null → 判据退回键名前缀 ✓ 一个字节都不动 ✓ */
+    state.kindMask = decodeKindMask(meta);
+    state._kindMap = null;                    // 换图 → 头衔→类别那张表作废 ✓
+    state._kindMapKey = '';
+    /* **「每省是不是水」那张表**（给「水域 · 边界」用 ✓ 2026-10-16 ✓）
+     *   ⚠ 必须排在 `state.titles` 之后算 ✗ —— 老包那条退路要读键名 ✓
+     *     所以这里先**置空**，等下头 titles 取回来再算一次（见下面 ✓）
+     *   置空这一步不能省 ✗：上一张图的表还留着的话，
+     *     新图前几帧会拿着**别人的水域**画边界（看着像"水域边界全是乱的"✓）*/
+    state.waterKindArr = null;
     /* **设置 + 最近颜色按游戏类型接回来** ✓（刷新 / 回主菜单都不丢 ✓
      * 同款游戏的图**共用一套**：TNO 和钢铁雄心4原版是同一份设置 ✓ 见 prefsKeyOf ✓）
      * 这份跟"涂色暂存"是分开的两份 —— 那份回主菜单才存、F5 就清 ✓（见 saveProject 上面的说明 ✓）
@@ -6118,6 +9192,14 @@ async function boot() {
     {
       const prefs = loadMapPrefs(meta);
       state.set = Object.assign({}, SET_DEFAULTS, (prefs && prefs.set) || {});
+      /* 2026-10-17：地名上限默认 12 → 1。
+         老存档若还停在旧默认 12，顺手迁到 1（只迁这一次 ✓）；之后用户自己调的值不动 ✓ */
+      if (!state.set.placeCapV1) {
+        if (state.set.labelPlaceMax == null || Number(state.set.labelPlaceMax) === 12) {
+          state.set.labelPlaceMax = 1;
+        }
+        state.set.placeCapV1 = 1;
+      }
       if (prefs && Array.isArray(prefs.recent)) state.recent = prefs.recent.slice(0, 24);
       LOG.event('设置', prefs ? '接回这张图上次的设置 ✓' : '用出厂设置 ✓');
     }
@@ -6137,31 +9219,15 @@ async function boot() {
     state.titles = titles;
     // （以前这里还抄一份 `state.original` 当"原色" ✗ —— 原色就是 titles.colors 那一份 ✓）
     state.provinceNames = titles.provinceNames || [];
-    // **名录快查表**：荒地 / 无男爵领 / 巨型荒地 —— 悬停、涂色、每帧都要问
+    // **名录快查表**：荒地 / 无男爵领 —— 悬停、涂色、每帧都要问
     // "这个号在不在名单里"，原来是拿 indexOf 线性扫的 ✓（见上面快查表那一段）
     buildMetaIndex();
 
-    // 荒地的地名**一律不显示** —— 它们要么是临时名（wl_1234）、要么是"约顿海姆"
-    // 这种真名，摆在图上都是噪音。借 LabelLayer 现成的 hideLabel 通道
-    // （那份数据里没有这个数组的就现建一个）。
-    {
-      const _wl = state.meta.wasteland || [];
-      if (_wl.length) {
-        const need = titles.keys.length;
-        if (!titles.hideLabel || titles.hideLabel.length < need) {
-          const arr = new Array(need).fill(false);
-          if (titles.hideLabel) {
-            for (let i = 0; i < titles.hideLabel.length && i < need; i++) {
-              arr[i] = !!titles.hideLabel[i];
-            }
-          }
-          titles.hideLabel = arr;
-        }
-        for (const _t of _wl) {
-          if (_t >= 0 && _t < titles.hideLabel.length) titles.hideLabel[_t] = true;
-        }
-      }
-    }
+    /* **荒地名 / 老包水域名**走 buildSeaLabelPoints 那条真名表的路 ✓
+     *   （「水域 / 荒地 · 名称」那两个界面开关已随专属设置退役 ✓
+     *     state 里两面旗保留、恒为 false → 显示口径跟"用户定的默认"一致 ✓
+     *   ⚠ 数据里这两类节点（wl_* / #sea / #lake / #river）**都没有标签位置** ✗
+     *     所以默认关 = 跟以前一模一样看不到 ✓；打开了也还看不到（等数据带 lx/ly ✓）*/
     buildColorIndex();
     // key → 序号，导入配色时用
     titles.index = Object.create(null);
@@ -6210,6 +9276,31 @@ async function boot() {
     state.provTitle = new Int32Array(meta.numProvinces).fill(-1);
     state.provLabel = new Int32Array(meta.numProvinces).fill(-1);
 
+    /* **「每省是不是水」那张表**（2026-10-16 ✓ 见 buildWaterKindMask ✓）
+     *   ⚠ **必须等到这儿** ✗✗ —— 这是实跑炸出来的（"Cannot read properties of null"）：
+     *     `waterKindByPid` 一路会走到 `titleAt` ✓ 而它读的是 **`state.titlemap`** ✗
+     *     （不是 `state.titles.keys` ✓ 我先按后者判断、把调用放早了整整 50 行 ✓）
+     *     上面那次置空之后就一直是 null ✓ 直到这句 `await api.titlemap()` 才有值 ✓
+     *   ⚠ 放在 `provPos` 那几行之后、上传显卡之前 ✓ —— 不依赖显卡、也不拖着开图 ✓
+     *     （EU5 四万多个地块走一趟也就几毫秒 ✓）*/
+    state.waterKindArr = buildWaterKindMask();
+    /* 🔴 **荒地自动上色的周长表**（2026-10-17 ✓ 重做 ✓）
+     *   ⚠ 必须等 `titlemap` + `provinceIds` 都有值之后再跑 ✗
+     *     —— 荒地名单来自最细层归属，周长来自像素图 / 邻接表 ✓
+     *   有整张 id 图的模式（除 EU5 原尺寸）直接扫，实测 CK3 0.08s ✓
+     *   分块图先按邻接表给近似，开图后再后台算精确的（见 scheduleTileWastePerimeter ✓）*/
+    setupWastePerimeter();
+    /* 🔴 **横跨左右的那批头衔**（2026-10-17 ✓ 用户点名的"掩耳盗铃"那条 ✓）
+     *   ⚠ **必须排在 `state.provinceIds` + `state.titlemap` 都有值之后** ✗✗
+     *     —— 它扫的是**像素图**（左右两列）+ 查 `titlemap` ✓（跟上面那张表同一个坑 ✓）
+     *   ⚠ 一次性 ✓：两列 × 图高（EU5 8192×4096 → 8192 次读 ✓）几毫秒 ✓ 换图才重算 ✓ */
+    state.crossSeamTids = buildCrossSeamTids();
+    /* ⚠ **荒地那个标记挪到 `uploadMapToGpu()` 末尾了** ✗✗（2026-10-17 ✓）
+     *   原因：这一行的时候 `renderer` **还是 null** ✓（它是几十行之后才 new 的 ✓）
+     *     原来那句 `if (renderer && …)` 直接跳过 → 一块都没打上 ✓
+     *   现在挂在 `uploadMapToGpu()` 尾部 ✓ —— 那儿 `setData` 刚跑完、LUT 现成 ✓
+     *     而且上下文丢失恢复时会跟着重跑 ✓（标记不会丢 ✓）*/
+
     setBoot('上传到显卡', 88);
     await nextTick();
     /* **这一步细分计时** ✓（用户那份日志："上传到显卡 → 就绪" 花了 **23.5 秒** ✗
@@ -6226,15 +9317,18 @@ async function boot() {
     };
     bootMark('①到渲染器');
     try {
-      renderer = new MapRenderer($('map'), meta);
-      bootMark('②着色器OK');
+      renderer = await createRendererWithRetry(meta);
+      bootMark('②渲染器OK');
     } catch (err) {
-      /* ⚠ 编译失败必须上屏 ✗ 手机上没有控制台可看 ✓ */
-      bootMark('②着色器失败: ' + (err && err.message ? err.message : err));
-      rawErr('✗ 着色器编译失败：' + (err && err.message ? err.message : err));
-      throw err;
+      /* 🔴 **别再一律写成"着色器编译失败"** ✗✗（2026-10-17）
+       *   那样会把"WebGL 上下文丢了"指成"着色器写错了" ✓
+       *   （管理员就是在着色器源码里白找了半天 ✓）
+       *   现在按 gl.js 给的 `stage` 分成人话 + 排查步骤，并且**上屏** ✓
+       *   （手机上没有控制台可看 ✓） */
+      handleBootRendererFailure(err);
+      return;                       // 后面全是"渲染器已经建好"的步骤，别硬跑 ✓
     }
-    _tick('编译着色器 + 建渲染器');
+    _tick('建渲染器');
     renderer.onContextLost = () => {
       // 这一条要进日志：白屏的最常见原因之一，而玩家只会说"它黑了" ✓
       LOG.event('WebGL 上下文丢失', '显卡驱动 / 显存（手机切后台最常见）');
@@ -6267,16 +9361,47 @@ async function boot() {
         + ' 画布' + ((_cv && _cv.width) || 0) + '×' + ((_cv && _cv.height) || 0) + ']'
         + (meta.mapWidth > _mx || meta.mapHeight > _mx ? ' ⚠超限' : ''));
     } catch (e) { bootMark('③传数据前 [查GL失败]'); }
-    await uploadMapToGpu(_tick);
+    /* ⚠ **灌数据时也可能丢上下文** ✗（2026-10-17）——
+     *   显存吃爆时 `texImage2D` 会静默失败，gl.js 的 `setData` 末尾会抛
+     *   `context-lost`；这里接住并按同一套人话上屏 ✓
+     *   普通数据错误（尺寸对不上之类）仍然交给外层启动失败 ✓ */
+    try {
+      await uploadMapToGpu(_tick);
+    } catch (err) {
+      if (!err || !err.stage) throw err;
+      handleBootRendererFailure(err);
+      return;
+    }
     bootMark('④数据OK');
     // **地名门槛按这张图自己的地块大小现算** ✓（不再吃 meta 里写死那套 ——
     //  那套是照某一张图调的，换个尺寸/换个游戏就对不上：地块小的图地名会提早糊出来）
     meta.labelZoom = computeLabelZoom(meta, titles);
+    /* **荒地 / 水域的标签位置在这儿补** ✓（2026-10-13 ✓）
+     *   ⚠ 必须在 `new LabelLayer` **之前** ✗ —— 它是构造时把 lx/ly 吃进去的，
+     *     晚了这一步就白算了（跟 hideLabel 那个坑同一个道理 ✓）
+     *   ⚠ CK3 按规则直接不算（见函数里那段 ✓）*/
+    try { buildPseudoLabelPositions(); } catch (e) { LOG.event('伪头衔补位置失败', String(e)); }
+    /* **水域名标签点** ✓（2026-10-13：悬停 + 地图上都要显示具体海域名 ✓）
+     *   同样得赶在 `new LabelLayer` 之前 ✗ —— 嗯，其实这几个点**不进 LabelLayer**
+     *   （它们是凭空多出来的一层，没头衔 ✓），是 drawLabels 里直接塞进去的 ✓
+     *   所以只要在第一次画之前算好就成，放这儿刚好 ✓
+     *   ⚠ CK3 按规矩不算（那份数据里也没有水域名表 ✓ 双保险 ✓）*/
+    try {
+      /* 🔴 **CK3 那一路现在收在函数里面了** ✗（2026-10-16 ✓）
+       *   以前在这儿整块置空 ✗ —— 那会儿 CK3 一个都不标 ✓ 现在按方案
+       *   CK3 的**河流**要出标 ✓ 而河名点在 `titles` 那边补（`buildPseudoLabelPositions` ✓），
+       *   这儿聚的是"荒地 + 老包水名"两类 ✓ CK3 两类都不出 ✓ → 算了也是白算 ✓
+       *   ⚠ 判据留给函数自己（`NAME_POLICY` 那张表 ✓）别在调用处再写一遍 game ✗ */
+      state.seaLabelPoints = buildSeaLabelPoints();
+      if (state.seaLabelPoints.length) {
+        LOG.event('水域名', `${state.seaLabelPoints.length} 片水域有具体名字`);
+      }
+    } catch (e) { state.seaLabelPoints = []; LOG.event('水域名标签失败', String(e)); }
     labels = new LabelLayer($('overlay'), titles, meta);
     /* ⚠ **开场就得把存过的不透明度喂进去** ✗ —— applySettings 跑在这句**之前** ✓
      *   那时候 labels 还没建、会跳过 ✓ 于是"存过的偏好"要等用户动一下滑块才生效 ✓ */
-    labels.alphaCountry = (state.set.labelAC != null ? Number(state.set.labelAC) : 50) / 100;
-    labels.alphaPlace = (state.set.labelAP != null ? Number(state.set.labelAP) : 50) / 100;
+    labels.alphaCountry = setNum('labelAC', 50) / 100;
+    labels.alphaPlace = setNum('labelAP', 50) / 100;
     _tick('建标签索引');
 
     /* **边界图重算一次** ✓ —— 这时候层号、粒度、多级链全都定下来了 ✓
@@ -6325,6 +9450,42 @@ async function boot() {
           out['WebGL'] = String(gl.getParameter(gl.VERSION) || '') + (gpu ? ' · ' + gpu : '');
         } else out['WebGL'] = '没有上下文';
       } catch (e) { /* 问不到显卡也没关系，别的照记 ✓ */ }
+      /* 🔴 **渲染健康自检**（2026-10-13 加的 ✓ 起因见下面）
+       *
+       *   用户报"点进去黑屏"，可导出来的日志上写的是「**错误 0 处**」✗ ——
+       *   因为那一条只说明 **JS 没抛异常** ✗，**完全不等于"画出来了"** ✓
+       *   这几种情况在旧日志里**长得一模一样**，没法分辨 ✗：
+       *     · 画布尺寸是 0（CSS 没算对 / 被压扁）→ 什么都没画
+       *     · WebGL 上下文丢了（手机上切后台、内存吃紧很常见）→ 画的都是空的
+       *     · **真画了，但安卓浏览器没把它合成上屏**（`content://` 协议下是老坑）
+       *   所以这里**直接读回像素** —— 这是唯一能一锤定音的判据 ✓
+       *     · 中心点**非零** → 渲染器**真的在画** ✓ 那黑屏是**显示/合成**那一侧的事
+       *     · 中心点**全零** → **渲染器没画出来** ✓ 那是渲染侧的问题（往下查画布尺寸 / 上下文）
+       *   ⚠ 只在"导出日志"这一刻取 ✗ —— 那时肯定已经渲染过若干帧了 ✓
+       *     （`readPixels` 读的是**当前后台缓冲**，没画过就都是 0 ✓）*/
+      try {
+        const cv = $('map');
+        if (cv) {
+          out['画布'] = `${cv.width}×${cv.height} 绘制缓冲 · 显示 ${cv.clientWidth}×${cv.clientHeight}`
+            + ` · 缩放 ${window.devicePixelRatio || 1}x`;
+        }
+        const gl2 = renderer && renderer.gl;
+        if (gl2 && cv && cv.width > 0 && cv.height > 0) {
+          const px = new Uint8Array(4);
+          gl2.readPixels((cv.width / 2) | 0, (cv.height / 2) | 0, 1, 1,
+                         gl2.RGBA, gl2.UNSIGNED_BYTE, px);
+          const _glerr = gl2.getError();
+          const _lost = !!(gl2.isContextLost && gl2.isContextLost());
+          out['像素自检'] = `中心像素=(${px[0]},${px[1]},${px[2]},${px[3]})`
+            + ((px[0] || px[1] || px[2]) ? ' · 渲染正常' : ' · 无像素')
+            + (_lost ? ' · 上下文丢失' : ' · 上下文正常')
+            + ` · glError=${_glerr}${_glerr ? '（有错误）' : '（无错误）'}`;
+        } else if (cv) {
+          out['像素自检'] = '画布尺寸为 0，无法渲染';
+        }
+      } catch (e) {
+        out['像素自检'] = '读不了：' + (e && e.message ? e.message : e);
+      }
       return out;
     });
 
@@ -6382,8 +9543,13 @@ async function boot() {
   } catch (e) {
     LOG.event('启动失败', (e && e.message) || String(e));
     console.error(e);
-    setBoot('出错了：' + e.message, 100);
-    $('boot-step').style.color = 'var(--danger)';
+    // 渲染器失败那条已经在上面分类上屏了 → 别用一句更模糊的话把它盖掉 ✓
+    if (!state._rendererFail) {
+      const msg = (e && e.message) ? e.message : String(e);
+      setBoot('出错了：' + msg, 100);
+      const _bs = $('boot-step');
+      if (_bs) _bs.style.color = 'var(--danger)';
+    }
   }
 }
 

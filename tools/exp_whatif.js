@@ -27,7 +27,7 @@ const fs = require('fs');
 const H = require('./lib/browser_stub.js');
 
 const WHICH = (process.argv[2] || 'VIC3').toUpperCase();
-const CARD = WHICH === 'VIC3' ? 'V3 原版' : WHICH === 'EU4HD' ? 'EU4HD'
+const CARD = WHICH === 'VIC3' ? 'VIC3 原版' : WHICH === 'EU4HD' ? 'EU4HD'
   : WHICH === 'EU5' ? 'EU5 原版' : `${WHICH} 原版`;
 //: 改动前的源码快照（可选）：设了就跑第 ③ 组
 const BEFORE = process.env.PDX_BEFORE || null;

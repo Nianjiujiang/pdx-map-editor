@@ -122,17 +122,32 @@ def load_dir(loc_dir: Path, keys=None) -> dict[str, str]:
     """把一个汉化 mod 的 localisation 目录整个读了，返回 {key: 中文}。
 
     后面的文件不覆盖前面的 —— 保留先读到的（跟游戏"先加载的赢"一致）。
+    **``replace/`` 例外，它最后读而且覆盖**：那是覆盖机制，放的是"改过原版的那份"。
+    （2026-10-13 烘 VN 时踩的：伏尔泰的噩梦把**自己的**地名整份放在
+    ``localisation/replace/`` 下，外面那层反而是原版 EU4 的汉化 ——
+    只读外面的话，VN 的核心区域名会退回原版那套，跟它的地图对不上。）
+    子目录也一并递归，模组爱按主题分文件夹。
     """
     want = set(keys) if keys is not None else None
     out: dict[str, str] = {}
     d = Path(loc_dir)
     if not d.is_dir():
         return out
-    for fp in sorted(d.glob("*.yml")):
+    plain: list[Path] = []
+    override: list[Path] = []
+    for fp in sorted(d.rglob("*.yml")):
+        rel = fp.relative_to(d).parts[:-1]        # 去掉文件名，只看目录链
+        (override if "replace" in rel else plain).append(fp)
+    for fp in plain:
         for k, v in load_file(fp).items():
             if want is not None and k not in want:
                 continue
             out.setdefault(k, v)
+    for fp in override:
+        for k, v in load_file(fp).items():
+            if want is not None and k not in want:
+                continue
+            out[k] = v                            # 覆盖机制：replace/ 里的赢
     return out
 
 

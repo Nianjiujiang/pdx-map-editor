@@ -45,10 +45,17 @@ OUT = ROOT / "pdx-map-editor.html"
 #:   既不内嵌、也不打包对外发 ✓（本地想用就把条目加回来，走 `python server.py` 照样看得到）
 MAPS = (
     ("vanilla", "pdx-ck3-vanilla", "CK3 原版", "data", "9216 × 4608"),
+    # CK2 是 CK3 的前作 ✓ 省份图 3072×2048（四代里最小的一张 ✓）
+    # ⚠ 别把它写成 5632×2048 ✗ —— 那是 EU4 / HOI4 的尺寸 ✓
+    #   这张图的真实尺寸见 build_ck2 的日志（provinces.bmp 头部 3072×2048 ✓）
+    ("ck2", "pdx-ck2-vanilla", "CK2 原版", "data_ck2", "3072 × 2048"),
     ("eu4", "pdx-eu4-vanilla", "EU4 原版", "data_eu4", "5632 × 2048"),
     ("hoi4", "pdx-hoi4-vanilla", "HOI4 原版", "data_hoi4", "5632 × 2048"),
-    ("hoi4alt", "pdx-hoi4-alt", "HOI4 修改边界", "data_hoi4_alt", "5632 × 2048"),
-    ("vic3", "pdx-vic3-vanilla", "V3 原版", "data_vic3", "8192 × 3616"),
+    ("hoi4alt", "pdx-hoi4-alt", "HOI4 修改边界", "data_hoi4_alt", "5632 × 2048"),  # note 保持跟旧包一致（见下 ✓）
+    # 🔴 2026-10-16 用户定的：显示名「VIC3」（原来是 `V3` ✓）
+    #   ⚠ 只改**给人看的名字** ✗ —— 包 id（`pdx-vic3-vanilla`）与缓存目录
+    #     （`data_vic3`）一律不动 ✓（那是数据 / 发布物的标识 ✓ 改了老包就接不上 ✓）
+    ("vic3", "pdx-vic3-vanilla", "VIC3 原版", "data_vic3", "8192 × 3616"),
     ("eu5", "pdx-eu5-vanilla", "EU5 原版", "data_eu5", "8192 × 4096"),
     ("eu5full", "pdx-eu5-full", "EU5 原尺寸", "data_eu5_full", "16384 × 8192"),
 )
@@ -138,6 +145,18 @@ def main() -> int:
     html = (WEB / "index.html").read_text(encoding="utf-8")
     css = (WEB / "style.css").read_text(encoding="utf-8")
 
+    # ---- 构建戳（2026-10-17 加）
+    # 启动页 / 诊断报告里的"版本戳"**不能拿 document.lastModified** ✗ ——
+    # 单文件版 / 某些浏览器里它是**当前时间**，看着像版本戳一直在变 ✓
+    # 这里把打包时间写进 <meta name="pdx-build">，产物里就是固定的那一份 ✓
+    build_stamp = time.strftime("%Y-%m-%d %H:%M")
+    _meta_dev = '<meta name="pdx-build" content="dev">'
+    if _meta_dev in html:
+        html = html.replace(_meta_dev, f'<meta name="pdx-build" content="{build_stamp}">')
+        print(f"  构建戳 {build_stamp}")
+    else:
+        print("!! 没找到 pdx-build meta —— 启动页版本戳会留空（web/index.html 结构变了？）")
+
     parts = []
     for name in MODULES:
         src = (WEB / "js" / name).read_text(encoding="utf-8")
@@ -204,6 +223,29 @@ def main() -> int:
         '<script type="module" src="js/app.js"></script>',
         f"<script>\n{payload}\n{js}\n</script>",
     )
+
+    # 4) 🔴 **删掉那两个「传统脚本」标签** ✗✗（2026-10-14 ✓ 用户报的 ✓）
+    #
+    #   用户报的："Failed to load resource: **net::ERR_FILE_NOT_FOUND**  tutorial.js:1"
+    #
+    #   ⚠ `web/index.html` 里有**三句** script ✗：
+    #       <script src="js/log.js"></script>        ← 传统脚本（给 window.PDXLOG ✓）
+    #       <script src="js/tutorial.js"></script>   ← 传统脚本
+    #       <script type="module" src="js/app.js">   ← 模块入口（上面那句替换的就是它 ✓）
+    #     而 `MODULES` 里**这两个都已经内联进 payload 了** ✓（见上面那份名单 ✓）
+    #     → 留着这两句，单文件版会去抓**旁边根本不存在的** `js/log.js` / `js/tutorial.js` ✗
+    #       控制台就报 `ERR_FILE_NOT_FOUND` ✓（桌面版 + 手机版都有 ✓ 实跑确认过 ✓）
+    #
+    #   ⚠ 顺序不受影响 ✗ —— 拍平是按 `MODULES` 的顺序来的 ✓
+    #     `log.js` 在第一位、`tutorial.js` 在 `app.js` 前面 ✓ 跟原来那两句的先后一致 ✓
+    #   ⚠ **别去删 `web/index.html` 里那两句** ✗ —— 开发版（直接开 `web/index.html`）
+    #     还得靠它们加载 ✓ 这里删的只是**烤出来的那一份** ✓
+    for _tag in ('<script src="js/log.js"></script>',
+                 '<script src="js/tutorial.js"></script>'):
+        html = html.replace(_tag, '')
+    # 顺手把整行（含缩进和换行）也收掉，别在产物里留一串空行 ✓
+    html = re.sub(r'[ \t]*<script src="js/(?:log|tutorial)\.js"></script>[ \t]*\r?\n',
+                  '', html)
 
     if "__CK3_EMBEDDED__" not in html:
         print("!! 没找到 <script type=\"module\" src=\"js/app.js\">，index.html 结构变了？")

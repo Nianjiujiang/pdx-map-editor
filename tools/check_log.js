@@ -102,7 +102,7 @@ LOG.snapshot(() => ({ '视图': '省份（第 3 层）', 'WebGL': 'WebGL 2.0 · 
 LOG.snapshot(() => { throw new Error('快照自己炸了'); });
 const t1 = LOG.text();
 ok('轨迹 / 环境 / 快照都进得了文本',
-   /· 启动/.test(t1) && /地图/.test(t1) && /NVIDIA/.test(t1));
+   /启动/.test(t1) && /地图/.test(t1) && /NVIDIA/.test(t1));
 ok('快照自己炸了不陪葬（只多一行说明）', /（现状取不出来）/.test(t1));
 
 // 上限：消息里**不能带数字** —— 数字会被归一化，500 条会缩成几十种 ✗
@@ -114,13 +114,43 @@ ok('到上限不再新增，只累计"没留几条"',
 
 // ---- 导得出吗
 const txt = LOG.text();
-ok('四段齐全（这是哪一份 / 当时的状态 / 错误 / 轨迹）',
-   ['[这是哪一份]', '[当时的状态]', '[错误]', '[轨迹]'].every((s) => txt.includes(s)));
+ok('六节齐全（环境 / 运行状态 / 摘要 / 错误 / 时间线 / JSON 附录）',
+   ['[1] 环境信息', '[2] 运行状态', '[3] 错误摘要', '[4] 错误明细',
+    '[5] 事件时间线', '[6] 附录'].every((s) => txt.includes(s)));
+ok('报告头有编号 / 格式版本 / 结论',
+   /PDX MAP EDITOR · DIAGNOSTIC REPORT/.test(txt)
+   && /PDX-\d{8}-\d{6}-[0-9A-F]{4}/.test(txt)
+   && /pdx-map-editor\.diagnostic\/2/.test(txt)
+   && /结论\s+:\s*ERROR/.test(txt));
 ok('版本戳 / 浏览器 / 时区都在（认得出是哪一版、什么机器）',
    /版本戳/.test(txt) && /浏览器/.test(txt) && /时区/.test(txt) && /单文件版/.test(txt));
+ok('版本戳不是 document.lastModified（否则会变成当前时间 ✗）',
+   /版本戳\s+:\s*开发版/.test(txt) && !/10\/08\/2026 12:00:00/.test(txt),
+   (txt.match(/版本戳\s+:\s*(.+)/) || ['', '没找到'])[1]);
 ok('栈留在文本里（没有它这份日志没意义）', /at frameBody/.test(txt));
 ok('行尾是 CRLF（记事本里不挤成一行）', txt.includes('\r\n'));
-ok('提示与错误分开数（"另有 N 条提示"）', /另有 1 条提示/.test(txt));
+ok('错误与警告分开计数（摘要里是 199 / 1）',
+   /错误\s+:\s*199/.test(txt) && /警告\s+:\s*1/.test(txt));
+ok('每条错误有稳定编号 + 严重级别（E-001 / [ERROR]）',
+   /E-001\s+\[ERROR\]/.test(txt) && /E-002\s+\[WARN\]/.test(txt));
+ok('事件时间线有编号和相对时间（T-001 / +…s）',
+   /T-001\s+\+\d+\.\d{3}s/.test(txt));
+
+// JSON 附录：机器可读、可被自动化分析 ✓
+let rawJson = null;
+try {
+  const a = txt.indexOf('---- BEGIN JSON ----');
+  const b = txt.indexOf('---- END JSON ----');
+  rawJson = JSON.parse(txt.slice(a + '---- BEGIN JSON ----'.length, b).trim());
+} catch (e) { rawJson = null; }
+ok('JSON 附录能被 JSON.parse（可以直接喂给分析脚本）', !!rawJson,
+   rawJson ? `schema=${rawJson.schema}` : '解析失败 ✗');
+ok('JSON 里的编号 / 错误数 / 事件数与正文一致',
+   !!rawJson && rawJson.reportId === LOG.reportId
+   && rawJson.errors.length === LOG.rec.errors.length
+   && rawJson.events.length === LOG.rec.events.length
+   && rawJson.errors[0].severity === 'ERROR'
+   && rawJson.errors[1].severity === 'WARN');
 
 let savedName = '';
 const realCreate = URL.createObjectURL;

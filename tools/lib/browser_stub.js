@@ -627,15 +627,27 @@ _p('labelMaxValue', labelMaxValue); _p('buildBorderEdges'); _p('buildBorderDepth
 _p('saveMapPrefs', saveMapPrefs); _p('loadMapPrefs', loadMapPrefs);
 _p('paintPids', paintPids); _p('paintPidsAsOne', paintPidsAsOne);
 _p('pickAt', pickAt); _p('setBrush', setBrush); _p('setTier', setTier); _p('setTool', setTool);
-_p('needsRestore', needsRestore); _p('isLocked', isLocked); _p('isSpecialTid', isSpecialTid);
+_p('needsRestore', needsRestore); _p('isLocked', isLocked); _p('updateCursor', updateCursor); _p('provinceAt', provinceAt); _p('isPaintable', isPaintable); _p('pickMarkerName', pickMarkerName); _p('waterKindByPid', waterKindByPid); _p('buildSeaLabelPoints', buildSeaLabelPoints); _p('kindOfTid', kindOfTid); _p('kindTidMap', kindTidMap); _p('NO_TITLE', NO_TITLE); _p('syncLayerSwitches', syncLayerSwitches); _p('isWastelandTile', isWastelandTile); _p('isSpecialTid', isSpecialTid);
 _p('runSearch', runSearch); _p('jumpToResult', jumpToResult); _p('searchJumpScale', searchJumpScale);
-_p('wasteApply', wasteApply); _p('wasteClear', wasteClear); _p('setWasteAuto', setWasteAuto);
-_p('wasteClearPlayerPaint', wasteClearPlayerPaint);
+/* 荒地自动上色（2026-10-17 重做 ✓）—— 周长 / 重算 / 帧循环那三句导出来给自测用 ✓ */
+_p('buildWastePidIndex', buildWastePidIndex); _p('setupWastePerimeter', setupWastePerimeter);
+_p('refreshWasteAuto', refreshWasteAuto); _p('wasteWatch', wasteWatch);
 _p('displayedColor', displayedColor); _p('displayedLabel', displayedLabel);
 _p('syncParentBorder', syncParentBorder); _p('syncLayerSwitches', syncLayerSwitches);
-_p('retintCountryLabels', retintCountryLabels); _p('wasteWatch', wasteWatch);
+_p('retintCountryLabels', retintCountryLabels);
 _p('syncAllPaintLabels', syncAllPaintLabels);
 _p('editTier', editTier); _p('setGrain', setGrain); _p('gotoLevel', gotoLevel);
+/* **层级 / 显示那几个纯函数也导出来** ✓（2026-10-14 ✓ 为了能实测）
+ *   「applyEditTier」—— "层级/粒度一变就跑"的那个 ✓（setTier/setGrain 都调它 ✓）
+ *   「labelTier」    —— 显示那一层（高亮 / 名字 / 水域内部边界 ✓）
+ *   「viewTierFor」  —— 按这一格挑层（有主→视图层 / 无主→最低层 ✓）
+ *   「isWaterPid」   —— 查 waterMask 那个"小标签" ✓
+ *   ⚠ 之前没导 → 探针里 ex.applyEditTier 是 undefined ✗
+ *     于是"实测"静默跳过、结果全是旧值 ✓（我差点又被它骗一次 ✓）
+ *   ⚠⚠ **这段整体在模板字符串里** ✗ —— 注释里**不许出现反引号** ✓
+ *     （我在 gl.js 那边已经栽过一次了 ✓ 见 docs 里那条教训 ✓）*/
+_p('applyEditTier', applyEditTier); _p('labelTier', labelTier);
+_p('viewTierFor', viewTierFor); _p('isWaterPid', isWaterPid);
 _p('pressTier', pressTier); _p('eraTierCount', eraTierCount);
 _p('refreshTierButtons', refreshTierButtons);
 _p('projectData', projectData); _p('saveProject', saveProject); _p('applyProject', applyProject);
@@ -647,10 +659,16 @@ _p('paintAt', paintAt); _p('hoverGroupRgb', hoverGroupRgb); _p('stableColor', st
 _p('hoverTargetTid', hoverTargetTid); _p('applyHoverHighlight', applyHoverHighlight);
 _p('readablePlaceName', readablePlaceName); _p('manualWaterName', manualWaterName);
 _p('drawLabels', drawLabels); _p('legendEntries', legendEntries);
+/* **地名的连通域取点** ✓（2026-10-16 ✓ 探针 / test_modes 要能量它 ✓） */
+_p('buildPlaceComponents', buildPlaceComponents); _p('placePointsFor', placePointsFor);
+_p('groupComponents', groupComponents); _p('labelPlaceMaxValue', labelPlaceMaxValue);
 _p('drawLegend', drawLegend); _p('rebuildLegendPanel', rebuildLegendPanel);
 _p('impassLabel', impassLabel); _p('specialTileLabel', specialTileLabel);
+_p('categoryNameOf', categoryNameOf); _p('nameIsMeaningful', nameIsMeaningful);
+_p('realNameAtTier', realNameAtTier); _p('isWaterKey', isWaterKey);
+_p('hoverSubName', hoverSubName); _p('kindOfPid', kindOfPid);
 _p('computeLabelZoom', computeLabelZoom); _p('applySettings', applySettings);
-_p('applyLutOverrides', applyLutOverrides); _p('lutColorOf', lutColorOf);
+_p('lutColorOf', lutColorOf);
 _p('hexToRgb', hexToRgb); _p('renameAt', renameAt); _p('openRename', openRename);
 _p('exportLog', exportLog); _p('showFatal', showFatal);
 if (typeof ARRIVE_SPAN !== 'undefined') _C.ARRIVE_SPAN = ARRIVE_SPAN;

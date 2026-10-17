@@ -3,6 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<!-- 构建戳：单文件版由 build_standalone.py 改写成打包时间；
+     开发版固定 dev（启动页显示「开发版」）✓
+     ⚠ **别用 document.lastModified 当版本戳** ✗ —— 单文件 / 某些浏览器里它会是当前时间 ✓ -->
+<meta name="pdx-build" content="dev">
 <title>地图编辑器</title>
 <script>
 // 双击 index.html 打开时浏览器是 file:// 协议，ES module 会被 CORS 拦掉，
@@ -93,8 +97,6 @@ if (location.protocol === 'file:') {
         <button class="btn ghost" id="btn-project">导出涂色</button>
         <!-- 出毛病时把这一份发给作者就行 ✓（日志模块是 js/log.js，比 app.js 先加载 ✓） -->
         <button class="btn ghost" id="btn-log">导出日志</button>
-        <!-- 清除也收进来 ✓（它原来是挨着撤销放的破坏性按钮，放菜单里更不容易误点 ✓） -->
-        <button class="btn ghost" id="btn-reset">清除</button>
       </div>
     </div>
   </header>
@@ -105,32 +107,21 @@ if (location.protocol === 'file:') {
       <section class="panel" id="display-panel">
         <div class="panel-head"><h2>显示</h2></div>
         <div class="tool-group actions stack">
-    <div class="tool-group" id="power-group">
-      <span class="group-label">势力</span>
-      <label class="switch">
-        <input type="checkbox" id="show-power-color" checked>
-        <span>颜色</span>
-      </label>
-      <label class="switch">
-        <input type="checkbox" id="show-power-border">
-        <span>边界</span>
-      </label>
-      <!-- 「名称」有两个开关：这一组一个、填色那组一个（见下面）✓
-           两个写的是**同一个状态**、互相镜像 ✓
-           为什么要两个：CK3 没有国家/年代层，这一整组在 CK3 里是**隐藏的** ✗
-           只留这一个的话，CK3 玩家就点不到「填色的名字」了 ✓（用户报的正是这个） -->
-      <label class="switch">
-        <input type="checkbox" id="show-power-names" checked>
-        <span>名称</span>
-      </label>
-    </div>
-
+    <!-- 🔴🔴 **显示区各组的排法**（2026-10-16 用户定的 ✓ 全体统一）：
+         **边界 → 名称 → 颜色 →（父级边界 / 只在「地块」那组 ✓）** ✓
+         ⚠ 以前是「颜色 / 边界 / 名称」（照 v1.8 那套排的 ✗）——
+           用户 2026-10-16 点名改成这个顺序 ✓ 各组一致 ✓ 缺的项跳过 ✓
+         🔴 **2026-10-17：「剧本」那一整组删了** ✗（用户："三个开关已经没什么用了"✓）
+            剧本颜色固定开、剧本边界固定关、剧本名称本来就跟「势力 · 名称」同一个状态 ✓
+            → 下面只剩「地块 / 势力 / 水域 / 荒地」四组 ✓ -->
     <div class="tool-group" id="region-group">
-      <span class="group-label">地区</span>
-      <label class="switch">
-        <input type="checkbox" id="show-region-color">
-        <span>颜色</span>
-      </label>
+      <!-- 🔴 **2026-10-16 用户定的：这组叫「地块」** ✗（原来是「地区」✓）
+           原话："显示设置那边的地区也改为地块"✓
+           ⚠ **只改这个显示标签** ✗ —— `id="region-group"` 与里面那三个开关的 id
+             一律不动 ✓（`applyGameUI` 按 id 显示/隐藏这一组 ✓ 改了它就失效 ✓）
+           ⚠ 跟设置页「边界」栏那个「地区」小标题**不是一回事** ✗ ——
+             那个说的是行政区划那一级（父级链 ✓ 用户 2026-10-16 确认保留 ✓）-->
+      <span class="group-label">地块</span>
       <label class="switch">
         <input type="checkbox" id="show-region-border" checked>
         <span>边界</span>
@@ -139,6 +130,12 @@ if (location.protocol === 'file:') {
         <input type="checkbox" id="show-region-name">
         <span>名称</span>
       </label>
+      <label class="switch">
+        <input type="checkbox" id="show-region-color">
+        <span>颜色</span>
+      </label>
+      <!-- **父级边界排最后** ✓ —— 它不是"三件套"之一 ✗
+           是个**附加档**（只管上面那一级画不画 ✓ 见 syncParentBorder ✓） -->
       <label class="switch" id="parent-border-row">
         <input type="checkbox" id="show-parent-border">
         <span>父级边界</span>
@@ -146,45 +143,122 @@ if (location.protocol === 'file:') {
     </div>
 
     <div class="tool-group">
-      <span class="group-label">填色</span>
+      <!-- 🔴 **2026-10-17：这组从「填色」改名「势力」** ✓（用户原话："把显示区的
+           涂色两个字改成势力"✓）
+           ⚠ 只改**显示标签** ✗ —— 里面三个 id（show-border-paint / show-labels-paint /
+             show-paint）一律不动 ✓ 它们是玩家涂色层的老接口，改名会牵一大片 ✓ -->
+      <span class="group-label">势力</span>
+      <label class="switch">
+        <input type="checkbox" id="show-border-paint" checked>
+        <span>边界</span>
+      </label>
+      <!-- 势力自己的「名称」开关 —— 任何一代游戏这一组都在 ✓
+           （「剧本」那组已经删了，现在这里是势力名称唯一的入口 ✓） -->
+      <label class="switch">
+        <input type="checkbox" id="show-labels-paint" checked>
+        <span>名称</span>
+      </label>
       <label class="switch">
         <input type="checkbox" id="show-paint" checked>
         <span>颜色</span>
       </label>
 
+    </div>
+
+    <!-- 🔴 **水域那一组**（2026-10-16 用户点名的 ✓ 见 handover §3.1）
+         ⚠ 只有**边界 / 名称**两条 ✗ —— 「颜色」那个勾**不给** ✓
+           （用户原话："水域不加入关于颜色的开关，只有关于边界和名称的开关"✓）
+         🔴🔴 **两个都默认「不勾」** ✗✗（2026-10-17 用户改的 ✓
+           原话："默认关闭水域边界、名称"✓
+           2026-10-16 那版两个都是勾上的 ✓ 理由曾是"默认观感完全不变"✓
+           现在反过来了 ✓ → 开图时水域之间那些缝**不画**、水名**不出** ✓
+           想看得自己勾 ✓ **HTML 这里不许再写 `checked`** ✗
+             （去掉它 = 开图前那几百毫秒界面就跟状态一致 ✓
+              开图后 `applyGameUI` 还会照 `state` 再刷一遍 ✓ 两道都对得上 ✓））
+         ⚠ 位置**必须排在「地块 / 势力」之后** ✗✗ ——
+            `tutorial.js` 的 `firstNamedSwitch()` 取的是"界面上**第一个**文字含「名称」的开关"✓
+            插到前面去的话，教程那一步会改指水域 ✓（顺序敏感，别挪 ✗）
+           （「剧本」那组已经删了：现在第一个含「名称」的是「地块」组 ✓）
+         ⚠ 口径（用户原话）：
+           "水域边界开关负责且仅负责**水域之间**（海洋、湖泊、河流、不可通行水域）
+            的边界的显示或隐藏。水域名称开关同理。
+            同时受管理的这些东西**不再受地区边界、地区名称的管理**。"✓
+           → 海岸线（水 ↔ 陆）**不归它** ✓ 照旧由「地块 / 势力 · 边界」管 ✓ -->
+    <div class="tool-group" id="water-group">
+      <span class="group-label">水域</span>
       <label class="switch">
-        <input type="checkbox" id="show-border-paint" checked>
+        <input type="checkbox" id="show-water-border">
         <span>边界</span>
       </label>
-      <!-- 填色自己的「名称」开关 —— 任何一代游戏这一组都在 ✓
-           （CK3 没有国家/年代层，势力那一组是隐藏的，所以这里必须有 ✓） -->
       <label class="switch">
-        <input type="checkbox" id="show-labels-paint" checked>
+        <input type="checkbox" id="show-water-name">
         <span>名称</span>
       </label>
+    </div>
 
+    <!-- 🔴 **荒地那一组**（2026-10-17 用户要的 ✓）
+         原话（先要名称）："显示区加一行，关于荒地的名称开关"✓
+         原话（再要边界）："给荒地加上边界开关，这个负责的是**荒地与荒地之间**的边界，
+                            你之前做了水域-水域的边界，这个应该轻车熟路了吧"✓
+         → 所以现在是**两条**：边界 + 名称 ✓
+           **边界** = 荒地 ↔ 荒地之间的缝 ✓（挨着陆地 / 水的那一圈外缘**不归它** ✗
+             照旧归「地块 · 边界」/「势力 · 边界」✓ 跟水域那条一个口径 ✓）
+           **名称** = 荒地自己的名字（`wl_*` / `#wasteland*` / 未编进州里的陆地 ✓）
+             它跟「地块 · 名称」**各管各的** ✓（荒地有自己的开关之后，
+               关掉「地块 · 名称」不该把荒地名一起带走 ✓ 这一条 2026-10-17 改的 ✗
+               在那之前荒地名是跟着「地块 · 名称」走的 ✓）
+         🔴 **2026-10-17 追加「自动上色」** ✗✗（用户点名要的 ✓）
+           开：按周边陆地最低地块的颜色加权，严格过半才给这块荒地 ✓
+           关：全部回退设置里「不可通行区域」那个色 ✓
+           ⚠ 它不是"荒地颜色"那个勾 ✗ —— 那个仍然在设置页里管所有地形类色 ✓
+             这一条只管"自动算出来的那份归属色" ✓
+         ⚠ **三个都默认不勾** ✗（2026-10-17 用户定的：自动上色也默认关闭 ✓
+           想要上色自己勾 ✓ 别在 HTML 里写 checked ✓）
+         ⚠ 顺序 **边界 → 名称 → 自动上色** ✓（跟别组一个排法 ✓）
+         ⚠ 位置排在「水域」之后 ✓ —— `tutorial.js` 的 `firstNamedSwitch()`
+           取的是"第一个含「名称」的开关"= `#show-power-names` ✓ 这边怎么排都不影响 ✓ -->
+    <div class="tool-group" id="waste-group">
+      <span class="group-label">荒地</span>
+      <label class="switch">
+        <input type="checkbox" id="show-waste-border">
+        <span>边界</span>
+      </label>
+      <label class="switch">
+        <input type="checkbox" id="show-waste-name">
+        <span>名称</span>
+      </label>
+      <label class="switch">
+        <input type="checkbox" id="waste-auto">
+        <span>自动上色</span>
+      </label>
+    </div>
+
+    <!-- 🔴 **清除按钮搬到显示区**（2026-10-17 用户定的 ✓）
+         「清除全部」= 原来的 `resetAll()`（全部涂色 + 撤销栈）
+         「清除荒地」= 只动手绘层里的荒地块 + 关掉自动上色、刷回荒地灰
+         ⚠ id `btn-reset` 不许改 ✗ —— app.js 的处理器和自检都按它找 ✓ -->
+    <div class="tool-group" id="clear-group">
+      <span class="group-label">清除</span>
+      <button class="btn ghost" id="btn-reset" type="button"
+              title="清除这张图上的全部涂色（会清空撤销栈）">清除全部</button>
+      <button class="btn ghost" id="btn-clear-waste" type="button"
+              title="清除荒地上的涂色，并关闭「荒地 · 自动上色」">清除荒地</button>
     </div>
 
         </div>
 
-          <div class="tool-group" id="waste-group">
-            <span class="group-label" id="waste-label">荒地</span>
-            <label class="switch" id="waste-row">
-              <input type="checkbox" id="show-waste">
-              <span>允许</span>
-            </label>
-            <label class="switch" id="waste-auto-row">
-              <input type="checkbox" id="waste-auto">
-              <span>自动</span>
-            </label>
-            <button class="btn tiny ghost" id="waste-clear">清除荒地填色</button>
-          </div>
       </section>
 
       <section class="panel">
         <div class="panel-head">
           <h2>当前颜色</h2>
-          <span class="hint" id="brush-target">—</span>
+          <!-- ⚠ **原来这儿有个提示**（`#brush-target`，写「1789 · 涂抹」那种）✗
+               2026-10-17 用户："红框框的部分去掉"✓ → 整个 span 拿掉了 ✓
+               ⚠ 配套在 app.js：`updateBrushTarget()` 那个函数和它的三处调用**一起删了** ✗
+                 （函数体就一句 `$('brush-target').textContent = …` ✓
+                  光删 HTML 会让它每帧去写一个 null ✗ 那种"留着半条线"的最难查 ✓
+                  ——见 `setTool` / `applyEditTier` / `选工具` 那三处 ✓）
+               → 想知道"这一笔按哪一级涂"看**层级按钮**那排就够 ✓（那儿本来就亮着 ✓） -->
         </div>
         <div class="brush">
           <div class="swatch big" id="brush-swatch"></div>
@@ -260,16 +334,16 @@ if (location.protocol === 'file:') {
       <div class="toast" id="toast" hidden></div>
 
       <div class="boot" id="boot">
-        <!-- ⚠ 这个 id 是给"卡片一多就放宽面板"用的 ✗（app.js 的 setPickWide ✓
-             桩里解析出来的节点没有 parentNode，所以别靠 parentNode 往上找 ✓ 2026-10-12） -->
         <div class="boot-inner" id="boot-inner">
           <div class="boot-title" id="boot-title">地图编辑器</div>
 
           <div class="map-pick" id="map-pick" hidden>
             <div class="map-pick-hint">选一张地图</div>
-            <!-- 一张图都没有的时候（轻量版第一次打开就是这样）那句引导
-                 **搬到下面 `#map-msg` 那个框里**了 ✓（2026-10-12 用户要求：
-                 原来它在这儿单独占一整块，白花一块地方 ✗ —— 见 app.js 的 render ✓）-->
+            <!-- 一张图都没有的时候（轻量版第一次打开就是这样）说清楚下一步干嘛 ✓
+                 有卡片了 app.js 会把它藏起来 ✓ -->
+            <div class="map-empty" id="map-empty" hidden>
+              请点击下方按钮导入，或将 .pdxmap 文件直接拖进这一页。
+            </div>
             <div class="map-pick-list" id="map-pick-list"></div>
             <button class="map-import" id="map-import">＋ 导入地图包…</button>
             <!-- 这行平时**是空的** ✗ —— 只有"这台浏览器存不下东西"的时候才跳出来警示
@@ -278,29 +352,35 @@ if (location.protocol === 'file:') {
             <div class="map-msg" id="map-msg" hidden></div>
           </div>
 
-          <!-- 导入得到的地图：**「导出备份 / 删除」两个动作现在直接长在卡片上** ✓
-               （这儿原来有个「⋯」小面板，2026-10-12 用户要求提到第一层 ✓）-->
+          <!-- 导入得到的地图：管理小面板（导出备份 / 删除）。定位在选图界面中间 -->
+          <div class="pack-menu" id="pack-menu" hidden>
+            <div class="pack-menu-title" id="pack-menu-title"></div>
+            <button class="btn" id="pack-menu-export">导出备份（.pdxmap）</button>
+            <button class="btn danger" id="pack-menu-del">删除这张图</button>
+            <button class="btn tiny" id="pack-menu-close">关闭</button>
+          </div>
 
           <div id="boot-progress">
             <div class="boot-step" id="boot-step">正在准备…</div>
             <div class="boot-bar"><i id="boot-bar"></i></div>
           </div>
 
-          <!-- 静态兜底提示：**脚本没跑起来**时（老设备太慢、或"文件"App 的预览窗口
-               压根不执行 JS —— 用户报的 iPad「一直等待」就是这种 ✓）这一屏会一直
-               停在"正在准备…"，别让玩家干等：这段话就是给那种情况看的 ✓
-               JS 一旦跑起来，boot() 第一件事就是把它删掉 —— 正常打开根本看不见 ✓ -->
-          <div class="boot-hint" id="boot-hint">
-            一直停在这一屏？说明脚本没跑起来（比如在「文件」App 的预览里打开的）。
-            请改用浏览器直接打开这个文件 —— iPhone / iPad：<b>分享 → 在 Safari 中打开</b>；
-            电脑：<b>用 Chrome / Edge / Firefox 直接打开</b>。
-          </div>
-
-          <!-- 署名：谁做的、去哪找人。href 由 app.js 按 AUTHOR 填（换主页只改那一处 ✓） -->
+          <!-- 署名：谁做的、去哪找人。href 由 app.js 按 AUTHOR 填（换主页只改那一处 ✓）
+               🔴 **分两行**（2026-10-17 用户："那些字挤在一起很难看"）：
+                   第一行 作者 + 主页；第二行 导出诊断报告 + 版本戳 ✓ -->
           <div class="boot-author">
-            <span>永夜廿九 制作</span>
-            <a class="boot-author-link" id="author-link" target="_blank" rel="noopener">B 站主页 →</a>
-            <span class="boot-ver" id="boot-ver"></span>
+            <div class="boot-author-row">
+              <span>永夜廿九 制作</span>
+              <a class="boot-author-link" id="author-link" target="_blank" rel="noopener">B 站主页 →</a>
+            </div>
+            <div class="boot-author-row boot-author-row-split">
+              <!-- 版本戳在**左**、导出按钮在**右**（2026-10-17 用户定的 ✓）
+                   ⚠ 接线在 log.js 里，**不在 app.js** ✗ —— 编辑器自己没起来时，
+                     app.js 里的入口根本挂不上，而那时正是最需要日志的场合 ✓ -->
+              <span class="boot-ver" id="boot-ver"></span>
+              <button class="boot-author-link boot-log-btn" id="btn-boot-log" type="button"
+                      title="导出诊断报告（含启动阶段 / 浏览器 / 显卡信息）">导出诊断报告</button>
+            </div>
           </div>
         </div>
       </div>
@@ -309,11 +389,12 @@ if (location.protocol === 'file:') {
   </div>
 
   <!-- 选文件只认 .pdxmap / .zip（别的一律拒，见 pack.js 的校验器）
-       **可以一次选好几个** ✓（2026-10-12 用户要求：挨个导，一个不成不影响后面的 ✓）
-       ⚠ `application/octet-stream` **必须留着** ✗（2026-10-12 用户报的"手机上选不了 pdxmap"）：
-         `.pdxmap` 是自定义扩展名，系统不认 → 类型就是 `application/octet-stream` ✗
-         安卓的文件选择器**按 MIME 过滤**，不列它就把 `.pdxmap` 灰掉、根本点不动 ✓
-         （手机版还会在 bindMobile 里把过滤整个放开，见 mobile/mobile_js.txt ✓） -->
+       ⚠ `application/octet-stream` **必须留着** ✗（2026-10-12 用户报的"手机上选不中 pdxmap"）：
+         `.pdxmap` 是自定义扩展名，系统不认 → 类型就是 `application/octet-stream` ✓
+         安卓的文件选择器**按 MIME 过滤**，不列它就把 `.pdxmap` 灰掉 ✓
+         （手机版还会在 bindMobile 里把过滤整个放开，见 mobile/mobile_js.txt ✓）
+       ⚠ 这一行是**从 10-12 的备份还原时补回来的** ✗ —— 那个底子比它早几个钟头 ✓
+       ⚠ `multiple` 也要留着 ✗（2026-10-12 用户要求：**多个包一起导入** ✓）-->
   <input type="file" id="pack-file"
          accept=".pdxmap,.zip,application/zip,application/octet-stream" multiple hidden>
 
@@ -343,59 +424,148 @@ if (location.protocol === 'file:') {
       <div class="set-grid">
         <div class="set-col">
           <h3>颜色</h3>
-          <label class="set-row"><span>空白地区</span><input type="color" id="set-bg"></label>
+          <!-- 🔴 **2026-10-16 两轮收拾**
+               第一轮（"全都进行全面优化"）：七项平铺 → 按类别分组 + `.set-sub` 小标题 ✓
+               第二轮（"就这样，简单点"）：用户把**两组的内容和名字都定了** ✗：
+                 · **陆地**：空白区域 / 无归属区域 / **不可通行区域**（它归陆地 ✓ 不是水 ✓）
+                 · **水域**：**河流 / 湖泊 / 海洋 / 不可通行海域**（次序也是他定的 ✓
+                   由小到大：河最细、海最大、不可通行海域是屏障 ✓
+                   原来我排的是"海 / 不可通行海域 / 湖 / 河"，正好倒过来 ✓）
+               ⚠ **只有两组了** ✗ —— 第一轮我分过"底子 / 水域 / 陆地"三组 ✓
+                 用户这一轮把"底子"并进**陆地**、把"不可通行区域"从陆地那组挪对位置 ✓
+                 → 别再加回第三个组 ✗ -->
+          <div class="set-sub">陆地</div>
+          <label class="set-row"><span>空白区域</span><input type="color" id="set-bg"></label>
+          <label class="set-row"><span>无归属区域</span><input type="color" id="set-unpainted"></label>
           <label class="set-row"><span>不可通行区域</span><input type="color" id="set-impass"></label>
-          <label class="set-row"><span>海洋</span><input type="color" id="set-sea"></label>
-          <label class="set-row"><span>不可通行海域</span><input type="color" id="set-impass-sea"></label>
-          <label class="set-row"><span>湖泊</span><input type="color" id="set-lake"></label>
+          <div class="set-sub">水域</div>
           <label class="set-row"><span>河流</span><input type="color" id="set-river"></label>
+          <label class="set-row"><span>湖泊</span><input type="color" id="set-lake"></label>
+          <label class="set-row"><span>海洋</span><input type="color" id="set-sea"></label>
+          <label class="set-row"><span>不可通行海域</span><input type="color" id="set-isea"></label>
         </div>
 
         <!-- ============ 边界（**一栏装完** ✓）============
-             命名规范（用户定的 ✓）：**「某某边界」+ 宽度 / 浓度** ——
-               地方边界宽度 = 原「基准线宽」（它管的就是省份 / 地区那些**地方**线 ✓）
-               势力边界宽度 = 原「势力线宽」（势力那条线 + 填色线本身的粗细 ✓）
-               水域边界宽度 = 原「海域宽度」（海 / 湖 / 河 ✓ 叫"水域"更准 ✓）
-               荒地边界宽度 = 原「荒地宽度」
-             **浓度那五条保留各自的层**（用户要求：省份、地区要分开 ✓）
-             顺序：**宽度挨着宽度、浓度挨着浓度** ✓（用户要求的排法 ✓）
-             **滑条**（用户定的 ✓）—— 档位等距，`min/max/step` 一锁就天然只有那几档 ✓：
-               四条宽度都是 **1~3 步长 0.5** ✓   五条浓度都是 **25~100 步长 25** ✓
-             线宽一律是**格数**（不是倍率 ✗）
-             每个滑条前面那个当前值提示由 `buildSliderTips()` 动态插进来 ✓
-             （`min/max/step` 要跟 app.js 里那几张档位表一致 —— 测试盯着两边 ✓）-->
+             命名规范（用户 2026-10-16 **第二轮**定的 ✓）：**小标题给类别、滑条只写「边界宽度 / 边界不透明度」**
+           —— 用户原话："**最大关键点：滑块左边就写边界宽度而不是省份边界宽度**"✓
+           ⚠ 所以这一栏里**再也没有「省份边界宽度」这种长标签** ✗ ——
+             类别由它上面那个 `.set-sub` 说（省份 / 地区 / 势力 / 水域 ✓）、
+             两行只说"这条线有多粗 / 有多实" ✓（这才叫"简单点"✓）
+           ⚠ 那两行的标签 2026-10-16 又改了一次 ✗：「浓度」→「**边界不透明度**」✓
+             用户先写"把边界浓度改名边界不透明度"、接着纠正"是【边界不透明度】不是【不透明度】"✓
+             ——**四个字的全名** ✓ 别缩成「不透明度」✗（那是「名字」栏那组小标题的名字 ✓）
+           ⚠ 小标题旁边那些提示（本层那条线 / 父级链 / 国家·剧本那一圈 /
+             只管水与水之间 / 字号与上限）**全清了** ✗（用户："红框框圈起来的东西去掉"✓
+             结构上不再有 `.set-sub` + hint 那种写法 ✓ 要说明就写在这段注释里 ✓）
+           ⚠ 但**内部字段名一个都没改** ✗：`wProv` / `wRegion` / `pw` / `waterW`、
+             `pa` / `ra` / `ca` / `waterA` ✓（老存档、设置项、测试全按这些键走 ✓
+              改的是**界面上那几个字**，不是键 ✓）
+           四类各自管哪条线（**只写在这儿** ✗ 界面上既不逐行重复、也不挂提示 ✓）：
+             省份 = 管**本层**那条线（子级线 ✓ 海岸线 / 海内细缝都归它 ✓）
+             地区 = 管**父级链**（多级链上层那些线 ✓）
+             势力 = 国家 / 剧本那一圈 ✓     水域 = 只管水与水之间 ✓
+           档位（`min/max/step` 一锁就天然只有那几档 ✓）：宽度 0.5~3 步长 0.5 ·
+             不透明度 0~100 步长 25（**0% = 那条线完全不画** ✓）
+           线宽一律是**格数**（不是倍率 ✗）
+           每个滑条前面那个当前值提示由 `buildSliderTips()` 动态插进来 ✓
+           （`min/max/step` 要跟 app.js 里那几张档位表一致 —— 测试盯着两边 ✓）-->
         <div class="set-col">
           <h3>边界</h3>
-          <label class="set-row"><span>地方边界宽度</span><input type="range" id="set-w" min="0.5" max="3" step="0.5"></label>
-          <label class="set-row"><span>势力边界宽度</span><input type="range" id="set-pw" min="0.5" max="3" step="0.5"></label>
-          <label class="set-row"><span>水域边界宽度</span><input type="range" id="set-water-w" min="0.5" max="3" step="0.5"></label>
-          <label class="set-row"><span>荒地边界宽度</span><input type="range" id="set-waste-w" min="0.5" max="3" step="0.5"></label>
-          <label class="set-row"><span>省份边界浓度</span><input type="range" id="set-pa" min="0" max="100" step="25"></label>
-          <label class="set-row"><span>地区边界浓度</span><input type="range" id="set-ra" min="0" max="100" step="25"></label>
-          <label class="set-row"><span>势力边界浓度</span><input type="range" id="set-ca" min="0" max="100" step="25"></label>
-          <label class="set-row"><span>水域边界浓度</span><input type="range" id="set-water-a" min="0" max="100" step="25"></label>
-          <label class="set-row"><span>荒地边界浓度</span><input type="range" id="set-waste-a" min="0" max="100" step="25"></label>
+          <!-- 🔴🔴 **2026-10-16 两轮收拾** ✗✗
+               第一轮（"全都进行全面优化"）：从"四根宽度挨着、四根浓度挨着"改成
+                 **一类两行连排**（省份宽+浓 · 地区宽+浓 · … ✓）✓
+               第二轮（"就这样，简单点"）：**滑条标签砍掉重复的类别名** ✗ ——
+                 「省份边界宽度」→「边界宽度」（类别靠小标题说 ✓）
+               ⚠ 小标题上那两句提示（"本层那条线" / "父级链"）留着 ✓
+                 用户 2026-10-13 报过"这两根到底差在哪"✓ 那是**真的分不清** ✓
+                 而"省份"两个字重复两遍是**纯废话** ✓ 两回事 ✓
+               ⚠ 别再把类别名加回滑条标签 ✗ —— `test_modes` 有一条断言盯着它 ✓ -->
+          <div class="set-sub">省份</div>
+          <label class="set-row"><span>边界宽度</span><input type="range" id="set-w-prov" min="0.5" max="3" step="0.5"></label>
+          <label class="set-row"><span>边界不透明度</span><input type="range" id="set-pa" min="0" max="100" step="25"></label>
+          <div class="set-sub">地区</div>
+          <label class="set-row"><span>边界宽度</span><input type="range" id="set-w-region" min="0.5" max="3" step="0.5"></label>
+          <label class="set-row"><span>边界不透明度</span><input type="range" id="set-ra" min="0" max="100" step="25"></label>
+          <div class="set-sub">势力</div>
+          <label class="set-row"><span>边界宽度</span><input type="range" id="set-pw" min="0.5" max="3" step="0.5"></label>
+          <label class="set-row"><span>边界不透明度</span><input type="range" id="set-ca" min="0" max="100" step="25"></label>
+          <!-- 🔴 **水域边界那一对**（2026-10-16 ✓ 用户点名要的 ✓）
+               ⚠ 用户原话："新增一对滑条「水域边界宽度 / 浓度」（**不沿用省份/地区那一档**）"✓
+                 → 所以它俩是**独立一档** ✓
+               ⚠ 「水域边界宽度」**不是**「海域宽度」✗ ——
+                 用户 2026-10-16 的命名规范里明写了不许再叫「海域宽度 / 海域浓度」✓
+                 （test_modes 里有两条断言盯着这两个词不许出现 ✓
+                   ⚠ 第二轮把标签砍成「边界宽度」之后，"海域宽度"更不会出现了 ✓
+                     但那条断言**留着** ✓ 它守的是"别又冒出个旧名字" ✓）-->
+          <div class="set-sub">水域</div>
+          <label class="set-row"><span>边界宽度</span><input type="range" id="set-water-w" min="0.5" max="3" step="0.5"></label>
+          <label class="set-row"><span>边界不透明度</span><input type="range" id="set-water-a" min="0" max="100" step="25"></label>
+          <!-- 🔴 **荒地边界那一对**（2026-10-17 ✓ 用户点名要的 ✓）
+               原话："给荒地加上边界开关，这个负责的是**荒地与荒地之间**的边界，
+                      你之前做了水域-水域的边界，这个应该轻车熟路了吧"✓
+               ⚠ 跟水域那对**完全同构** ✗ —— 独立一档、不沿用省份/地区那档 ✓
+                 档位也一样（宽度 0.5~3 步长 0.5 · 不透明度 0~100 步长 25 ✓）
+                 出厂值也一样（1 / 25% ✓ 默认都是"很淡的辅助线"✓）
+               ⚠ 不透明度 **0% = 那条线完全不画** ✓（跟别处同一个口径 ✓
+                 不是"线还在但看不见"✗）
+               ⚠ 两条通道**各认自己的勾** ✗（关掉水域那个，荒地这条照样在 ✓ 反之亦然 ✓）-->
+          <div class="set-sub" id="set-waste-sub">荒地</div>
+          <label class="set-row" id="set-waste-w-row"><span>边界宽度</span><input type="range" id="set-waste-w" min="0.5" max="3" step="0.5"></label>
+          <label class="set-row" id="set-waste-a-row"><span>边界不透明度</span><input type="range" id="set-waste-a" min="0" max="100" step="25"></label>
         </div>
 
         <div class="set-col">
           <h3>名字</h3>
-          <label class="set-row"><span>字号倍率</span><input type="range" id="set-font" min="0.5" max="2" step="0.05"></label>
-          <!-- 一个连通域一个名字之后，全图能有几千坨 → 按**面积从大到小**取前 N 个 ✓
-               N 就 1~20（一眼能看清的国名也就十来个 ✓ 几百几千纯属离谱 ✗）；
-               **拉满（20）就是"无上限"** ✓ —— 省掉单独一个勾选框（用户要求）
-               数值提示放**滑块左边** ✓ 放右边会把滑块挤到中间去，
-               跟上面「字号倍率」那根（只有"标签 + 滑块"两个元素）就对不齐了 ✓ -->
-          <label class="set-row"><span>势力名称上限</span><span class="hint" id="set-labelmax-v"></span><input type="range" id="set-labelmax" min="1" max="21" step="1"></label>
-          <!-- **两张名字各给自己一档不透明度**（用户定的：25 / 50 / 75 / 100 ✓）
-               「势力名称」= 剧本/年份那几层（国名 / 势力名 ✓）·「地名」= 地区/省份/地点那些 ✓
-               （分层口径见 drawLabels 里那段注释 ✓ 着色器/标签层都按 tier 判 ✓）
-               半透明的好处是底下的填色和边界还看得见 ✓ -->
-          <label class="set-row"><span>势力名称不透明度</span><input type="range" id="set-labelac" min="25" max="100" step="25"></label>
-          <label class="set-row"><span>地名不透明度</span><input type="range" id="set-labelap" min="25" max="100" step="25"></label>
+          <!-- 🔴🔴 **2026-10-17 整栏重排：两块 —— 地块 / 势力** ✗✗（用户定的 ✓）
+               原话："首先是把字号分开两个，一个给地块，一个给势力
+                     然后分块就分两块，一个地块一个势力，下面就是各自的字号、不透明度、上限。
+                     所以这样也可以去掉那个势力or地块前缀了，更方便。"
+
+               改之前是"**按维度分三组**"（字号与数量 / 不透明度 ✓）——
+                 字号还**只有一根、两块共用** ✗ → 调大地名，国名跟着一起大 ✓ 两件事绑死 ✓
+               改之后是"**按对象分两块**"：
+                 【地块】字号倍率 · 不透明度 · 上限      ← 三行都管**地块名**
+                 【势力】字号倍率 · 不透明度 · 上限      ← 三行都管**势力名**
+               ⚠ 标签因此**去掉了前缀** ✓：「地块名称不透明度」→「不透明度」✓
+                 （块头已经说了是谁的 ✓ 用户原话："可以去掉那个势力or地块前缀了"✓）
+                 ⚠ 但**注释里要写清哪根是哪根** ✗ —— 界面上省字，代码里不能省 ✓
+                   `set-labelap` = 地块那根 ✓ `set-labelac` = 势力那根 ✓
+                   `set-labelplacemax` = 地块上限 ✓ `set-labelmax` = 势力上限 ✓
+                   `set-fontplace` / `set-fontpower` = 两块字号（2026-10-17 新加的 ✓）
+               ⚠ 顺序按用户说的：**字号 → 不透明度 → 上限** ✓（原话那个次序 ✓
+                 跟旧的"字号/上限 一组、不透明度 一组"不一样 ✗ 别按旧的排回去 ✓）-->
+
+          <div class="set-sub">地块</div>
+          <!-- **字号倍率**（🔴 2026-10-17 用户改的：**0.5~3 · 步长 0.1** ✓
+               原来是 0.5~2 · 步长 0.05 ✓ —— 上限太低、档太密 ✓）：
+               管**地块名**（含海 / 湖 / 河 / 荒地名 ✓）
+               ⚠ 2026-10-17 之前它跟势力名**共用** `s.font` 一个数 ✗
+                 现在拆成 `fontPlace` / `fontPower` ✓ 老存档那个数两块都继承 ✓ -->
+          <label class="set-row"><span>字号倍率</span><input type="range" id="set-fontplace" min="0.5" max="3" step="0.1"></label>
+          <label class="set-row"><span>不透明度</span><input type="range" id="set-labelap" min="25" max="100" step="25"></label>
+          <!-- **地块名上限**（2026-10-16 用户定的 ✓）
+               地名改成"**每个连通域一个标**"之后，一个头衔底下可能一堆碎块
+               （CK3 的飞地 / EU4 的岛群 ✓）→ 按**每个头衔**各留 N 个 ✓
+               档位跟势力那根同款（1~21，拉满 = 无上限 ✓ 默认 12 ✓）
+               数值提示放**滑块左边** ✓（放右边会把滑块挤到中间、跟别的行对不齐 ✓）-->
+          <label class="set-row"><span>上限</span><span class="hint" id="set-labelplacemax-v"></span><input type="range" id="set-labelplacemax" min="1" max="21" step="1"></label>
+
+          <div class="set-sub">势力</div>
+          <!-- **势力名 = 剧本 / 年份那几层 + 玩家涂出来的色块名** ✓（见 drawLabels 那头 ✓）
+               上限的"一组"是**一个国家**（本土 + N 块殖民地那种 ✓ 用户的原意 ✓）
+               ⚠ 默认别压太狠 ✗（用户报过"国名很多没显示"✓）：
+                 真正决定画面上能看见几个的是**字号门槛**，这一档是**再砍一刀** ✓ -->
+          <label class="set-row"><span>字号倍率</span><input type="range" id="set-fontpower" min="0.5" max="3" step="0.1"></label>
+          <label class="set-row"><span>不透明度</span><input type="range" id="set-labelac" min="25" max="100" step="25"></label>
+          <label class="set-row"><span>上限</span><span class="hint" id="set-labelmax-v"></span><input type="range" id="set-labelmax" min="1" max="21" step="1"></label>
         </div>
 
         <div class="set-col">
           <h3>其他</h3>
+          <!-- ⚠ 组名从「导出图例」缩成「**图例**」✓（2026-10-16 用户："就这样，简单点"✓
+               它底下就三行（导出时显示 / 标题 / 位置 ✓）—— 四个字的组名比内容还长 ✓
+               ⚠ 「位置」原来写的是裸的「位置」✓ 保留 ✓（上下文已经是图例了 ✓）-->
+          <div class="set-sub">图例</div>
           <label class="set-row"><span>导出时显示</span><input type="checkbox" id="set-legend"></label>
           <label class="set-row"><span>图例标题</span><input type="text" id="set-legend-title" maxlength="40" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"></label>
           <label class="set-row"><span>位置</span>
@@ -407,6 +577,7 @@ if (location.protocol === 'file:') {
             </select>
           </label>
           <div class="legend-list" id="legend-list"></div>
+          <div class="set-sub">取色</div>
           <!-- 取完色（搜索里点色块 / 右键 / 吸管 / 调色板）自动切到哪个画图工具 ✓
                已经在涂抹或填色上时**不动** —— 别打断正在画的活儿 ✓ -->
           <label class="set-row"><span>取色后切到</span>

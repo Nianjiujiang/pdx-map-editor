@@ -12,12 +12,14 @@
  *   ② 轨迹：启动、选图、导出、导入、清除…（"出问题前最后干了什么"比栈还管用）
  *   ③ 环境：这是哪一版文件、什么浏览器、当时在看哪张图的哪一层
  *
- * 界面**一个像素都不碰** ✓ 按钮在顶栏「导出 ▾」菜单里，接线在 app.js 那边
- * （这个文件只管记录和导出，不碰 DOM 结构 —— 免得它一出问题就是把界面搞坏）
+ * 界面**几乎一个像素都不碰** ✓：顶栏按钮在 app.js 那边接线；
+ * 唯一一处是启动页那颗「导出诊断报告」—— 它必须在 app.js 没起来时也能用，
+ * 所以由本文件绑一个已经存在的按钮（不创建 DOM、不改布局 ✓）
  *
- * 导出的 .txt 长这样：
- *   [这是哪一份] → [当时的状态] → [错误] → [轨迹]
- *   前两段回答"他手上是什么"，后两段回答"出了什么事" ✓
+ * 导出的是一份正式诊断报告（见文件末尾 text()）：
+ *   报告头（编号 / 时间 / 结论）→ 环境 → 运行状态 → 错误摘要 → 错误明细
+ *   → 事件时间线 → 机器可读的 JSON 附录
+ *   前两节回答"他手上是什么"，中间回答"出了什么事"，最后给自动化分析留口子 ✓
  */
 (function (window) {
   'use strict';
@@ -111,6 +113,28 @@
     snaps: [],           // 导出时现取一份现状的回调
     dropped: 0,          // 上限丢掉的条数
   };
+
+  /** 报告编号：一份报告一个号，客服/作者按号定位 ✓（同一次页面会话内固定） */
+  const reportId = 'PDX-' + idStamp(new Date()) + '-' + hex4();
+
+  function idStamp(d) {
+    return d.getFullYear() + pad(d.getMonth() + 1, 2) + pad(d.getDate(), 2)
+      + '-' + pad(d.getHours(), 2) + pad(d.getMinutes(), 2) + pad(d.getSeconds(), 2);
+  }
+
+  function hex4() {
+    let n = 0;
+    try {
+      if (window.crypto && window.crypto.getRandomValues) {
+        const a = new Uint8Array(2);
+        window.crypto.getRandomValues(a);
+        n = (a[0] << 8) | a[1];
+      } else {
+        n = Math.floor(Math.random() * 65536);
+      }
+    } catch (e) { n = Math.floor(Math.random() * 65536); }
+    return ('0000' + n.toString(16).toUpperCase()).slice(-4);
+  }
 
   /**
    * 记一条错。
@@ -238,7 +262,18 @@
     rec.dropped = 0;
   }
 
-  /* ---- "这是哪一份"：全是从浏览器现问的，问不到就写"取不到" ✓ ---------- */
+  /** 构建戳：读 `<meta name="pdx-build">`（build_standalone.py 写打包时间）✓
+   *  ⚠ 不用 document.lastModified ✗ —— 单文件 / 某些浏览器里它是当前时间 ✓ */
+  function buildStamp() {
+    try {
+      const doc = window.document;
+      const m = doc && doc.querySelector && doc.querySelector('meta[name="pdx-build"]');
+      const v = m && m.content ? String(m.content).trim() : '';
+      return v && v !== 'dev' ? v : '开发版';
+    } catch (e) { return '开发版'; }
+  }
+
+  /* ---- 环境信息：全是从浏览器现问的，问不到就写"取不到" ✓ ---------- */
   function basics() {
     const out = {};
     const put = (k, v) => { out[k] = (v === '' || v == null) ? '取不到' : String(v); };
@@ -246,17 +281,20 @@
       const nav = (typeof navigator !== 'undefined' && navigator) || null;
       const loc = window.location || null;
       const scr = (typeof screen !== 'undefined' && screen) || null;
-      put('版本戳', (window.document && window.document.lastModified)
-        ? window.document.lastModified : '');
+      const ua = nav && nav.userAgent ? String(nav.userAgent) : '';
+      put('版本戳', buildStamp());
       put('运行方式', window.__CK3_EMBEDDED__
         ? '单文件版（数据烘在文件里）' : '开发版（走 server.py 读 web/）');
       put('页面地址', loc ? loc.href : '');
-      put('浏览器', nav ? nav.userAgent : '');
+      put('协议', loc && loc.protocol ? loc.protocol : '');
+      put('浏览器', ua ? browserName(ua) : '');
+      put('平台', osName(ua) !== '未知' ? osName(ua)
+        : ((nav && nav.userAgentData && nav.userAgentData.platform) || ''));
+      put('语言 / 时区', (nav && nav.language ? nav.language : '') + ' / ' + tz());
       put('屏幕', scr ? (scr.width + '×' + scr.height
         + ' @' + (window.devicePixelRatio || 1) + 'x'
         + '，窗口 ' + (window.innerWidth || '?') + '×' + (window.innerHeight || '?')) : '');
-      put('语言 / 时区', (nav && nav.language ? nav.language : '')
-        + ' / ' + tz());
+      put('User-Agent', ua);
     } catch (e) { /* 问不到就少几行，不影响下面的正文 ✓ */ }
     return out;
   }
@@ -283,72 +321,256 @@
     return pairs;
   }
 
-  /** 拼出整份日志文本 */
+  /** 时区偏移（+08:00） */
+  function tzOffset(t) {
+    const d = new Date(t);
+    const m = -d.getTimezoneOffset();
+    const sign = m >= 0 ? '+' : '-';
+    const a = Math.abs(m);
+    return 'UTC' + sign + pad(Math.floor(a / 60), 2) + ':' + pad(a % 60, 2);
+  }
+
+  /** 带时区的完整时间 */
+  function fullTimeZone(t) {
+    return fullTime(t) + ' (' + tzOffset(t) + ')';
+  }
+
+  /** 会话时长：00:02:31.482 */
+  function durationText(ms) {
+    const s = Math.max(0, ms) / 1000;
+    return pad(Math.floor(s / 3600), 2) + ':' + pad(Math.floor((s % 3600) / 60), 2)
+      + ':' + pad(Math.floor(s % 60), 2)
+      + '.' + pad(Math.floor((s - Math.floor(s)) * 1000), 3);
+  }
+
+  /** 从 UA 认浏览器 / 系统 —— 只做粗分，认不出就写"未知" ✓（不猜） */
+  function browserName(ua) {
+    const s = String(ua || '');
+    // ⚠ Edge / Opera 的 UA 里**也带 Chrome/** ✗ 必须先认它们，再认 Chrome ✓
+    let m = /(?:Edg|Edge)\/([\d.]+)/.exec(s);
+    if (m) return 'Edge ' + m[1];
+    m = /OPR\/([\d.]+)/.exec(s);
+    if (m) return 'Opera ' + m[1];
+    m = /Firefox\/([\d.]+)/.exec(s);
+    if (m) return 'Firefox ' + m[1];
+    m = /Chrome\/([\d.]+)/.exec(s);
+    if (m) return 'Chrome ' + m[1];
+    m = /Version\/([\d.]+).*Safari/.exec(s);
+    if (m) return 'Safari ' + m[1];
+    return '未知';
+  }
+
+  function osName(ua) {
+    const s = String(ua || '');
+    if (/Windows NT 10\.0/.test(s)) return 'Windows 10/11';
+    if (/Windows NT 6\.3/.test(s)) return 'Windows 8.1';
+    if (/Android/.test(s)) return 'Android';
+    if (/iPhone|iPad|iPod/.test(s)) return 'iOS / iPadOS';
+    if (/Mac OS X/.test(s)) return 'macOS';
+    if (/Linux/.test(s)) return 'Linux';
+    return '未知';
+  }
+
+  /** 内部 kind → 报告里的严重级别 */
+  function severityOf(kind) {
+    if (kind === 'warn') return 'WARN';
+    if (kind === '未捕获') return 'UNCAUGHT';
+    if (kind === 'Promise') return 'REJECTION';
+    return 'ERROR';
+  }
+
+  /** 报告里不要 ✓/✗ 这类手写标记：统一清掉、压掉多余空格 ✓
+   *  ⚠ 只用于**环境 / 状态 / 时间线**这些展示字段 ✗ —— 错误消息与堆栈保持原样，
+   *     那是现场证据，不能替它"美化" ✓ */
+  function cleanValue(v) {
+    return String(v == null ? '' : v)
+      .replace(/[✓✗]/g, '')
+      .replace(/[ \t]{2,}/g, ' ')
+      .trim();
+  }
+
+  /** 拼出整份**诊断报告**（正式格式；最后一节是机器可读的 JSON） */
   function text() {
     const L = [];
     const line = (s) => L.push(s == null ? '' : s);
-    const hr = '============================================================';
-    const thin = '------------------------------------------------------------';
-  /**
-   * 标签列对齐：中文按两个位宽算，补到 12 位。
-   * 记事本里中文是等宽的，这样左右两栏才站得齐 ✓
-   * （直接用 padEnd 的话，"地图"和"语言 / 时区"后面差一半 ✗）
-   */
-  function col(k) {
-    let w = 0;
-    for (const ch of String(k)) w += ch.charCodeAt(0) > 0x2e80 ? 2 : 1;
-    return String(k) + ' '.repeat(Math.max(2, 12 - w));
-  }
+    const hr = '==============================================================================';
+    const thin = '------------------------------------------------------------------------------';
+    const width = (str) => {
+      let w = 0;
+      for (const ch of String(str)) w += ch.charCodeAt(0) > 0x2e80 ? 2 : 1;
+      return w;
+    };
+    /** 顶层字段：标签列对齐（中文按两位算） */
+    const col = (k) => String(k) + ' '.repeat(Math.max(2, 14 - width(k)));
+    const field = (k, v) => line('  ' + col(k) + ' : '
+      + (v == null || String(v) === '' ? '—' : cleanValue(v)));
+    /** 错误块里的短字段 */
+    const ecol = (k) => String(k) + ' '.repeat(Math.max(1, 8 - width(k)));
+    const efield = (k, v, indent) => {
+      const pad = ' '.repeat(indent);
+      const head = ecol(k);
+      const rows = String(v == null ? '' : v).split('\n');
+      rows.forEach((row, i) => line(pad
+        + (i === 0 ? head + ': ' : ' '.repeat(head.length + 2)) + row));
+    };
 
-    line(hr);
-    line(' 地图编辑器 · 报错日志');
-    line(' 导出时间 ' + fullTime(Date.now()) + '（本机时间）');
-    line(thin);
-
-    line(' [这是哪一份]');
+    const now = Date.now();
     const b = basics();
-    for (const k of Object.keys(b)) line('   ' + col(k) + b[k]);
-    line('');
-
-    line(' [当时的状态]');
-    const st = stateLines();
-    if (st.length) for (const [k, v] of st) line('   ' + col(k) + v);
-    else line('   （编辑器还没起来，没有状态可取）');
-    line('');
+    const stPairs = stateLines();
+    const runtime = {};
+    for (const [k, v] of stPairs) runtime[k] = v;
 
     const errs = rec.errors;
     const nWarn = errs.filter((e) => e.kind === 'warn').length;
-    line(' [错误] ' + (errs.length - nWarn) + ' 处'
-         + (nWarn ? '，另有 ' + nWarn + ' 条提示' : '')
-         + (rec.dropped ? '（到上限没留的还有 ' + rec.dropped + ' 条）' : ''));
-    if (!errs.length) {
-      line('   （一条都没有 —— 到这里为止是干净的 ✓）');
+    const nTrue = errs.length - nWarn;
+    const nUncaught = errs.filter((e) => e.kind === '未捕获').length;
+    const nReject = errs.filter((e) => e.kind === 'Promise').length;
+    const nOccur = errs.reduce((a, e) => a + (e.n || 1), 0);
+    const bootFail = runtime['渲染器状态'] || '';
+    const conclusion = bootFail ? 'BOOT FAILURE'
+      : (nTrue ? 'ERROR' : (nWarn ? 'WARN' : 'OK'));
+    const summary = bootFail
+      ? 'BOOT FAILURE（启动阶段失败，详见 [2] / [4]）'
+      : (nTrue ? 'ERROR（' + nTrue + ' 个错误，' + nWarn + ' 条警告）'
+        : (nWarn ? 'WARN（仅 ' + nWarn + ' 条警告）' : 'OK（未记录到错误）'));
+
+    line(hr);
+    line('  PDX 地图编辑器 · 诊断报告');
+    line('  PDX MAP EDITOR · DIAGNOSTIC REPORT');
+    line(hr);
+    field('报告编号', reportId);
+    field('生成时间', fullTimeZone(now));
+    field('报告格式', 'pdx-map-editor.diagnostic/2');
+    field('会话时长', durationText(now - rec.t0));
+    field('结论', summary);
+    line(hr);
+
+    line('');
+    line('[1] 环境信息 / ENVIRONMENT');
+    line(thin);
+    for (const k of Object.keys(b)) field(k, b[k]);
+
+    line('');
+    line('[2] 运行状态 / RUNTIME STATE');
+    line(thin);
+    if (stPairs.length) {
+      for (const [k, v] of stPairs) field(k, v);
     } else {
-      if (errs.length === nWarn) line('   （只有提示，没有真错误 —— 基本是干净的 ✓）');
-      for (const e of errs) {
-        // 消息自己带换行（JSON、栈）时，后续行也**跟着缩进** —— 不然会顶到最左边，
-        // 看着像下一条记录的标题 ✗
-        line('   ' + clock(e.t) + '  ' + (e.kind === 'warn' ? '·' : '✗') + ' ['
-             + e.kind + '] ' + e.msg.split('\n').join('\n       '));
-        if (e.where) line('       ' + e.where);
+      line('  （编辑器尚未完成初始化，无运行状态可取）');
+    }
+
+    line('');
+    line('[3] 错误摘要 / ERROR SUMMARY');
+    line(thin);
+    field('错误', nTrue);
+    field('警告', nWarn);
+    field('未捕获', nUncaught);
+    field('Promise 拒绝', nReject);
+    field('记录条数', errs.length);
+    field('累计出现', nOccur);
+    field('丢弃记录', rec.dropped);
+    field('首条错误', errs.length ? fullTimeZone(errs[0].t) : '—');
+    field('末条错误', errs.length ? fullTimeZone(errs[errs.length - 1].t) : '—');
+
+    line('');
+    line('[4] 错误明细 / ERRORS');
+    line(thin);
+    if (!errs.length) {
+      line('  （未记录到错误）');
+    } else {
+      for (let i = 0; i < errs.length; i++) {
+        const e = errs[i];
+        line('  E-' + pad(i + 1, 3) + '  [' + severityOf(e.kind) + ']  ' + clock(e.t));
+        efield('来源', e.kind, 9);
+        efield('消息', e.msg, 9);
+        efield('位置', e.where || '（未提供）', 9);
+        efield('次数', e.n || 1, 9);
         if (e.stack) {
-          const rows = e.stack.split('\n').slice(0, 12);
-          for (const r of rows) line('       ' + r.trim());
+          line(' '.repeat(9) + ecol('堆栈') + ':');
+          const rows = e.stack.split('\n');
+          const shown = rows.slice(0, 12);
+          for (const r of shown) line(' '.repeat(11) + r.trim());
+          if (rows.length > shown.length) {
+            line(' '.repeat(11) + '…（堆栈后 ' + (rows.length - shown.length) + ' 行未收录）');
+          }
+        } else {
+          efield('堆栈', '（无）', 9);
         }
-        if (e.n > 1) line('       （同一处，共 ' + e.n + ' 次）');
+        if (i + 1 < errs.length) line('');
       }
     }
-    line('');
 
-    line(' [轨迹] ' + rec.events.length + ' 条');
-    if (!rec.events.length) line('   （一条都没有）');
-    for (const ev of rec.events) {
-      line('   ' + clock(ev.t) + '  · ' + ev.name + (ev.detail ? '：' + ev.detail : ''));
+    line('');
+    line('[5] 事件时间线 / TIMELINE');
+    line(thin);
+    if (!rec.events.length) {
+      line('  （无事件）');
+    } else {
+      for (let i = 0; i < rec.events.length; i++) {
+        const ev = rec.events[i];
+        const rel = '+' + ((ev.t - rec.t0) / 1000).toFixed(3) + 's';
+        line('  T-' + pad(i + 1, 3) + '  ' + rel.padEnd(10) + '  ' + clock(ev.t)
+          + '  ' + ev.name + (ev.detail
+            ? '  |  ' + cleanValue(ev.detail).replace(/\n/g, ' / ') : ''));
+      }
+      if (rec.events.length >= MAX_EVENT) {
+        line('  （事件已到上限 ' + MAX_EVENT + ' 条，较早记录可能被截断）');
+      }
     }
+
+    line('');
+    line('[6] 附录 / APPENDIX (JSON)');
+    line(thin);
+    line('---- BEGIN JSON ----');
+    const json = JSON.stringify(buildRaw(b, runtime, conclusion), null, 2);
+    for (const row of json.split('\n')) line(row);
+    line('---- END JSON ----');
+
     line(hr);
-    line(' 把这一整份发给作者（B 站：永夜廿九）就行，不用再教怎么看控制台 ✓');
+    line('  说明：本报告由编辑器自动生成，不包含涂色图片、地图数据或游戏文件。');
+    line('  提交问题时请附完整报告；报告编号 ' + reportId + ' 便于定位。');
     line(hr);
     return L.join('\r\n');   // CRLF：Windows 记事本里换行才不会挤成一行 ✓
+  }
+
+  function cleanMap(obj) {
+    const out = {};
+    for (const k of Object.keys(obj)) out[k] = cleanValue(obj[k]);
+    return out;
+  }
+
+  /** JSON 附录：给自动化分析 / 附件归档用，字段与正文一一对应 */
+  function buildRaw(b, runtime, conclusion) {
+    const errors = rec.errors.map((e, i) => ({
+      id: 'E-' + pad(i + 1, 3),
+      severity: severityOf(e.kind),
+      source: e.kind,
+      time: new Date(e.t).toISOString(),
+      message: e.msg,
+      location: e.where || null,
+      stack: e.stack || null,
+      count: e.n || 1,
+    }));
+    const events = rec.events.map((ev, i) => ({
+      id: 'T-' + pad(i + 1, 3),
+      time: new Date(ev.t).toISOString(),
+      relativeMs: ev.t - rec.t0,
+      name: ev.name,
+      detail: ev.detail ? cleanValue(ev.detail) : null,
+    }));
+    return {
+      schema: 'pdx-map-editor.diagnostic/2',
+      reportId: reportId,
+      generatedAt: new Date().toISOString(),
+      sessionStartedAt: new Date(rec.t0).toISOString(),
+      durationMs: Date.now() - rec.t0,
+      conclusion: conclusion,
+      environment: cleanMap(b),
+      runtime: cleanMap(runtime),
+      errors: errors,
+      events: events,
+      dropped: rec.dropped,
+    };
   }
 
   /**
@@ -371,6 +593,29 @@
     }
   }
 
+  /** 启动页「导出诊断报告」按钮 —— **不依赖 app.js** ✓
+   *
+   *  为什么放在 log.js 里：编辑器自己没起来（脚本报错 / 加载失败 / 渲染器建不出来）时，
+   *  app.js 里的导出入口根本挂不上；而这时正是最需要日志的场合 ✓
+   *  这里只**绑一个已经存在的按钮**，不创建 DOM、不改布局 ✓
+   *  （按钮在 web/index.html 的启动页署名区 ✓） */
+  function bindBootExport() {
+    try {
+      const doc = window.document;
+      const btn = doc && doc.getElementById && doc.getElementById('btn-boot-log');
+      if (!btn || btn.__pdxLogBound) return;
+      btn.__pdxLogBound = true;
+      const label = btn.textContent;
+      btn.addEventListener('click', function (e) {
+        if (e && e.preventDefault) e.preventDefault();
+        event('导出诊断报告', '启动页');
+        const ok = download('pdx-map-editor_诊断报告_' + idStamp(new Date()) + '.txt');
+        btn.textContent = ok ? '已导出' : '导出失败';
+        setTimeout(function () { btn.textContent = label; }, 2200);
+      });
+    } catch (e) { /* 没有 DOM 就算了 ✓ */ }
+  }
+
   window.PDXLOG = {
     event: event,
     error: error,
@@ -381,11 +626,16 @@
     clear: clear,
     text: text,
     download: download,
+    reportId: reportId,
     //: 自己看自己（调试用：控制台里敲 PDXLOG.rec.errors 就能翻）
     rec: rec,
   };
 
   hookConsole();
   hookGlobal();
+  bindBootExport();
+  if (window.document && window.document.addEventListener) {
+    window.document.addEventListener('DOMContentLoaded', bindBootExport);
+  }
   event('日志就绪', '（这一条能看见 = 日志模块加载上了 ✓）');
 })(window);

@@ -17,7 +17,7 @@
 const H = require('./lib/browser_stub.js');
 
 const WHICH = (process.argv[2] || 'VIC3').toUpperCase();
-const CARD = WHICH === 'VIC3' ? 'V3 原版' : WHICH === 'EU5' ? 'EU5 原版' : `${WHICH} 原版`;
+const CARD = WHICH === 'VIC3' ? 'VIC3 原版' : WHICH === 'EU5' ? 'EU5 原版' : `${WHICH} 原版`;
 
 function bench(name, fn, iters = 7) {
   fn(); fn();

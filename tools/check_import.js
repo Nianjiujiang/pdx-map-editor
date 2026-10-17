@@ -811,12 +811,13 @@ async function testMultiImport() {
   ok('两张卡各挂一个小序号（1 / 2 ✓）', nos2.join(',') === '1,2',
     nos2.join(',') || '没有序号 ✗');
 
-  /* 卡片一多就**另起一列** ✓（用户 2026-10-12 要求）
+  /* 2026-10-17 用户："统一变成列表形式，多的时候塞进列表而不是塞进两列"
+     → 永远一列，卡片多了由**列表自己滚**（CSS max-height），不再加 two-col / wide-pick ✓
      ⚠ 读类名要用 classList.contains ✗ —— 桩里 className 和 classList 不同步
      （app 用的是 classList.add ✓，className 那边看不见 ✓）*/
   ok('卡不多的时候还是老老实实一列（不分列 ✓）',
     !listEl.classList.contains('two-col'), `${listEl.children.length} 张`);
-  /* 一直导到超过阈值（app.js 的 TWO_COL_AT = 10 ✓）
+  /* 一直导到超过旧阈值（原来 app.js 的 TWO_COL_AT = 10，现在已删 ✓）
      同一份文件反复导 → 每次都是"库里已有一份一模一样的"→ 直接再进一张 ✓ */
   const one = blobOf(raw);
   let guard = 0;
@@ -824,19 +825,21 @@ async function testMultiImport() {
     fi.files = [one];
     await fi.onchange();
   }
-  ok('卡到阈值以上 → 列表加上 two-col（另起一列 ✓）',
-    listEl.classList.contains('two-col'),
-    `${listEl.children.length} 张 / ${[...listEl.classList._s].join(' ')}`);
   const innerBox = env.get('boot-inner');
-  ok('面板同时放宽（340px 里塞不下两列 ✓）',
-    !!innerBox && innerBox.classList.contains('wide-pick'),
+  ok('卡到 10 张以上 → 还是**一列列表**（不再排两列 ✓）',
+    listEl.children.length >= 10
+    && !listEl.classList.contains('two-col')
+    && !(innerBox && innerBox.classList.contains('wide-pick')),
+    `${listEl.children.length} 张 / ${[...listEl.classList._s].join(' ')}`);
+  ok('面板也不放宽（列表自己滚，不撑大启动框 ✓）',
+    !!innerBox && !innerBox.classList.contains('wide-pick'),
     innerBox && innerBox.classList._s ? [...innerBox.classList._s].join(' ') || '（空的）' : '没取到面板 ✗');
 
   // 收尾：点一张卡让 boot 正常结束（不然那个 Promise 一直挂着）
   const card = listEl.children[0];
   if (card) card.onclick();
   await booting;
-  ok('点了卡之后面板收回原宽（不然加载条也被撑成 760px ✓）',
+  ok('点了卡之后启动框还是原来的宽度（没有 wide-pick 要收 ✓）',
     !(innerBox && innerBox.classList.contains('wide-pick')),
     innerBox ? [...innerBox.classList._s].join(' ') || '（空的 ✓）' : '?');
 }

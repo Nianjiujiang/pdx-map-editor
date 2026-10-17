@@ -380,11 +380,33 @@ export class LabelLayer {
    * 以前是硬撑到 MIN_FONT，于是缩小时密密麻麻的小国名全挤在一起。
    * 现在 MIN_FONT 是"够不够格显示"的门槛，不是下限。
    */
-  _fontSize(pixels, tier = 0) {
+  /*  🔴🔴 **2026-10-17：字号拆成两个** ✗✗（用户："把字号分开两个，一个给地块，一个给势力"✓）
+   *
+   *  以前只有一个 `__CK3_FONT_SCALE` ✗ —— 调大地名，国名也跟着一起大 ✓ 两件事绑死 ✓
+   *  现在分成：`__CK3_FONT_PLACE`（地块名 ✓）/ `__CK3_FONT_POWER`（势力名 ✓）
+   *
+   *  ⚠⚠ **用现成的判据分这两类** ✗✗ —— 代码里本来就有，别新造字段 ✓
+   *    · `tier < nEra` = **时代层**（剧本 / 年份那几层的国名 / 势力名 ✓）
+   *      `open()` 和上面那道字号门槛**用的就是它** ✓ 同一个口径 ✓
+   *    · `layer === 2` = **玩家涂出来的色块名** ✓（`_paint` 里那个"玩家名"层 ✓
+   *      见 drawPoints 里"地名 0 / 国名 1 / 玩家名 2"那段 ✓）
+   *    · 其余（`tier >= nEra` 且不是色块）→ **地块名** ✓（含海 / 湖 / 河 / 荒地名 ✓）
+   *  ⚠ `this.nEra` 本来就在（构造时从 meta.eraDates 取 ✓）—— 别再传 `nEra` 进来 ✗
+   *  ⚠ **两个都要留回退** ✗ —— 老的内联产物 / 测试桩可能只设了旧那个名字 ✓
+   *    回退顺序：新名字 → 旧名字 `__CK3_FONT_SCALE` → 1 ✓
+   *    （"只设旧值"的环境行为**跟改造前一模一样** ✓ 不炸也不变 ✓）
+   *  @param {number} pixels 面积（√ 之后就是边的像素数 ✓）
+   *  @param {number} tier   这个点自己那一层（`open()` 拿它查缩放门槛 ✓）
+   *  @param {number} layer  这个点画在哪一层（0 地名 / 1 国名 / 2 玩家名 ✓ 缺省 0 ✓）*/
+  _fontSize(pixels, tier = 0, layer = 0) {
     const side = Math.sqrt(Math.max(pixels || 1, 1)) * this.scale;
     const boost = TIER_FONT_BOOST[tier] || 1;
-    // 设置页的字号倍率：走一个全局值，开发版（真 ES module）和内联版都能用 ✓
-  const _userScale = (typeof window !== "undefined" && window.__CK3_FONT_SCALE) || 1;
+    const _isPower = (tier < (this.nEra || 1)) || (layer === 2);
+    const _w = (typeof window !== 'undefined') ? window : null;
+    const _legacy = (_w && _w.__CK3_FONT_SCALE) || 1;
+    const _userScale = _isPower
+      ? ((_w && _w.__CK3_FONT_POWER) || _legacy)
+      : ((_w && _w.__CK3_FONT_PLACE) || _legacy);
     const size = side * FONT_RATIO * boost * _userScale;
     // **只有最粗那一层（国名/大洲名）留门槛**，其余层一律 0 = 全显示。
     // 不按下标查表：层数每个游戏不一样（EU5 有 6 层），查不到就会退回 MIN_FONT，
@@ -548,20 +570,6 @@ export class LabelLayer {
    * 直接画一组点（常规模式按颜色聚出来的那些色块）。
    * @param {Array<{name:string, x:number, y:number, area:number}>} points
    */
-  /** 某一层的地名导成点数组（给"两套名字合并画"用）
-   *  `tid` 是头衔序号 —— 上层拿它认"这个名字是哪个头衔的"（改名、图例归属 ✓） */
-  pointsFor(tier) {
-    const list = this.byTier[tier];
-    if (!list || !list.length) return [];
-    const { names, lx, ly } = this.titles;
-    const out = [];
-    for (const i of list) {
-      if (!names[i]) continue;
-      out.push({ tid: i, name: names[i], x: lx[i], y: ly[i], area: this.sizeArea[i], tier });
-    }
-    return out;
-  }
-
   /**
    * 直接画一组点。
    * @param {number} [need] 这一层的缩放门槛（百分比）。缩放不到就整层不画 ——
@@ -608,7 +616,10 @@ export class LabelLayer {
       T[n] = p.name;
       X[n] = p.x;
       Y[n] = p.y;
-      const size0 = this._fontSize(p.area, p.tier || 0);
+      /* ⚠ 第三个参数是**层**（0 地名 / 1 国名 / 2 玩家名 ✓）——
+       *   字号分"地块 / 势力"两类就靠它 + tier（见 `_fontSize` 那段 ✓）
+       *   别新造字段 ✗ 这个 `layer` 本来就是每个点自带的 ✓ */
+      const size0 = this._fontSize(p.area, p.tier || 0, p.layer || 0);
       if (size0 <= 0) continue;
       // **名字不超出自己的版图** ✓（不是裁字 ✗ —— 太长就自己变小 ✓）
       // p.w = 那一片的横向跨度（地图像素 ✓，由 app 随 paintBlocks 一起给）
@@ -630,17 +641,20 @@ export class LabelLayer {
       HOT[n] = false;
       LY[n] = p.layer || 0;
       /* **所有名字一律 50% 不透明** ✓（用户要求：地名和国名都要 ✓）
-       *   以前只有"玩家涂出来的国名"（`p.fade`）拿 0.6 ✗ 地名是全不透明的 1 ✓
-       *   两者现在一起压在地图上 —— 半透的好处是底下的填色/边界还看得见 ✓
-       * **现在两档可调**（用户定的：设置里 25 / 50 / 75 / 100 ✓）：
-       *   分法是按**层**——"剧本/年份那几层"算国名（势力名 ✓）、其余算地名 ✓
-       *   跟 drawLabels 里那条分层口径必须一致 ✗ 错一处就没法单独调 ✓
-       *   玩家涂出来的色块名（p.fade）归到地名那一档 ✓
+       *   半透的好处是底下的填色 / 边界还看得见 ✓
+       * **两档可调**（用户定的：设置里 25 / 50 / 75 / 100 ✓）——
+       * **分法是按"层"**（2026-10-16 用户定的 ✓）：
+       *   · `tier < nEra`（剧本 / 年份那几层）= **势力名** → 「势力名称不透明度」✓
+       *     **玩家涂出来的色块名也归这档** ✗（drawLabels 给它们 `tier: 0` ✓）
+       *   · `tier >= nEra`（地区 / 省份 / 地点，"真正的"地名）= **地名** → 「地名不透明度」✓
+       *   ⚠ 跟 drawLabels 里那条分层口径必须一致 ✗ 错一处就没法单独调 ✓
+       *     （以前画面上叫"色块名"的那批一律压进地名档 ✗ →
+       *      剧本层的国名全跟着「地名不透明度」走，「势力名称」那根滑条怎么拖都没反应 ✓）
        *   ⚠ 这里只有 **this.nEra** ✗（那个自由变量 nEra 在模块顶上，类里取不到 ✓）*/
       const _aC = this.alphaCountry == null ? 0.5 : this.alphaCountry;
       const _aP = this.alphaPlace == null ? 0.5 : this.alphaPlace;
       const _nEra = this.nEra || 0;
-      F[n] = (!p.fade && _nEra > 0 && (p.tier || 0) < _nEra) ? _aC : _aP;
+      F[n] = (_nEra > 0 && (p.tier || 0) < _nEra) ? _aC : _aP;
       C[n] = p.color || '';   // 「国名取色」：带着自己那族的颜色画
       n++;
     }

@@ -26,6 +26,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import re
 import sys
@@ -288,7 +289,7 @@ def main() -> int:
         for k, v in agg.items():
             members.setdefault(k, v)
     for i, m in members.items():
-        c = largest_block_centre(m, offsets, neigh, counts, pcx, pcy)
+        c = largest_block_centre(m, offsets, neigh, counts, pcx, pcy, map_w=w)          # 跨接缝的块 x 走展开坐标 ✓（见函数说明 ✓）
         if c is not None:
             lx[i], ly[i] = c[0], c[1]
             block_area[i] = c[2]
@@ -483,33 +484,23 @@ def main() -> int:
             has_land.add(cur_)
             cur_ = parent.get(cur_)
             g_ += 1
-    hid = 0
-    for k_ in keys:
-        if level.get(k_, 5) >= 5 or k_ not in E.NAME_OF or k_ in has_land:
-            continue
-        i_ = index_of.get(k_)
-        if i_ is not None and names[i_]:
-            names[i_] = ""
-            names_en[i_] = ""
-            hid += 1
-    log(f"  水域上级（下属地块全是水）隐藏名字 {hid} 个")
-
-    # 含岛屿的洋（大西洋系）"全是水"判不出来，单独标成"不显示地名" ——
-    # 只是不打标签，节点照旧可涂、悬停也照旧能查到名字。
+    # 🔴🔴 **水的名字一律照常显示** ✗✗（2026-10-15 用户定的 ✓）
+    #   用户原话："为什么你不给水域填名字啊……我是不是记得每个水域都有上层名字" ✓
+    #     "原本游戏的文件的水域单位是**地点**而不是像素！" ✓ —— 他说得对 ✓
+    #     （实取：水地块 5709 个、2 278 万像素（占全图 68% ✓）、
+    #       南太平洋一块 170 万 px ✓、北太平洋 138 万 ✓ —— 是我把
+    #       `titles.area`（=地块个数）念成像素了 ✗）
+    #   以前这儿有**三道闸**，把水的名字全憋住了 ✗：
+    #     ①「水域上级（下属地块全是水）隐藏名字」604 个 ——
+    #        正是**南太平洋 / 北太平洋 / 印度洋**这些占满屏幕的大块 ✗
+    #     ②「含岛屿的洋（大西洋系）只隐藏地名」1077 格 ✗ —— 同上 ✗
+    #     ③「水名在任何层级都不显示」—— 连地点层逐块的名也清了 ✗
+    #   三道**全撤** ✓ —— 水从此跟陆地一个待遇：
+    #     · 地点层显示**这块水自己**的名字（南太平洋 / 楚科奇海 / 安塔拉角 ✓）
+    #     · 粗层显示**它那一层祖先**的名字（波罗的海 / 北海 ✓ = 用户说的"上层名字" ✓）
+    #   ⚠ 名字本来就在数据里（树节点自带、本地化齐 ✓）—— 这里**一个都不编** ✓
+    #     位置 / 面积 / 可涂性 / 边界一个字节不动 ✓
     hide_label = [False] * len(names)
-    OCEAN_NAMES = ("大西洋", "太平洋", "印度洋", "南大洋", "北冰洋")
-    hid2 = 0
-    for i_, n_ in enumerate(names):
-        if n_ and any(o in n_ for o in OCEAN_NAMES) and names[i_]:
-            hide_label[i_] = True
-            hid2 += 1
-    log(f"  只隐藏地名（仍可涂）：{hid2} 个")
-
-    # 水名出现在**任何层级**（比如 eastern_baltic_sea 既是海也是省）都不显示
-    for uid_, disp_ in E.NAME_OF.items():
-        if disp_ in water_names and uid_ in index_of:
-            names[index_of[uid_]] = ""
-            names_en[index_of[uid_]] = ""
     # **水域优先**：impassable_mountains 里有些其实是海（跟 sea_zones 重叠），
     # 不扣掉的话会被当成陆地染成棕色 —— 实际该是"不可通行的海"。
     if "#impassable" in cat:
@@ -518,11 +509,163 @@ def main() -> int:
         cat["#impassable"] -= water
         if overlap:
             log(f"  （{len(overlap)} 个既在 impassable 又在 sea/lakes，按水域处理）")
-    # 自己建三个伪头衔（build_special_titles 按 blank 过滤，我们这批是"已知锁定"，
+
+    # 🔴🔴 **水名表提前解析** ✗✗（2026-10-14 ✓ 为了让海/湖能**按海区**分片 ✓）
+    #
+    #   用户点破的基本思维（原话）：
+    #     "province.bmp 里面那些小碎块是**省份级水域**，上面是地区级，
+    #      再上面是战略级，每个水域不同的层级**按游戏内容给名字**，
+    #      反正是**遵循陆地那样的思路**" ✓
+    #   → 关键在"**每个水域**"✗ 不是"每一层"✓
+    #     每一层里还得**按海区分成 N 片** ✓ 片名就是那个海区的名字 ✓
+    #
+    #   ⚠ 我第一版只做了"每层一个节点" ✗（`#sea_reg_0` 一片盖住全部 4791 个海格 ✓）
+    #     → 整层的海共用一个名字 ✓ 那不是"按游戏内容给名字"✓
+    #     实测就露馅了：回填只中了 8 个节点（5 层 × 海/湖 各一个 ✓）✓
+    #
+    #   ⚠ 原来这段在文件后半 ✗（`seaNamesByTier` 写完 meta 那儿 ✓）——
+    #     那时节点早建完了 ✓ 名字只能"回填"✓ 而回填做不到"一片一个名"✗
+    #     （一个节点只能有一个名字 ✓ 想按海区分就得**建的时候就分开** ✓）
+    #   → 所以**挪到这儿** ✓ 后面那段改成复用它 ✓
+    _sea_by_tier: dict[str, dict[int, str]] = {}
+    try:
+        _t0 = E.load_water_names_by_tier(root)
+        _arr0 = E.sea_names_by_tier_array(_t0, TIER_ORDER)
+        for _r0, _tn0 in enumerate(TIER_ORDER):
+            if _r0 < len(_arr0) and _arr0[_r0]:
+                _sea_by_tier[_tn0] = {int(k): str(v) for k, v in _arr0[_r0].items()}
+        _WL_TBL = {int(k): str(v) for k, v in (_t0.get("wasteland") or {}).items()}
+        _AREA_TBL = {int(k): str(v) for k, v in (_t0.get("area") or {}).items()}
+        log(f"水名表（提前）：{[len(_sea_by_tier.get(t, {})) for t in TIER_ORDER]} · 荒地 {len(_WL_TBL)} 条")
+    except Exception as _e0:
+        _WL_TBL = {}
+        _AREA_TBL = {}
+        log(f"水名表（提前）解析跳过：{_e0}")
+    # 🔴🔴 **水域不再是伪头衔** ✗✗（2026-10-14 ✓ 用户要求 ✓）
+    #
+    #   用户："你就不能把水域变成一个**仅仅是不能填色的地块**吗……
+    #     最底层的单位也有自己的 Province id"✓
+    #     "和陆地一样啊，**大名，河北，华北**，这样下来"（= 逐块 / 地区 / 大区 ✓）
+    #     "只是水域**带一个小标签**来让他在**边界和颜色**等方面听从相关的开关，
+    #      **其他逻辑不变**"
+    #
+    #   → 所以 `locked` 里**只剩 `#impassable`** ✓（海 / 湖两个**不再建节点** ✓）
+    #     水域从此"所有层都无主"✓ 身份靠 `pid` + `meta.waterMask`（那个"小标签"✓）
+    #     颜色走海域色 ✓ 边界听水域那两条开关 ✓ 高亮按 pid ✓ 别的全跟普通地块一样 ✓
+    #
+    #   ⚠ **`#impassable` 留着** ✗ —— 它是"不可通行**山地**"✓ 不是水 ✓
+    #     而且它能"一块块涂色"✓（细层不盖、保留真节点 ✓ 见下面那个分支 ✓）
+    #   ⚠⚠ **EU5 有真层级** ✗（`reg` / `area` / `prov` / `loc` ✓）——
+    #     按用户"大名 / 河北 / 华北"那条口径，**粗层本该保留** ✓
+    #     但这一刀先做到"**最细层回归逐块**"✓（那是关键 ✓）
+    #     粗层怎么补见文件末尾 TODO ✓（`seaNamesByTier` 还在 ✓ 数据没丢 ✓）
+    _water_all = np.zeros(int(n_prov), dtype=bool)
+    for _wcat in ("#sea", "#lake"):
+        for _wp in (cat.get(_wcat) or ()):
+            _wpi = int(_wp)
+            if 0 <= _wpi < _water_all.size:
+                _water_all[_wpi] = True
+    log(f"水域标签：{int(_water_all.sum())} 个地块"
+        f"（不再是伪头衔 ✓ 身份靠 pid + waterMask ✓）")
+
+
+    # 🔴🔴 **水陆混片拆分**（HOI4 口径——同名拆两片 ✓ 2026-10-15 用户要求 ✓）
+    #
+    #   用户原话："在 EU5 原版，有一些大区域同时包含了水体和陆地。但这个办法其实
+    #     在 HOI4 已经解决过了……他们被分开成了两个同名区域，从而分开了水陆。" ✓
+    #     （点名的 5023 英格兰 / 5452 美索美洲，在区域层就是"不列颠"/"美索美洲"
+    #      底下的水陆 ✓）
+    #   HOI4 那边怎么做的（见 `build_hoi4.py`）：海省**不在州里** ✓
+    #     水片由 `build_special_titles` 按层单独造、**名字取那一层的区域名** ✓
+    #     —— 于是岛屿和它周围那片海是**两个同名片** ✓ 这里照做 ✓
+    #
+    #   实测（数据核对）：EU5 的水格在区域/地区/省份三层**全指着陆地的树节点** ✗
+    #     区域层 82 片里 74 片水陆混杂（行 2 = reg ✓）、地区层 237 片、省份层 466 片 ✓
+    #   → 拆：水格指给**同名新片** ✓ 陆格原地不动（涂色 / 边界 / 名字一个字节不变 ✓）
+    #
+    #   ⚠⚠ **行号 = `TIER_ORDER` 的序号** ✗✗
+    #     `TIER_ORDER = (ERA_TIER, "reg", "area", "prov", "loc")` = 5 行 ✓
+    #     所以 **reg / area / prov = 行 1 / 2 / 3** ✓
+    #     （上一版写成 2/3/4 ✗ → 拆的是 area/prov/loc：**区域层一片没动** ✗
+    #       而 loc 层本来就逐块一片 ✓ 白拆 ✓）
+    #   ⚠⚠ **海 / 湖 分开拆、分开上色** ✗✗
+    #     一个树节点里海格湖格都有时拆**两片**：
+    #       · 海 = `<键>_sea`  色 (32,57,92) ✓
+    #       · 湖 = `<键>_lake` 色 (47,110,150) ✓
+    #     （跟 EU4 / HOI4 / VIC3 / build_data 那套类色**同一组常量** ✓）
+    #     上一版海湖**共用一个海蓝** ✗ → 用户："湖泊莫名其妙变成了海域的颜色"✗
+    #   ⚠⚠ **新片必须带标签位置** ✗✗
+    #     没有 lx/ly 的话 `LabelLayer` 压根不收（它要 lx/ly/area 三样 ✓）
+    #     → 海面上一个名字都出不来 ✗ 用户报的"海域们失去了自己的名字"就是它 ✓
+    #     → 用跟第 9 步**同一个算法**当场算（`largest_block_centre` = 最大连通块重心 ✓）
+    #       成员只取**水格** ✓ 于是标正好落在水面上 ✓
+    #   ⚠ 纯水片（北太平洋 / 巴哈马海域那种）**不拆** ✗ —— 它没有陆格、无从"分" ✓
+    #     它们的名字是**故意清的**（见上面"水域上级隐藏名字"那段 ✓）别在这儿补 ✗
+    _SEA_RGB = (32, 57, 92)                 # 海 ✓
+    _LAKE_RGB = (47, 110, 150)              # 湖 ✓
+    _WASTE_RGB = (94, 94, 94)               # 荒地（不可通行）✓
+    _sea_pids = set(cat.get("#sea", ()) or ())
+    _lake_pids = set(cat.get("#lake", ()) or ())
+    _split_log: dict[str, int] = {}
+    for _grow in (1, 2, 3):                 # reg / area / prov ✓
+        _rowd = titlemap[_grow]
+        _mem: dict[int, list[int]] = {}
+        for _pp in np.nonzero(_rowd != NO_TITLE)[0]:
+            _t = int(_rowd[_pp])
+            if keys[_t].startswith("#"):
+                continue                    # 伪头衔 / 无名色块不动 ✓
+            _mem.setdefault(_t, []).append(int(_pp))
+        for _t, _mps in _mem.items():
+            _w_sea = [q for q in _mps if q in _sea_pids]
+            _w_lake = [q for q in _mps if q in _lake_pids]
+            if len(_w_sea) + len(_w_lake) == len(_mps):
+                # 纯水片（北太平洋 / 波罗的海那种 ✓）**不拆** ✓ —— 没陆格可拆 ✓
+                # 但**颜色要按类色**✗✗（原来是随手配的杂色 ✗ —— 用户报的
+                # "海域、湖泊没有应有的上色"里粗层那半就是它 ✓）
+                colors[_t] = _SEA_RGB if len(_w_sea) >= len(_w_lake) else _LAKE_RGB
+                continue
+            for _suf, _w, _rgb in (("_sea", _w_sea, _SEA_RGB),
+                                   ("_lake", _w_lake, _LAKE_RGB)):
+                if not _w:
+                    continue                # 这一片没有这类水格 ✓
+                _new_key = f"{keys[_t]}{_suf}"
+                if _new_key in index_of:
+                    continue                # 幂等 ✓
+                _idx = len(keys)
+                _ctr = largest_block_centre(_w, offsets, neigh, counts, pcx, pcy,
+                                            map_w=w)      # 同上 ✓
+                keys.append(_new_key)
+                names.append(names[_t])     # **同名两片** ✓（HOI4 就是这样 ✓）
+                names_en.append(names_en[_t])
+                # ⚠「不打标签」也一起继承 ✗（"北大西洋诸岛"那种洋名原节点是憋住的 ✓
+                #   新片不继承的话，那个标签会从水里冒出来 ✗）
+                hide_label.append(bool(hide_label[_t]))
+                level[_new_key] = level[keys[_t]]
+                parent[_new_key] = parent.get(keys[_t])
+                index_of[_new_key] = _idx
+                ordered_keys.append(_new_key)
+                colors = np.vstack([colors, np.array([_rgb], dtype=np.uint8)])
+                _px = int(sum(int(counts[q]) for q in _w))
+                area = np.concatenate([area, np.array([_px], dtype=np.int64)])
+                block_area = np.concatenate(
+                    [block_area, np.array([int(_ctr[2]) if _ctr else 0], dtype=np.int64)])
+                lx = np.concatenate(
+                    [lx, np.array([float(_ctr[0]) if _ctr else np.nan], dtype=np.float32)])
+                ly = np.concatenate(
+                    [ly, np.array([float(_ctr[1]) if _ctr else np.nan], dtype=np.float32)])
+                _rowd[np.array(_w, dtype=np.int64)] = _idx
+                _tag = ("区域" if _grow == 1 else "地区" if _grow == 2 else "省份") + _suf
+                _split_log[_tag] = _split_log.get(_tag, 0) + 1
+    n_nodes = len(keys)
+    if _split_log:
+        log("水陆混片拆分（HOI4 口径）："
+            + " · ".join(f"{k} {v} 片" for k, v in sorted(_split_log.items())) + " ✓")
+
+
+    # 自己建伪头衔（`build_special_titles` 按 blank 过滤，我们这批是"已知锁定"，
     # 不走那条路）：节点排在真实节点之后，前端按序号判锁。
-    locked = [("#sea", "海洋", (30, 54, 82)),
-              ("#lake", "湖泊", (58, 104, 138)),
-              ("#impassable", "不可通行", (94, 94, 94))]
+    # 🔴 **只剩"不可通行"** ✗（海 / 湖 2026-10-14 起不建 ✓ 见上面那段说明 ✓）
+    locked = [("#impassable", "不可通行", (94, 94, 94))]
     added = 0
     waste_tids: list[int] = []       # 荒地节点（细层每块一个 + 粗层那个伪头衔）
     waste_pids: list[int] = []
@@ -532,91 +675,121 @@ def main() -> int:
         ids_l = sorted(cat.get(key, ()))
         if not ids_l:
             continue
-        idx = len(keys)
-        keys.append(key)
-        names.append(label)
-        names_en.append(label)
-        # 层级号给"超出所有层"：地名层按这个跳过它们，于是海/不可通行不出地名
-        # （其余几套的伪头衔也是这么排的）
-        level[key] = len(TIER_ORDER)
-        colors = np.vstack([colors, np.array([rgb], dtype=np.uint8)])
-        area = np.concatenate([area, np.zeros(1, dtype=np.int64)])
-        block_area = np.concatenate([block_area, np.zeros(1, dtype=np.int64)])
-        lx = np.concatenate([lx, np.full(1, np.nan, dtype=np.float32)])
-        ly = np.concatenate([ly, np.full(1, np.nan, dtype=np.float32)])
-        if key == "#impassable":
-            # **最细那层不盖** ✗ —— 不可通行的地块本来就在层级树里有自己的节点和
-            # 名字（约顿海姆、哈当厄尔高原…）。整片盖住的话，1818 块荒地共用一个
-            # 颜色，想给其中一块单独上色根本做不到。留着它们，细层就能一块一色。
-            fine_row = len(TIER_ORDER) - 1
-            rows = np.array([r for r in range(len(TIER_ORDER)) if r != fine_row])
-            titlemap[np.ix_(rows, np.array(ids_l, dtype=np.int64))] = idx
-            waste_tids.append(idx)                       # 粗层那个灰节点
-            waste_pids.extend(ids_l)
-            for pid_l in ids_l:
-                nm_l = loc_id_to_name.get(pid_l)
-                if nm_l and nm_l in index_of:
-                    waste_tids.append(index_of[nm_l])    # 细层用它自己的节点
-        else:
-            titlemap[:, np.array(ids_l)] = idx           # 海/湖：照旧六层都在场
-            # 海/湖自己的名字不出现在图上
-            for pid_l in ids_l:
-                nm_l = loc_id_to_name.get(pid_l)
-                if nm_l and nm_l in index_of:
-                    names[index_of[nm_l]] = ""
-                    names_en[index_of[nm_l]] = ""
-        if key in ("#sea", "#lake"):
-            water_tids.add(idx)
-        added += 1
-        log(f"  锁住 {key}（{label}）：{len(ids_l)} 个地块 → 节点 {idx}")
+        # 🔴🔴 **每层一片** ✗✗（2026-10-14 ✓ 跟 EU4 / HOI4 / VIC3 / CK3 对齐）
+        #
+        #   用户点破的基本思维（原话）：
+        #     "province.bmp 里面那些小碎块是**省份级水域**，上面是地区级，
+        #      再上面是战略级，每个水域不同的层级**按游戏内容给名字**，
+        #      反正是**遵循陆地那样的思路**" ✓
+        #   → 所以海 / 湖**每一层各有一片** ✓ 键名 `#sea_<层>_<序号>` ✓
+        #     （原来这里是"整片一个节点"`titlemap[:, ids_l] = idx` ✗ ——
+        #      所有层共用一个 `#sea` ✓ 于是换层时海域范围根本不变 ✓
+        #      正是用户报的"地区/省份模式下都按战略地区"那个毛病 ✓）
+        #
+        #   ⚠ **`#impassable` 不在此列** ✗ —— 它保持原样（见下面那个分支 ✓）：
+        #     它的地块**本来就在层级树里有自己的节点和名字** ✓ 细层不盖 ✓
+        #     "每层一片"只对**海 / 湖**做 ✓（它们才是"数据里没有细层归属"的那种 ✓）
+        #
+        #   ⚠ 名字这一步**先给类名** ✗（"海洋" / "湖泊" ✓）——
+        #     真名要等 `seaNamesByTier` 解析完（见文件后半 ✓）再回填 ✓
+        #     回填之前前端会判成"类名 → 没名字"✓ 那是**安全**的 ✓
+        #     反过来（先编个假名）会让"没有名字的片"顶着别人的名字出标 ✗
+        _layers = TIER_ORDER if key != "#impassable" else [None]
+        for _r, _tname in enumerate(_layers):
+            idx = len(keys)
+            keys.append(f"{key}_{_tname}_0" if _tname else key)
+            names.append(label)
+            names_en.append(label)
+            # 层级号 = **这一层自己** ✓（原来给"超出所有层"✗ 那是"整片"的写法 ✓
+            #   ⚠ 给超出值的话地名层会跳过它 ✓ 于是水域片既不出地名也不出片名 ✗）
+            level[f"{key}_{_tname}_0" if _tname else key] = _r
+            colors = np.vstack([colors, np.array([rgb], dtype=np.uint8)])
+            area = np.concatenate([area, np.zeros(1, dtype=np.int64)])
+            block_area = np.concatenate([block_area, np.zeros(1, dtype=np.int64)])
+            lx = np.concatenate([lx, np.full(1, np.nan, dtype=np.float32)])
+            ly = np.concatenate([ly, np.full(1, np.nan, dtype=np.float32)])
+            if key == "#impassable":
+                # **最细那层不盖** ✗ —— 不可通行的地块本来就在层级树里有自己的节点和
+                # 名字（约顿海姆、哈当厄尔高原…）。整片盖住的话，1818 块荒地共用一个
+                # 颜色，想给其中一块单独上色根本做不到。留着它们，细层就能一块一色。
+                fine_row = len(TIER_ORDER) - 1
+                rows = np.array([r for r in range(len(TIER_ORDER)) if r != fine_row])
+                titlemap[np.ix_(rows, np.array(ids_l, dtype=np.int64))] = idx
+                waste_tids.append(idx)                       # 粗层那个灰节点
+                waste_pids.extend(ids_l)
+                for pid_l in ids_l:
+                    nm_l = loc_id_to_name.get(pid_l)
+                    if nm_l and nm_l in index_of:
+                        waste_tids.append(index_of[nm_l])    # 细层用它自己的节点
+            else:
+                # 🔴 **按海区分组** ✗✗ —— 不是"每层一个节点"，是"每层 N 个" ✓
+                #   分组的依据 = **这一层那一张水名表里的名字** ✓
+                #     · 同一个名字的地块 = 同一个海区 → 一片 ✓
+                #     · 表里没有的地块 → 全归"无名组"一片 ✓ 名字用类名 ✓
+                #       （前端判"类名 = 没名字"→ 不出标 ✓ 正是"没有就是没有" ✓）
+                #   ⚠ 顺序要**稳定** ✗ —— 按名字排序 ✓ 不然每次烤出来的序号都不一样 ✓
+                #     （序号进了 `titlemap` 和 `keys` ✓ 变了就是"包每次都不一样" ✓）
+                _tbl = _sea_by_tier.get(_tname) or {}
+                _groups: dict[str, list[int]] = {}
+                for _pid in ids_l:
+                    _groups.setdefault(_tbl.get(_pid) or "", []).append(_pid)
+                for _gi, (_nm, _pids) in enumerate(sorted(_groups.items())):
+                    idx = len(keys)
+                    keys.append(f"{key}_{_tname}_{_gi}")
+                    names.append(_nm or label)
+                    names_en.append(_nm or label)
+                    level[f"{key}_{_tname}_{_gi}"] = _r
+                    colors = np.vstack([colors, np.array([rgb], dtype=np.uint8)])
+                    area = np.concatenate([area, np.zeros(1, dtype=np.int64)])
+                    block_area = np.concatenate([block_area, np.zeros(1, dtype=np.int64)])
+                    lx = np.concatenate([lx, np.full(1, np.nan, dtype=np.float32)])
+                    ly = np.concatenate([ly, np.full(1, np.nan, dtype=np.float32)])
+                    titlemap[_r, np.array(_pids, dtype=np.int64)] = idx
+                    if key in ("#sea", "#lake"):
+                        water_tids.add(idx)
+                    added += 1
+                log(f"  锁住 {key}（{label}）第 {_r} 层（{_tname}）："
+                    f"{len(ids_l)} 个地块 → {len(_groups)} 片")
+                # 海/湖自己的名字不出现在图上（照旧 ✓）
+                for pid_l in ids_l:
+                    nm_l = loc_id_to_name.get(pid_l)
+                    if nm_l and nm_l in index_of:
+                        names[index_of[nm_l]] = ""
+                        names_en[index_of[nm_l]] = ""
+                continue
+            if key in ("#sea", "#lake"):
+                water_tids.add(idx)
+            added += 1
+            log(f"  锁住 {key}（{label}）：{len(ids_l)} 个地块 → 节点 {idx}")
     n_nodes += added
 
-    # ---- 9c. 荒地自动上色：按"跟周边国家接壤的边长占比" ----
-    # 边长用**边界像素对**数（四邻）来量，比"挨着几个省"准得多：
-    # 一块荒漠旁边或许挨着三个省，但其中 80% 的边属于同一个国家 —— 那就该是那一国。
-    waste_auto: list[list[int]] = []
-    if waste_pids:
-        n_pid = int(ids.max()) + 1
-        wmask = np.zeros(n_pid, dtype=bool)
-        wmask[np.array(sorted(set(waste_pids)), dtype=np.int64)] = True
-        pair_cnt: dict[int, int] = {}
-        for axis in (0, 1):
-            a = ids[:-1, :] if axis == 0 else ids[:, :-1]
-            b = ids[1:, :] if axis == 0 else ids[:, 1:]
-            aw = wmask[a]
-            bw = wmask[b]
-            m = aw != bw                       # 一边是荒地、一边不是
-            if not m.any():
-                continue
-            pa = a[m].astype(np.int64)
-            pb = b[m].astype(np.int64)
-            awm = aw[m]
-            wp = np.where(awm, pa, pb)         # 规范成 (荒地, 邻居)
-            nb = np.where(awm, pb, pa)
-            key = (wp << 16) | nb
-            uk, uc = np.unique(key, return_counts=True)
-            for k_, c_ in zip(uk.tolist(), uc.tolist()):
-                pair_cnt[k_] = pair_cnt.get(k_, 0) + c_
-        per_waste: dict[int, dict[int, int]] = {}
-        edge_tot: dict[int, int] = {}          # 这块荒地的**整条陆地周长**
-        for k_, c_ in pair_cnt.items():
-            wp, nb = k_ >> 16, k_ & 0xFFFF
-            t_nb = int(titlemap[0, nb])
-            if t_nb in water_tids:             # 水不算边长
-                continue
-            edge_tot[wp] = edge_tot.get(wp, 0) + c_
-            if t_nb >= n_real_titles:          # 无主地/别的荒地：算进分母，但不是"某个国家"
-                continue
-            d = per_waste.setdefault(wp, {})
-            d[t_nb] = d.get(t_nb, 0) + c_
-        for wp, per in per_waste.items():
-            tot = edge_tot.get(wp, 0)          # ← 分母是整条周长，不再只是"有主的那部分"
-            if not tot:
-                continue
-            best_cty, best_n = max(per.items(), key=lambda kv: kv[1])
-            if best_n * 2 > tot:               # **严格过半**才算
-                waste_auto.append([int(wp), int(best_cty)])
-        log(f"  荒地自动上色：{len(waste_auto)}/{len(waste_pids)} 块有主（边缘过半）")
+    # 🔴🔴 **水 / 荒地的"应有的颜色"** ✗✗（2026-10-15 用户报的 ✓）
+    #   用户："EU5 海域、湖泊、荒地没有应有的上色" ✓
+    #   实况（实跑核对过）：
+    #     · 地点层的水格拿的是**游戏地图色**（一格格亮青/亮蓝：(34,175,181) /
+    #       (119,204,251) / (0,159,241) … ✓）
+    #     · 地点层的荒地也是地图色（(238,220,6) 亮黄 / (136,60,151) 紫 /
+    #       (68,127,56) 绿 … ✓）
+    #   → 整张图看着就是"海没蓝、湖没湖蓝、荒地没灰" ✗
+    #   别的游戏（EU4 / HOI4 / VIC3 / build_data ✓）这三类**一律类色** ✓ 这里补齐：
+    #     海 = (32,57,92) ✓ 湖 = (47,110,150) ✓ 荒地 = (94,94,94) ✓（同一组常量 ✓）
+    #   ⚠ 只动**颜色** ✗ —— 名字 / 归属 / 可涂性 / 边界一个字节不动 ✓
+    #   ⚠ 只落**地点层**（`titlemap[_fine_row]` ✓）——
+    #     粗层的纯水片在上面拆分段里已按类色刷过 ✓、粗层荒地本来就是 `#impassable` 灰 ✓
+    _fine_row = len(TIER_ORDER) - 1
+    _rgb_fixed = 0
+    for _pool, _rgb in ((cat.get("#sea", ()) or (), _SEA_RGB),
+                        (cat.get("#lake", ()) or (), _LAKE_RGB),
+                        (waste_pids, _WASTE_RGB)):
+        for _p in _pool:
+            _t = int(titlemap[_fine_row, int(_p)])
+            if 0 < _t < len(colors):
+                if tuple(colors[_t]) != _rgb:
+                    _rgb_fixed += 1
+                colors[_t] = _rgb
+    log(f"水域 / 荒地按类色上色：{_rgb_fixed} 个地点节点 "
+        f"（海 32,57,92 · 湖 47,110,150 · 荒地 94,94,94 ✓）")
+
 
     # ---- 分块（全像素渲染用）----
     # 16384×8192 一张纹理正好顶到 MAX_TEXTURE_SIZE、还要 268MB 显存 ✗，
@@ -662,6 +835,13 @@ def main() -> int:
     # hide_label 是按当时的 names 定长的，后面追加的伪头衔没跟着长 —— 写盘前补齐
     if len(hide_label) < len(names):
         hide_label += [False] * (len(names) - len(hide_label))
+    # 🔴 **跨接缝标记（`wrapLabel`）已退役** ✗✗（2026-10-16 ✓ 用户定 ✓）
+    #   那套是给"全体像素求几何中心 → 太平洋的名字落在地图正中"打的补丁 ✓
+    #   现在前端按**连通域**取点（见 app.js 的 `buildPlaceComponents` ✓），
+    #   而邻接表只连**图内 4 邻域**、没有跨左右边界的边 →
+    #   跨 180° 经线的那片海**本来就是两块** ✓ 自然就左右各出一个名 ✓
+    #   → 这里不再打标，`titles.json` 里也没有 `wrapLabel` 这一项了 ✓
+    #     （旧数据里那枚布尔数组前端也不读了 ✗ 留着无害 ✓）
 
     payload = {
         "keys": [plain(k) for k in keys], "names": names, "namesEn": names_en,
@@ -673,8 +853,20 @@ def main() -> int:
         "parents": [index_of.get(parent.get(k) or "", -1) if parent.get(k) else -1
                     for k in keys],
         "colors": colors.tolist(),
+        # ⚠ **长度基准用 `len(keys)`** ✗✗ —— 别用 `n_nodes` ✓（2026-10-14 修 ✓）
+        #   `provCount` 是"每个头衔有多少个地块"✓ 而 `np.bincount` 只统计
+        #   **最细层（loc）出现过**的节点 ✗ —— 于是：
+        #     · `#impassable`（建在最后 ✓ 恰好不在最细层 ✓）
+        #     · 剧本层的 `#sea_1337_0` / `#lake_1337_0`
+        #   这些**一个都不在里面** ✓ → 长度比 `n_nodes` 短 ✓
+        #   → 包校验（`pack.js`）要求它跟 `numTitles` **等长** ✗ 不等长整个包导不进来 ✓
+        #     （实跑：改"每层一片"之后短了 10 项 ✓ 41538 vs 41548 ✓
+        #      正好是我新加的那些"只出现在某一层"的节点 ✓）
+        #   ⚠ `n_nodes` 跟 `len(keys)` 在正常路径上应该相等 ✗ ——
+        #     但 `n_nodes` 是个累加变量 ✓ 中间任何一步漏加就悄悄错位 ✓
+        #     `len(keys)` 是**事实** ✓ 用事实当基准 ✓
         "provCount": np.bincount(titlemap[len(TIER_ORDER) - 1][titlemap[len(TIER_ORDER) - 1] != NO_TITLE].astype(np.int64),
-                                 minlength=n_nodes)[:n_nodes].tolist(),
+                                 minlength=len(keys))[:len(keys)].tolist(),
         "area": area.tolist(),
         "hideLabel": hide_label,
         "blockArea": block_area.tolist(),
@@ -695,9 +887,34 @@ def main() -> int:
     log(f"  provinces_id.bin {len(pid_raw)/1024/1024:.1f} MB（压缩后 "
         f"{(DATA / 'provinces_id.bin').stat().st_size/1024/1024:.1f} MB）")
 
+    # 🔴🔴 **底层地块的"身份标"** ✗✗（2026-10-15 用户定 ✓）
+    #   用户原话："你可以给不是这些玩意的普通陆地加上陆地标记，就像给他们加上海洋河流
+    #     标记一样。这个标记统一加给所有底层 prov 的 id 设置，反正不管怎么切换也无法
+    #     改变他们的身份" ✓
+    #   → `meta.kindMask`：每地块 **1 字节**、base64（跟当年那个 `waterMask` 一个形状 ✓）
+    #     1 陆地（**兜底** ✓ 不属于下面几类的全是它）/ 2 海洋 / 3 湖泊 / 4 河流 /
+    #     5 不可通行海域 / 6 不可通行区域 ✓
+    #   ⚠ **无归属区域不进这枚标** ✗（用户明确交代：无归属是**剧本 / 归属**决定的，
+    #     不是地块身份 ✓ 它继续按运行时算 —— 见前端那行 `set-unpainted` ✓）
+    #   ⚠ EU5 **没有河流 / 不可通行海域** ✗（`cat` 里就是空集 ✓）——
+    #     空集就老实留空 ✓ 那两格全图落进"陆地" ✓ 不编假数据 ✓
+    #   ⚠ 判据是构建期那几套现成类别集合（`cat` ✓），跟"水域优先"一条口径
+    #     （`#impassable` 里跟水重叠的 47 格早就扣掉了 ✓ 它们按海/湖算 ✓）
+    import base64 as _b64                                          # noqa: PLC0415
+    from build_tier_pieces import kind_mask as _kind_mask          # noqa: PLC0415
+    _kind_b64 = _kind_mask(n_prov, cat)
+    _kind_n = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0}
+    for _b in _b64.b64decode(_kind_b64):
+        if int(_b) in _kind_n:
+            _kind_n[int(_b)] += 1
+    log("身份标 kindMask：" + " · ".join(f"{_k}={_kind_n[_k]}" for _k in sorted(_kind_n))
+        + f"（1~6 合计 {sum(_kind_n.values())} = numProvinces-1 ✓）")
+
     meta = {
         "generated": time.strftime("%Y-%m-%d %H:%M:%S"),
         "game": "eu5", "label": args.label, "gameRoot": str(root),
+        # **底层地块身份标**（每地块 1 字节 base64 ✓ 见上面那段说明 ✓）
+        "kindMask": _kind_b64,
         "provinceMap": "locations.png", "nameLang": "zh", "entity": "地点",
         "mapWidth": w, "mapHeight": h, "numProvinces": n_prov, "numTitles": n_nodes,
         "numRealTitles": n_real_titles, "tiers": list(TIER_ORDER),
@@ -720,10 +937,70 @@ def main() -> int:
         # 荒地（不可通行）：哪些节点算荒地（前端据此决定"荒漠涂色"关着时显示灰），
         # 以及每块荒地按接壤边长过半算出来的归属（[地块号, 国家节点号]）。
         "wasteland": sorted(set(waste_tids)),
-        "wastelandAuto": waste_auto,
         "scaleDown": args.scale, "sourceSize": [im.width * args.scale, im.height * args.scale],
         "matchRate": round(100.0 * float(hit[inverse].sum()) / ids.size, 2),
     }
+    # **水域名**（2026-10-13 ✓ 出处见 docs/水域名调研.md、接口见 _local/water_names_api2.md）
+    #   ⚠ **按视图层各一套** ✗（用户要求："EU4/5 在不同的视图下，海域包括的范围也不一样"✓）
+    #     `seaNamesByTier` 的下标 = `meta["tiers"]` 的下标（reg/area/prov/loc ✓ 剧本层给 None）
+    #   `seaNames` 仍然写 **area 层** ✓ —— 那是第一轮验过的口径（5709 条 ✓），
+    #     留着当"没有 byTier 时的兜底"；写最粗的 reg 层会让老前端退回时名字突然变很粗 ✗
+    #   **荒地名字**也一并收（用户要求："EU4 和 EU5 的荒地有自己的名字，你怎么还是隐藏了"✓）
+    try:
+        _t = E.load_water_names_by_tier(root)
+        _arr = E.sea_names_by_tier_array(_t, meta["tiers"])
+        if any(_arr):
+            meta["seaNamesByTier"] = [
+                ({str(k): str(v) for k, v in x.items()} if x else None) for x in _arr
+            ]
+        _area = _t.get("area") or {}
+        if _area:
+            meta["seaNames"] = {str(k): str(v) for k, v in _area.items()}
+        _wl = _t.get("wasteland") or {}
+        if _wl:
+            meta["wastelandNames"] = {str(k): str(v) for k, v in _wl.items()}
+        log(f"水域名：分层 {[len(x or {}) for x in _arr]} · 荒地 {len(_wl)} 条")
+        # 🔴 **回填"每层一片"的真名** ✗✗（2026-10-14 ✓ 见上面 locked 循环里那段说明）
+        #   上面建节点时名字先给了**类名**（"海洋" / "湖泊" ✓）——
+        #   因为那时 `seaNamesByTier` 还没解析 ✓ 现在有了 ✓ 该回填了 ✓
+        #
+        #   一片的名字怎么定：**取这一层那一坨地块里第一个有名字的** ✓
+        #     · 同一片（同一层同一节点 ✓）本来就是一个海区 ✓ 名字一致 ✓
+        #     · 全都没名字 → **保持类名** ✗ 前端会判成"类名 = 没名字"→ 不出标 ✓
+        #       这正是用户要的"**按游戏内容给名字**，没有就是没有" ✓
+        #   ⚠ 只回填 `#sea_*` / `#lake_*` ✗ 别碰 `#impassable`（它有自己的真名 ✓）
+        _back = 0
+        for _r, _tname in enumerate(TIER_ORDER):
+            _row = titlemap[_r]
+            # ⚠ **按层名去 `meta["tiers"]` 里查下标** ✗✗ —— 别用 `_arr[_r]` 硬对 ✓
+            #   我第一版就是 `_arr[_r]` ✗ → 回填只中了 8 个节点 ✓（该有几千个 ✓）
+            #   根因：`TIER_ORDER` 是 **5 层**（1337/reg/area/prov/loc ✓）
+            #     而 `meta["tiers"]` 是 **6 层**（中间多一个 blank ✓ 见 build_eu5 后面
+            #     那个"加空白剧本层"的步骤 ✓）→ 差一格 → `_arr[1]` 拿到的是 blank 的 None ✓
+            #   ⚠ `_arr` 的长度跟 `meta["tiers"]` 对齐 ✗ 不是跟 `TIER_ORDER` ✓
+            _ti = meta["tiers"].index(_tname) if _tname in meta["tiers"] else -1
+            _tbl = (_arr[_ti] if 0 <= _ti < len(_arr) else None) or {}
+            if not _tbl:
+                continue
+            # 这一层用到的、属于"海 / 湖"的那些片节点
+            _seen: dict[int, str] = {}
+            for _pid, _nm in _tbl.items():
+                _tid = int(_row[int(_pid)])
+                if _tid <= 0 or _tid in _seen:
+                    continue
+                _k = str(keys[_tid])
+                if not (_k.startswith("#sea_") or _k.startswith("#lake_")):
+                    continue
+                _seen[_tid] = str(_nm)
+            for _tid, _nm in _seen.items():
+                if _nm and names[_tid] != _nm:
+                    names[_tid] = _nm
+                    names_en[_tid] = _nm
+                    _back += 1
+        if _back:
+            log(f"  水片真名回填：{_back} 个节点（每层一片 ✓ 没名字的保持类名 ✓）")
+    except Exception as _e:
+        log(f"水域名解析跳过：{_e}")
     (DATA / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2),
                                     encoding="utf-8")
     log("全部完成 ✔")

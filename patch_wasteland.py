@@ -8,9 +8,7 @@
      EU5 → **一个字都不动**（它本来就是真名，约顿海姆那种）
   ③ 荒地地名一律不显示（hideLabel）
   ④ meta.numTitles 跟 keys 对齐（免得上一次那种"颜色表装不下新节点"的坑）
-  ⑤ 烘 waste_perimeter：每块荒地 → [[邻居地块号, 共享边像素数], …]
-     含别的荒地 ✓ 含无主地 ✓，水不算；同一块地的内部像素不算邻居
-  ⑥ 烘 waste_by_tier：按层级各算一份"接壤边长过半"的归属
+  （⑤/⑥「周长表 / 各层自动归属」两步已随荒地自动上色退役 ✓ 2026-10-15 ✓）
 
 模式**按数据自己的形状认**（不靠调用方传对参数）：CK3 有 deJureYear、
 EU4 有 provinceColors、EU5 有 eraDates —— 认错了会把名字灌串（省份号会撞）。
@@ -22,6 +20,7 @@ EU4 有 provinceColors、EU5 有 eraDates —— 认错了会把名字灌串（�
 """
 from __future__ import annotations
 
+import base64
 import json
 import sys
 import zlib
@@ -31,8 +30,6 @@ import numpy as np
 
 import re
 WATER = ("#river", "#lake", "#sea", "#impassable_sea")
-#: 这些地块**不参与自动填色**（巨型荒地，涂上去太糊）—— 手涂不受影响
-AUTO_SKIP_PIDS = (1466, 1464, 731, 13270)
 
 #: 定点改名：{（数据目录名, tag）: 新名字} ✓
 NAME_OVERRIDES = {
@@ -41,7 +38,11 @@ NAME_OVERRIDES = {
     ("data_eu5_full", "CHI"): "大元",   # 原尺寸那张也得改，不然两张图一个「中华」一个「大元」✗
 }
 DEFAULT_DIRS = ("data", "data_miller", "data_eu4", "data_eu4_hd", "data_vic3",
-                "data_eu5", "data_eu5_full")
+                "data_eu5", "data_eu5_full",
+                # CK2：由 build_ck2.py 收尾时自己调 ✓ 列在这儿是让它也是"一等公民" ✓
+                # ⚠ 认模式那一步会把它认成 **ck3**（靠 meta.deJureYear ✓ 见 _detect ✓）
+                #   —— 那正是要的 ✓（CK2 的荒地名字用类别名，跟 CK3 同一条 ✓）
+                "data_ck2")
 _ZH_CACHE: dict[str, str] | None = None
 
 
@@ -180,7 +181,13 @@ def split_blobs(D: Path, M: dict, T: dict, ids: "np.ndarray", tm: "np.ndarray",
     new_tm[:, :n] = tm
     for i2, (pid, _src_pid, src) in enumerate(new_nodes):
         node = base + i2
-        new_tm[:, pid] = node
+        # ⚠ 列要**按层**填 ✗（2026-10-13）：
+        #   它**自己那一层**指向新节点 ✓；其余层**跟着源地块走** ✓
+        #   —— 粗层那些"片"是按行分组认成员的，一刀切全写新节点会把这一格
+        #     从粗层的片里踢出去 ✓ 前端的 `pidsOf` 就对不上了 ✓
+        _rt = int(T["tiers"][src]) if src < len(T.get("tiers") or []) else new_tm.shape[0] - 1
+        for _r in range(new_tm.shape[0]):
+            new_tm[_r, pid] = node if _r == _rt else new_tm[_r, _src_pid]
         ys, xs = np.nonzero(ids == pid)
         area = int(ys.size)
         T["keys"].append(f"wl_{pid}")
@@ -212,6 +219,30 @@ def split_blobs(D: Path, M: dict, T: dict, ids: "np.ndarray", tm: "np.ndarray",
             # 颜色/名字，还随 titles.json 一起落盘（拆分一真发生就是数据污染）
             val = lst[src_pid] if 0 <= src_pid < len(lst) else ""
             lst.append(list(val) if isinstance(val, list) else val)
+    # ⚠ **meta 里那份"按省份的长数组"也得跟着长长** ✗（2026-10-14 ✓ 踩到了）
+    #   `provColors`（base64 的 RGBA8 = 每块地自己的原色 ✓）**在 M 里不在 T 里** ✗
+    #   所以上面那个"按省份的数组一起长长"的循环**扫不到它** ✓
+    #   后果：numProvinces 长了一位、它没长 ✓ → 前端按 `numProvinces × 4` 校验直接判废 ✓
+    #     → 「水域 · 颜色」开着却退回统一色（**静默** ✗ 正是这个项目最忌讳的那种）
+    #   （CK3 这次真踩了：荒地拆出 1 块 → 13270 → 13271 ✓ 差 4 个字节 ✓）
+    #   新省份继承**源省份**那个色 —— 跟上面 names / colors 同一套口径 ✓
+    # 🔴 **身份标 `kindMask` 也得跟着长长** ✗✗（2026-10-15 ✓ 同一类坑 ✓）
+    #   它是"每省份 **1 字节** base64"（见 `meta.kindMask` ✓）——
+    #   上面那个"按省份的数组一起长长"的循环**扫不到它** ✗：
+    #     · 它在 `M` 里不在 `T` 里 ✓（跟当年 `provColors` 一模一样 ✓）
+    #     · 而且不是 list（是 base64 字符串 ✗）→ `isinstance(lst, list)` 直接跳过 ✓
+    #   不长的话：`numProvinces` 比它多一位 ✓ → 前端长度校验判废 ✗ →
+    #     七行颜色整批退回"按键名前缀"那条老路 ✓（EU5 上等于**全空** ✗ 静默 ✗
+    #     正是这个项目最忌讳的那种 ✗）
+    #   新省份**继承源省份的身份** ✓（跟上面 names / colors 同一个口径 ✓）
+    if isinstance(M.get("kindMask"), str) and M["kindMask"]:
+        try:
+            _kb = bytearray(base64.b64decode(M["kindMask"]))
+            for _new_pid2, _src_pid2, _src2 in new_nodes:
+                _kb.append(_kb[_src_pid2] if 0 <= _src_pid2 < len(_kb) else 1)
+            M["kindMask"] = base64.b64encode(bytes(_kb)).decode("ascii")
+        except Exception:                      # 解不出来就当没这枚标（老包 ✓）
+            M.pop("kindMask", None)
     M["numProvinces"] = nxt
     M["numTitles"] = len(T["keys"])
     M["wasteland"] = sorted(wl)
@@ -222,14 +253,25 @@ def split_blobs(D: Path, M: dict, T: dict, ids: "np.ndarray", tm: "np.ndarray",
     return len(new_nodes), new_tm, ids
 
 def _detect(M: dict, T: dict) -> str:
-    """**先认清 EU4/EU5，最后才轮到 CK3** —— specialPrefix 这类字段 EU4/EU5 也有，
+    """**先认清 CK2 / EU4 / EU5，最后才轮到 CK3** —— specialPrefix 这类字段 EU4/EU5 也有，
     放在最前面会把它们误认成 CK3，然后拿"不可通行"去刷掉它们的真名 ✗。
 
     ⚠ 顺序还得再小心一层 ✗：**CK3 现在也有 `eraDates` 了**（1066 那一层就是剧本层 ✓
       见 build_data 的 ERA_TIER ✓）所以不能拿 `eraDates` 认 EU5 ——
       它一加，CK3 就会被误认成 EU5、整份数据按 EU5 的规矩去刷名字 ✓
       `deJureYear` 是 CK3 独有的（"法理按哪一年对齐"那个参数 ✓）→ 拿它认 CK3 最稳 ✓
+
+    🔴 **CK2 得排在 CK3 前面认** ✗✗（2026-10-15 ✓）—— **CK2 也有 `deJureYear`** ✗
+      （它的法理也是按 1066 那天对齐的 ✓ 见 build_ck2.py 文件头 ③ ✓）
+      判据用 `meta.game` ✓（每份缓存都有这一枚 ✓ 本来就是最直接的答案 ✓）
+    ⚠ 认错的后果：CK2 会落进 `ck3` 那一支 → 那一支把**所有逐块荒地节点**
+      统一改成"它扫到的第一个荒地节点的名字" ✗（那是给 CK3 写的：CK3 的荒地本来
+      就没名字 ✓ 统一成类名正合适 ✓）—— CK2 那 15 块**各有真名**的荒地
+      （撒哈拉沙漠 / 塔克拉玛干沙漠 / 丝绸之路 ×3 … ✓ 见 build_ck2 的 11b ✓）
+      会全被叫成同一个名字 ✗
     """
+    if M.get("game") == "ck2":         # CK2 独有：片是一块一片的，名字逐块写好 ✓ 别动 ✗
+        return "ck2"
     if "provinceColors" in T:          # EU4 独有：省份原版颜色
         return "eu4"
     if "deJureYear" in M:              # CK3 独有：法理对齐到哪一年（它也有剧本层了 ✗）
@@ -356,7 +398,9 @@ def patch(data_dir: Path | str, quiet: bool = False) -> dict:
                         dtype="<u2").reshape(M["mapHeight"], M["mapWidth"]).copy()
     keys = T["keys"]
     key_index = {k: i for i, k in enumerate(keys)}
-    water = {i for i, k in enumerate(keys) if k in WATER}
+    # ⚠ **前缀匹配** ✗（2026-10-13 起每层一片：键长这样 `#sea_pr_57` ✓）
+    #   精确相等会把新键**一个都认不出来** → 海会被算进荒地的"陆地周长"里去 ✓
+    water = {i for i, k in enumerate(keys) if str(k).startswith(WATER)}
     fine = rows - 1
 
     own: dict[int, int] = {}
@@ -381,19 +425,34 @@ def patch(data_dir: Path | str, quiet: bool = False) -> dict:
         split_n, tm, ids = res
         n = M["numProvinces"]
         keys = T["keys"]
-        water = {i for i, k in enumerate(keys) if k in WATER}
+        water = {i for i, k in enumerate(keys) if str(k).startswith(WATER)}
 
-    # ① 每一层都指向它自己
+    # ① **只保证"它自己那一层"指向它自己** ✓（2026-10-13 收窄）
+    #   以前是把**每一层**都改写成那个逐块节点 ✗ —— 那正是"全层共用一个节点"的老架构 ✓
+    #   现在粗层有粗层自己的片（同名荒地算一片 ✓ 见 build_tier_pieces ✓）
+    #   再一刀切地全改，就把刚写好的分层归属冲掉了 ✓
+    #   逐块涂色不受影响：`paintTargetsAt` 走的是**最细层那个节点** ✓（核对过 ✓）
     moved = 0
     for pid, idx in own.items():
-        if not np.all(tm[:, pid] == idx):
-            tm[:, pid] = idx
+        _r = int(T["tiers"][idx]) if idx < len(T.get("tiers") or []) else fine
+        if 0 <= _r < rows and int(tm[_r, pid]) != idx:
+            tm[_r, pid] = idx
             moved += 1
 
     # ② 名字（按模式分开，绝不串台）
     named = 0
     idxs = sorted(set(own.values()))
-    if mode == "ck3":
+    if mode == "ck2":
+        # 🔴 **一个字都不动** ✗✗（2026-10-15 ✓ 见 `_detect` 那段长注释 ✓）
+        #   CK2 的荒地**逐块都有真名**（撒哈拉沙漠 / 塔克拉玛干沙漠 / 丝绸之路 ×3 … ✓
+        #   构建期按 `PROV<地块号>` 写好的 ✓ 中文优先 ✓ 见 build_ck2 的 11b / 12b ✓）
+        #   —— 而 `ck3` 那一支会把它们**统一改成"扫到的第一个"** ✗，那是为
+        #      "CK3 的荒地本来就没名字"写的 ✓ 套到 CK2 上就是把 15 个沙漠叫成一个名 ✗
+        #   名字之外的那几件事（每层指向自己 / hideLabel / 标注位置重算）**照做** ✓
+        #   前端那边靠 `meta.wastelandNames` 出真名 ✓（`buildSeaLabelPoints` 按名字分组 ✓
+        #   同名的一组只出一个标 ✓）—— 跟 `titles.names` 是同一个答案 ✓ 不打架 ✓
+        pass
+    elif mode == "ck3":
         base, base_en = "不可通行", "Impassable"
         for i, k in enumerate(keys):
             if k.startswith("#") and i in wl:
@@ -425,73 +484,24 @@ def patch(data_dir: Path | str, quiet: bool = False) -> dict:
         arr = [bool(x) for x in (T.get("hideLabel") or [])]
         arr += [False] * (need - len(arr))
         T["hideLabel"] = arr
-    for idx in idxs:
-        T["hideLabel"][idx] = True
+    # 🔴 **CK2 不藏** ✗✗（2026-10-15 ✓ 用户口径"都应该是一个一个标" ✓ 见 `_detect` 那段 ✓）
+    #   这条 hideLabel 本来是为了"别让**类名**当荒地地名出标"（CK3 的荒地没有真名 ✓
+    #   节点名是"不可通行山地"那种 ✓ 出标就是一排重复的类名 ✗）
+    #   CK2 的荒地**逐块都有真名**（撒哈拉沙漠 / 塔克拉玛干沙漠 / 丝绸之路 ×3 … ✓
+    #   构建期写进 `titles.names` 的 ✓ 见 build_ck2 的 11b / 12b ✓）
+    #   → 藏起来等于把它那 20 个标**全抹掉** ✗（实跑量到：荒地标 0 个 ✗）
+    #   不藏的话它们跟普通地名同一条路：**一个节点一个标** ✓ = 用户要的"一片一标" ✓
+    if mode != "ck2":
+        for idx in idxs:
+            T["hideLabel"][idx] = True
 
     # ④ numTitles 对齐
     M["numTitles"] = need
     if M.get("numRealTitles", 0) > need:
         M["numRealTitles"] = need
 
-    # ⑤ 周长表
-    pids = np.array(sorted(own), dtype=np.int64)
-    is_waste = np.zeros(n, dtype=bool)
-    is_waste[pids] = True
-    wmask = np.zeros(int(ids.max()) + 1, dtype=bool)
-    wmask[pids] = True
-    adj: dict[int, dict[int, int]] = {}
-    for axis in (0, 1):
-        a = ids[:-1, :] if axis == 0 else ids[:, :-1]
-        b = ids[1:, :] if axis == 0 else ids[:, 1:]
-        m = wmask[a] | wmask[b]
-        if not m.any():
-            continue
-        pa, pb = a[m].astype(np.int64), b[m].astype(np.int64)
-        keep = pa != pb                      # 同一块地的内部像素不算接壤
-        if not keep.any():
-            continue
-        pa, pb = pa[keep], pb[keep]
-        lo, hi = np.minimum(pa, pb), np.maximum(pa, pb)
-        uk, uc = np.unique((lo << 20) | hi, return_counts=True)
-        for code, c in zip(uk.tolist(), uc.tolist()):
-            x, y = code >> 20, code & 0xFFFFF
-            if x < n and is_waste[x]:
-                adj.setdefault(x, {})
-                adj[x][y] = adj[x].get(y, 0) + c
-            if y < n and is_waste[y]:
-                adj.setdefault(y, {})
-                adj[y][x] = adj[y].get(x, 0) + c
-    per_out = []
-    for pid in sorted(own):
-        nb = [[int(k), int(c)] for k, c in (adj.get(pid) or {}).items()
-              if not (k < n and int(tm[fine, k]) in water)]
-        nb.sort(key=lambda x: -x[1])
-        per_out.append([int(pid), nb])
-    M["wastelandPerimeter"] = per_out
-
-    # ⑥ 按层级各算一份（分母 = 完整陆地周长，含别的荒地/无主地）
-    by_tier = []
-    for r in range(rows):
-        per: dict[int, dict[int, int]] = {}
-        tot: dict[int, int] = {}
-        for pid, nbrs in per_out:
-            for k, c in nbrs:
-                t_nb = int(tm[r, k])
-                tot[pid] = tot.get(pid, 0) + c
-                if t_nb >= M["numRealTitles"]:
-                    continue
-                per.setdefault(pid, {})
-                per[pid][t_nb] = per[pid].get(t_nb, 0) + c
-        row = []
-        for pid, dd in per.items():
-            t = tot.get(pid, 0)
-            if t and max(dd.values()) * 2 > t:
-                row.append([int(pid), int(max(dd.items(), key=lambda kv: kv[1])[0])])
-        by_tier.append(row)
-    M["wastelandAutoByTier"] = by_tier
-    M["wastelandAuto"] = by_tier[0] if by_tier else []
-    # 不参与自动填色的地块（只登记这份缓存里**确实是荒地**的那些）
-    M["wasteAutoSkip"] = sorted(p for p in AUTO_SKIP_PIDS if p in own)
+    # （「周长表 / 各层自动归属 / wasteAutoSkip」三件已随「荒地自动上色」退役 ✓
+    #   2026-10-15 —— 前端那些读取方全拆了，这里的计算与写出也一并摘 ✓）
     # **全部 tag 的中文名**：构建器只给了 tag → 颜色，这里按键匹配把名字补上
     # （键形如 1444_SWE / 1936_XSM；同一个 tag 取第一个非空名字 ✓）
 
@@ -583,11 +593,9 @@ def patch(data_dir: Path | str, quiet: bool = False) -> dict:
     tit_p.write_text(json.dumps(T, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     meta_p.write_text(json.dumps(M, ensure_ascii=False, indent=2), encoding="utf-8")
     tm_p.write_bytes(zlib.compress(tm.astype("<u2").tobytes(), 6))
-    nbr_tot = sum(len(x[1]) for x in per_out)
-    say(f"  {D}: [{mode}] 荒地 {len(own)} 块 · 拆开 {split_n} · 调整层指向 {moved} · 改名 {named} · "
-        f"周长邻居对 {nbr_tot} · 各层有主 {[len(x) for x in by_tier]}")
+    say(f"  {D}: [{mode}] 荒地 {len(own)} 块 · 拆开 {split_n} · 调整层指向 {moved} · 改名 {named}")
     return {"dir": str(D), "mode": mode, "waste": len(own), "moved": moved,
-            "named": named, "perimeter": nbr_tot, "byTier": [len(x) for x in by_tier]}
+            "named": named}
 
 
 def main(argv: list[str]) -> int:

@@ -97,21 +97,80 @@ function bindMobile() {
       sheet.style.width = Math.round(w) + 'px';
       sheet.style.left = Math.round(left) + 'px';
       sheet.classList.toggle('below', below);
+      /* 🔴 **两次三成**（用户 2026-10-13："设置高度减去 30%"→ 之后又说"再缩小 30% 左右"✓）
+       *   最终系数 = 0.7 × 0.7 ≈ **0.5** ✓（取整好记，跟"再缩三成"差 1% ✓）
+       *   ⚠ 这两句算出来的是**"从按钮一路到屏幕边缘"的可用高度** ✗
+       *     而它写成**内联样式** ✓ 优先级压过 `mobile_css.txt` 里的
+       *     `#mob-sheet { max-height: … }` ✓（所以光改 CSS 一点用都没有 ✗
+       *       用户连着报了好几回"没看到"✓ 就是这个原因 ✓）
+       *   ⚠ 必须**在这儿**乘 ✗ 不能在 CSS 里补 ✓
+       *   剩下的空间给地图 ✓ 放不下的内容交给 `#mob-sheet-body` 的滑条 ✓
+       *   ⚠ 改系数时**顺手把 css 那两处 vh 也改一下** ✗ 它们只是兜底（被内联压着 ✓）
+       *     但两边数值差太远容易看糊涂 ✓ */
+      const _avail = (below ? (a.height - (r.bottom - a.top) - 20) : (r.top - a.top - 20));
+      /* 🔴 **「更高」模式：上限回到"可用高度"，不再乘系数** ✗✗（2026-10-13 修 ✓）
+       *   这是"小按钮没用"的**真正原因** ✗ ——
+       *   我把 cap 压到 0.5×可用之后，面板的 `height` 和 `max-height` **都是这个 cap** ✓
+       *   于是按不按「更高」**面板都是同一个数** ✓ 按钮看着毫无反应 ✓
+       *   （我前两轮还在折腾 `wrap.style.height` 和 flex ✗ 都是白费力气 ✓
+       *     那个按钮的语义本来就是"**面板整体变高**"✓ 不是"把内容区撑开"✓）
+       *
+       *   现在：普通模式 = 可用 × 0.5 ✓（用户要的那个"缩两次三成"✓）
+       *        「更高」  = 可用 × 1.0 ✓（顶到屏幕边，但不顶出去 ✓）
+       *   两者差一倍 ✓ 按下去一定看得见 ✓
+       *   ⚠ 系数只在**这一处**算 ✗ 别在别处再乘一次 ✓（乘两回就是 0.25，矮得离谱 ✓）*/
+      const _tall = sheet.classList.contains('mob-tall');
+      /* 🔴 **系数按"页"分** ✗✗（2026-10-13 用户："但是颜色区的高度不要跟着调那么低啊"✓）
+       *   前面那几个系数（0.7 → 0.5 → 0.333 → 0.4）都是冲着**设置页**调的 ✓
+       *   可它是**全局**的 ✗ 于是**颜色页也跟着缩到四成** ✓
+       *   颜色页里是调色板 + 图例列表 ✓ 本来就该占地方 ✓ 缩那么矮根本没法用 ✓
+       *
+       *   现在分开：
+       *     · `display`（设置）→ **0.46** ✓
+       *       🔴 **2026-10-17 +15%**（用户："手机版的高度再提升15%"✓
+       *         原话还有一句："你的高度UI根本没搞定，敷衍我"✓ —— 骂得对 ✓
+       *         ⚠ 我前两轮都在改 `mobile_css.txt` 里的 `#mob-sheet.mob-tall` ✗
+       *           那是**白改**：真正的高度是下面那句内联 `sheet.style.maxHeight` ✓
+       *           内联压过 CSS ✓（这个坑**旧注释里就写着**，我没读到 ✓ 我的错 ✓）
+       *         `0.4 × 1.15 = 0.46` ✓
+       *       （原来 0.4 是用户前几轮"缩两次三成"逐次调下来的值 ✓）
+       *     · `color`（颜色）  → **1.0** ✓（回到缩放之前的高度 ✓）
+       *     · 其余（工具 / 视图 / 文件那些）→ 也走 1.0 ✓
+       *       （它们本来就短 ✓ 按内容撑就行 ✓ 缩它们没意义 ✓）
+       *   ⚠ 判断用 `key` ✗ 它是 `place(btn, key)` 的入参 ✓ 现成的 ✓
+       *     别去猜"当前哪页" ✗（`opened` 是别的作用域里的 ✓）*/
+      const _isDisplay = (key === 'display');
+      /* 🔴 设置页那个 0.46 = 0.4 × 1.15 ✓（2026-10-17 用户要的 +15% ✓
+       *   改**这里**才是真改 ✗ —— CSS 里那两条被这句内联压过 ✓）*/
+      const _f = _tall ? 1.0 : (_isDisplay ? 0.46 : 1.0);
+      const _cap = Math.round(Math.max(160, _avail) * _f) + 'px';
       if (below) {
         sheet.style.top = Math.round(r.bottom - a.top + 10) + 'px';
         sheet.style.bottom = 'auto';
-        sheet.style.maxHeight = Math.max(160, a.height - (r.bottom - a.top) - 20) + 'px';
+        sheet.style.maxHeight = _cap;
       } else {
         sheet.style.bottom = Math.round(a.bottom - r.top + 10) + 'px';
         sheet.style.top = 'auto';
-        sheet.style.maxHeight = Math.max(160, r.top - a.top - 20) + 'px';
+        sheet.style.maxHeight = _cap;
       }
       sheet.style.setProperty('--tail-x', Math.round(cx - left) + 'px');
+      /* 「更高」模式：把 height 顶到**刚算出来的上限** ✓
+       *   ⚠ 这里就是 **1.0** ✗ 别再乘一次 0.7 ✓ ——
+       *     上面那个 `maxHeight` 已经缩过三成了 ✓ 再乘就是 0.49，矮得没法看 ✓
+       *   （我第一版就是两边都乘 ✗ 幸好发现得早 ✓）*/
       /* 「更高」模式：把 height 顶到**刚算出来的可用上限**（就是上面那个 max-height ✓
        *   贴着底部往上长 ✓ 不会顶出屏幕 ✓）；普通模式清掉 height ✓ 回到"按内容自己撑" ✓
        * 这里**不做动画** ✗（用户要求去掉 ✓ 而且显式 px 也会让面板不再跟内容长高 ✗）*/
+      /* 「更高」模式：把 height 顶到**可用高度的七成**（用户 2026-10-13 定的："设置高度减去 30%"✓
+       *   原来是直接 `height = maxHeight` ✗ —— 那是"从按钮一路顶到屏幕边"✓ 太大了 ✓
+       *   而且它是**内联样式** ✗ 优先级压过 CSS ✓ 所以光改 `mobile_css.txt` 里的
+       *   `#mob-sheet.mob-tall { height: 40vh }` **根本看不出变化** ✓
+       *   （用户报的"根本没看到，高度仍然遵循界面最高的"就是这个 ✓）
+       * 现在 ×0.7 ✓ 剩下的交给 `.mob-panes` 的滑条 ✓ 内容放得下 ✓
+       * ⚠ `maxHeight` 是字符串（"512px" ✓）→ 要 `parseFloat` 再算 ✓ */
       try {
         if (sheet.classList.contains('mob-tall') && sheet.style.maxHeight) {
+          /* ⚠ 1.0 ✓（`maxHeight` 上面已经乘过 0.7 了 ✗ 这儿再乘就成 0.49）*/
           sheet.style.height = sheet.style.maxHeight;
         } else {
           sheet.style.height = '';
@@ -320,7 +379,37 @@ function bindMobile() {
         if (max <= 0) return;
         gDisp._lockHMax = Math.max(gDisp._lockHMax || 0, max);   // **只涨不缩** ✓
         const wrap = gDisp.querySelector('.mob-panes');
-        if (wrap) wrap.style.minHeight = Math.round(gDisp._lockHMax) + 'px';
+        /* 🔴🔴 **锁高度不能再写 `minHeight`** ✗✗（2026-10-13 用户报的"高度仍然遵循界面最高的"✓）
+         *   原来：`wrap.style.minHeight = 最高那一页的高度` ✗
+         *     `min-height` 会**顶住**容器 ✓ → 面板永远长到"最高那页"那么大 ✓
+         *     → 内容少的那几页**照样留一大片空白** ✓ 正是用户描述的现象 ✓
+         *   现在：**取"内容高度"和"面板上限"里的较小值，设成 `height`** ✓
+         *     · 内容放得下 → 面板就内容那么高 ✓ 不空 ✓
+         *     · 内容放不下 → 面板停在 cap ✓ 多出来的**进滑条** ✓（用户要的"收入隐藏"✓）
+         *   ⚠ 用 `height` 不用 `min-height` ✗：`height` 是"定死"，`min-height` 是"至少"
+         *     后者只会把面板越撑越大 ✓ 这就是前三轮怎么改都没用的原因 ✓
+         *   ⚠ `cap` 取的是 `#mob-sheet` 的 `max-height` ✓ 它已经在上面乘过 0.7 了 ✓
+         *     （"设置高度减去 30%"那条 ✓ 见 place() 里那段 ✓）*/
+        const cap = parseFloat(sheet.style.maxHeight) || 1e9;
+        if (wrap) {
+          /* ⚠⚠ **「更高」模式下不许锁** ✗✗（2026-10-13 用户报"上拉的小按钮没效果了"✓）
+           *   那个小按钮（`mob-tallbtn` ✓）走的是给 `#mob-sheet` 加 `mob-tall` 类 ✓
+           *   让它**撑到面板上限** ✓ 而面板本身的高度由 `sheet.style.height` 顶着 ✓
+           *   可 `.mob-panes` 要是被这里**写死成一个 height** ✗
+           *   → 里面那层就撑不开了 ✓「更高」按下去当然没反应 ✓
+           *   （这锅是我上一轮"把 minHeight 改成 height"顺手砸出来的 ✗
+           *     原来的 `min-height` 反而不会挡这个 ✓ 但它是"按最高页死撑"的元凶 ✓
+           *     所以现在按模式分开：**普通模式定死高度、更高模式放开** ✓）
+           *   ⚠ 判断要读**实时**的 classList ✗ 不能在别处缓存状态 ✓
+           *     （`mob-tall` 是用户点按钮现加的 ✓）*/
+          wrap.style.minHeight = '';                       // 旧版死撑，任何时候都清掉 ✓
+          /* ⚠ 这里**不再分模式** ✗ —— 「更高」是通过**放大面板上限**实现的 ✓
+           *   （见上面 `_cap` 那里 ✓ 普通 0.5×可用、「更高」1.0×可用 ✓）
+           *   内容区只要老老实实跟着 cap 走就行 ✓ 高的页自然出滑条 ✓
+           *   ⚠ 我在这儿绕过两圈（先放开 flex、再写死 cap ✗）全是白费 ✓
+           *     按钮要的是**面板变高**，不是内容区在固定面板里撑开 ✓ */
+          wrap.style.height = Math.round(Math.min(gDisp._lockHMax, cap)) + 'px';
+        }
       } catch (e) { /* ✓ */ } finally {
         if (!wasMeasuring) { try { sheet.classList.remove('measuring'); } catch (e) { /* ✓ */ } }
       }
@@ -383,17 +472,6 @@ function bindMobile() {
       } else {
         makeTallBtn(gColor, 'color');
       }
-    } catch (e) { /* ✓ */ }
-
-    /* **没有荒地的地图：把「荒地」整组藏掉** ✓
-     * 判断依据跟教程模块用的是同一个：app 把 #waste-label 的内联 display 设成 none ✓
-     *（这一组在手机上会被那条 group-label 规则顶出一个孤零零的标题 ✗ 见 CSS 里的说明 ✓）
-     */
-    try {
-      const wl2 = $('waste-label');
-      const wg2 = $('waste-group');
-      const hiddenByApp = !!(wl2 && wl2.style && wl2.style.display === 'none');
-      if (wg2 && hiddenByApp) wg2.classList.add('no-waste');
     } catch (e) { /* ✓ */ }
 
     // 颜色页变高时让"搜索结果"那块吃掉空间 ✓ 先给它挂个记号（CSS 靠这个记号找它 ✓）
@@ -812,6 +890,11 @@ function bindMobile() {
           state.hover.pid = 0;
           state.hover.inside = false;
         }
+        /* ⚠⚠ **"整片编组高亮"还得单独清一次** ✗✗（2026-10-13 用户报"手机版为什么还有高亮"）
+         *   `setHoverState` 一共 **6 个参数**，最后那个是**编组号** ✓
+         *   上面 `setHover(null)` 只管前五个 ✗ **碰不到编组** ✓
+         *   这里补一次全零，把编组也抹掉 ✓ */
+        if (renderer && renderer.setHoverState) renderer.setHoverState(0, 0, null, 0, null, 0);
       } catch (e) { /* 不影响用 ✓ */ }
     };
     for (const _ev of ['pointerdown', 'pointermove', 'pointerup', 'pointercancel',
@@ -833,5 +916,16 @@ function bindMobile() {
     renderer.hoverPid = 0;       // 单块高亮：关 ✓
     renderer.hoverPaintOn = 0;   // 整族高亮（同色一族一起亮）：也关 ✓
     renderer.setHover(null);
+    /* 🔴 **整片编组高亮：这里才是漏掉的那一路** ✗✗
+     *   （2026-10-13 用户报："手机版**为什么还有高亮**、、、"✓ 语气很有画面感 ✓）
+     *   `setHoverState(pid, paintOn, rgb, ?, ?, group)` 一共 **6 个参数** ✓
+     *   最后那个 `group` 是**编组号** ✓
+     *   （`hoverGroupIdOf(pid)` 算出来的 ✓ 见 gl.js 的 rebuildHoverGroups ✓）
+     *   ⚠ 上面三句**都碰不到它** ✗：
+     *     · `renderer.hoverPid = 0`      → 只管单块 ✓
+     *     · `renderer.hoverPaintOn = 0`  → 只管同色整族 ✓
+     *     · `renderer.setHover(null)`    → 也只管前五个 ✓
+     *   → 这里再推一次全零 ✓ 六个数一个不留 ✓ */
+    if (renderer.setHoverState) renderer.setHoverState(0, 0, null, 0, null, 0);
   };
 }

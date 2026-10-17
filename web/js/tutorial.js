@@ -36,7 +36,6 @@
     }
     return $('#show-region-name') || $('#show-labels-paint') || null;
   }
-  const wasteSwitch = () => $('waste-auto') || $('show-waste');
 
   /* ---------------------------------------------------------------- 动作探针
    * 一步开始时挂上（arm），只认"这一次"的动作 ✓
@@ -59,13 +58,8 @@
    */
   function buildSteps() {
     const booted = snap().boot;      // 地图已经选好（比如重开教程）→ 第一步不做自动判定 ✓
-    // **这张图有没有荒地** ✓（HOI4 / 维多利亚3 一个都没有 ✗）
-    //   怎么看：app 在没有荒地数据时会把「荒地」那几行收起来（style.display='none'）
-    //   —— 教程**只认 DOM** ✓ 不碰 app 的 state ✗（那是模块内变量，开发版根本读不到 ✓）
-    //   有 → 照旧教「荒地自动上色」；没有 → 换一句话、并且自己过去 ✓
-    //   （以前没荒地时那一步会**永远卡住** ✗ 要勾的开关根本不存在 → 怎么做都不算完成 ✓）
-    const _wlab = $('waste-label');
-    const hasWaste = !(_wlab && _wlab.style && _wlab.style.display === 'none');
+    // （「荒地也能自动上色」那一步已随荒地专属机制退役 ✓ —— 2026-10-15：
+    //    水域 / 荒地 = 普通陆地，没有那组开关了 → 教程少这一步 ✓）
     return [
       {
         title: '选择地图',
@@ -109,19 +103,6 @@
         arm: (f) => armOn($('map'), 'mouseup', f),
         // 光松开鼠标不算 ✗（擦一下没涂上也算点过）→ 得**改动数真的涨了** ✓
         done: (b, f) => f.hit && snap().changes !== b.changes,
-      },
-      hasWaste ? {
-        title: '荒地也能自动上色',
-        text: '把「荒地自动上色」打开，沙漠和荒山就会自己乖乖跟着周围一起上色啦，不用一块块去操心~',
-        target: wasteSwitch,
-        arm: (f) => armOn(wasteSwitch(), 'change', f),
-        done: (b, f) => f.hit,
-      } : {
-        // 没有荒地的图（HOI4 / V3）：这一条讲不了 ✗ → 说清楚为什么，停够时间自己过 ✓
-        title: '这张图没有荒地',
-        text: '沙漠、荒山这类走不了的地方，这张地图上本来就没有，所以「荒地」那组开关不用管它~ 我们接着往下走！',
-        target: () => q('#map'),
-        done: () => true,
       },
       {
         title: '想存下来就导出',

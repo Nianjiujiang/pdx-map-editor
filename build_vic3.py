@@ -25,6 +25,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import sys
 import time
@@ -57,6 +58,15 @@ SPECIAL_CATEGORIES = [
     ("#sea", "海洋", (32, 57, 92), "sea_starts"),
     ("#wasteland", "不可通行", (94, 94, 94), None),
 ]
+
+#: 这些类别**最细那层每块地单独一个节点**（可以一块块涂色 ✓）
+#: 🔴 2026-10-13 补 ✓ —— 上面那段原来引用的是 **EU4 模块**里的 `SETTABLE_CATEGORIES`
+#:   而这里**从来没 import 过它** ✓（那段是从 `build_eu4.py` 抄的 ✓ 抄漏了一步 ✓）
+#:   → `NameError` ✓ 整个 VIC3 构建当场崩 ✓
+#: ⚠ **每个 build_*.py 用自己那份** ✗ 别跨模块借 —— 各游戏的地形类别本来就不一样 ✓
+#:   （EU4 是 `("#wasteland",)` ✓ CK3 是 `("#impassable", "#wasteland")` ✓
+#:     VIC3 只有"不可通行"这一种可涂的 ✓ 海域 / 湖泊不给涂 ✓）
+VIC3_SETTABLE_CATEGORIES = ("#wasteland",)
 
 
 def find_vic3(explicit: str | None = None) -> Path:
@@ -103,9 +113,12 @@ def dyn_names(G):
 def main() -> int:
     global DATA
     ap = argparse.ArgumentParser(description="从维多利亚3 安装目录构建制地图缓存")
-    ap.add_argument("--vic3", help="V3 安装根目录（含 game/map_data）")
+    ap.add_argument("--vic3", help="VIC3 安装根目录（含 game/map_data）")
     ap.add_argument("--out", help="缓存写到哪个目录，默认 data_vic3/")
-    ap.add_argument("--label", default="V3 原版", help="这套地图的显示名，写进 meta")
+    #: 🔴 2026-10-16 用户定的：显示名「VIC3」（原来是 `V3` ✓）
+    #:   ⚠ 只改**给人看的那个词** ✗ —— `--out` 的 `data_vic3/` 与 meta 里的
+    #:     `game: vic3` 一律不动 ✓（那是数据 / 存档 / 路径的标识 ✓）
+    ap.add_argument("--label", default="VIC3 原版", help="这套地图的显示名，写进 meta")
     args = ap.parse_args()
 
     root = find_vic3(args.vic3)
@@ -340,78 +353,138 @@ def main() -> int:
             if k in index_of:
                 titlemap[0, p] = index_of[k]
 
-    # 8. 海 / 湖 / 不可通行
+    # 8. 海 / 湖 / 不可通行 —— **每一层一片**（2026-10-13 架构统一 ✓）
     blank = (np.all(titlemap == NO_TITLE, axis=0) & present) | (impassable & present)
-    log(f"完全没有归属的地块：{int(blank.sum())} 个")
-    special, assign, stats, fine_assign, waste_pids, _waste_tids = build_special_titles(
+    # 🔴🔴 **水域不算"空白"** ✗✗（2026-10-14 ✓ 用户要求 ✓ 跟 CK3 同一刀 ✓）
+    #
+    #   用户："你就不能把水域变成一个**仅仅是不能填色的地块**吗……
+    #     最底层的单位也有自己的 Province id"✓
+    #     "和陆地一样啊，**大名，河北，华北**，这样下来"（= 逐块 / 地区 / 大区 ✓）
+    #     "只是水域**带一个小标签**来让他在**边界和颜色**等方面听从相关的开关，
+    #      **其他逻辑不变**"
+    #
+    #   → 水域**不再造伪头衔** ✓ 于是它"所有层都无主"✓ 正好落进上面这个 blank ✗
+    #     → 被「**不可通行**」那片盖住 ✓（CK3 那边实跑量到过：悬停海拿到的 tid
+    #       是 `#wasteland_c_3` ✓ 于是**海的高亮跟着荒地整片亮** ✗）
+    #   → 必须**排除在 blank 之外** ✓ 那它就"完全无归属"✓
+    #     身份靠 `pid` + `meta.waterMask`（那个"小标签"✓）——
+    #     颜色走海域色 ✓ 边界听水域那两条开关 ✓ 高亮按 pid ✓ 别的全跟普通地块一样 ✓
+    #
+    #   ⚠ 水域**不能**进 `#wasteland` ✗ —— 荒地是"可以一块块涂色"的 ✓
+    #     水域**不能填色** ✓ 两者待遇相反 ✓
+    #   ⚠ VIC3 **只有一层水域数据** ✗（一个海州正好一个省 ✓ 战略区 1:1 ✓
+    #     见 `load_water_names_by_tier` 的说明 ✓）→ 所以它**一层伪头衔都不造** ✓
+    #     跟 CK3 一样 ✓（EU4 / EU5 / HOI4 有真层级 ✓ 它们**粗层保留** ✓） */
+    #   ⚠ VIC3 这边变量叫 `is_sea` / `is_lake`（**布尔数组** ✓ 现成的 ✓）
+    #     别去 `terrains` 里按名字找 ✗ —— 那是"地形分类"那张表 ✓ 名字不一样 ✓
+    _water_all = np.asarray(is_sea, dtype=bool) | np.asarray(is_lake, dtype=bool)
+    blank = blank & ~_water_all
+    log(f"完全没有归属的地块：{int(blank.sum())} 个"
+        f"（已排除 {int(_water_all.sum())} 个水域 ✓ 它们不算「无主荒地」✓）")
+    _special_names_v: dict[str, str] = {}
+    #: **地理层** = 年份层右边那三层（sr / st / pr ✓）
+    _geo = list(TIER_ORDER[1:])
+    # ⚠ VIC3 只有**一张**水名表（`load_water_names` ✓ 没有 by_tier 那一版）——
+    #   海区是一区一省（游戏规定 ✓），所以三层拿同一张表分片 ✓
+    #   每层仍旧**各有各的节点** ✓（这就是"每层自己的归属"那个骨架 ✓）
+    _wtier: dict[str, dict[int, str]] = {t: {} for t in _geo}
+    try:
+        _one = dict(V.load_water_names(root) or {})
+        for _t in _geo:
+            _wtier[_t] = dict(_one)
+        log(f"水名表：{len(_one)} 条（三层共用 ✓）")
+    except Exception as _e:            # 解析不出来不该拖垮整个构建 ✓
+        log(f"水名表跳过：{_e}")
+    special, _sp_rows, stats, waste_pids, _waste_tids = build_special_titles(
+        # 🔴 **`skip_fine_tier=True`** ✗（2026-10-14 ✓ 用户要求 ✓）
+        #   水域**最细层不造片** ✓（它就是它自己那个 province ✓）而**粗层照造** ✓
+        #   用户："和陆地一样啊，**大名，河北，华北**，这样下来"✓
+        #     → VIC3 的 `sr`（战略区）/ `st`（州）那两级**照旧造** ✓
+        #       `pr`（省份）那级**不造** ✓
+        #   ⚠ VIC3 **只有一层水域数据** ✗（一个海州正好一个省 ✓ 战略区 1:1 ✓
+        #     见 `load_water_names_by_tier` 的说明 ✓）
+        #     → 所以 sr / st 两级聚出来的片**是一样的** ✓ 名字也一样 ✓
+        #       这**不是 bug** ✗ 是"游戏内容只有一层"✓（跟 HOI4 那个"省份级=地区级"同类 ✓）
+        #   ⚠ 只影响"造片"那一步 ✗ —— `blank` / `waterMask` 都不受影响 ✓
         {"sea_starts": set(np.nonzero(is_sea)[0].tolist()),
          "lakes": set(np.nonzero(is_lake)[0].tolist())},
-        n_prov, blank, n_real, categories=SPECIAL_CATEGORIES,
-        fine_tier=TIER_ORDER[-1])
+        n_prov, blank | _water_all, n_real, categories=SPECIAL_CATEGORIES,
+        # 🔴 **剧本层：每一类共用一个「海洋」节点** ✗（2026-10-14 ✓ 用户的主意 ✓）
+        script_tiers=[t for t in TIER_ORDER if t not in _geo],
+        fine_tier=_geo[-1], geo_tiers=_geo, tier_names=_wtier,
+        skip_fine_tier=True,
+        name_sink=_special_names_v)
     log("锁住的地形：" + ("，".join(stats) if stats else "无"))
-    sel = assign >= 0
-    if sel.any():
-        vals = assign[sel].astype(np.uint16)
-        for r in range(len(TIER_ORDER)):
-            titlemap[r, sel] = vals
-    # 逐块荒地**只盖最细那层**（粗层照旧是那块共享的灰）
-    sel2 = fine_assign >= 0
-    if sel2.any():
-        titlemap[len(TIER_ORDER) - 1, sel2] = fine_assign[sel2].astype(np.uint16)
 
-    # 荒地节点序号（建节点时记下的真实序号）+ 那个共享伪头衔
+    # 🔴🔴 **底层地块的"身份标"** ✗✗（2026-10-16 补 ✓ 用户点名要的 ✓）
+    #   跟 `build_data.py`(CK3) / `build_ck2.py` / `build_eu4.py` / `build_eu5.py` /
+    #     `build_hoi4.py` 同一枚 ✓
+    #   → `meta.kindMask`：每地块 **1 字节**、base64
+    #     1 陆地（兜底）/ 2 海洋 / 3 湖泊 / 4 河流 / 5 不可通行海域 / 6 不可通行区域 ✓
+    #   ⚠ VIC3 **只有海和湖** ✗（`sea_starts` / `lakes` 两张名单 ✓
+    #     码 4 / 5 两格全图落"陆地 1" ✓ 不编假数据 ✓）
+    #   ⚠🔴 **`#wasteland` 那 793 块故意不进标** ✗✗ ——
+    #     它那一类里**混着两种东西**（见 `SPECIAL_CATEGORIES` 上面那段注释 ✓）：
+    #       ① 地形名带 `impassable` 的**真的不可通行** ✓（该给码 6 ✓）
+    #       ② "不属于任何州"的**没编进州里的陆地**（其实是能走的 ✓ 该给码 1 ✓）
+    #     两样合在一个类别里，**分不开** ✗ → 硬给码 6 = 把一片陆地涂成"不可通行灰" ✗
+    #     → 所以这一类**一个都不标** ✓ 全落"陆地 1" ✓
+    #     ⚠ 这跟改造前**一模一样** ✓ 实测：VIC3 认水 海 106 · 湖 52 ✓
+    #       而 kindMask 会发的正是同样这 158 块 ✓ **显示口径零变化** ✓
+    #     （真要细分得先把那 793 块拆成两类 ✓ 那是另一件事 ✗ 别在这一轮夹带 ✓）
+    #   ⚠ 判据就是**上面传给 `build_special_titles` 的那两份名单** ✓ 同源 ✓
+    #   ⚠ **不许拿 `{ }` 当作用域块** ✗（Python 里那不是块 ✓ 见 build_data.py 那条教训 ✓）
+    import base64 as _kind_b64mod                                 # noqa: PLC0415
+    from build_tier_pieces import (kind_mask as _kind_mask,       # noqa: PLC0415
+                                   KIND_CODES as _KIND_CODES)
+    _kind_cat: dict[str, set[int]] = {}
+    for _kkey, _kmask in (("#sea", is_sea), ("#lake", is_lake)):
+        if _kkey not in _KIND_CODES:
+            continue
+        # ⚠ VIC3 这边**没有 `terrain` 那个字典** ✗ —— 它读的是 `default.map`
+        #   上的两个布尔数组（`is_sea` / `is_lake` ✓ 见上面 170 行那两行 ✓）
+        #   所以直接拿数组里的下标 ✓ 跟传给 `build_special_titles` 的那两份**同源** ✓
+        _ks = {int(p) for p in np.nonzero(_kmask)[0].tolist() if 0 < int(p) < n_prov}
+        if _ks:
+            _kind_cat[_kkey] = _ks
+    _kind_b64 = _kind_mask(n_prov, _kind_cat)
+    _kind_n = {c: 0 for c in range(7)}
+    for _kb in _kind_b64mod.b64decode(_kind_b64):
+        _kind_n[int(_kb)] = _kind_n.get(int(_kb), 0) + 1
+    _kind_tot = sum(_kind_n[c] for c in range(1, 7))
+    assert _kind_tot == n_prov - 1, \
+        f"kindMask 有空洞 ✗：1~6 合计 {_kind_tot} ≠ numProvinces-1 = {n_prov - 1}"
+    assert _kind_n[0] == 1, f"kindMask 的 0 号格子应该是空位 ✗（实际 {_kind_n[0]} 个）"
+    log("身份标 kindMask："
+        + " · ".join(f"{c}={_kind_n[c]}" for c in range(1, 7))
+        + f"（1~6 合计 {_kind_tot} = numProvinces-1 ✓ 无空洞 ✓"
+        + " ｜ `#wasteland` 那 793 块按「无归属 ≠ 身份」故意不标 ✓）")
+    from build_tier_pieces import apply_rows as _apply_rows        # noqa: PLC0415
+    log(f"背景地形按层填了 {_apply_rows(titlemap, _sp_rows, TIER_ORDER, _geo)} 个"
+        f" (省份, 层级) 对（年份层借最粗那层的片 ✓）")
+
+    # 荒地节点序号（建节点时记下的真实序号）+ 粗层那些"整片"伪头衔
     #（前端"荒漠·涂色"关着时它要显示灰）
+    # ⚠ 判据一律**前缀匹配** ✗ —— 每层一片之后，键是 `#sea_pr_57` 这种 ✓
     waste_tids = list(_waste_tids)
     water_tids = set()
     for k, sp in enumerate(special):
-        if sp.key in ("#sea", "#lake"):
+        _k = str(sp.key)
+        if _k.startswith(("#sea", "#lake", "#river", "#impassable_sea")):
             water_tids.add(n_real + k)
-        if sp.key in ("#wasteland",):
+        # 🔴 **VIC3 自己的"可涂色"类别** ✗（2026-10-13 修 ✓）
+        #   这里原来写的是 `SETTABLE_CATEGORIES` ✗ —— 那是 **EU4 模块**里的常量 ✓
+        #   而 `build_vic3.py` 从头到尾**没 import 过它** ✓
+        #   （那段是从 `build_eu4.py` 抄过来的 ✓ 抄漏了那一步 ✓）
+        #   → `NameError: name 'SETTABLE_CATEGORIES' is not defined` ✓ 整个构建当场崩 ✓
+        #   ✅ 用 VIC3 自己那套：它的地形只有 湖泊 / 海洋 / 不可通行 ✓
+        #      "可以一块块涂色"的只有**不可通行**（跟 CK3 的不可通行山地同理 ✓
+        #      玩家会想按周边国家给它上色 ✓）—— 海域 / 湖泊不给涂 ✓
+        #   ⚠ 键名要**前缀**匹配 ✗ —— 每层一片之后是 `#impassable_sr_0` 这种 ✓
+        #   ⚠ 用元组常量而不是内联字符串 ✗ 以后加类别只改一处 ✓
+        if _k.startswith(VIC3_SETTABLE_CATEGORIES):
             waste_tids.append(n_real + k)
 
-    # ---- 荒地自动上色：分母是**整条陆地周长**（无主地也算），严格过半 ----
-    waste_auto: list[list[int]] = []
-    if waste_pids:
-        n_pid = int(ids.max()) + 1
-        wmask = np.zeros(n_pid, dtype=bool)
-        wmask[np.array(sorted(set(waste_pids)), dtype=np.int64)] = True
-        pair_cnt: dict[int, int] = {}
-        for axis in (0, 1):
-            a = ids[:-1, :] if axis == 0 else ids[:, :-1]
-            b = ids[1:, :] if axis == 0 else ids[:, 1:]
-            aw = wmask[a]
-            bw = wmask[b]
-            m = aw != bw
-            if not m.any():
-                continue
-            pa = a[m].astype(np.int64)
-            pb = b[m].astype(np.int64)
-            awm = aw[m]
-            wp = np.where(awm, pa, pb)
-            nb = np.where(awm, pb, pa)
-            uk, uc = np.unique((wp << 16) | nb, return_counts=True)
-            for k_, c_ in zip(uk.tolist(), uc.tolist()):
-                pair_cnt[k_] = pair_cnt.get(k_, 0) + c_
-        per_waste: dict[int, dict[int, int]] = {}
-        edge_tot: dict[int, int] = {}
-        for k_, c_ in pair_cnt.items():
-            wp, nb = k_ >> 16, k_ & 0xFFFF
-            t_nb = int(titlemap[0, nb])
-            if t_nb in water_tids:
-                continue
-            edge_tot[wp] = edge_tot.get(wp, 0) + c_
-            if t_nb >= n_real:
-                continue
-            d = per_waste.setdefault(wp, {})
-            d[t_nb] = d.get(t_nb, 0) + c_
-        for wp, d in per_waste.items():
-            tot = edge_tot.get(wp, 0)
-            if not tot:
-                continue
-            best = max(d.items(), key=lambda kv: kv[1])
-            if best[1] * 2 > tot:
-                waste_auto.append([int(wp), int(best[0])])
-        log(f"荒地自动上色：{len(waste_auto)}/{len(waste_pids)} 块有主（边缘过半）")
 
     ordered_all = ordered + special
     n_all = len(ordered_all)
@@ -428,14 +501,31 @@ def main() -> int:
     log(f"算出 {int((counts > 0).sum())} 个省份的质心")
 
     # 10. 成员 → 地盘数、面积
+    # ⚠ **按"节点自己那一层"数** ✗（2026-10-13 每层一片之后）
+    #   以前伪头衔在**每一行**都写着同一个序号 ✗ → 每层数一遍会虚高成 N 倍，
+    #   所以老代码用 `tid >= n_real and r > 0` 把它挡掉 ✗。
+    #   现在每层是**不同的节点** ✓、剧本层借的是最粗那层的片 ✓ ——
+    #   老判据会把水 / 荒地整个跳过（provCount / area 全 0 → 标签层挑不到它们 ✓）
+    #   正确的口径：**只数"它自己那一层"那一行** ✓
+    _own_row = np.array([TIER_ORDER.index(t.tier) if t.tier in TIER_ORDER else -1
+                         for t in ordered_all], dtype=np.int64)
     members: list[list[int]] = [[] for _ in range(n_all)]
     for r in range(len(TIER_ORDER)):
         row = titlemap[r]
-        for p in np.nonzero((row != NO_TITLE) & present)[0]:
-            tid = int(row[p])
-            if tid >= n_real and r > 0:
-                continue
-            members[tid].append(int(p))
+        sel = np.nonzero((row != NO_TITLE) & present)[0]
+        if sel.size == 0:
+            continue
+        tids = row[sel].astype(np.int64)
+        keep = _own_row[tids] == r          # 这一行里"本来就属于这一层"的节点 ✓
+        sel, tids = sel[keep], tids[keep]
+        if sel.size == 0:
+            continue
+        _o = np.argsort(tids, kind="stable")
+        sel, tids = sel[_o], tids[_o]
+        _uniq, _starts = np.unique(tids, return_index=True)
+        _ends = np.append(_starts[1:], tids.size)
+        for _u, _a, _b in zip(_uniq.tolist(), _starts.tolist(), _ends.tolist()):
+            members[_u].extend(sel[_a:_b].tolist())
     prov_count = [len(m) for m in members]
     area = np.zeros(n_all, dtype=np.int64)
     for i, m in enumerate(members):
@@ -461,6 +551,9 @@ def main() -> int:
 
     # 12. 名字
     special_names = {k: label for k, label, _c, _s in SPECIAL_CATEGORIES}
+    # ⚠ 每层一片之后，键是 `#sea_pr_57` 这种 ✗ —— 只有类别名那张表查不到它们 ✓
+    #   必须把 `build_special_titles` 带出来的**逐片真名**并进来 ✓
+    special_names.update(_special_names_v)
     resolved: list[str] = []
     names_en: list[str] = []
     key_of: list[str] = []
@@ -528,6 +621,7 @@ def main() -> int:
         "colors": colors.tolist(),
         "provCount": prov_count,
         "area": area.tolist(),
+
         "blockArea": block_area.tolist(),
         "lx": [None if np.isnan(v) else round(float(v), 1) for v in lx],
         "ly": [None if np.isnan(v) else round(float(v), 1) for v in ly],
@@ -560,6 +654,12 @@ def main() -> int:
         "mapWidth": w,
         "mapHeight": h,
         "numProvinces": n_prov,
+        # **底层地块身份标**（每地块 1 字节 base64 ✓ 2026-10-16 补 ✓
+        #   1 陆地 / 2 海洋 / 3 湖泊 / 4 河流 / 5 不可通行海域 / 6 不可通行区域 ✓
+        #   VIC3 只有前三种（`sea_starts` / `lakes` 两张名单 ✓）
+        #   ⚠ `#wasteland` 那 793 块**故意不标**（里面混着"真不可通行"与
+        #     "没编进州的陆地"，分不开 ✓ 详见烤标那一段 ✓）✓）
+        "kindMask": _kind_b64,
         "numTitles": n_all,
         "numRealTitles": n_real,
         "tiers": list(TIER_ORDER),
@@ -579,13 +679,44 @@ def main() -> int:
         "colorLutWidth": 256,
         # 荒地：哪些节点算荒地 + 逐块的自动归属（口径同 EU4/EU5/CK3）
         "wasteland": sorted(set(waste_tids)),
-        "wastelandAuto": waste_auto,
         "lockedKinds": [k for k, *_ in SPECIAL_CATEGORIES],
         "landProvinces": int(land.sum()),
         "noStateProvinces": len(no_state),
         "impassableProvinces": int((impassable & present).sum()),
         "remappedIds": len(known),
     }
+    # **水域名**（2026-10-13 ✓ 出处见 docs/水域名调研.md）
+    #   { 地块 id : "北海" } —— 编辑器拿它画具体海域名（悬停一行 + 地图标签 ✓）
+    #   ⚠ VIC3 的权威名单是 game/map_data/state_regions/99_seas.txt 那 106 条 ✓
+    try:
+        _wn = V.load_water_names(root)
+        if _wn:
+            meta["seaNames"] = {str(k): str(v) for k, v in _wn.items()}
+            log(f"水域名：{len(_wn)} 个地块有具体名字")
+        else:
+            log("水域名：没解析到（跳过，画面用笼统名）")
+    except Exception as _e:
+        log(f"水域名解析跳过：{_e}")
+    # **水域名 · 按层**（2026-10-13 补 ✓ 跟 EU4 / HOI4 / EU5 对齐）
+    #   ⚠ 这是"每层一片"那套的配套：构建期按层把地块聚成片 ✓
+    #     而"这一层的片叫什么"就得靠这张表 ✓ 见 `load_water_names_by_tier` 的说明 ✓
+    #   ⚠ VIC3 只有一层水域数据（一个海州正好一个省 ✓ 战略区 1:1 ✓）
+    #     → 三层返回同一张 ✓ 这是**游戏内容如此** ✗ 不是偷懒 ✓
+    #   ⚠ 下标必须跟 `meta["tiers"]` 对齐 ✗ —— 剧本层给 None ✓
+    #     （同 EU4 那套：`[None] * 剧本层数 + [三层的水名表]` ✓
+    #      少一格就是"包导不进来"那条老坑 ✓ 见 pack.js 的等长校验 ✓）
+    try:
+        _wt = V.load_water_names_by_tier(root)
+        _tiers_all = meta.get("tiers") or []
+        _arr: list = []
+        for _t in _tiers_all:
+            _arr.append(({str(k): str(v) for k, v in _wt[_t].items()}
+                         if _wt.get(_t) else None))
+        meta["seaNamesByTier"] = _arr
+        _n = sum(1 for x in _arr if x)
+        log(f"水域名（按层）：{_n} 层有表（层序 {'/'.join(_tiers_all)} ✓）")
+    except Exception as _e:
+        log(f"水域名按层解析跳过：{_e}")
     (DATA / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2),
                                     encoding="utf-8")
     log("全部完成 ✔")

@@ -211,12 +211,14 @@ if __name__ == "__main__":       # 自带自检：python -m eu5.parser
                    {"stockholm", "SWE", "uppland_province", "svealand_area"})
     print("中文抽样:", loc)
 
-def parse_default_map(path: Path) -> dict:
-    """``map_data/default.map`` 里的四张"按名字列"的表。
 
-    实测有 ``sea_zones`` / ``lakes`` / ``impassable_mountains`` / ``non_ownable`` 四段，
-    里面是 **location 名字**（裸词），跟层级树用的是同一套名字 ——
-    所以"哪些地块是水"完全能从数据里对出来，不用猜颜色。
+def parse_default_map(path: Path) -> dict:
+    """``map_data/default.map`` 里那几张"按名字列"的表。
+
+    实测有 ``sea_zones``（本机 4821 词 / 去重 4793）/ ``lakes``（919 / 918）/
+    ``impassable_mountains``（1878）/ ``non_ownable``（153）/ ``volcanoes`` /
+    ``earthquakes`` 这些段，里面是 **location 名字**（裸词），跟层级树用的是同一套
+    名字 —— 所以"哪些地块是水"完全能从数据里对出来，不用猜颜色。
     """
     out: dict[str, list[str]] = {}
     fp = Path(path)
@@ -230,3 +232,283 @@ def parse_default_map(path: Path) -> dict:
         if words:
             out[key] = words
     return out
+
+
+#: ``lang`` → 本地化目录名。写目录名就照用，认不出来原样试一次再退回英文。
+#: （EU5 的简中目录叫 ``simp_chinese``，跟 HOI4 一个口径 ✓）
+_WATER_LANG_DIRS: dict[str, tuple[str, ...]] = {
+    "zh": ("simp_chinese", "english"),
+    "zh_cn": ("simp_chinese", "english"),
+    "zh_hans": ("simp_chinese", "english"),
+    "zh_hant": ("simp_chinese", "english"),
+    "chs": ("simp_chinese", "english"),
+    "cn": ("simp_chinese", "english"),
+    "chinese": ("simp_chinese", "english"),
+    "simp_chinese": ("simp_chinese", "english"),
+    "en": ("english",),
+    "english": ("english",),
+}
+
+
+def _water_lang_dirs(lang: str) -> tuple[str, ...]:
+    """``lang`` → 本地化目录名列表（先中文后英文，前面的优先）。"""
+    raw = str(lang or "").strip()
+    if not raw:
+        return ("simp_chinese", "english")
+    hit = _WATER_LANG_DIRS.get(raw.lower().replace("-", "_"))
+    if hit is not None:
+        return hit
+    return (raw, "english") if raw != "english" else ("english",)
+
+
+def _loc_root(root: Path) -> Path:
+    """找出 ``load_loc`` 该用的根（游戏根 / ``game/`` / ``game/in_game/`` 都认）。
+
+    先认带 ``main_menu/localization`` 的那个 —— EU5 的内容本地化只在那儿，
+    ``in_game/localization`` 底下的 jomini 系统提示会把人骗过去 ✗。
+    """
+    root = Path(root)
+    cands = (root, root / "game", root.parent, root.parent.parent)
+    for cand in cands:
+        if (cand / "main_menu" / "localization").is_dir():
+            return cand
+    for cand in cands:
+        if (cand / "localization").is_dir():
+            return cand
+    return root
+
+
+def _map_data_dir(root: Path) -> Path | None:
+    """找 ``map_data/``（给游戏根 / ``game/`` / ``game/in_game/`` 都认）。"""
+    root = Path(root)
+    for cand in (root / "game" / "in_game" / "map_data", root / "map_data",
+                 root / "in_game" / "map_data"):
+        if (cand / "default.map").is_file():
+            return cand
+    return None
+
+
+#: ---------- 水名 / 荒地名：按**视图层**各切一套 ----------
+#:
+#: 游戏里换视图，海域**合并的范围**就跟着变 —— 一层一张表，不能只做一层。
+#: 层级树（``parse_hierarchy`` 的 depth，从 0 数起）是
+#:
+#:     0 continent / 1 subcontinent / 2 region / 3 area / 4 province / 5 location
+#:
+#: 编辑器那套 ``meta.tiers`` 是 ``['1337', 'blank', 'reg', 'area', 'prov', 'loc']``
+#: —— 前两层是剧本（水名给 ``null``），后四层正好对上树里的 2..5：
+TIER_LEVEL: dict[str, int] = {"reg": 2, "area": 3, "prov": 4, "loc": 5}
+
+#: 哪几层**允许退回水块自己的名字**。
+#: 祖先底下还有陆地时（湖坐在陆地 area / 陆地 province 里），祖先的名字是**陆地**地名
+#: ——``malaren``（梅拉伦湖）的 area 是 ``svealand_area`` = 斯韦阿兰、province 是
+#: ``sodermanland_province`` = 南曼兰 —— 往湖上顶就不对了，所以改用湖**自己**的名字 ✓。
+#: ``reg`` **不在**里面：region 本来就是"陆 + 海一起分"的一层（``indonesia_region``
+#: = 印度尼西亚、``polynesia_region`` = 波利尼西亚、``canada_region`` = 加拿大，
+#: 大半面积是海），到这一层正是该**合并成区名**的地方（跟 HOI4 的战略区一个道理）
+#: —— 不然最粗那层反而跟 loc 一样碎，粒度就反了 ✗。
+TIERS_KEEP_OWN = ("area", "prov")
+
+#: 荒地（不可通行 / 无主地）：``default.map`` 里这两份名单，装的也是 location 名。
+WASTELAND_LISTS = ("impassable_mountains", "non_ownable")
+
+
+def _tier_ancestor(uid: str, want: int, parent: dict, level: dict, limit: int = 12):
+    """``uid`` 在 ``want`` 那一层归哪个祖先。
+
+    往上找第一个 ``level <= want`` 的节点。树是严格分层的，正常就是正好等于 ——
+    万一层跳了（某个 location 直接挂在 area 下面），就按"它在那一层落在哪个块里"
+    算，跟编辑器画出来的是同一件事。找不到（或超出 limit）返回 ``None``。
+    """
+    cur, guard = parent.get(uid), 0
+    while cur is not None and guard < limit:
+        if level.get(cur, 99) <= want:
+            return cur
+        cur, guard = parent.get(cur), guard + 1
+    return None
+
+
+def load_water_names_by_tier(root: Path, *, lang: str = "zh") -> dict[str, dict[int, str]]:
+    """EU5 的**分层**水域名 + 荒地名。认不出来返回 ``{}``。
+
+    返回 ``{"reg": {id: 名}, "area": {...}, "prov": {...}, "loc": {...},
+    "wasteland": {id: 名}}``，键是**编辑器地块 id**（跟 ``provinces_id.bin``
+    同一套编号 ✓），值是中文优先的水名 / 荒地名。
+
+    四层怎么切：**某个水块在那一层属于哪个祖先，就用那个祖先的名字**
+    （loc = location 自己、prov = 它所在的 province、area = 它所在的 area、
+    reg = 它所在的 region）。游戏里就是这么做合并的，所以
+
+    * ``loc`` 最细 —— 5709 个水块各一个名字（``north_sea4`` 也是有名有姓的：
+      雷维特浅滩 / Revet，不是"自动切片编号"✗ 那是早先的误判）；
+    * ``area`` / ``prov`` —— 祖先底下**没有陆地**（纯水域）才跟祖先；
+      落在陆地 area / province 里的湖退回**湖自己的名字**（见 ``TIERS_KEEP_OWN``）；
+    * ``reg`` 最粗 —— region 名（斯堪的纳维亚 / 印度尼西亚…），这一层就是合并口径。
+
+    ``wasteland`` 走 ``default.map`` 的 ``impassable_mountains`` / ``non_ownable``
+    （本机 1865 + 153 个 location），名字同样是 location 自己的名字（叙拉纳山 /
+    尤通黑门山 / 提米蒙盆地走廊）—— 这些名字以前被滤掉了 ✗，现在单出一组。
+    **跟水重叠的算水**（本机 47 个既在 ``impassable_mountains`` 又在
+    ``sea_zones``/``lakes``；跟 ``build_eu5.py`` 第 9b 段"水域优先"一个口径），
+    不扣掉的话它们在地图上会被当成荒地染成灰的 ✗。
+
+    链路（跟 ``build_eu5.py`` 完全一致，不然 id 就对不上）：
+
+    1. ``definitions.txt`` 的 level-5 叶子按名字排序，序号 1..N 就是编辑器那套
+       **省份轴**（``build_eu5`` 的 ``loc_ord``）。地块图上的 id 就是它 ——
+       对过 ``data_eu5/titlemap.bin``，22860 个陆地 location 一个不差 ✓。
+    2. 名字 → location：``sea_zones`` / ``lakes`` / 荒地那两份名单里的名字回查叶子。
+    3. 判断"祖先是不是水域"用的是**它底下有没有陆地 location**，不是名字：
+       ``james_bay_lowlands_area`` = "西詹姆斯湾"装的是 28 块陆地（外带 1 个湖），
+       ``hudson_bay_coast_area`` = "哈得孙湾海岸"一个水块都没有 —— 猜名字必踩 ✗。
+    4. 名字走本文件已有的 :func:`load_loc`（会展开 ``$granada_area$`` 那种 ``$引用$``）：
+       中文缺的条目回退英文，两边都没有的那条跳过（本机四层 + 荒地一条都没缺 ✓）。
+
+    :param root: 游戏根目录（``C:\\Game NIANJIU\\EU5``，含 ``game/in_game`` 与
+        ``game/main_menu``）；给 ``game/in_game`` 或 ``game`` 也认。
+    :param lang: ``zh``（默认，= ``simp_chinese``）/ ``en``，也可以直接给目录名。
+    """
+    try:
+        root = Path(root)
+        map_data = _map_data_dir(root)
+        if map_data is None:
+            return {}
+        dmap = parse_default_map(map_data / "default.map")
+        # 去重但保序：名单里同一个名字偶尔写两遍
+        zones = list(dict.fromkeys(dmap.get("sea_zones") or ()))
+        lakes = list(dict.fromkeys(dmap.get("lakes") or ()))
+        if not zones and not lakes:
+            return {}
+
+        parent, level, _ = parse_hierarchy(map_data / "definitions.txt")
+        loc_uids = sorted(u for u, lv in level.items() if lv == 5)
+        if not loc_uids:
+            return {}
+        loc_ord = {u: i + 1 for i, u in enumerate(loc_uids)}
+        by_name: dict[str, list[str]] = {}
+        for u in loc_uids:
+            by_name.setdefault(u.split(":", 1)[1], []).append(u)
+
+        water: set[str] = set()
+        for nm in zones + lakes:
+            water.update(by_name.get(nm, ()))
+        if not water:
+            return {}
+
+        # 哪些节点下头**有陆地**（有陆地 = 不是纯水域）
+        land_holder: set[str] = set()
+        for u in loc_uids:
+            if u in water:
+                continue
+            cur, guard = parent.get(u), 0
+            while cur is not None and guard < 12:
+                land_holder.add(cur)
+                cur = parent.get(cur)
+                guard += 1
+
+        # 每一层：水块 → **拿谁的名字当标签**（用 uid 记，读本地化之前先别散成字符串）
+        label_uid: dict[str, dict[str, str]] = {}
+        for tier, want_lv in TIER_LEVEL.items():
+            picked: dict[str, str] = {}
+            for u in water:
+                key_uid = u                                  # loc 层 = 自己
+                if tier != "loc":
+                    a = _tier_ancestor(u, want_lv, parent, level)
+                    if a is not None and (a not in land_holder
+                                          or tier not in TIERS_KEEP_OWN):
+                        key_uid = a                          # 纯水域祖先：跟祖先
+                picked[u] = key_uid
+            label_uid[tier] = picked
+
+        # 荒地：两份名单 − 水（水域优先）
+        wasteland: set[str] = set()
+        for key in WASTELAND_LISTS:
+            for nm in dmap.get(key) or ():
+                wasteland.update(by_name.get(nm, ()))
+        wasteland -= water
+
+        def shown(uid: str) -> str:
+            return NAME_OF.get(uid) or uid.split(":", 1)[1]
+
+        # 四层 + 荒地要的名字一次读全（load_loc 反正整张表都读，分四次读纯浪费）
+        want: set[str] = {shown(u) for u in wasteland}
+        for picked in label_uid.values():
+            want.update(shown(k) for k in picked.values())
+        loc_root = _loc_root(root)
+        names: dict[str, str] = {}
+        for sub in _water_lang_dirs(lang):
+            got = load_loc(loc_root, sub, want)
+            for k, v in got.items():
+                names.setdefault(k, v)         # 前面的语言优先，后面的只补空缺
+            if want <= names.keys():
+                break                          # 全齐了，不用再读第二个语言
+
+        out: dict[str, dict[int, str]] = {}
+        for tier, picked in label_uid.items():
+            table: dict[int, str] = {}
+            for uid in sorted(water, key=loc_ord.__getitem__):
+                name = names.get(shown(picked[uid]))
+                if name:
+                    table[loc_ord[uid]] = name
+            out[tier] = table
+        waste: dict[int, str] = {}
+        for uid in sorted(wasteland, key=loc_ord.__getitem__):
+            name = names.get(shown(uid))
+            if name:
+                waste[loc_ord[uid]] = name
+        out["wasteland"] = waste
+        return out
+    except Exception:                          # 契约：认不出来一律 {}，不抛给调用方
+        return {}
+
+
+def sea_names_by_tier_array(names_by_tier: dict, tiers) -> list:
+    """把上面那坨摆成 ``meta.seaNamesByTier`` 要的形状。
+
+    那个字段是**数组**，下标就是 ``meta.tiers`` 的下标（第 0 项 = 最粗那层）；
+    某一层拿不到名字就写 ``None``（前端靠 ``None`` 判"这层没有、退回旧字段
+    ``seaNames``"，别写 ``{}`` ✗）。``1337`` / ``blank`` 两层自然落到 ``None``。
+    键统一转成字符串（跟 ``meta.seaNames`` 一个口径 ✓）。
+    """
+    out: list = []
+    for t in tiers or ():
+        table = (names_by_tier or {}).get(str(t).lower())
+        out.append({str(k): str(v) for k, v in table.items()} if table else None)
+    return out
+
+
+def load_water_names(root: Path, *, lang: str = "zh") -> dict[int, str]:
+    """EU5 的水域名 → ``{编辑器地块 id: 水域名}``，**只取 area 那一层**。
+
+    第一轮就这一张表（``meta.seaNames`` 用它），所以这个入口原样留着 ——
+    它等价于 :func:`load_water_names_by_tier` 返回的 ``"area"``，一个字没变 ✓。
+    要按视图层分的那四张表 + 荒地名，用 :func:`load_water_names_by_tier`。
+
+    EU5 的水**不叫** ``sea_starts`` 了，改成 ``map_data/default.map`` 里的两份
+    **按名字列**的名单：``sea_zones``（本机 4821 条、去重 4793）和 ``lakes``
+    （919 / 918）。两份都是 location 名，跟层级树同一套；``in_game/localization``
+    那边只有 jomini 的系统提示，**内容的本地化在 ``main_menu/localization``**。
+
+    贴标签（跟 ``build_eu5.py`` 第 9b 段完全一致，不然 id 就对不上）：
+
+    1. ``definitions.txt`` 的 level-5 叶子按名字排序，序号 1..N 就是编辑器那套
+       **省份轴**（``build_eu5`` 的 ``loc_ord``）。地块图上的 id 就是它 ——
+       对过 ``data_eu5/titlemap.bin``，22860 个陆地 location 一个不差 ✓。
+    2. 名字 → location：``sea_zones`` / ``lakes`` 里的名字回查那批叶子。
+    3. 贴标签：水块的 **area 祖先**（``north_sea_area`` / ``inner_baltic_sea_area``）
+       名字才是给人看的。判断"祖先是不是水域"用的是**它底下有没有陆地 location**，
+       不是名字：``james_bay_lowlands_area`` = "西詹姆斯湾"装的是 28 块陆地（外带 1 个湖），
+       ``hudson_bay_coast_area`` = "哈得孙湾海岸"一个水块都没有 —— 猜名字必踩 ✗。
+    4. 落在**陆地 area** 里的水块是湖：那时 area 名是陆地名字（``malaren`` 的
+       area 是 ``svealand_area`` = 斯韦阿兰 ✗），所以改用湖**自己**的名字
+       （``malaren`` → 梅拉伦湖）。两边都取不到就跳过，不编。
+
+    :param root: 游戏根目录（``C:\\Game NIANJIU\\EU5``，含 ``game/in_game`` 与
+        ``game/main_menu``）；给 ``game/in_game`` 或 ``game`` 也认。
+    :param lang: ``zh``（默认，= ``simp_chinese``）/ ``en``，也可以直接给目录名。
+    """
+    try:
+        return load_water_names_by_tier(root, lang=lang).get("area", {})
+    except Exception:                          # 契约：认不出来一律 {}，不抛给调用方
+        return {}
+

@@ -345,6 +345,14 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin
 }
 .hover-card .hc-title { font-weight: 600; color: #fff; display: flex; align-items: center; gap: 6px; }
 .hover-card .hc-title .dot { width: 11px; height: 11px; border-radius: 3px; }
+/* 第二行：**具体地名**（2026-10-13 用户要求悬停要看到）
+   缩进 17px = 色点 11 + 间距 6，跟上面那行文字左边缘对齐 ✓ */
+.hover-card .hc-sub {
+  margin-top: 3px;
+  padding-left: 17px;
+  font-size: 11px;
+  color: var(--text-faint);
+}
 
 .toast {
   position: absolute; left: 50%; bottom: 26px; transform: translateX(-50%);
@@ -382,28 +390,22 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin
   margin: 0 0 10px; font-size: 11px; letter-spacing: 2px;
   color: var(--text-faint); text-transform: uppercase;
 }
-/* ⚠ 这里得是 **grid** 而不是 flex 列 ✗ ——
-   卡片一多要"另起一列"，而那条规则改的就是 grid-template-columns，
-   还是 flex 列的话它根本不生效 ✓ */
-.map-pick-list { display: grid; grid-template-columns: 1fr; gap: 8px; }
-/* 卡片到阈值以上：**列表排两列 + 面板放宽 + 列表自己滚** ✓
-   （2026-10-12 用户要求："导入的地图太多就另起一列"）
-   `.boot-inner` 只有 340px，两列会挤成一条 —— 所以面板也得跟着宽 ✓
-   限高滚动是为了卡一多别把整页顶出屏幕 ✓ */
-.boot-inner.wide-pick { width: 760px; }
-.map-pick-list.two-col {
-  grid-template-columns: 1fr 1fr;
-  max-height: min(62vh, 600px);
+/* 选图列表：**永远一列** ✓（2026-10-17 用户："统一变成列表形式，
+   多的时候塞进列表而不是塞进两列"）
+   ⚠ 卡片多了由**列表自己滚**（max-height + overflow）✗ 不再改列数、
+     也不再放宽启动面板（面板放宽那一套已删 ✓） */
+.map-pick-list {
+  display: grid; grid-template-columns: 1fr; gap: 8px;
+  max-height: min(58vh, 560px);
   overflow-y: auto;
-  padding-right: 4px;          /* 滚动条别贴着卡片 ✓ */
-  /* ⚠ 这儿的滚动条得**自己染暗** ✗ —— 别处没管过它，默认是浏览器那根白条 ✓
-     （跟侧栏 `.sidebar::-webkit-scrollbar-thumb` 同一个色 ✓）*/
+  padding-right: 4px;
+  /* 滚动条自己染暗（跟侧栏同一色）✓ */
   scrollbar-width: thin;
   scrollbar-color: #2b3542 transparent;
 }
-.map-pick-list.two-col::-webkit-scrollbar { width: 8px; }
-.map-pick-list.two-col::-webkit-scrollbar-thumb { background: #2b3542; border-radius: 4px; }
-.map-pick-list.two-col::-webkit-scrollbar-track { background: transparent; }
+.map-pick-list::-webkit-scrollbar { width: 8px; }
+.map-pick-list::-webkit-scrollbar-thumb { background: #2b3542; border-radius: 4px; }
+.map-pick-list::-webkit-scrollbar-track { background: transparent; }
 .map-card {
   appearance: none; cursor: pointer;
   display: flex; align-items: baseline; justify-content: space-between;
@@ -511,18 +513,36 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin
   background: linear-gradient(90deg, var(--gold-dim), var(--gold));
   transition: width .25s;
 }
-/* 署名那行：小、暗、不抢戏，但点得到 ✓ */
+/* 署名那行：小、暗、不抢戏，但点得到 ✓
+   🔴 2026-10-17 用户："加载界面那些字挤在一起很难看" → **拆成两行**
+      第一行 作者 + 主页；第二行 导出诊断报告 + 版本戳 */
 .boot-author {
   margin-top: 18px; padding-top: 12px;
   border-top: 1px solid var(--line);
   font: 10.5px var(--mono); color: var(--text-faint);
-  display: flex; align-items: center; justify-content: center; gap: 8px;
+  display: flex; flex-direction: column; align-items: center; gap: 7px;
+}
+.boot-author-row {
+  display: flex; align-items: center; justify-content: center;
+  flex-wrap: wrap; gap: 10px;
+}
+/* 第二行：**版本戳在左、导出按钮在右**，但两个挨着居中 ✓
+   ⚠ 别用 space-between ✗ —— boot-inner 只有 340px，撑到两头会离得特别远（用户 2026-10-17 指出的 ✓） */
+.boot-author-row-split {
+  justify-content: center;
+  gap: 12px;
 }
 .boot-author-link {
   color: var(--gold-dim); text-decoration: none;
   border-bottom: 1px solid transparent;
 }
 .boot-author-link:hover { color: var(--gold); border-bottom-color: var(--gold-dim); }
+/* 启动页那颗「导出诊断报告」：长得像旁边那条链接，但它是 <button> ✓ */
+.boot-log-btn {
+  font: inherit; color: var(--gold-dim); background: none;
+  border: 0; border-bottom: 1px solid transparent;
+  padding: 0; cursor: pointer;
+}
 
 /* ------------------------------------------------------------ 状态栏 */
 .statusbar {
@@ -563,9 +583,6 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin
 .io-row { display: flex; gap: 6px; flex-wrap: wrap; }
 
 
-/* 荒地上色那一块：跟别的开关分开，按钮**独占一行** ✓ */
-
-
 /* 右上角「导出 ▾」的下拉（点了才出来，省地方） */
 #export-row { position: relative; }
 .dropdown {
@@ -586,8 +603,8 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin
 .dropdown[hidden] { display: none; }
 .dropdown .btn { justify-content: flex-start; }
 
-/* 「显示」区**行高统一** —— 原来开关(~17px)、分组标题(~12px)、荒地那个按钮(~21px)
-   三种高度混在一起，看着参差。这里统一到 22px，并把多余的上边距清零。 */
+/* 「显示」区**行高统一** —— 原来开关(~17px)、分组标题(~12px)两种高度混在一起，看着参差。
+   这里统一到 22px，并把多余的上边距清零。 */
 #display-panel .switch,
 #display-panel .group-label {
   min-height: 22px;
@@ -596,14 +613,33 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin
   margin: 0;
 }
 #display-panel .switch input[type=checkbox] { margin: 0; }
-/* 荒地那一行末尾的小按钮：跟「允许 / 自动」同一行，比普通按钮小一号 */
-#display-panel #waste-clear {
-  padding: 1px 6px;
-  font-size: 11px;
-  min-height: 18px;
-  margin-left: 2px;
-}
 #display-panel .tool-group { min-height: 22px; }
+
+/* ============ 「显示」区 2026-10-13 整理 ============
+   原来三组（势力 / 地区 / 填色）挤在一起，两个毛病：
+     · 组标签宽度**自适应** —— 组内第一个开关的起点就跟着标签长度飘 ✗
+     · 次级项（父级边界）跟三个主开关长一个样 ✗
+       "边界 颜色 名称"是主开关，次级项得看得出是次要的 ✓
+   所以：标签定宽 + 组间留白 + 次级项淡一档 ✓
+   ⚠ 手机上（<=1200px）标签本来就被藏了（见上面那条 @media ✓）
+     定宽对那边没影响 ✓ */
+#display-panel .group-label {
+  width: 36px;
+  flex: 0 0 auto;
+}
+#display-panel .actions.stack { gap: 8px; }   /* 三组之间：6 → 8，别糊成一片 */
+#display-panel .switch.sub span { color: var(--text-faint); }
+
+/* 清除那组（2026-10-17 从「文件 ▾」搬过来 ✓）：
+   跟上面的开关组**不画分割线**（用户："不要有分割线，很占空间"✓）；
+   组间距交给 `.actions.stack` 的 gap，这里不再额外加 margin/padding ✓ */
+#clear-group {
+  flex-wrap: wrap;
+}
+#clear-group .btn {
+  padding: 2px 10px;
+  font-size: 11.5px;
+}
 
 
 /* 二级设置页 */
@@ -637,6 +673,26 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin
 #settings .modal-box { width: min(1120px, 94vw); }
 .set-col { flex: 1 1 240px; min-width: 220px; }
 .set-col h3 { font-size: 11px; color: var(--text-faint); letter-spacing: .5px; margin: 4px 0 8px; }
+/* ---- 栏内的**小标题**（2026-10-16 加 ✓ 用户："全都进行全面优化！"✓）----------------
+ * 为什么要它：颜色栏七项、边界栏八根，一栏平铺下来**分不清哪几项是一伙的** ✗
+ *   （"海 / 不可通行海域 / 湖 / 河"挨着谁、"省份那两根"管哪条线 —— 全靠猜 ✓）
+ * → 加一层 `.set-sub` 分组标：字号比 h3 再小一档、颜色更淡、上面留一点缝 ✓
+ *   ⚠ **不许做成卡片 / 边框** ✗ —— 这一栏本来就窄（240px ✓），
+ *     再套框框会把滑条挤短 ✓ 只靠"一条细线 + 淡字"分区就够了 ✓
+ *   ⚠ 行高别撑大 ✗：八根滑条 + 四个小标题要能一屏放下 ✓（4px + 11px 那条 ✓）
+ */
+.set-sub {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin: 9px 0 3px;
+  padding-top: 7px;
+  border-top: 1px solid var(--line);
+  font-size: 10.5px;
+  color: var(--text-faint);
+  letter-spacing: .3px;
+}
+.set-sub:first-of-type { margin-top: 2px; padding-top: 0; border-top: 0; }
 .set-row {
   display: flex;
   align-items: center;
@@ -672,7 +728,26 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin
 }
 .set-row select { max-width: 132px; }
 .set-row input[type=text] { max-width: 150px; }
-.set-row input[type=color] { width: 46px; height: 20px; padding: 0; border: 1px solid var(--line); background: none; }
+/* ⚠⚠ **颜色框别只写 `background: none` 就完事** ✗✗
+ *   （2026-10-13 用户报"手机版设置颜色都是灰色"✓ 就是这一行）
+ *   `input[type=color]` 的颜色**本来就是靠那层原生色块显示的** ✓
+ *   桌面浏览器有 `::-webkit-color-swatch` 撑着，所以看着正常 ✓
+ *   **手机 WebView 不一定有那层** ✗ → 露出的就是透明背景 = 一片灰 ✓
+ *   ✅ 正确做法：`appearance: none` 之后**自己给 swatch 定样式** ✓
+ *      这样色块能撑满整个 46×20 的框，桌面和手机长得一样 ✓
+ *   ⚠ swatch 的 `padding` 一定要清零 ✗ 不然色块只有中间一小条 ✓ */
+.set-row input[type=color] {
+  width: 46px; height: 20px; padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: none;
+  -webkit-appearance: none;
+  appearance: none;
+  cursor: pointer;
+}
+.set-row input[type=color]::-webkit-color-swatch-wrapper { padding: 0; }
+.set-row input[type=color]::-webkit-color-swatch { border: 0; border-radius: 2px; }
+.set-row input[type=color]::-moz-color-swatch { border: 0; border-radius: 2px; }
 .set-row input[type=range] { width: 118px; accent-color: var(--gold); }
 .set-row input[type=checkbox] { width: 14px; height: 14px; margin: 0; flex: none; accent-color: var(--gold); }
 /* 「名字上限」那种**跟在标签后面的当前值**（"12 个" / "无上限"）——
@@ -842,4 +917,4 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin
 #set-legend-title::placeholder { color: #5d6b7c; }
 
 /* 启动页角落的版本戳（就一行小灰字 ✓ 不占地方） */
-.boot-ver { margin-left: 10px; font-size: 11px; color: #56616f; letter-spacing: .3px; }
+.boot-ver { margin-left: 0; font-size: 11px; color: #56616f; letter-spacing: .3px; }
