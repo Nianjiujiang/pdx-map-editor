@@ -352,13 +352,14 @@ if (location.protocol === 'file:') {
             <div class="map-msg" id="map-msg" hidden></div>
           </div>
 
-          <!-- 导入得到的地图：管理小面板（导出备份 / 删除）。定位在选图界面中间 -->
-          <div class="pack-menu" id="pack-menu" hidden>
-            <div class="pack-menu-title" id="pack-menu-title"></div>
-            <button class="btn" id="pack-menu-export">导出备份（.pdxmap）</button>
-            <button class="btn danger" id="pack-menu-del">删除这张图</button>
-            <button class="btn tiny" id="pack-menu-close">关闭</button>
-          </div>
+          <!-- ⚠ **这里原来有个「⋯」管理小面板** ✗（四个按钮：导出备份 / 删除 / 关闭 + 标题）
+               2026-10-12 起「导出备份 / 删除」两个动作**直接长在卡片上**了 ✓
+               面板连元素带样式整个拆掉 —— 留一堆没人引用的死 markup 只会
+               （a）让"页面上还有没有那个面板"那条自检一直是红的 ✓
+               （b）哪天谁又给它接上线，"关不掉"那个坑原样回来 ✓
+               （2026-10-17 那条线合并回来时把这段 markup 带回来了 ✗ 现在再删一次 ✓）
+               ⚠ **注释里也别写出那个 id / 类名** ✗ —— 自检是按字面量扫整份 HTML 的，
+                 连注释一起抓（这条规矩别处也踩过 ✓）-->
 
           <div id="boot-progress">
             <div class="boot-step" id="boot-step">正在准备…</div>

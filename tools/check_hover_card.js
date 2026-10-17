@@ -27,9 +27,13 @@ const H = require('./lib/browser_stub.js');
 
 const ONLY = (process.argv[2] || '').toUpperCase();
 const fails = [];
+/* ⚠ 过的那几条也要**数一下** ✗ —— 汇总里得有个数（"跑了几条"跟"全过"是两件事 ✓）
+   还要记**跳过了哪几套**（缺数据）：不写出来的话"跑一半就退出"看着跟"全过"一样 ✓ */
+const oks = [];
+const skipped = [];
 
 function ok(name, cond, extra = '') {
-  if (!cond) fails.push(name);
+  (cond ? oks : fails).push(name);
   console.log(`  ${cond ? '✔' : '✘'} ${name}${extra ? '  → ' + extra : ''}`);
 }
 
@@ -53,7 +57,16 @@ async function bootMap(m) {
   ex.setDataDir(m.data);
   const cards = env.get('map-pick-list').children;
   const card = cards.find((c) => c.flat().includes(m.card));
-  if (card) card.onclick();
+  /* 🔴 **没卡就别再等下去了** ✗✗（2026-10-18 修 ✓）
+   *   本机没烘这一套的 data 目录时（`data_ck2` / `data_eu4` …），选图页里
+   *   压根没有这张卡 ✓ —— 以前照样 `await booting`：
+   *     `boot()` 卡在 `pickMap()` 里等一次**永远不会来的点击** ✓
+   *   → 这个 await 永远不 resolve、后面所有断言一条都不跑 ✓
+   *     而事件循环空了之后 Node **以状态码 0 正常退出** ✗✗
+   *     → 看着就是"全过"（连汇总行都没有 ✓）—— **假的绿** ✓
+   *   现在：没有卡就**明说跳过** ✓（返回 null，由调用方记账 ✓）*/
+  if (!card) return null;
+  card.onclick();
   await booting;
   return { ex, env };
 }
@@ -343,7 +356,14 @@ function pick(ex) {
   for (const m of MAPS) {
     if (ONLY && ONLY !== m.id) continue;
     console.log(`\n=========== ${m.id} ===========`);
-    const { ex, env } = await bootMap(m);
+    const bm = await bootMap(m);
+    if (!bm) {
+      console.log(`  ·（跳过 ${m.id}：选图页里没有「${m.card}」这张卡`
+        + ` —— 本机缺 ${m.data}/ 那套数据 ✓）`);
+      skipped.push(m.id);
+      continue;
+    }
+    const { ex, env } = bm;
     const M = ex.state.meta;
     if (String(M.game) !== m.game) { ok(`${m.id}：载入的是这套地图`, false, `实际 ${M.game}`); continue; }
     const nt = M.tiers.length;
@@ -666,6 +686,15 @@ function pick(ex) {
   }
 
   console.log('\n==========================================================');
-  console.log(fails.length ? `失败 ${fails.length} 条：\n  - ${fails.join('\n  - ')}` : '✔ 悬停规格表全过');
+  console.log(fails.length ? `失败 ${fails.length} 条：\n  - ${fails.join('\n  - ')}` : '✔ 已跑到的都过了');
+  /* ⚠ **跳过了几张必须写出来** ✗ —— 不写的话"跑了一半退出"和"全过"长得一模一样 ✓
+     （这套自检要七八套真实游戏数据才全量跑得起来，开发机上多半没有 ✓）*/
+  if (skipped.length) {
+    console.log(`（跳过 ${skipped.length} 套：${skipped.join(' / ')}`
+      + ' —— 本机没有对应的 data 目录，先去烘数据，或只跑一套：'
+      + ' node tools/check_hover_card.js CK3 ✓）');
+  }
+  console.log(`断言 ${oks.length} 条过 · ${fails.length} 条失败`
+  + (skipped.length ? ` · ${skipped.length} 套地图跳过` : ''));
   process.exit(fails.length ? 1 : 0);
 })().catch((e) => { console.error('自检自己崩了：', e); process.exit(1); });
