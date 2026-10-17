@@ -668,6 +668,7 @@ _p('categoryNameOf', categoryNameOf); _p('nameIsMeaningful', nameIsMeaningful);
 _p('realNameAtTier', realNameAtTier); _p('isWaterKey', isWaterKey);
 _p('hoverSubName', hoverSubName); _p('kindOfPid', kindOfPid);
 _p('computeLabelZoom', computeLabelZoom); _p('applySettings', applySettings);
+_p('fitView', fitView); _p('minScale', minScale);
 _p('lutColorOf', lutColorOf);
 _p('hexToRgb', hexToRgb); _p('renameAt', renameAt); _p('openRename', openRename);
 _p('exportLog', exportLog); _p('showFatal', showFatal);

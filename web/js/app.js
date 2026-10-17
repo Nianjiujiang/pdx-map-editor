@@ -2722,7 +2722,10 @@ function minScale() {
   const stage = $('stage');
   const fit = Math.min(stage.clientWidth / state.meta.mapWidth,
                        stage.clientHeight / state.meta.mapHeight);
-  return fit * 0.7;
+  const s = fit * 0.7;
+  /* stage 会瞬时量出 0×0（切后台 / 嵌入容器收放）→ 别把 0 写进相机缩放，否则整图全黑 ✓ */
+  if (Number.isFinite(s) && s > 0) return s;
+  return (state.cam && state.cam.scale > 0) ? state.cam.scale : 1;
 }
 
 /** 相机允许**露出一部分地图外面** ✓（2026-10-13 用户要求 ✓）
@@ -2765,6 +2768,17 @@ function panBy(dx, dy, ratio) {
 }
 
 function fitView() {
+  const stage = $('stage');
+  /* ⚠ 视口会**瞬时塌成 0×0**（切后台 / 嵌入容器；实测进图那几秒约一半概率撞上
+     那一瞬）——这一下量出来的"适配缩放"是 0，写进去就是**黑屏**
+     （用户报的那次：缩放 0%、地图全黑，点「⤢」才回来 ✗）。
+     量不到有效尺寸就**先不动相机**，下一帧再试 ✓（布局回来就有值）；
+     给个次数上限兜底，真的一直量不到（页面藏着没显示）就别空转了 ✓ */
+  if (!(stage.clientWidth > 0) || !(stage.clientHeight > 0)) {
+    if ((fitView._retry = (fitView._retry || 0) + 1) <= 120) requestAnimationFrame(fitView);
+    return;
+  }
+  fitView._retry = 0;
   state.cam.scale = minScale();
   state.cam.cx = state.meta.mapWidth / 2;
   state.cam.cy = state.meta.mapHeight / 2;
@@ -6368,8 +6382,17 @@ function frameBody() {
     const v = renderer.view;
     if (v && v.w > 0 && v.h > 0) {
       for (const [r, c] of state.tileMap.tilesInView(v)) {
-        if (state.tileMap.cache.has(`${r}_${c}`)) continue;
         const layer = r * state.tiles.cols + c;
+        const cached = state.tileMap.cache.get(`${r}_${c}`);
+        /* **「缓存里有」≠「显存里有」** ✗ —— `provinceAt`（悬停）也会把块拉进
+         *   缓存、而不上传 ✓ 原来只看缓存的跳过判断会让这些块**永远上不了车**：
+         *   那块地图一直渲成 0 号省份的灰（悬停却查得到 —— 用户报的"缺一块"就是它 ✓）。
+         *   所以：缓存有 → 没传过就趁这一帧补传 ✓；没缓存 → 取了传 ✓；
+         *   传过的（uploadedTiles 里有）才跳过 —— 别每帧白传 ✓ */
+        if (cached) {
+          if (!renderer.uploadedTiles.has(layer)) renderer.uploadTile(layer, cached);
+          continue;
+        }
         state.tileMap.get(r, c).then((tile) => {
           if (tile) renderer.uploadTile(layer, tile);
         }).catch(() => { /* 取块失败就下一帧再试 */ });
@@ -8719,24 +8742,69 @@ function showFatal(msg) {
  * ⚠ 它和 showFatal 是**两条路** ✗ 都留着：一个给人看细节、一个保证看得见 ✓
  */
 /**
- * 🔴 **启动里程表**（只在手机上显示）—— 用户报"手机版黑屏、也没有报错条" ✓
+ * 🔴 **启动里程表**（`#diag` 打开，默认不显示）—— 用户报"手机版黑屏、也没有报错条" ✓
  *
  * 为什么需要它 ✗：黑屏如果**没有异常** ✓ 那错误捕获就一点用没有 ✓
  *   （着色器编译失败会抛 ✓ 但"画出来是黑的"不会抛 ✓）
  *   → 那就需要一条**不用等出错、一直在那儿**的文字 ✓
  *   它一路打勾：停在哪儿，就知道是哪一步 ✓✓
  *
- * ⚠ 只在**手机**上显示 ✗ 桌面版页面干干净净 ✓
+ * ⚠ 默认**一个字都不显示** ✗ 桌面版、手机版的页面都干干净净 ✓
+ *   要看它：地址后面加 `#diag` 再打开 ✓
+ *   （手机上：把文件路径改成 `…/pdx-map-editor.html#diag` ✓
+ *     或者排障时在控制台敲 `__PDX_DIAG_ON()` ✓）
  * ⚠ 用最原始的东西（inline style + <div>）✗ 不依赖任何样式表 ✓
+ *
+ * ⚠ **它以前是彻底哑的** ✗（函数体第一行就是 `return` ✓）——
+ *   文档里写着"手机版上留了启动里程表"，实际一个像素都没有 ✓
+ *   于是"手机黑屏、不知道什么缘故"这件事**连排障工具都没得用** ✓
+ *   → 现在是"开关一开就能用"，而不是"要改代码才有" ✓
  */
+let _markEl = null;
 function bootMark(txt) {
-  /* 排障用的启动里程表（手机上那行荧光绿的字）—— **正式版不显示** ✓
-   * 手机版黑屏时它很有用：字停在哪一步就指向哪一步 ✓
-   * ⚠ 但它每帧都调 getError()，那会**吞掉真实的 GL 错误** ✗ 所以正式版静音 ✓
-   * 要再排障：去掉这个 return，并把 gl.js 里逐帧探针的 getError 加回来 ✓ */
-  return;
-  void txt;
+  if (!DIAG) return;
+  try {
+    if (!_markEl) {
+      _markEl = document.createElement('pre');
+      _markEl.id = 'boot-mark';
+      _markEl.style.cssText = 'position:fixed;left:4px;top:4px;z-index:2147483647;'
+        + 'margin:0;padding:2px 6px;max-width:92vw;font:12px/1.45 monospace;'
+        + 'color:#5f5;background:rgba(0,0,0,.6);pointer-events:none;'
+        + 'white-space:pre-wrap;word-break:break-all';
+      document.body.appendChild(_markEl);
+    }
+    _markEl.textContent = txt;
+  } catch (e) { /* 上屏失败不能连累启动 ✓ */ }
 }
+
+/*: 排障模式（`#diag` / `?diag`）—— 里程表和 gl.js 那几处逐帧探针都看它 ✓
+ *  ⚠ **一处开、两处用** ✗：gl.js 读的是 window.__PDX_DIAG（它排在 app.js 前面 ✓）
+ *  ⚠ 是 `let` 不是 const ✗ —— 控制台里 `__PDX_DIAG_ON()` 要能当场打开（见下 ✓） */
+let DIAG = (() => {
+  try {
+    if (typeof location === 'undefined' || !location) return false;
+    return /(^|[#&?])diag\b/.test(String(location.hash || '') + String(location.search || ''));
+  } catch (e) { return false; }
+})();
+try { window.__PDX_DIAG = DIAG; } catch (e) { /* ✓ */ }
+/* 排障时也能现开：控制台敲 __PDX_DIAG_ON() —— 不用刷新，这一趟就能看着 ✓ */
+try {
+  const turnOn = () => {
+    DIAG = true;
+    window.__PDX_DIAG = true;
+    bootMark('排障已打开 ✓（里程表从这一条开始）');
+  };
+  window.__PDX_DIAG_ON = turnOn;
+  /* ⚠ 光看启动那一刻的 hash 不够 ✗ —— 往地址栏后面补 `#diag` **不会重载页面** ✓
+   *   （同文档导航：浏览器只挪个锚点 ✓）于是用户"加了 #diag 却什么都没出现" ✓
+   *   → 监听 hashchange：补上就当场开 ✓（问号那一路 `?diag=1` 本来就会重载 ✓）*/
+  window.addEventListener('hashchange', () => {
+    if (DIAG) return;
+    try {
+      if (/(^|[#&?])diag\b/.test(String(location.hash || ''))) turnOn();
+    } catch (e) { /* ✓ */ }
+  });
+} catch (e) { /* ✓ */ }
 
 function rawErr(msg) {
   /* 排障用的顶部红条 —— **正式版不显示** ✓
@@ -8969,6 +9037,17 @@ function waitForGpuRestore(ms) {
  *  `no-webgl2` 也试一次：GPU 进程忙 / 上下文创建超时是暂时性的 ✓
  *  ⚠ 着色器真的编译不过 **不重试** ✗（重试一百次也一样）✓
  */
+/* gl.js 里有两套错误来源：RendererSetupError（stage）和老 shaderErr（code）——
+   统一成 stage，否则从 _build 里抛出来的 CTX_LOST 不会被重试 ✓ */
+function _stageOfError(err) {
+  if (err && err.stage) return err.stage;
+  const code = err && err.code;
+  if (code === 'CTX_LOST') return 'context-lost';
+  if (code === 'COMPILE') return 'shader-compile';
+  if (code === 'LINK') return 'shader-link';
+  return '';
+}
+
 async function createRendererWithRetry(meta, opts) {
   const o = opts || {};
   const make = (typeof o.make === 'function') ? o.make : () => new MapRenderer($('map'), meta);
@@ -8979,7 +9058,7 @@ async function createRendererWithRetry(meta, opts) {
       return make();
     } catch (err) {
       lastErr = err;
-      const stage = (err && err.stage) || '';
+      const stage = _stageOfError(err);
       const retryable = stage === 'context-lost' || stage === 'out-of-memory'
         || stage === 'no-webgl2';
       try {
@@ -9011,7 +9090,7 @@ async function createRendererWithRetry(meta, opts) {
  *  @returns {{code:string,title:string,body:string,steps:string[],facts:string}}
  */
 function describeRendererFailure(err) {
-  const stage = (err && err.stage) || 'renderer';
+  const stage = _stageOfError(err) || 'renderer';
   const d = (err && err.detail) || {};
   const raw = String((err && err.message) || err || '');
   const facts = [
