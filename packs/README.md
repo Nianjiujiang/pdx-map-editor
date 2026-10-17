@@ -36,6 +36,6 @@ python build_packs.py          # 打完就落在这个文件夹里 ✓
 python pack_map.py data_kr --id kr-1936 --label "KR 1936" --author 你的名字 --out kr-1936.pdxmap
 ```
 
-格式、字段、校验规矩都在 [`docs/导入式地图-策划.md`](../docs/导入式地图-策划.md) ✓
+格式、字段、校验规矩以 `pack_map.py` 和编辑器的校验器为准 ✓
 ⚠ 打包**别人做的 mod 地图**要先拿到授权 —— 这个仓库里只发游戏自带的那几张，
 就是这个原因。
