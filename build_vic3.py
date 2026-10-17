@@ -50,7 +50,7 @@ ERA_LABEL = "1836"
 #: 四层的顺序
 TIER_ORDER = (ERA_LABEL, "sr", "st", "pr")
 TIER_NAME = {ERA_LABEL: ERA_LABEL, "sr": "战略", "st": "地区", "pr": "省份"}
-TIER_KEY = {ERA_LABEL: ERA_LABEL, "sr": "战略", "st": "地区", "pr": "省"}
+TIER_KEY = {ERA_LABEL: ERA_LABEL, "sr": "战略", "st": "地区", "pr": "省份"}
 
 #: 锁住的地块：海、湖、不可通行（地形名里带 impassable 的，以及不属于任何州的陆地）
 SPECIAL_CATEGORIES = [

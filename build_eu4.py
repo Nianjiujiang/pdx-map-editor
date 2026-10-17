@@ -550,7 +550,7 @@ def main() -> int:
     if use_eras:
         TIER_ORDER = tuple(ERA_LABELS) + ("rg", "ar", "pr")   # rg 区域：地区的上一级
         TIER_NAME = {**{y: y for y in ERA_LABELS}, "rg": "区域", "ar": "地区", "pr": "省份"}
-        TIER_KEY = {**{y: y for y in ERA_LABELS}, "rg": "区域", "ar": "地区", "pr": "省"}
+        TIER_KEY = {**{y: y for y in ERA_LABELS}, "rg": "区域", "ar": "地区", "pr": "省份"}
     else:
         TIER_ORDER, TIER_NAME, TIER_KEY = E.TIER_ORDER, E.TIER_NAME, E.TIER_KEY
 

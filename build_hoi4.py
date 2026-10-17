@@ -67,7 +67,8 @@ TIER_KEY: dict = {}
 #: 年份层之后那三层固定是战略区 / 州 / 省份
 TAIL_TIERS = ("sr", "st", "pr")
 TAIL_NAME = {"sr": "战略", "st": "地区", "pr": "省份"}
-TAIL_KEY = {"sr": "战略", "st": "地区", "pr": "省"}
+# 悬停层级链左边那枚小标签（短名）✓ 2026-10-17 用户："那个『省』改名叫省份吧"
+TAIL_KEY = {"sr": "战略", "st": "地区", "pr": "省份"}
 
 #: HOI4 只有海和湖要锁（荒地在这个数据集里就是普通陆地，能涂）
 SPECIAL_CATEGORIES = [
@@ -122,6 +123,22 @@ def era_labels(bookmarks) -> tuple[str, ...]:
 #: 定点改名（游戏里的名字来自**国策**给的自治级别，开局历史里查不到 ✗）
 NAME_OVERRIDE = {
     "HBC": "冀察政务委员会",   # 察南 → 官方那个名字 ✓
+}
+
+#: **「修改边界」版的两条硬规则** ✓（2026-10-17 用户点名）
+#:
+#:   ① 省 5042（阿克赛钦那块）：归「**和田**」州（STATE_1042）+「**塔克拉玛干**」战略区（145）
+#:      —— 原版把它算在克什米尔州 / 阿里战略区下面 ✓ 修改边界版要收回来 ✓
+#:   ② 州 434「阿鲁纳恰尔」改名「**藏南**」✓
+#:
+#: ⚠ **只在 `--alt-borders` 时生效** ✗✗ —— 原版那份一个字都不能动 ✓
+#:   （同样的游戏数据，只有省份图不同；这两条是"按图改归属"，不是数据修正 ✓）
+ALT_BORDERS = {
+    "province": 5042,
+    "from_state": 441,          # 克什米尔
+    "to_state": 1042,           # 和阗（显示名「和田」）
+    "to_sr": 145,               # 塔克拉玛干
+    "rename_states": {"STATE_434": "藏南"},
 }
 
 
@@ -193,6 +210,9 @@ def main() -> int:
     ap.add_argument("--provinces", help="用指定的省份图（province id 表），不给就用游戏目录里的 map/provinces.bmp")
     ap.add_argument("--out", help="缓存写到哪个目录，默认 data_hoi4/")
     ap.add_argument("--label", default="HOI4 原版", help="这套地图的显示名，写进 meta")
+    ap.add_argument("--alt-borders", action="store_true",
+                    help="套用「修改边界」版的两条硬规则：省 5042 → 和田州 / 塔克拉玛干战略区；"
+                         "州 434「阿鲁纳恰尔」→「藏南」")
     args = ap.parse_args()
 
     root = find_steam_game(args.hoi4, "Hearts of Iron IV", "map/provinces.bmp", "--hoi4")
@@ -208,6 +228,20 @@ def main() -> int:
     bookmarks = H.parse_bookmarks(root / "common" / "bookmarks")
     if not bookmarks:
         raise SystemExit("common/bookmarks 里没读到剧本，装的是不是完整版？")
+    # 🔴 **同一天的 bookmark 只留一个** ✗✗（2026-10-17 英式和平）
+    #   那个 mod 把世界拆成 6 个地区各做了一个 bookmark（欧洲/美洲/俄罗斯/亚洲/
+    #   地中海/巴尔干），**日期全是 1933.1.1.12** ✓ 游戏里它们是"同一天的不同开局国家组"✗
+    #   我们这儿一天就是一层，全收进来会变成 6 个一模一样的「1933.1」层 ✓
+    _seen = set()
+    _uniq = []
+    for _b in bookmarks:
+        if _b.date in _seen:
+            continue
+        _seen.add(_b.date)
+        _uniq.append(_b)
+    if len(_uniq) != len(bookmarks):
+        log(f"  同一天的 bookmark 合并：{len(bookmarks)} 个 → {len(_uniq)} 层")
+    bookmarks = _uniq
     ERA_DATES = tuple(b.date for b in bookmarks)
     ERA_LABELS = era_labels(bookmarks)
     TIER_ORDER = tuple(ERA_LABELS) + TAIL_TIERS
@@ -257,6 +291,26 @@ def main() -> int:
     states = H.parse_states(root / "history" / "states", dlcs=DLC_ON)
     srs = H.parse_strategic_regions(MAP / "strategicregions")
     log(f"州 {len(states)} 个 / 战略区 {len(srs)} 个")
+
+    # 🔴 **修改边界版的两条硬规则**（见 ALT_BORDERS 的注释 ✓）
+    if getattr(args, "alt_borders", False):
+        _ab = ALT_BORDERS
+        _pid = _ab["province"]
+        _old = states.get(_ab["from_state"])
+        _new = states.get(_ab["to_state"])
+        if _old and _pid in _old.provinces:
+            _old.provinces.remove(_pid)
+        if _new is not None and _pid not in _new.provinces:
+            _new.provinces.append(_pid)
+        _dropped = 0
+        for _rid, (_nk, _plist) in srs.items():
+            if _pid in _plist:
+                _plist.remove(_pid)
+                _dropped += 1
+        if _ab["to_sr"] in srs:
+            srs[_ab["to_sr"]][1].append(_pid)
+        log(f"  修改边界：省 {_pid} → 州 {_ab['to_state']} / 战略区 {_ab['to_sr']}"
+            f"（从 {_dropped} 个战略区里摘掉 ✓）")
 
     prov_state: dict[int, int] = {}
     for sid, st in states.items():
@@ -413,6 +467,13 @@ def main() -> int:
     zh = H.load_names(zh_dir, want)
     en = H.load_names(en_dir, want)
     log(f"名字：简体中文 {len(zh)} 条 / 英文 {len(en)} 条")
+
+    # 🔴 修改边界版的第二条：州名改口（见 ALT_BORDERS 的注释 ✓）
+    if getattr(args, "alt_borders", False):
+        for _k, _v in ALT_BORDERS["rename_states"].items():
+            _was = zh.get(_k) or '(无)'
+            zh[_k] = _v
+            log(f"  修改边界：州名 {_k}「{_was}」→「{_v}」")
 
     # 每个 tag 的中文名（取不到就用英文、再不行用 tag 本身 ✓）—— countryTags 要用
     tag_names: dict[str, str] = {}

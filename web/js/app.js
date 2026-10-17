@@ -3100,13 +3100,18 @@ function renderHoverCard(pid) {
       if (isPlaceholderName(_rowName)) {
         /* ① 先取真名 ✓（CK2 的 259 条水名 / 20 条荒地名就在这张表里 ✓）
          * ② 真名也没有 → 才退类别名 ✓（先判不可通行海域 ✗ 见 CATEGORY_NAME ✓）
-         * ③ 任何一行都不许出现 `#<数字>` ✗（下面 `impassLabel` 也不会造编号 ✓）*/
-        _rowName = realNameFromTables(pid) || CATEGORY_NAME[kindOfPid(pid)] || TIER_BADGE[tier] || '';
+         * ③ 任何一行都不许出现 `#<数字>` ✗（下面 `impassLabel` 也不会造编号 ✓）
+         * 🔴 **兜底不许再退层级名** ✗✗（2026-10-17 用户："没有名字的 province
+         *   直接变成了『省』"）—— HOI4 的省份本来就没名字（13055 块里只有 3247 块
+         *   有城市名 ✓），原来退到 TIER_BADGE 就把层级名当地名印出来 ✓
+         *   现在退成空 → 下面渲染成淡色的「—」✓ */
+        _rowName = realNameFromTables(pid) || CATEGORY_NAME[kindOfPid(pid)] || '';
       }
+      const _shown = impassLabel(_rowName);
       row.innerHTML =
         `<span class="dot" style="background:${rgbToHex(col)}"></span>
          <span class="tier">${TIER_BADGE[tier]}</span>
-         <span class="name">${impassLabel(_rowName)}${changed}</span>
+         <span class="name"${_shown ? '' : ' style="color:var(--text-faint)"'}>${_shown || '—'}${changed}</span>
          <span class="pick">取色</span>`;
       row.onclick = () => {
         gotoLevel(tier);

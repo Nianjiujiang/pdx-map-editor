@@ -99,6 +99,55 @@ def _parse_date(s: str) -> tuple[int, int, int]:
     return (int(parts[0]), int(parts[1]), int(parts[2]))
 
 
+def parse_character_deaths(char_dir: Path) -> dict[str, tuple[int, int, int]]:
+    """``history/characters`` → ``{角色 id: 死亡日期}`` ✓（2026-10-17）
+
+    为什么需要它：头衔史里的 ``holder`` 只写了"某年某月谁拿了它"，
+    **人死了不会自动把 holder 清掉** ✗ —— 于是 1066 年那一层会出现
+    "几百年前就死了的人还占着地"（用户报的："这个人明明都死了，还找他干嘛"✓）。
+    构建时按人物史把这些人筛掉，当无主处理 ✓
+
+    实现：人物史是嵌套块，用一个小括号栈把每个角色块切出来，
+    再在块里找 ``death``，记下它所在子块的日期 ✓
+    （``death = yes`` 和 ``death = { death_reason = … }`` 两种写法都认 ✓）
+    ⚠ 读不出死亡日期的一律当活着 —— **宁可留着，也别凭空清人** ✓
+    """
+    out: dict[str, tuple[int, int, int]] = {}
+    if not char_dir.is_dir():
+        return out
+    date_re = re.compile(r"^\s*(\d{1,4})\.(\d{1,2})\.(\d{1,2})\s*=\s*\{")
+    for f in sorted(char_dir.glob("*.txt")):
+        try:
+            lines = f.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        i, n = 0, len(lines)
+        while i < n:
+            head = lines[i].split("#", 1)[0]
+            m = re.match(r"^(\S+)\s*=\s*\{", head)
+            if not m:
+                i += 1
+                continue
+            cid = m.group(1).strip('"')
+            depth = head.count("{") - head.count("}")
+            block = [head]
+            i += 1
+            while i < n and depth > 0:
+                cur = lines[i].split("#", 1)[0]
+                depth += cur.count("{") - cur.count("}")
+                block.append(cur)
+                i += 1
+            got_date = None
+            for line in block:
+                dm = date_re.match(line)
+                if dm:
+                    got_date = (int(dm.group(1)), int(dm.group(2)), int(dm.group(3)))
+                if got_date and re.search(r"\bdeath\b", line):
+                    out[cid] = got_date
+                    break
+    return out
+
+
 # ------------------------------------------------------------------ 省份图
 
 
@@ -450,6 +499,20 @@ def build_realm_layer(
                 break
         if start < 0:
             continue                       # 背景地形：这一层照地形那套走 ✓
+        # 🔴 **县和公国打架时，以公国为准** ✗✗（2026-10-17 用户报的「宋的大同、怀安飞地」）
+        #   例：大同那几块地的县（c_datong_2）封君写着 k_hedong（宋的河东 ——
+        #   还是 924 年留下的老字段 ✓），可**同一个人**（耶律合术 1413746）
+        #   另外还拿着公国 d_yunshuo，而那个公国挂在辽下面 ✓
+        #   → 一条链通宋、一条链通辽，我们原来只认"县"那条 → 宋凭空多一块飞地 ✗
+        #   现在：同一个人同时拿着这块地的县和它的公国 → **按公国算** ✓
+        #   ⚠ 只在"同一个人"时才改 ✗ —— 换个人的话县和公国本来就是两码事 ✓
+        if _order[r] == "c" and "d" in rows:
+            _dtid = int(titlemap[rows["d"], pid])
+            if 0 < _dtid < len(ordered):
+                _dkey = keys[_dtid]
+                _h = holders.get(keys[start])
+                if _h and holders.get(_dkey) == _h:
+                    start = _dtid
         top = top_liege(keys[start], titles, holders, lieges, governments, obedient,
                         tributaries)
         if top is None:
@@ -525,6 +588,25 @@ def build_realm_layer(
         # ⚠ 好几个持有者的组可能会并到**同一个国号**上（他们都挂在同一位君主名下 ✓）
         #   所以这里要**累加** ✗ 不能直接赋值（赋值会把前一组的地盘冲掉 ✗ 我踩过 ✓）
         out.setdefault(best, []).extend(pids)
+    # 🔴 **二次归并：同一个人的地盘不许裂成两个政权** ✗✗（2026-10-17 用户报的「凉国」）
+    #   上面那一刀只并了"**自己名下**那些头衔"；可还有一类会漏：
+    #   瓜州 / 振武这些县的封君链**顶到 `k_hexi`**（河西那位君主），
+    #   于是它们被记在 `k_hexi` 名下 —— 而 `k_hexi` 的持有者同时拿着 `k_xia` ✓
+    #   → 一边记 `k_xia`、一边记 `k_hexi`，同一个君主的同一条线裂成「夏」和「凉」✗
+    #   所以再扫一遍：`out` 里凡是**持有者相同**的两个政权，并到地盘大的那个上 ✓
+    #   （持有者查不到 = 这个头衔没人持 → 留着，它本来就是独立的一块 ✓）
+    by_holder_out: dict[str, list[str]] = {}
+    for _k2 in out:
+        _h = holders.get(_k2)
+        if _h:
+            by_holder_out.setdefault(str(_h), []).append(_k2)
+    for _h, _ks in by_holder_out.items():
+        if len(_ks) < 2:
+            continue
+        _ks.sort(key=lambda k3: -len(out[k3]))
+        _keep = _ks[0]
+        for _k3 in _ks[1:]:
+            out[_keep].extend(out.pop(_k3))
     for _k2 in out:
         out[_k2] = sorted(out[_k2])
     return out, n_none
@@ -609,6 +691,9 @@ def main() -> int:
                     help="剧本地图那一层的日期，默认 1066.9.15（CK3 那批 bm_1066_* 的开局）")
     ap.add_argument("--no-bookmark", action="store_true",
                     help="不生成 1066 剧本地图那一层（只剩法理那五层）")
+    ap.add_argument("--drop-dead-holders", action="store_true",
+                    help="剧本日期前已去世的持有者当无主处理（默认关：人一死地就往法理上层跑，"
+                         "宋这种大帝国会凭空变大 ✓）")
     args = ap.parse_args()
     if args.no_bookmark and ERA_TIER in MAP_ORDER:
         MAP_ORDER.remove(ERA_TIER)      # 先摘掉，后面所有下标都按这版现查 ✓
@@ -658,6 +743,21 @@ def main() -> int:
         holders, lieges, governments, tributaries = parse_title_history(
             game / "history" / "titles", titles, bookmark_date)
         obedient = parse_governments(game / "common" / "governments")
+        # 🔴 **死者持仓** ✗✗（2026-10-17 用户报："这个人明明都死了，还找他干嘛"）
+        #   头衔史里的 `holder` 只是"某年某月谁拿了它"，**人死了不会自动清空** ✗
+        #   → 1066 那会儿会有一批头衔还挂在几百年前的人名下
+        #     （实测东方王朝这张图有 178 个：3 个帝国级、27 个王国级、46 个公国级 ✓）
+        #   这里按人物史把"死在剧本日期之前（含当天）"的人筛掉，那些头衔按无主处理 ✓
+        #   ⚠ 只认**带日期的 death** ✗；读不出来的当活着（宁可留着，也别凭空清人 ✓）
+        _deaths = parse_character_deaths(game / "history" / "characters") \
+            if getattr(args, "drop_dead_holders", False) else {}
+        if _deaths:
+            _dead = [k for k, v in holders.items()
+                     if v and str(v) in _deaths and _deaths[str(v)] <= bookmark_date]
+            if _dead:
+                for _k in _dead:
+                    holders.pop(_k, None)
+                log(f"持有者在剧本日期前已去世：{len(_dead)} 个头衔按无主处理")
         # 🔴 **头衔自己没记 `government` 的，跟"这个人别的头衔"里那个政府** ✗
         #   用户报的："塔奔孛黑答在游戏里也应该不是大辽的" ✓
         #   查下来 `c_tavan_bogd` 自己那条历史里**没写 government** ✗

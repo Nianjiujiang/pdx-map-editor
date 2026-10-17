@@ -67,7 +67,7 @@ TIER_ORDER = (ERA_TIER, "reg", "area", "prov", "loc")
 TIER_NAME = {"1337": "1337", "cont": "大洲", "sub": "次大陆", "reg": "区域",
              "area": "地区", "prov": "省份", "loc": "地点"}
 TIER_KEY = {"1337": "国家", "cont": "大洲", "sub": "次大陆", "reg": "区域",
-            "area": "地区", "prov": "省", "loc": "地点"}
+            "area": "地区", "prov": "省份", "loc": "地点"}
 
 
 def find_eu5(explicit: str | None = None) -> Path:
