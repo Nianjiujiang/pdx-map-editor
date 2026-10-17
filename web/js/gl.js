@@ -1210,6 +1210,37 @@ function makeTexture(gl, w, h, internal, format, type, data, filter) {
   return tex;
 }
 
+/**
+ * 挑一个「最省显存」的块尺寸 ✓（2026-10-17 手机丢上下文之后加的）
+ *
+ *  为什么不能直接贴着上限开 ✗：
+ *    · 贴 4096 → 9216 宽的图要 3×2 块，每块 4096² × 2 字节 = 33MB，合计 **192MB**；
+ *    · 用 2048 → 5×3 = 15 块，合计 **120MB**（每块只有 8MB，但边角补零全浪费）；
+ *    · 用 2304 → 4×2 = 8 块，合计 **85MB** —— 正好等于"整张图本身"的大小。
+ *  所以这里把候选尺寸都算一遍总字节，挑**最小的那个**（并列取大块：层数少、上传次数少）。
+ *
+ *  ⚠ 总显存的下限就是 mapW × mapH × 2 ✓（块只能比它大、不可能更小）
+ *  ⚠ 层数还得 ≤ 2048（MAX_ARRAY_TEXTURE_LAYERS 的常见下限）✓
+ */
+function pickTileLayout(mapW, mapH, maxTex) {
+  const cap = Math.max(256, Math.min(maxTex || 4096, 4096));
+  let best = null;
+  for (let t = 256; t <= cap; t += 64) {
+    const cols = Math.ceil(mapW / t), rows = Math.ceil(mapH / t);
+    if (cols * rows > 2048) continue;
+    const bytes = cols * rows * t * t * 2;
+    if (!best || bytes < best.bytes || (bytes === best.bytes && t > best.tileW)) {
+      best = { tileW: t, tileH: t, cols, rows, bytes };
+    }
+  }
+  if (!best) {                       // 极端情况：退回最小的能装下的块
+    const t = Math.max(1, Math.min(mapW, mapH, cap));
+    best = { tileW: t, tileH: t, cols: Math.ceil(mapW / t), rows: Math.ceil(mapH / t), bytes: 0 };
+  }
+  best.synthetic = true;
+  return best;
+}
+
 export class MapRenderer {
   constructor(canvas, meta) {
     this.canvas = canvas;
@@ -1526,6 +1557,40 @@ export class MapRenderer {
     return tex;
   }
 
+  /**
+   * 从整张 id 数组里切一块、传给数组纹理的第 (r, c) 块 ✓（合成切块专用）
+   *
+   *  ⚠ 传过的直接返回 false（`uploadedTiles` 去重 ✓）—— 帧循环每帧都会问一遍，
+   *    不去重的话每帧白切 10MB 内存 + 白传一次 ✓
+   *  ⚠ 右/下边缘不足一块的地方补 0（= 无省份 ✓）
+   *
+   *  @returns {boolean} 真传上去了
+   */
+  uploadSyntheticTile(r, c) {
+    const layout = this.tileInfo;
+    const ids = this.synthIds;
+    if (!layout || !layout.synthetic || !ids) return false;
+    if (r < 0 || c < 0 || r >= layout.rows || c >= layout.cols) return false;
+    const layer = r * layout.cols + c;
+    if (this.uploadedTiles.has(layer)) return false;
+    if (this.ctxLost) return false;
+
+    const m = this.meta;
+    const x0 = c * layout.tileW, y0 = r * layout.tileH;
+    const n = Math.min(layout.tileW, m.mapWidth - x0);
+    if (n <= 0) return false;
+
+    const buf = new Uint16Array(layout.tileW * layout.tileH);
+    const at = ids.subarray ? ids.subarray.bind(ids) : ids.slice.bind(ids);
+    for (let y = 0; y < layout.tileH; y++) {
+      const sy = y0 + y;
+      if (sy >= m.mapHeight) break;
+      const src = sy * m.mapWidth + x0;
+      buf.set(at(src, src + n), y * layout.tileW);
+    }
+    return this.uploadTile(layer, buf);
+  }
+
   /** 把某一块上传到数组纹理的第 layer 层 */
   uploadTile(layer, data) {
     const gl = this.gl;
@@ -1609,22 +1674,20 @@ export class MapRenderer {
          *   💡 改成**按实际需要开**：一块 2048 是条舒服的线 ✓
          *     同样这张图：2048 → 3 层 × 8MB = 24MB ✓（省 2.7 倍 ✓）
          *     层数多一点反而更好：显存按**块**算，不用一次占满 ✓ */
-        const cap = Math.min(lim, 2048);
-        const tileW = Math.max(1, Math.min(m.mapWidth, cap));
-        const tileH = Math.max(1, Math.min(m.mapHeight, cap));
-        layout = {
-          tileW, tileH,
-          cols: Math.ceil(m.mapWidth / tileW),
-          rows: Math.ceil(m.mapHeight / tileH),
-          synthetic: true,
-        };
-        const _mb = (layout.cols * layout.rows * tileW * tileH * 2 / 1048576).toFixed(0);
+        /* 🔴 **块尺寸按"最省显存"挑** ✗✗（2026-10-17 手机丢上下文之后改的）
+         *   原来是贴着上限开（每块 2048）→ CK3 那张 9216×4608 要 15 块 =
+         *   **120MB** 显存，手机一次全传直接把 GPU 上下文顶丢了（用户白屏 ✓）。
+         *   现在挑总字节最小的那组：同一张图只要 8 块 = 85MB（= 整图大小）；
+         *   而且**不再一次全传**，交给帧循环按视野补（见 app.js 的懒上传 ✓）。
+         *   ⚠ 电脑上限 16384 > 图宽 → 根本不走这条路，一行都不变 ✓ */
+        layout = pickTileLayout(m.mapWidth, m.mapHeight, lim);
+        const _mb = (layout.cols * layout.rows * layout.tileW * layout.tileH * 2 / 1048576).toFixed(0);
         console.log(`贴图上限 ${lim}px 装不下 ${m.mapWidth}×${m.mapHeight}`
-          + ` → 就地切成 ${layout.cols}×${layout.rows} 块（每块 ${tileW}×${tileH}，约 ${_mb}MB）`);
+          + ` → 就地切成 ${layout.cols}×${layout.rows} 块（每块 ${layout.tileW}×${layout.tileH}，约 ${_mb}MB）`);
         /* ⚠ 顺手写进"启动里程表" ✗ —— 用户手机上能直接看到走没走这条路 ✓ */
         try {
           if (typeof bootMark === 'function') {
-            bootMark('切块' + layout.cols + '×' + layout.rows + ' 每块' + tileW + '×' + tileH + ' 约' + _mb + 'MB');
+            bootMark('切块' + layout.cols + '×' + layout.rows + ' 每块' + layout.tileW + '×' + layout.tileH + ' 约' + _mb + 'MB');
           }
         } catch (e) { /* ✓ */ }
       }
@@ -1639,6 +1702,10 @@ export class MapRenderer {
     // 分块路径：数据目录带了 tiles.json ✓ 或者上面就地切了块 ✓
     this.tileInfo = layout || null;
     this.useTiles = layout ? 1 : 0;
+    /* 🔴 **就地切的那条要留着整张 id 数组** ✗✗（2026-10-17）
+     *   以前这里一次 `uploadAllTiles` 全传（CK3 那张 = 120MB → 手机上下文丢了 ✓）
+     *   现在只留个**引用**（不复制，零额外内存 ✓），帧循环按视野逐块切、逐块传 ✓ */
+    this.synthIds = (layout && layout.synthetic) ? provinceIds : null;
     // 数组纹理刚重建（每层都是全新的占位 0）→ 上传记录清空 ✓
     // （synthetic 那条就地切的不受影响：紧接着 uploadAllTiles 会逐块传、逐块记 ✓）
     this.uploadedTiles.clear();
@@ -1646,9 +1713,12 @@ export class MapRenderer {
       const first = new Uint16Array(layout.tileW * layout.tileH);
       this.provArrTex = this.makeTileArray(layout.tileW, layout.tileH,
         layout.cols * layout.rows, first);
-      // 就地切的那条：数据全在内存里 ✓ 立刻逐块传上去 ✓
-      // （带 tiles.json 的那条不用管 —— app 会按视野逐块喂给 uploadTile ✓）
-      if (layout.synthetic) this.uploadAllTiles(provinceIds, layout);
+      // 就地切的那条：**不再一次全传** ✗✗（2026-10-17 —— 全传 = 120MB，手机当场丢上下文 ✓）
+      // 只先传「视野中央」那一块，保证第一帧不是空白；其余由帧循环按视野补 ✓
+      // （带 tiles.json 的那条也一样 —— app 会按视野逐块喂给 uploadTile ✓）
+      if (layout.synthetic) {
+        this.uploadSyntheticTile(Math.floor(layout.rows / 2), Math.floor(layout.cols / 2));
+      }
     } else {
       // 没有分块数据时也建一张 1×1 的数组纹理 —— 采样器不完整的话，
       // 有些驱动会直接报错（哪怕这一路根本没被采样）。uUseTiles 仍是 0 ✓。

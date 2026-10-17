@@ -6374,26 +6374,60 @@ function frameBody() {
    *   周长表版本 / 设置里那个荒地色 ✓）—— 必须在 render() 之前 ✓
    * ⚠ 这三步各自兜底 ✗ —— 一步坏了不该让这一帧的 render 也轮不到 ✓（见 frameStep）*/
   frameStep('荒地自动色', wasteWatch);
-  // ---- 分块（EU5 原尺寸）：按视野补齐缺的块、离开视野的自然被缓存淘汰 ----
-  // 半尺寸那套 state.tileMap 是 null → 这段整个跳过 ✓
-  if (state.tileMap && renderer && renderer.provArrTex && renderer.tileInfo) {
+  // ---- 分块：按视野补齐缺的块、离开视野的自然被缓存淘汰 ----
+  // 半尺寸那套 state.tileMap 是 null → 走下面「合成切块」那条 ✓
+  if (renderer && renderer.provArrTex && renderer.tileInfo) {
+    const ti = renderer.tileInfo;
     const v = renderer.view;
     if (v && v.w > 0 && v.h > 0) {
-      for (const [r, c] of state.tileMap.tilesInView(v)) {
-        const layer = r * state.tiles.cols + c;
-        const cached = state.tileMap.cache.get(`${r}_${c}`);
-        /* **「缓存里有」≠「显存里有」** ✗ —— `provinceAt`（悬停）也会把块拉进
-         *   缓存、而不上传 ✓ 原来只看缓存的跳过判断会让这些块**永远上不了车**：
-         *   那块地图一直渲成 0 号省份的灰（悬停却查得到 —— 用户报的"缺一块"就是它 ✓）。
-         *   所以：缓存有 → 没传过就趁这一帧补传 ✓；没缓存 → 取了传 ✓；
-         *   传过的（uploadedTiles 里有）才跳过 —— 别每帧白传 ✓ */
-        if (cached) {
-          if (!renderer.uploadedTiles.has(layer)) renderer.uploadTile(layer, cached);
-          continue;
+      if (state.tileMap) {
+        for (const [r, c] of state.tileMap.tilesInView(v)) {
+          const layer = r * state.tiles.cols + c;
+          const cached = state.tileMap.cache.get(`${r}_${c}`);
+          /* **「缓存里有」≠「显存里有」** ✗ —— `provinceAt`（悬停）也会把块拉进
+           *   缓存、而不上传 ✓ 原来只看缓存的跳过判断会让这些块**永远上不了车**：
+           *   那块地图一直渲成 0 号省份的灰（悬停却查得到 —— 用户报的"缺一块"就是它 ✓）。
+           *   所以：缓存有 → 没传过就趁这一帧补传 ✓；没缓存 → 取了传 ✓；
+           *   传过的（uploadedTiles 里有）才跳过 —— 别每帧白传 ✓ */
+          if (cached) {
+            if (!renderer.uploadedTiles.has(layer)) renderer.uploadTile(layer, cached);
+            continue;
+          }
+          state.tileMap.get(r, c).then((tile) => {
+            if (tile) renderer.uploadTile(layer, tile);
+          }).catch(() => { /* 取块失败就下一帧再试 */ });
         }
-        state.tileMap.get(r, c).then((tile) => {
-          if (tile) renderer.uploadTile(layer, tile);
-        }).catch(() => { /* 取块失败就下一帧再试 */ });
+      } else if (ti.synthetic && renderer.uploadSyntheticTile) {
+        /* 🔴 **合成切块：按视野懒传** ✗✗（2026-10-17 用户白屏之后改的）
+         *   以前在 gl.js 的 setData 里一次全传：CK3 那张 9216×4608 要
+         *   **120MB 显存**，手机 GPU 上下文当场被顶丢（画面变白、只剩地名 ✓）。
+         *   现在：每帧最多两块、按"离视野中心近"排先；总显存还有 96MB 软上限
+         *   （缩到最小、整张都在视野里时，也别一口气全灌进去 ✓ ——
+         *    没传的块先空着，放大到那边自然就补上了 ✓）。
+         *   ⚠ 传上去的记在 `renderer.uploadedTiles` 里，不会每帧白切白传 ✓ */
+        const tileBytes = ti.tileW * ti.tileH * 2;
+        const BUDGET = 96 * 1048576;
+        const c0 = Math.max(0, Math.floor(v.x / ti.tileW) - 1);
+        const c1 = Math.min(ti.cols - 1, Math.floor((v.x + v.w - 1e-6) / ti.tileW) + 1);
+        const r0 = Math.max(0, Math.floor(v.y / ti.tileH) - 1);
+        const r1 = Math.min(ti.rows - 1, Math.floor((v.y + v.h - 1e-6) / ti.tileH) + 1);
+        const cx = v.x + v.w / 2, cy = v.y + v.h / 2;
+        const want = [];
+        for (let r = r0; r <= r1; r++) {
+          for (let c = c0; c <= c1; c++) {
+            if (renderer.uploadedTiles.has(r * ti.cols + c)) continue;
+            const dx = (c + 0.5) * ti.tileW - cx;
+            const dy = (r + 0.5) * ti.tileH - cy;
+            want.push([dx * dx + dy * dy, r, c]);
+          }
+        }
+        want.sort((a, b) => a[0] - b[0]);
+        let n = 0;
+        for (const [, r, c] of want) {
+          if (n >= 2) break;
+          if (renderer.uploadedTiles.size * tileBytes >= BUDGET) break;
+          if (renderer.uploadSyntheticTile(r, c)) n++;
+        }
       }
     }
   }
@@ -9004,7 +9038,7 @@ function onEnterForeground() {
     if (!renderer || !renderer.ctxLost) return;
     if (typeof document !== 'undefined' && document.hidden) return;
     LOG.event('上下文未恢复', '提示用户刷新');
-    showFatal('✗ 显卡把 WebGL 上下文收走了，一直没还回来 —— 地图现在是黑的。\n'
+    showFatal('✗ 显卡把 WebGL 上下文收走了，一直没还回来 —— 地图现在是空白的。\n'
       + '刷新页面就能重来（涂色记得先导出 ✓）。');
   }, 3000);
 }
