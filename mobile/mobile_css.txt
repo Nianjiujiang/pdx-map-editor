@@ -1,0 +1,860 @@
+/* ===========================================================================
+   手机版界面（**这个文件只打进手机版** ✓ 电脑版一个字节不动 ✓）
+   —— 一级界面：地图 + 左上返回 / 右上导入导出 / 底部四个入口
+      二级界面：从底部滑上来的下拉面板，内容直接搬桌面那几块 ✓
+   宽屏打开（电脑上调试）时，整体收进一个手机大小的框里居中 ✓
+   =========================================================================== */
+
+/* ── 一级界面：六个入口 ───────────────────────────────────────────── */
+#mob-ui { position: fixed; inset: 0; z-index: 57; pointer-events: none; }
+#mob-ui > * { pointer-events: auto; }
+
+#mob-topbar {
+  position: absolute; top: 0; left: 0; right: 0; height: 54px;
+  display: flex; align-items: center; gap: 8px; padding: 8px 10px;
+  background: linear-gradient(#0b0f14f2, #0b0f1400);
+}
+#mob-topbar .mob-gap { flex: 1 1 auto; }
+.mob-btn {
+  min-height: 38px; padding: 0 14px; border-radius: 19px;
+  border: 1px solid #2b3743; background: rgba(13, 19, 26, .92); color: #e8eef6;
+  font: 600 14px/1 "Microsoft YaHei", system-ui, sans-serif;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .45); backdrop-filter: blur(6px);
+}
+.mob-btn.gold { border-color: #c9a94e; color: #f0d98a; }
+.mob-btn:active { transform: translateY(1px); }
+.mob-btn[hidden] { display: none; }
+
+/* 底部四个入口 */
+#mob-dock {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px;
+  padding: 8px 8px calc(8px + env(safe-area-inset-bottom, 0px));
+  background: linear-gradient(#0b0f1400, #0b0f14f7 42%);
+}
+#mob-dock button {
+  min-height: 52px; padding: 4px 2px; border-radius: 12px;
+  border: 1px solid #26313d; background: rgba(13, 19, 26, .94); color: #dfe7f0;
+  font: 600 13px/1.35 "Microsoft YaHei", system-ui, sans-serif;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .45);
+}
+#mob-dock button i { font-style: normal; font-size: 17px; line-height: 1; }
+#mob-dock button.on { border-color: #c9a94e; color: #f0d98a; background: rgba(36, 29, 16, .95); }
+
+/* 面板打开时点一下地图也能收起 ✓ */
+#mob-backdrop {
+  position: absolute; inset: 0; background: rgba(0, 0, 0, .42);
+  opacity: 0; pointer-events: none; transition: opacity .22s;
+}
+#mob-backdrop.on { opacity: 1; pointer-events: auto; }
+
+/* ── 二级界面：从按钮**正上方**弹出来的那一栏（上拉菜单那种 ✓）──────── */
+#mob-sheet {
+  position: absolute; z-index: 61;
+  /* ⚠ 2026-10-13：跟 `.tall` 一起**按三成降**（用户要求"设置高度减去 30%"✓）
+   *   原来是 **62vh** → 62 × 0.5 ≈ **31vh** ✓（之前试过 52 ✗ 那个不是"三成"）
+   *   这一条管的是**非 tall** 的常规二级面板（工具 / 颜色那些）✓ 它们内容本来就短 ✓ */
+  max-height: 25vh; display: flex; flex-direction: column;
+  /* 🔴 **必须 `overflow: hidden`** ✗（2026-10-13 用户报"高度仍然遵循界面最高的"✓）
+   *   不加这句，超出 max-height 的内容**照样画在面板外面** ✓
+   *   看着就是"面板高度跟着内容走"✗ 其实是溢出了 ✓
+   *   收了之后：多余的进 `.mob-panes` 的滑条 ✓ 面板本身老老实实 43vh / 40vh ✓ */
+  overflow: hidden;
+  background: #0d131a; border-radius: 16px;
+  border: 1px solid #2b3743;
+  box-shadow: 0 -14px 44px rgba(0, 0, 0, .66), 0 0 0 1px rgba(0, 0, 0, .3);
+  /* 左 / 下 / 宽 由 JS 按"哪个按钮被按了"算出来 ✓ */
+  opacity: 0; transform: translateY(16px) scale(.97);
+  transform-origin: bottom center; pointer-events: none;
+  transition: opacity .18s ease, transform .24s cubic-bezier(.16, 1, .3, 1);
+}
+#mob-sheet.on { opacity: 1; transform: none; pointer-events: auto; }
+/* 按钮在上半屏（比如顶栏那个「导入导出」）→ 那一栏往下弹，尖角翻到顶上 ✓ */
+#mob-sheet.below { transform-origin: top center; }
+#mob-sheet.below::after {
+  bottom: auto; top: -9px;
+  border-top: 0; border-bottom: 9px solid #2b3743;
+}
+#mob-sheet.below::before {
+  bottom: auto; top: -7px;
+  border-top: 0; border-bottom: 7px solid #0d131a;
+}
+/* 指向按钮的小尖角：像真的从那个按钮上长出来的 ✓ */
+#mob-sheet::after {
+  content: ''; position: absolute; bottom: -9px; left: var(--tail-x, 50%);
+  margin-left: -9px; width: 0; height: 0;
+  border-left: 9px solid transparent; border-right: 9px solid transparent;
+  border-top: 9px solid #2b3743;
+}
+#mob-sheet::before {
+  content: ''; position: absolute; bottom: -7px; left: var(--tail-x, 50%);
+  margin-left: -7px; width: 0; height: 0; z-index: 1;
+  border-left: 7px solid transparent; border-right: 7px solid transparent;
+  border-top: 7px solid #0d131a;
+}
+#mob-sheet-head {
+  flex: none; display: flex; align-items: center; gap: 10px;
+  padding: 12px 14px 10px; border-bottom: 1px solid #1d2833;
+}
+#mob-sheet-head b { font-size: 15px; color: #f0d98a; letter-spacing: .5px; }
+#mob-sheet-head span { flex: 1 1 auto; color: #7d8b9c; font-size: 12px; }
+#mob-sheet-x {
+  min-height: 34px; padding: 0 12px; border-radius: 17px; border: 1px solid #2b3743;
+  background: #131b23; color: #cfd9e4; font: 600 13px/1 "Microsoft YaHei", system-ui, sans-serif;
+}
+/* 🔴🔴 **这里不许滚动** ✗✗（2026-10-13 用户报"滑动时连带着上面的分类按钮一起滑动，很怪"✓）
+ *
+ *   原来的 DOM 是"两层滚动套着"，而且**标签栏住在滚动层里面** ✗：
+ *     #mob-sheet-head     ← 标题栏（不滚 ✓）
+ *     #mob-sheet-body     ← `overflow-y: auto` **滚动层 ①** ← 标签栏在这儿 ✗
+ *       .mob-tabs         ← 「设置 / 颜色 / 工具 / 视图」← 被一起滑走了 ✓
+ *       .mob-panes        ← **滚动层 ②**（但原来只在 `mob-tall` 时才允许滚 ✓）
+ *
+ *   所以在**普通模式**下只能靠①滚 → 标签栏必然跟着走 ✓ 就是那个"很怪" ✓
+ *   （「更高」模式下①被设成 `hidden` ✗ 反而不犯这个毛病 ✓
+ *     所以这个 bug 只在普通模式出现 ✓ 用户看到的正是这样 ✓）
+ *
+ *   ✅ 正确分工：**滚动只发生在 `.mob-panes` 里** ✓
+ *     · `#mob-sheet-body` → `overflow: hidden`（一个像素都不滚 ✓）
+ *     · 但它是 flex 列容器 ✗ 这样 `.mob-panes` 才能撑满剩下的地方 ✓
+ *     · `.mob-tabs` 加 `flex: none` ✓ 永远待在原地 ✓
+ *   ⚠ 这三处是一套 ✗ 改一处要看另外两处 ✓（见下面 `.mob-tabs` 和 `.mob-panes` ✓）
+ *   ⚠ 原来那句 `-webkit-overflow-scrolling: touch` 一起搬给 `.mob-panes` ✓
+ *     那才是真正滚动的那个层 ✓ 不搬的话手机上滑起来会发涩 ✓ */
+#mob-sheet-body {
+  flex: 1 1 auto;
+  overflow: hidden;                  /* ← 不滚 ✓ 交给里面的 .mob-panes */
+  display: flex; flex-direction: column;
+  min-height: 0;                     /* ← 不写这句，内容会把面板顶高 ✓ */
+  padding: 10px 12px calc(20px + env(safe-area-inset-bottom, 0px));
+}
+.mob-group { display: block; }
+.mob-group[hidden] { display: none !important; }
+.mob-group > .panel {
+  border: 0; border-radius: 0; margin: 0 0 12px; padding: 0; background: none;
+}
+.mob-group .panel-head { padding: 6px 2px 8px; }
+.mob-group .panel-head h2 { font-size: 14px; color: #9fb0c2; }
+
+/* ── 悬停那套手机上手没法用 ✓ 全藏掉（跟随鼠标的信息卡 + 侧栏里的归属链）──── */
+#hover-card { display: none !important; }
+#hover-chain { display: none !important; }
+
+/* ── 「设置」= 一排标签按钮 + 下面跟着换内容 ────────────────────────── */
+/* 顶上那个多余的总标题行不要了 ✗ */
+.mob-set-title { display: none; }
+.mob-tabs {
+  display: flex; flex-wrap: wrap; gap: 8px;
+  padding-bottom: 12px; margin-bottom: 10px; border-bottom: 1px solid #1d2833;
+}
+/* **设置这一栏高度锁死** ✓ 换标签时不许变 ✗
+ * ⚠ 2026-10-13 用户要求："**设置高度减去 30%**" ✓
+ *   基准是原来的 **58vh** → 58 × 0.5 ≈ **29vh** ✓
+ *
+ * 🔴🔴 **类名必须跟 JS 一致** ✗✗（用户报"根本没看到，高度仍然遵循界面最高的"✓ 就是这个）
+ *   JS 那边用的是 **`mob-tall`**（`sheet.classList.toggle('mob-tall', …)` ✓ 见 mobile_js.txt）
+ *   而这里原来写的是 **`.tall`** ✗ —— 那个类**谁也没加过** ✓
+ *   → 这三条规则全是**死代码** ✗ 高度当然没变 ✓
+ *   ✅ 现在两个名字都写上（`.tall` 留着以防别处还在用 ✗ 反正不冲突 ✓）
+ *
+ * 🔴 **两件事一起做才有用** ✗ 光设 height 不够：
+ *   ① flex 子项的 `min-height` 默认是 `auto` ✓ → 内容会把父容器**顶高** ✓
+ *      所以 `#mob-sheet-body` 必须补 `min-height: 0` ✓（原来漏了 ✓）
+ *   ② `#mob-sheet` 自身要 `overflow: hidden` ✓ → 不然溢出内容照样画在外面 ✓
+ *      （看着就是"高度按内容走"✓ 用户说的"怎么不把多余内容收进去"✓）
+ *   下面那行 `.mob-panes { overflow-y: auto }` 就是滑条 ✓ 内容放得下 ✓
+ *
+ * ⚠ 「颜色什么的当然不变」✓ —— `.set-row input[type=color]` 那几条
+ *   （`-webkit-color-swatch`）是修"手机上色块露灰"的 ✓ 跟高度无关 ✓ 别动 ✓
+ * ⚠ 跟上面 `#mob-sheet` 那个 `max-height` 是一对 ✗ 两个都按三成降过了 ✓ */
+#mob-sheet.tall, #mob-sheet.mob-tall { height: 29vh; max-height: 29vh; }
+#mob-sheet.tall #mob-sheet-body, #mob-sheet.mob-tall #mob-sheet-body {
+  display: flex; flex-direction: column;
+  min-height: 0;            /* ← 不加这句，内容会把面板顶回原高度 ✓ */
+}
+#mob-sheet.tall .mob-group, #mob-sheet.mob-tall .mob-group {
+  flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column;
+}
+/* ⚠ **普通模式也要能滚** ✗（2026-10-13 跟上面 `#mob-sheet-body` 配套改的 ✓）
+ *   原来是 `#mob-sheet.tall …, #mob-sheet.mob-tall …` 两个前缀 ✗
+ *   → 只有「更高」模式下 `.mob-panes` 才滚 ✓ 普通模式压根不滚 ✓
+ *     于是滚动全落在 `#mob-sheet-body` 上 → **标签栏被一起滑走** ✓（用户报的那个 ✓）
+ *   现在**无条件**让它滚 ✓ 标签栏就固定住了 ✓
+ *   ⚠ `min-height: 0` 必须有 ✗ 不然 flex 子项按内容撑开、滚条不出现 ✓
+ *   ⚠ `overflow-y: auto` 只管纵向 ✗ 横向那个 `overflow-x: hidden !important`
+ *     在下面那段"滑块彻底根治"里 ✓ 两者不冲突 ✓ */
+.mob-panes {
+  flex: 1 1 auto; min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;   /* ← 从 #mob-sheet-body 搬过来的 ✓ */
+}
+.mob-tabs, .mob-tabs-row { flex: none; }   /* ← 标签栏固定，永远不被挤/不被滑 ✓ */
+/* ⚠ **中间那层（`.mob-group`）也得能撑** ✗（2026-10-13 补 ✓）
+ *   链子是 `#mob-sheet-body`（flex 列）→ `.mob-group` → `.mob-tabs` + `.mob-panes`
+ *   · `.mob-panes` 写了 `flex: 1` ✓ 但它得先有个"能撑开的父"
+ *   · 原来 `flex: 1 1 auto` 只在 `#mob-sheet.tall …` / `.mob-tall …` 下给 ✗
+ *     → **普通模式**里 `.mob-group` 是普通块 ✓ 高度按内容走 ✓
+ *     → `.mob-panes` 跟着按内容 ✓ `overflow-y: auto` **永远不触发** ✗
+ *     → 于是滚动还是落回 `#mob-sheet-body` ✓ 标签栏又被滑走 ✓（白改 ✓）
+ *   ⚠ 这四层是一条链子 ✗（body / group / panes / tabs）少一环就白搭 ✓ */
+.mob-sheet-body > .mob-group, #mob-sheet-body > .mob-group {
+  flex: 1 1 auto; min-height: 0;
+  display: flex; flex-direction: column;
+}
+.mob-tab {
+  min-height: 38px; padding: 0 14px; border-radius: 19px;
+  border: 1px solid #26313d; background: #101820; color: #cfd9e4;
+  font: 600 14px/1 "Microsoft YaHei", system-ui, sans-serif;
+}
+.mob-tab.on { border-color: #c9a94e; color: #f0d98a; background: rgba(36, 29, 16, .95); }
+.mob-pane[hidden] { display: none !important; }
+.mob-pane .set-col { display: block; }
+/* 每页顶上那行小标题（颜色/边界/名字等/导出图例）跟标签重复 ✗ 去掉 ✓ */
+.mob-pane .set-col h3, .mob-pane h3 { display: none; }
+/* 显示页顶上那个「显示」标题同样是重复的 ✗ 去掉 ✓ */
+#display-panel .panel-head { display: none; }
+
+/* **一页就是一块** ✓ 不许出现"两段"的观感 ✗
+   （搬进来的是两个节点：显示面板 + 那一栏设置 ✓ 把它们的边距/边框/内边距全抹平 ✓） */
+.mob-pane > .panel {
+  margin: 0; padding: 0; border: 0; background: none; box-shadow: none;
+}
+.mob-pane > .panel + .set-col, .mob-pane .set-col { margin: 0; padding: 0; border: 0; }
+.mob-pane .set-col > *:first-child { margin-top: 0; }
+.mob-pane .set-row, .mob-pane .switch, .mob-pane label { margin-top: 0; margin-bottom: 0; }
+.mob-pane .set-row { min-height: 32px; }
+.mob-pane .switch { min-height: 32px; }
+.mob-pane .set-row:last-child, .mob-pane .switch:last-child { margin-bottom: 0; }
+
+/* ── 面板内一律对齐（用户嫌不整齐 ✗）────────────────────────────────
+   问题在：每行的勾选框个数不一样（势力 2 个、地区 4 个 ✓），
+   于是"颜色/边界"在每行里起跑线不同 ✗ 看着就乱 ✓
+   办法：给行首的组名和每个勾选框**定死宽度** ✓ 自然就成列了 ✓
+   ────────────────────────────────────────────────────────────────── */
+.mob-pane .tool-group, .mob-pane .set-col, .mob-pane > .panel {
+  margin: 0 !important; padding: 0 !important; border: 0 !important; background: none !important;
+}
+.mob-pane .tool-group + .tool-group { margin-top: 6px !important; }
+.mob-pane .group-label {
+  display: inline-block; min-width: 42px; text-align: left; color: #8b9aab;
+}
+.mob-pane .switch {
+  display: inline-flex; align-items: center; min-width: 76px; gap: 5px;
+  min-height: 32px; margin: 0;
+}
+.mob-pane .switch input[type="checkbox"] { margin: 0; }
+/* 「恢复默认」别甩到右边去 ✗ 跟着左边对齐 ✓ */
+.mob-pane .set-row > span:empty { display: none; }
+.mob-pane #set-reset, .mob-pane .set-row button { margin-right: auto; }
+.mob-pane .set-row { display: flex; align-items: center; gap: 10px; min-height: 34px; }
+.mob-pane .set-row > span:first-child { min-width: 76px; color: #cfd9e4; }
+
+/* 工具 / 视图：**一行一个选项、占满整栏** ✓
+   （踩过坑：第一版只写了 .mob-pane ✗ 那是"设置"里四个标签页的类名 ✓
+     而工具/视图是 .mob-group → 规则没命中 → 还是一排小胶囊 ✗
+     所以这里两个都写上 ✓ 反正面板里的分段按钮都该一行一个 ✓） */
+.mob-pane .segmented, .mob-group .segmented {
+  display: block !important; flex-wrap: nowrap !important; width: 100% !important;
+}
+.mob-pane .segmented button, .mob-group .segmented button {
+  display: block !important; width: 100% !important; flex: none !important;
+  margin: 5px 0 !important; min-height: 38px; text-align: left; padding: 0 12px;
+  border-radius: 10px;
+}
+.mob-pane .segmented button:first-child, .mob-group .segmented button:first-child { margin-top: 0; }
+.mob-pane .segmented button:last-child, .mob-group .segmented button:last-child { margin-bottom: 0; }
+/* 分段按钮里那个小小的层级角标（1936 后面那个 1）也摆整齐点 ✓ */
+.mob-group .segmented button i, .mob-pane .segmented button i { color: #7d8b9c; font-style: normal; }
+.mob-author-row { margin-top: 18px; border-top: 1px dashed #26313d; padding-top: 12px; }
+.mob-author-row .btn, .mob-author-row a { min-height: 40px; }
+
+/* 面板里的控件：手指点得到就行 ✓ 不用搞那么松散、那么大 ✗ */
+#mob-sheet-head { padding: 9px 12px 8px; }
+#mob-sheet-head b { font-size: 14px; }
+#mob-sheet-body { padding: 8px 10px calc(14px + env(safe-area-inset-bottom, 0px)); }
+.mob-tabs { gap: 6px; padding-bottom: 8px; margin-bottom: 8px; }
+.mob-tab { min-height: 32px; padding: 0 12px; font-size: 13px; border-radius: 16px; }
+#mob-sheet .switch { min-height: 34px; font-size: 14px; }
+#mob-sheet .switch input[type="checkbox"] { width: 18px; height: 18px; }
+#mob-sheet .segmented { flex-wrap: wrap; gap: 6px; }
+#mob-sheet .segmented button { min-height: 32px; padding: 0 11px; font-size: 13px; }
+#mob-sheet .chip { width: 32px; height: 32px; }
+#mob-sheet .palette { gap: 8px; flex-wrap: wrap; }
+#mob-sheet .result { min-height: 34px; }
+#mob-sheet .chain-row { min-height: 34px; }
+#mob-sheet input[type="text"], #mob-sheet input[type="number"] { font-size: 13.5px; padding: 6px 8px; }
+#mob-sheet .btn { min-height: 34px; padding: 0 12px; font-size: 13px; }
+#mob-sheet .set-row { min-height: 34px; font-size: 14px; }
+/* ↑ 跟 .switch 那行一样大 ✓（用户：别把「字号倍率」几个字弄得跟别人不一样 ✓）*/
+#mob-sheet .set-col { margin: 0; }
+#mob-sheet .panel-head { padding: 4px 2px 6px; }
+#mob-sheet .panel-head h2 { font-size: 13px; }
+.mob-author-row { margin-top: 12px; padding-top: 10px; }
+.mob-author-row .btn, .mob-author-row a { min-height: 34px; font-size: 13px; }
+
+/* ===========================================================================
+   🔴 **设置面板再紧凑一档 + 高度 +15%**（2026-10-17 ✓ 用户点名 ✓）
+      原话："手机版的设置UI再紧凑一下，同时高度提升15%。**只有设置**！颜色什么的不要改"✓
+
+   ⚠ **选择器一律带 `.mob-pane`** ✗✗ —— 三个理由：
+     ① 那是"**设置**"里那 5 个标签页（显示 / 颜色 / 边界 / 名字 / 其他）的类名 ✓
+        工具 / 视图 / 文件那些面板用的是 `.mob-group` ✓ **一个都不会被这条命中** ✓
+        （2026-10-13 踩过反过来的坑：规则只写 `.mob-pane`，工具页没命中 ✗
+          这次要的正是"只打设置" ✓ 所以这个前缀刚好对 ✓）
+     ② 上面那一坨 `#mob-sheet …` 是**所有**二级面板共用的 ✓ 不能直接改 ✗
+     ③ 颜色那几条（`.set-row input[type=color]` / `-webkit-color-swatch`）是修
+        "手机上色块露灰"的 ✓ 跟疏密无关 ✓ —— 这一段里**一个 color 字样都没有** ✓
+
+   ⚠ **高度只加在 `.mob-tall` 那一档** ✗：
+     `#mob-sheet` 的 25vh 是常规二级面板（工具 / 颜色那些，内容本来就短）共用的 ✓
+     能进"更高"模式的才是内容多的那几页 ✓ 所以 +15% 加在那儿最合适 ✓
+     29vh × 1.15 ≈ 33vh（实际 +13.8% ✓ 就按 15% 算 ✓）
+     ⚠ 后来又加过一次 → 现在是 **38vh** ✓（见下面那行 ✓）
+   ⚠ `#mob-sheet` 的 max-height 也**必须一起跟着改** ✗ ——
+     两个是一对 ✓ 只改一个等于没改（另一个兜着 ✓）
+   ⚠ 那个 `!important` 是必须的 ✗：上面 `.tall, .mob-tall` 那条是 `height: 29vh`
+     同权重、而且它在**后面**? —— 不，它在前面 ✓ 但 `.mob-tall` 只一个类、
+     这条两个类（`#mob-sheet.mob-tall`）权重更高 ✓ 不加也能赢 ✓
+     留着 `!important` 只是防以后有人插一条更狠的 ✓
+   =========================================================================== */
+/* 🔴 **2026-10-17 再 +15%**（用户："手机版的高度再提升15%"✓）
+   上一版 29vh → 33vh（+13.8% ✓）· 这一版 33 × 1.15 = 37.95 ≈ **38vh** ✓
+   ⚠ **两份都要改** ✗ —— `height` 跟 `max-height` 是一对 ✓
+     只改一个 = 另一个兜着 = 等于没改 ✓（上一版就是为这才写两遍 ✓）
+   ⚠ 高度**不写死**也成 ✗ —— JS 的 `place()` 会按内容把它顶到算出来的上限 ✓
+     这里给的是**上限** ✓ 内容少的时候它照样矮（贴着底部往上长 ✓）*/
+#mob-sheet.mob-tall { height: 38vh !important; max-height: 38vh !important; }
+
+/* ── 疏密：每一行的"手感"往下压一档 ─────────────────────────────────
+   压的是**留白**，不是字号 ✗（字号再小就影响读了 ✓ 用户只说"紧凑" ✓）
+   ⚠ 数值都只在设置页里用 ✓ 别把这些挪到 `#mob-sheet …` 去 ✗ */
+.mob-pane #mob-sheet-body { padding-top: 6px; }
+.mob-pane .mob-tabs { gap: 5px; padding-bottom: 6px; margin-bottom: 6px; }
+.mob-pane .mob-tab { min-height: 29px; padding: 0 11px; border-radius: 15px; }
+.mob-pane .set-row { min-height: 29px; gap: 8px; }
+.mob-pane .switch { min-height: 29px; gap: 4px; }
+.mob-pane .tool-group + .tool-group { margin-top: 4px !important; }
+/* 小标题（陆地 / 水域 / 省份…）那一条细线上下也收一点 ✓ */
+.mob-pane .set-sub { padding-top: 3px; margin-top: 4px; }
+/* 色块 / 色板 / 结果行 / 链条行：跟着行高一齐收 ✓（**只动尺寸，不动颜色** ✓）*/
+.mob-pane .chip { width: 29px; height: 29px; }
+.mob-pane .result { min-height: 30px; }
+.mob-pane .chain-row { min-height: 30px; }
+.mob-pane input[type="text"], .mob-pane input[type="number"] { padding: 5px 7px; }
+.mob-pane .btn { min-height: 30px; padding: 0 11px; }
+/* 滑条那几行：把 range 上下那点余量也收掉 ✓ */
+.mob-pane .set-row input[type="range"] { margin: 0; }
+
+/* ── 地图：一级界面就它一个 ───────────────────────────────────────── */
+.toolbar { display: none !important; }        /* 顶栏全部搬进面板了 ✓ */
+.sidebar { display: none !important; }        /* 左栏内容也搬进去了 ✓ */
+
+/* 「更高」那个按钮**不做动画** ✓（用户要求去掉 ✓）
+   曾经给 #mob-sheet 加过 height 过渡 ✓ 但那要求高度一直是显式 px ✗
+   → 面板就不再跟着内容长高了 ✗ 得不偿失 ✓ 已撤掉 ✓ */
+.body, .stage { height: 100%; }
+.stage { width: 100%; }
+#stage { touch-action: none; }
+.statusbar {
+  position: absolute; left: 0; right: 0; bottom: 66px;   /* 浮在四个入口上方 ✓ */
+  display: flex; flex-wrap: nowrap; align-items: center;  /* **不许换行** ✗（换行就变成竖着摞一串 — 了 ✓）*/
+  gap: 12px; padding: 4px 12px; font-size: 12px;
+  overflow-x: auto; overflow-y: hidden; white-space: nowrap;
+  background: linear-gradient(#0b0f1400, #0b0f14cc 60%);
+  pointer-events: none;
+}
+.statusbar > * { flex: none; pointer-events: auto; }
+.statusbar .spacer { display: none; }
+#status-meta { display: none; }        /* 那串「N 个头衔 · N 个地块 · 尺寸」手机上没人看 ✓ */
+#status-pos { order: -1; }
+
+/* 悬停卡 / 缩放条 / 教程卡片 */
+.hover-card { max-width: 72vw; font-size: 13px; padding: 8px 10px; border-radius: 10px; z-index: 50; }
+.zoom-box { right: 10px; bottom: 86px; }
+#tutCard { max-width: calc(100vw - 24px); padding: 14px 16px; border-radius: 12px; }
+#tutCard button { min-height: 42px; padding: 0 16px; font-size: 14px; }
+
+/* 设置那个弹窗在手机版用不上了 ✓ —— 内容整块搬进了「设置」二级面板 ✗ 不再套第三层 */
+#settings { display: none !important; }
+
+/* 改名弹窗还是要的 ✓ 竖屏全屏、一栏 */
+.modal { align-items: stretch; justify-content: stretch; padding: 0; }
+.modal-box {
+  width: 100% !important; max-width: none; height: 100%; max-height: none;
+  border-radius: 0; border: 0; overflow-y: auto; padding: 14px 14px 96px;
+  -webkit-overflow-scrolling: touch;
+}
+.modal-head { position: sticky; top: -14px; z-index: 2; padding: 12px 0 10px; background: #0f151c; }
+.set-grid { grid-template-columns: 1fr !important; gap: 14px; }
+.set-row { min-height: 44px; }
+.legend-row { min-height: 44px; }
+
+/* 启动页：单列大按钮（⚠ 2026-10-17 起**电脑版也统一一列** ✓
+   这里只把宽度 / 间距调到手指友好；`.boot-inner` 不许超宽 ✓）*/
+.boot-inner { width: 100%; padding: 16px 14px; }
+.boot-title { font-size: 24px; }
+.map-pick-list { grid-template-columns: 1fr !important; gap: 10px; }
+.map-pick-list > * { min-height: 56px; }
+.boot-author { font-size: 12px; flex-wrap: wrap; gap: 6px; }
+
+/* 顶栏左边那个「永夜廿九」小胶囊（贴在「返回」右边 ✓）*/
+#mob-mid { flex: 1 1 auto; }
+#mob-topbar .mob-author, #mob-mid .btn, #mob-mid a {
+  min-height: 34px; padding: 0 13px; border-radius: 17px; line-height: 34px;
+  border: 1px solid #2b3743; background: rgba(13, 19, 26, .92); color: #e8eef6;
+  font: 600 13px/1 "Microsoft YaHei", system-ui, sans-serif; text-decoration: none;
+}
+
+/* ===========================================================================
+   宽屏打开时（电脑上调试）：把一切收进一个手机大小的框里居中 ✓
+   真手机上窗口本来就窄，这条不生效 ✓
+   =========================================================================== */
+@media (min-width: 561px) {
+  body { display: flex; align-items: center; justify-content: center; background: #06090c; }
+  #app {
+    position: relative; width: 430px; max-width: 100vw; height: min(932px, 95vh);
+    border-radius: 24px; overflow: hidden; border: 1px solid #26313d;
+    box-shadow: 0 30px 90px rgba(0, 0, 0, .75), 0 0 0 8px rgba(255, 255, 255, .02);
+  }
+  #mob-sheet, #mob-backdrop, #mob-ui, #mob-intro, #rename { position: absolute; }
+  #mob-backdrop { border-radius: 24px; }
+  #tutLayer { position: absolute; }
+  .boot-inner { padding: 16px 14px; }
+}
+
+/* 导出下拉里那些项，摊到面板里要长得像按钮 ✓ */
+.mob-group .menu-item, .mob-group #export-menu button {
+  display: block; width: 100%; text-align: left;
+  min-height: 46px; margin: 6px 0; padding: 0 14px;
+  border-radius: 10px; border: 1px solid #26313d;
+  background: #101820; color: #e8eef6;
+  font: 600 15px/46px "Microsoft YaHei", system-ui, sans-serif;
+}
+
+/* ===========================================================================
+   面板内瘦身（用户嫌臃肿 ✗）
+   ① 桌面那套"组名"（视图 / 工具 这种小字）在手机面板里是重复的 → 藏掉 ✓
+   ② 分段按钮外面那层圆角壳（边框 + 内边距）去掉 → 只留按钮本身 ✓
+   ③ 标题那一行压扁、收紧 ✓
+   =========================================================================== */
+.mob-group .group-label { display: none !important; }
+.mob-group .segmented, .mob-pane .segmented {
+  padding: 0 !important; border: 0 !important; background: none !important;
+  border-radius: 0 !important; box-shadow: none !important; gap: 0 !important;
+}
+.mob-group .segmented button, .mob-pane .segmented button {
+  min-height: 34px !important; margin: 4px 0 !important;
+  border-radius: 8px !important; font-size: 13.5px !important;
+}
+.mob-group .tool-group, .mob-pane .tool-group { margin: 0 !important; padding: 0 !important; }
+#mob-sheet-head { padding: 7px 10px 7px !important; }
+#mob-sheet-head b { font-size: 14px !important; }
+#mob-sheet-x { min-height: 28px !important; padding: 0 10px !important; font-size: 12.5px !important; border-radius: 14px !important; }
+#mob-sheet-body { padding: 6px 9px calc(12px + env(safe-area-inset-bottom, 0px)) !important; }
+
+/* ===========================================================================
+   用户嫌臃肿的最后一刀：
+   ① 顶部那条（金标题 + 收起）**整条去掉** ✓
+      —— 点同一个入口按钮就能收回 ✓ 左上「返回」也行 ✓ 点地图也行 ✓ 三种都够 ✓
+   ② **横向溢出堵住** ✓（之前底部冒出一条横向滑块 ✗ 说明里面某块比面板宽 ✓）
+      → 面板体只许竖着滚 ✓ 里面的行允许换行 ✓ 勾选框窄一点 ✓
+   =========================================================================== */
+#mob-sheet-head { display: none !important; }
+#mob-sheet, #mob-sheet-body, .mob-group, .mob-pane, .mob-subs {
+  overflow-x: hidden !important; max-width: 100% !important;
+}
+.mob-group *, .mob-pane * { max-width: 100%; }
+.mob-pane .set-row, .mob-group .tool-group, .mob-pane .tool-group {
+  flex-wrap: wrap !important; row-gap: 4px !important;
+}
+.mob-pane .switch, .mob-group .switch {
+  min-width: 62px !important; flex: 0 1 auto !important;
+}
+.mob-pane .group-label, .mob-group .group-label { min-width: 34px !important; }
+.mob-pane .set-row > span:first-child { min-width: 58px !important; }
+/* 面板体自身的滚动条也别露出来 ✓ */
+#mob-sheet-body { scrollbar-width: none; }
+#mob-sheet-body::-webkit-scrollbar { width: 0; height: 0; }
+
+/* ===========================================================================
+   滑块彻底根治（用户：该死的滑块 ✗）
+   ① 面板体和里面每一层都不许有横向滚动 ✓
+   ② 纵向滚动条也不画出来 ✓（能滚，但别露那根灰条 ✗）
+   ③ 行内容再压一档，四个勾选框老老实实排得下 ✓
+   =========================================================================== */
+#mob-sheet, #mob-sheet-body, .mob-group, .mob-pane, .mob-subs,
+.mob-group > *, .mob-pane > * { overflow-x: hidden !important; }
+#mob-sheet-body, .mob-pane, .mob-group { scrollbar-width: none !important; -ms-overflow-style: none; }
+#mob-sheet-body::-webkit-scrollbar, .mob-pane::-webkit-scrollbar,
+.mob-group::-webkit-scrollbar { width: 0 !important; height: 0 !important; display: none !important; }
+.mob-pane .switch, .mob-group .switch { min-width: 0 !important; margin-right: 2px !important; }
+.mob-pane .switch span, .mob-group .switch span { font-size: 13px !important; white-space: nowrap; }
+.mob-pane .switch input[type="checkbox"], .mob-group .switch input[type="checkbox"] {
+  width: 16px !important; height: 16px !important;
+}
+.mob-pane .group-label, .mob-group .group-label { min-width: 30px !important; font-size: 12.5px !important; }
+.mob-pane .set-row > span:first-child { min-width: 54px !important; font-size: 13px !important; }
+
+/* ===========================================================================
+   手机上哪来的键盘 ✗
+   ① 工具按钮尾巴上的 Q/W/E…、年份按钮上的小数字 —— 全是快捷键 ✓ 一律藏掉 ✓
+   ② 滚动条：面板里**任何一层**都不许画出来 ✓（能滚，但别露 ✗）
+   ③ 按钮再紧一档，工具那一栏 148px 就够了 ✓
+   =========================================================================== */
+.mob-group .k, .mob-pane .k { display: none !important; }
+#mob-sheet, #mob-sheet * { scrollbar-width: none !important; -ms-overflow-style: none !important; }
+#mob-sheet::-webkit-scrollbar, #mob-sheet *::-webkit-scrollbar {
+  width: 0 !important; height: 0 !important; display: none !important;
+}
+.mob-group .segmented button, .mob-pane .segmented button {
+  margin: 3px 0 !important; min-height: 32px !important; font-size: 13px !important;
+}
+.mob-group { padding-bottom: 0 !important; }
+
+/* ===========================================================================
+   手机版的「教程」= 一个介绍弹窗（不再是逐步引导 ✓）
+   直接复用 app 原有的 .modal 体系 ✓ 所以竖屏自动全屏、可滚动 ✓
+   =========================================================================== */
+#mob-intro { display: flex; }
+#mob-intro[hidden] { display: none !important; }
+#mob-intro .mi-box { padding: 14px 16px 20px; }
+#mob-intro .modal-head { position: sticky; top: -14px; background: #0f151c; }
+#mob-intro .modal-head h2 { font-size: 17px; color: #f0d98a; }
+.mi-body { font-size: 14px; line-height: 1.85; color: #cdd7e2; }
+.mi-body h4 {
+  margin: 16px 0 4px; font-size: 14px; color: #f0d98a;
+  border-left: 3px solid #c9a94e; padding-left: 8px;
+}
+.mi-body p { margin: 0 0 8px; }
+.mi-body strong { color: #fff; }
+.mi-body .mi-lead { color: #e8eef6; }
+
+/* ===========================================================================
+   顶栏那几个胶囊（返回 / 永夜廿九 / 教程 / 文件）**一律 flex 居中** ✓
+   —— 之前用 line-height 撑高度 ✗ 字体行盒上下留白不对称 ✓
+      中文尤其明显，看着就是"字比胶囊中心高一点点" ✗
+      flex + align-items:center + line-height:1 才是真正的垂直居中 ✓
+   =========================================================================== */
+#mob-topbar .mob-btn,
+#mob-topbar .mob-author,
+#mob-topbar a.mob-author,
+#mob-topbar a.btn {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  height: 34px !important;
+  min-height: 34px !important;
+  padding: 0 13px !important;
+  line-height: 1 !important;
+  border-radius: 17px !important;
+  font-size: 13px !important;
+  box-sizing: border-box !important;
+}
+
+/* 坐标在手机上是废的 ✗（没有悬停 → 永远显示「—」）→ 去掉 ✓ */
+#status-pos { display: none !important; }
+.statusbar { justify-content: flex-start !important; gap: 14px !important; }
+.statusbar #status-changes { font-weight: 600; }
+
+/* ===========================================================================
+   教程那个介绍窗 = **居中的圆角卡片** ✓ 不是全屏 ✗（用户要求）
+   （之前复用了"设置弹窗竖屏全屏"那套 → 于是铺满整屏 ✓ 太唬人 ✗）
+   =========================================================================== */
+#mob-intro {
+  display: flex !important;
+  align-items: center !important; justify-content: center !important;
+  padding: 14px !important;
+}
+#mob-intro .modal-box {
+  width: 100% !important; max-width: 420px !important;
+  height: auto !important; max-height: 76vh !important;
+  border-radius: 16px !important; border: 1px solid #2b3743 !important;
+  padding: 12px 16px 18px !important;
+  overflow-y: auto; scrollbar-width: none;
+}
+#mob-intro .modal-box::-webkit-scrollbar { width: 0; height: 0; display: none; }
+#mob-intro .modal-head { position: static !important; padding: 4px 0 10px !important; }
+#mob-intro .mi-body { font-size: 13.5px; line-height: 1.8; }
+
+/* 底部那条状态栏（缩放 / 改动 N）也**整条藏掉** ✓（用户要求 ✓） */
+.statusbar { display: none !important; }
+
+/* ===========================================================================
+   文件那栏（导出整图 / 导出涂色 / 导入 / 撤销 / 重做 / 清除）
+   **跟工具那栏一个样式**：一行一个、占满整栏、左对齐 ✓
+   =========================================================================== */
+.mob-group[data-group="io"] button,
+.mob-group[data-group="io"] .menu-item,
+.mob-group[data-group="io"] a.btn {
+  display: block !important; width: 100% !important; text-align: left !important;
+  min-height: 34px !important; margin: 4px 0 !important; padding: 0 12px !important;
+  border-radius: 8px !important; font: 600 13.5px/34px "Microsoft YaHei", system-ui, sans-serif !important;
+  border: 1px solid #26313d !important; background: #101820 !important; color: #e8eef6 !important;
+}
+.mob-group[data-group="io"] > * { margin: 0 !important; padding: 0 !important; }
+#btn-export { display: none !important; }
+
+/* ===========================================================================
+   顶栏正中间那对「撤销 / 重做」✓
+   圆圈按钮、跟顶栏其它胶囊一样高 ✓ 禁用时是灰的（原样式保留 ✓）
+   =========================================================================== */
+#mob-mid { display: flex; align-items: center; justify-content: center; }
+.mob-undo { display: inline-flex; align-items: center; gap: 6px; }
+.mob-icobtn {
+  display: inline-flex !important; align-items: center !important; justify-content: center !important;
+  width: 34px !important; height: 34px !important; min-width: 34px !important;
+  padding: 0 !important; line-height: 1 !important;
+  border-radius: 50% !important; border: 1px solid #2b3743 !important;
+  background: rgba(13, 19, 26, .92) !important; color: #e8eef6 !important;
+  font-size: 15px !important; box-sizing: border-box !important;
+}
+.mob-icobtn:disabled { opacity: .38 !important; }
+
+/* ===========================================================================
+   当前工具 / 当前颜色（顶栏下面左边那个小胶囊 ✓）
+   色块 + 工具名 ✓ 点一下开「工具」面板 ✓
+   =========================================================================== */
+#mob-now {
+  position: absolute; top: 60px; left: 10px; z-index: 58;
+  display: inline-flex; align-items: center; gap: 7px;
+  min-height: 32px; padding: 0 12px 0 8px; border-radius: 16px;
+  border: 1px solid #2b3743; background: rgba(13, 19, 26, .92); color: #e8eef6;
+  font: 600 13px/1 "Microsoft YaHei", system-ui, sans-serif;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .45); backdrop-filter: blur(6px);
+}
+#mob-now.on { border-color: #c9a94e; color: #f0d98a; }
+#mob-now .mn-sw {
+  width: 18px; height: 18px; border-radius: 5px; background: #c83232;
+  border: 1px solid rgba(255, 255, 255, .35); box-shadow: 0 0 0 1px rgba(0, 0, 0, .5) inset;
+}
+
+/* ===========================================================================
+   撤销 / 重做：**相对整条顶栏居中** ✓
+   （以前放在中间那个 flex 槽里 ✗ 可左右两边宽度不一样 → 看着就是偏的 ✗）
+   =========================================================================== */
+#mob-topbar { position: absolute; }
+.mob-undo {
+  position: absolute !important; left: 50% !important; top: 50% !important;
+  transform: translate(-50%, -50%) !important;
+}
+/* 底部那条渐变交给 JS 按当前颜色画 ✓ 这里只留个兜底 */
+#mob-dock { transition: background .25s linear; }
+#mob-dock button { background: rgba(13, 19, 26, .94); }
+
+/* 双保险：状态栏里那三项（缩放百分比 / 坐标 / 改动）**点名禁掉** ✓
+   （万一以后有人把 .statusbar 那条 display:none 删了，这三项也照样不冒出来 ✓） */
+#status-zoom, #status-pos, #status-changes, #status-meta { display: none !important; }
+.statusbar { display: none !important; visibility: hidden !important; height: 0 !important; }
+
+/* 显示页里「势力 / 地区 / 填色」这几个前缀**必须留着** ✓
+   （上一版我一刀切把 .group-label 全藏了 ✗ 结果那三个前缀也没了 ✓ 用户骂得对 ✓） */
+.mob-pane .group-label {
+  display: inline-block !important;
+  min-width: 34px !important;
+  color: #8b9aab !important;
+  font-size: 12.5px !important;
+}
+
+/* 设置页的内容区：高度由 JS 量完锁住 ✓ 切标签时不许变 ✗ */
+.mob-panes { display: block; }
+.mob-pane { display: block; }
+
+/* ===========================================================================
+   顶栏那个返回箭头（手机版 ✓ 用户要"就一个箭头"）
+   方块按钮、箭头居中、点得到的尺寸 ✓ 比带字的胶囊更省地方 ✓
+   =========================================================================== */
+#mob-topbar .mob-back-arrow {
+  width: 38px !important; min-width: 38px !important; padding: 0 !important;
+  font-size: 17px !important; line-height: 1 !important;
+}
+
+
+/* ===========================================================================
+   改名弹窗 = **居中的小卡片**，不要铺满全屏（用户：手机版改名不要覆盖全屏）
+   —— 上面那段 .modal 是给"设置弹窗"写的竖屏全屏版 ✗
+      改名只有一行输入，铺满整屏太唬人、还看不见地图 ✓
+   =========================================================================== */
+#rename {
+  display: flex !important;
+  align-items: center !important; justify-content: center !important;
+  padding: 16px !important;
+}
+/* **必须补这一句** ✗ —— 上面那个 display:flex 带 !important ✓
+   会把元素自带的 hidden 属性压过去 ✓ 于是改名窗**一进页面就杵在屏幕中间** ✗
+   （用户报的"一点进去一个大大的改名"就是这个 ✓）
+   [hidden] 是属性选择器、权重比单独的 #rename 高 ✓ 所以这句一定压得住 ✓
+   —— 教程那个介绍窗当初就记得写了 ✓ 改名窗漏了 ✗） */
+#rename[hidden] { display: none !important; }
+#rename .modal-box {
+  width: 100% !important; max-width: 380px !important;
+  height: auto !important; max-height: 70vh !important;
+  border-radius: 16px !important; border: 1px solid #2b3743 !important;
+  padding: 14px 16px 16px !important;
+  overflow-y: auto; scrollbar-width: none;
+}
+#rename .modal-box::-webkit-scrollbar { width: 0; height: 0; display: none; }
+#rename .modal-head { position: static !important; padding: 4px 0 10px !important; }
+#rename input, #rename .rename-input { font-size: 15px !important; min-height: 40px !important; }
+#rename button { min-height: 38px !important; padding: 0 14px !important; font-size: 14px !important; }
+
+
+/* ===========================================================================
+   图例条目在窄面板里也要排得下（现在一行是：勾选 + 色块 + 名字 + ↑↓）
+   —— 名字框让它缩 ✓ 箭头小一点但还是要指尖点得到 ✓
+   =========================================================================== */
+#mob-sheet .legend-row { flex-wrap: nowrap !important; gap: 6px !important; }
+#mob-sheet .legend-row .legend-name { min-width: 0 !important; font-size: 13px !important; padding: 4px 7px !important; }
+#mob-sheet .legend-row .legend-sw { width: 16px !important; height: 16px !important; }
+#mob-sheet .legend-row .legend-up,
+#mob-sheet .legend-row .legend-down {
+  width: 24px !important; height: 19px !important; font-size: 10px !important;
+}
+
+
+/* ===========================================================================
+   图例的**拖动把手**在手机上也要按得住
+   （一行现在是：勾选 + 色块 + 名字 + ↑↓ + 把手 ✓ 名字让位给它们 ✓）
+   =========================================================================== */
+#mob-sheet .legend-row .legend-drag {
+  width: 22px !important; font-size: 15px !important;
+  display: flex !important; align-items: center !important; justify-content: center !important;
+  min-height: 24px !important;
+  touch-action: none !important;   /* 按住把手拖动时不许滚页面 ✓ */
+}
+#mob-sheet .legend-row .legend-name { flex: 1 1 auto !important; }
+
+
+/* ===========================================================================
+   ① 图例列表**做小一点**（用户要求：设置界面里的这个 UI 小一点）
+      一行是：勾选 + 色块 + 名字 + ↑↓ + 把手 ✓ 全部收一档 ✓
+   =========================================================================== */
+#mob-sheet .legend-row {
+  gap: 6px !important; padding: 1px 0 !important;
+  /* **行高必须清掉** ✗ —— 早期那条 `.legend-row { min-height: 44px }`（触摸友好的老规矩 ✓）
+     一直在撑着每一行 ✓ 光收内边距根本压不下去 ✓（用户：项目之间的间距再小一点 ✓）
+     现在按内容自己的高度走（勾选框 15px + 上下 1px ≈ 17~20px 一行 ✓）*/
+  min-height: 0 !important;
+}
+#mob-sheet .legend-row .legend-on { width: 15px !important; height: 15px !important; }
+#mob-sheet .legend-row .legend-sw { width: 13px !important; height: 13px !important; border-radius: 3px !important; }
+#mob-sheet .legend-row .legend-name {
+  font-size: 12.5px !important; padding: 3px 6px !important; border-radius: 5px !important;
+}
+#mob-sheet .legend-row .legend-move { gap: 1px !important; }
+#mob-sheet .legend-row .legend-up,
+#mob-sheet .legend-row .legend-down {
+  width: 17px !important; height: 12px !important; font-size: 8px !important;
+}
+#mob-sheet .legend-row .legend-drag { width: 16px !important; font-size: 12px !important; min-height: 20px !important; }
+#mob-sheet .legend-list { max-height: 190px; }
+
+/* ===========================================================================
+   ② 「更高」按钮：把设置面板拔到 88vh，图例列表跟着放开 → 一次能看更多条
+      普通模式：列表上限 190px（面板本来就矮 ✓）
+      高的模式：列表放开到 42vh ✓ 面板内部滚动 ✓
+   =========================================================================== */
+#mob-sheet .mob-tallbtn {
+  margin-left: auto; align-self: center;
+  min-height: 26px; padding: 0 10px; border-radius: 13px;
+  border: 1px solid #2b3743; background: #101820; color: #9fb0c2;
+  font: 600 12px/1 "Microsoft YaHei", system-ui, sans-serif;
+}
+#mob-sheet .mob-tallbtn.on { border-color: #c9a94e; color: #f0d98a; }
+
+/* 高度**不写死** ✗ —— JS 会把它顶到 place() 算出来的那个上限（贴着底部往上长 ✓）
+   写死 88vh 会顶出屏幕（用户报过 ✓）；而且列表还被上限卡着 → 下面留一大块空地 ✗
+
+   ⚠ **每条都要加 :not([hidden])** ✗ —— 这些 display:flex 带 !important，
+     会把"面板自带的 hidden"直接压过去 → 四个面板一起显出来 ✗（踩过三次了 ✗）
+     :not([hidden]) 既把权重抬够 ✓ 又天然绕开该藏起来的那些 ✓
+*/
+#mob-sheet.mob-tall { display: flex !important; flex-direction: column !important; }
+#mob-sheet.mob-tall #mob-sheet-body:not([hidden]) {
+  flex: 1 1 auto !important; min-height: 0 !important;
+  display: flex !important; flex-direction: column !important; overflow-y: hidden !important;
+}
+#mob-sheet.mob-tall .mob-group:not([hidden]) {
+  flex: 1 1 auto !important; min-height: 0 !important;
+  display: flex !important; flex-direction: column !important;
+}
+#mob-sheet.mob-tall .mob-panes:not([hidden]) {
+  flex: 1 1 auto !important; min-height: 0 !important;
+  display: flex !important; flex-direction: column !important; overflow-y: auto !important;
+}
+/* 图例那一页：列表**把剩下的空间全吃掉** ✓ 内部滚动 ✓ 不再留空地 ✓ */
+#mob-sheet.mob-tall .mob-pane[data-pane="legend"]:not([hidden]) {
+  flex: 1 1 auto !important; min-height: 0 !important;
+  display: flex !important; flex-direction: column !important;
+}
+#mob-sheet.mob-tall .mob-pane[data-pane="legend"]:not([hidden]) .legend-list {
+  flex: 1 1 auto !important; max-height: none !important; min-height: 60px !important;
+}
+/* 兜底：高模式下面，凡是带 hidden 的都别想冒出来 ✓（权重按需要抬到最高） */
+#mob-sheet.mob-tall .mob-group[hidden],
+#mob-sheet.mob-tall .mob-panes[hidden],
+#mob-sheet.mob-tall .mob-pane[hidden],
+#mob-sheet.mob-tall .mob-subs[hidden],
+#mob-sheet.mob-tall #mob-sheet-body[hidden] { display: none !important; }
+
+/* 量"最高那页"的时候，临时把列表收回普通上限 ✓
+   —— 不然在高的模式下量一次，高度锁就被顶到那么高 ✗ 之后普通模式也跟着变高 ✗ */
+#mob-sheet.measuring .legend-list { max-height: 190px !important; }
+
+
+/* ===========================================================================
+   ① 「地区 · 涂色」那个小标（#brush-target）在手机上藏掉 ✓（用户要求去掉 ✓）
+   =========================================================================== */
+#brush-target { display: none !important; }
+
+/* ===========================================================================
+   ③ 颜色页变高时：让"搜索结果"那块**吃掉剩余空间** ✓ 内部滚动 ✓
+      （面板本身的高度由 JS 顶到可用上限 ✓ 见 place() ✓）
+   =========================================================================== */
+#mob-sheet.mob-tall[data-group="color"] .mob-grow {
+  flex: 1 1 auto !important; min-height: 0 !important;
+  display: flex !important; flex-direction: column !important;
+}
+/* 搜索结果（#results）：**普通模式给它一个上限** ✗
+   基类里 `.results { flex: 1 1 auto; max-height: 100% }` 自己就会撑满容器 ✓
+   面板矮的时候它一长（搜个 a 就 231 条 ✓）就把上面的「当前颜色 / 最近使用」顶出视野 ✗
+   → 用户报的"搜索结果把原来的 UI 挡住"就是这个 ✓ 普通模式留 34vh、内部滚动 ✓ */
+#mob-sheet .results { max-height: 34vh !important; }
+
+/* 「更高」模式下改成**只吃剩下的空间** ✓（不是卡一个死数字 ✗）
+   之前写死 52vh → 面板里"当前颜色 + 最近使用 + 查找 + 结果"加起来超过面板 ✗
+   → 变成面板滚一层、列表内部再滚一层 ✗ 底下一行正好卡在缝上 ✓
+     （用户："是不是还差一点没显示" ✓）
+   现在：固定那几块各占各的 ✓ 列表把余量填满 ✓ **只有一层滚动** ✓ 一行都不卡缝 ✓ */
+#mob-sheet.mob-tall[data-group="color"] .mob-panes:not([hidden]) {
+  overflow-y: hidden !important;          /* 外层的滚动关掉 ✓ 交给列表自己滚 ✓ */
+  padding-bottom: 6px !important;         /* 最后一行不贴着边 ✓ */
+}
+#mob-sheet.mob-tall[data-group="color"] .mob-grow {
+  flex: 1 1 auto !important; min-height: 0 !important;
+  display: flex !important; flex-direction: column !important;
+}
+#mob-sheet.mob-tall[data-group="color"] .mob-grow #results {
+  flex: 1 1 auto !important; max-height: none !important; min-height: 0 !important;
+  overflow-y: auto !important;
+}
+/* 面板头里那个「▾」按钮：贴右边 ✓ */
+#mob-sheet .panel-head .mob-tallbtn { margin-left: auto; flex: none; }
+
+/* ===========================================================================
+   滚动条统一成**暗色** ✓
+   （用户 2026-10-12："手机版剧本太多导致的那个滑块改成符合背景颜色，不要白色" ✓）
+
+   **只管颜色，不管"露不露"** ✗：
+     · 上面那些 `scrollbar-width: none !important` 和 id/类级 `::-webkit-scrollbar`
+       选择器照样优先 —— 该藏的还藏着 ✓
+     · 只把**没人管过的**那些（= 浏览器默认那根白条）染成跟电脑版侧栏同色的暗灰 ✓
+
+   `#2b3542` 就是电脑版 `.sidebar::-webkit-scrollbar-thumb` 用色 ✓（同一套视觉）
+   =========================================================================== */
+* { scrollbar-color: #2b3542 transparent; }            /* Firefox ✓ */
+*::-webkit-scrollbar { width: 9px; height: 9px; }      /* Chromium / Safari；横向那条靠 height ✓ */
+*::-webkit-scrollbar-thumb { background: #2b3542; border-radius: 5px; }
+*::-webkit-scrollbar-thumb:hover { background: #3a4757; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-corner { background: transparent; }
