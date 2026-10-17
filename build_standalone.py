@@ -45,10 +45,6 @@ OUT = ROOT / "pdx-map-editor.html"
 #:   既不内嵌、也不打包对外发 ✓（本地想用就把条目加回来，走 `python server.py` 照样看得到）
 MAPS = (
     ("vanilla", "pdx-ck3-vanilla", "CK3 原版", "data", "9216 × 4608"),
-    # CK2 是 CK3 的前作 ✓ 省份图 3072×2048（四代里最小的一张 ✓）
-    # ⚠ 别把它写成 5632×2048 ✗ —— 那是 EU4 / HOI4 的尺寸 ✓
-    #   这张图的真实尺寸见 build_ck2 的日志（provinces.bmp 头部 3072×2048 ✓）
-    ("ck2", "pdx-ck2-vanilla", "CK2 原版", "data_ck2", "3072 × 2048"),
     ("eu4", "pdx-eu4-vanilla", "EU4 原版", "data_eu4", "5632 × 2048"),
     ("hoi4", "pdx-hoi4-vanilla", "HOI4 原版", "data_hoi4", "5632 × 2048"),
     ("hoi4alt", "pdx-hoi4-alt", "HOI4 修改边界", "data_hoi4_alt", "5632 × 2048"),  # note 保持跟旧包一致（见下 ✓）

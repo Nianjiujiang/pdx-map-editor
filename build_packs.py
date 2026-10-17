@@ -2,9 +2,8 @@
 # -*- coding: utf-8 -*-
 """把游戏自带的那几张地图打成 `.pdxmap` 包 —— 轻量版的配菜。
 
-    python build_packs.py                 # 打到 packs/（默认，7 个公开包）
-    python build_packs.py --include-private --out _local/packs-internal
-                                          # 连内测中的 CK2 一起打（只准内部用）
+    python build_packs.py                 # 打到 packs/（默认）
+    python build_packs.py --out 某个目录    # 换个地方
 
 为什么要有它：编辑器的单文件从 2026-10-12 起**默认不内嵌地图**（约 0.6 MB）✓
 地图改成"要用哪张下哪张"：CK3 2.4 MB、EU5 原尺寸 12.2 MB，比人人下 35 MB 划算得多 ✓
@@ -13,8 +12,6 @@
 地图清单**只有一份** —— `build_standalone.py` 里的 `MAPS` ✓
 这里只是照着它循环，别在这儿另抄一张表 ✗（拍平清单抄了三份、为此踩过两回）
 ⚠ 表里没有 EU4HD：那是创意工坊模组的地图，没拿到作者授权，不打包对外发 ✓
-⚠ CK2 模式仍在**内测** ✗：默认不打进 `packs/`；`--include-private` 也不许写进
-  `packs/`，只能写到 `_local/packs-internal/` 这种内部目录 ✓
 """
 
 from __future__ import annotations
@@ -39,13 +36,6 @@ from pack_map import build_pack                         # noqa: E402  （打包�
 #: 默认输出目录。**不进仓库**（见 .gitignore）—— 建出来传给 Release 当附件的 ✓
 OUT_DIR = ROOT / "packs"
 
-#: **内部测试中的包：默认不对外打包** ✓
-#: CK2 模式还在内测，public 的 `packs/` 里不许出现它；
-#: 要打只能显式 `--include-private` + 一个**非 packs/** 的输出目录 ✓
-PRIVATE_PACKS = {
-    "pdx-ck2-vanilla",
-}
-
 #: 每个包写进 manifest 的版本号 = **烘这份数据时那个游戏本体的版本** ✓
 #: 卡片左下角显示成「v1.20.0.4」，玩家一眼就知道这图是哪一版游戏上的。
 #: ⚠ **这张表是手写的**：CK3 / V3 / EU5 的 `meta.gameVersion` 要么没有、要么是 `?`
@@ -55,11 +45,6 @@ PRIVATE_PACKS = {
 #: 还容易被当成真版本 ✓）
 PACK_VERSIONS = {
     "pdx-ck3-vanilla": "1.20.0.4",      # Crusader Kings III · launcher/launcher-settings.json
-    # Crusader Kings II · 版本在 ChangeLog.txt 顶上那行横幅里（`################ 3.3.3 ###…`）
-    # ⚠ CK2 **没有** launcher/launcher-settings.json ✗（那份是启动器写出来的，
-    #   而 CK2 的启动器早退役了 ✓ 目录里只剩 motd.txt ✓ 实查过 ✓）
-    #   → 跟 EU5 一样只能手写 ✓ 将来游戏更了就回来改这一行 ✓
-    "pdx-ck2-vanilla": "3.3.3",
     "pdx-eu4-vanilla": "1.37.5.0",      # EU4 · meta.gameVersion 里就有 ✓
     "pdx-hoi4-vanilla": "1.19.3.0",     # HOI4 的 rawVersion ✓
     "pdx-hoi4-alt": "1.19.3.0",         # （"Operation Postern … (5632)" 有 39 字，超 version 上限 ✗）
@@ -87,22 +72,12 @@ def main() -> int:
     ap.add_argument("--out", default=str(OUT_DIR), help=f"输出目录，默认 {OUT_DIR.name}/")
     ap.add_argument("--version", default=None,
                     help="统一指定版本号（默认按包各自查 PACK_VERSIONS）")
-    ap.add_argument("--include-private", action="store_true",
-                    help="连内测中的包一起打（只能写到 --out，且不能是 packs/）")
     args = ap.parse_args()
 
     out_dir = Path(args.out)
-    # 内测包**绝不能写进公开的 packs/** ✗ —— 谁上传前都不会逐个翻清单，靠目录隔开最稳 ✓
-    if args.include_private and out_dir.resolve() == OUT_DIR.resolve():
-        print("!! --include-private 不能写进 packs/（那是公开附件目录）")
-        print("   请改用：python build_packs.py --include-private --out _local/packs-internal")
-        return 2
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    todo = [m for m in MAPS
-            if args.include_private or m[1] not in PRIVATE_PACKS]
-    if args.include_private:
-        print("⚠ 包含内测中的地图包：只能内部测试用，**不要上传** ✓")
+    todo = list(MAPS)
     print(f"打 {len(todo)} 个地图包 → {out_dir}/")
     made = []
     skipped = []
@@ -136,11 +111,8 @@ def main() -> int:
 
     total = sum(m[2] for m in made)
     print(f"\n一共 {len(made)} 个包，合计 {total / 1048576:.2f} MB")
-    if args.include_private:
-        print("  ⚠ 这一批含内测中的包，只留内部测试，**不要上传** ✓")
-    else:
-        print(f"  这些就是跟 pdx-map-editor.html（轻量版）一起发出去的东西 ✓")
-        print("  玩家在选图那一页「＋ 导入地图包…」把它们导进去即可")
+    print(f"  这些就是跟 pdx-map-editor.html（轻量版）一起发出去的东西 ✓")
+    print("  玩家在选图那一页「＋ 导入地图包…」把它们导进去即可")
     return 0
 
 

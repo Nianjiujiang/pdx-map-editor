@@ -214,8 +214,6 @@ let GAME = GAMES.ck3;
  */
 const MAP_CHOICES = [
   { key: 'vanilla', emb: 'vanilla', dir: '/data',        game: 'ck3', label: 'CK3 原版',     note: '9216 × 4608' },
-  // CK2 是 CK3 的前作 ✓ 尺寸见 build_standalone.py 的 MAPS（README 那张表同源 ✓）
-  { key: 'ck2',     emb: 'ck2',     dir: '/data_ck2',   game: 'ck2', label: 'CK2 原版',     note: '3072 × 2048' },
   { key: 'eu4',     emb: 'eu4',     dir: '/data_eu4',    game: 'eu4', label: 'EU4 原版',     note: '5632 × 2048' },
   { key: 'eu5',     emb: 'eu5',     dir: '/data_eu5',    game: 'eu5',  label: 'EU5 原版',   note: '8192 × 4096' },
   { key: 'eu5full', emb: 'eu5full', dir: '/data_eu5_full', game: 'eu5', label: 'EU5 原尺寸', note: '16384 × 8192' },

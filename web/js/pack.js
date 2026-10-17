@@ -27,8 +27,8 @@ export const PACK_SCHEMA_MAX = 1;
 
 /** 包必须属于这六个游戏之一（术语 / 层级 / 导出格式全走那个游戏的现成设定）
  *  ⚠ 跟 `pack_map.py` 的 `GAMES` **必须一起改** ✗ —— 那边放行这边拒收就是
- *    "自己打的包自己导不进来"（CK2 是 2026-10-15 加的，两头同时加） */
-export const PACK_GAMES = ['ck2', 'ck3', 'eu4', 'hoi4', 'vic3', 'eu5'];
+ *    "自己打的包自己导不进来" */
+export const PACK_GAMES = ['ck3', 'eu4', 'hoi4', 'vic3', 'eu5'];
 
 /** 必需文件：和 data_xxx/ 里同名同格式，编辑器一个字节都不用改 */
 export const PACK_REQUIRED = [
