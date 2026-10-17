@@ -26,8 +26,9 @@ python build_packs.py          # 打完就落在这个文件夹里 ✓
 | `pdx-eu5-vanilla.pdxmap` | EU5 原版 | 4.17 MB |
 | `pdx-eu5-full.pdxmap` | EU5 原尺寸 | 12.50 MB |
 
-**玩家怎么用**：双击 `pdx-map-editor.html`（约 0.8 MB，不用装东西），
+**玩家怎么用**：双击 `pdx-map-editor.html`（不到 1 MB，不用装东西），
 在选图那一页点「＋ 导入地图包…」，选一个 `.pdxmap` 就进去了 ✓
+手机上就下 `pdx-map-editor-mobile.html`，手机浏览器打开，触屏涂。
 导入的图存在他自己的浏览器里，刷新还在（换电脑要重导一次）。
 
 **想自己给 mod 打一个包**（KR 之类）：
