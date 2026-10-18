@@ -72,6 +72,33 @@ export class RendererSetupError extends Error {
   }
 }
 
+/**
+ * 这台机器是不是在用**软件渲染**（SwiftShader / llvmpipe / 微软基本显示适配器）✓
+ *
+ *  判据只用品味得出的两条，任意一条成立就算 ✓：
+ *    ① `WEBGL_debug_renderer_info` 的 unmasked 名字里带软件光栅器的特征；
+ *    ② **拿不到 unmasked 名字**，但 RENDERER 就是 `WebKit WebGL`
+ *       （真显卡的 Chrome/Edge 在 Windows 上一般给得出 unmasked ✓；
+ *        拿不到 + 原生渲染器名 = 大概率为软件路径 ✓）
+ *
+ *  ⚠ 宁可**少判**也别误伤 ✗ —— 把正常显卡认成软件渲染，会让用户白关一堆东西 ✓
+ */
+function detectSoftwareGL(gl) {
+  try {
+    let name = '';
+    const dbg = gl.getExtension && gl.getExtension('WEBGL_debug_renderer_info');
+    if (dbg && gl.getParameter) {
+      name = String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) || '');
+    }
+    const base = String((gl.getParameter && gl.getParameter(gl.RENDERER)) || '');
+    const s = (name + ' ' + base).toLowerCase();
+    if (/swiftshader|llvmpipe|software|basic render|microsoft basic/.test(s)) return true;
+    // 没有 unmasked 名字、且原生名就是 WebKit WebGL → 多半是软件路径 ✓
+    if (!name && /webkit webgl/.test(base.toLowerCase())) return true;
+    return false;
+  } catch (e) { return false; }
+}
+
 /** 把 GL 的"现场"收集成一组普通字段 ✓（导出日志 / 错误屏都要用） */
 function _glFacts(gl) {
   const out = { contextLost: false, glError: 0 };
@@ -87,6 +114,10 @@ function _glFacts(gl) {
       out.unmaskedRenderer = String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) || '');
       out.unmaskedVendor = String(gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL) || '');
     }
+    /* ⚠ 软件渲染标记也要进报告 ✗ —— 它决定了错误屏给哪一套建议 ✓
+     *   （2026-10-18：用户那台就是软件渲染，报告里却只有一句 "WebKit WebGL"，
+     *     光看报告分不出是"显卡弱"还是"根本没用显卡" ✓）*/
+    out.softwareGL = detectSoftwareGL(gl);
   } catch (e) {
     out.factsError = String((e && e.message) || e);
   }
@@ -1464,6 +1495,17 @@ export class MapRenderer {
     }
     this.maxTex = maxTex;
 
+    /* 🔴 **先认一下"是不是软件渲染"** ✗✗（2026-10-18 用户报：VIC3 图链接失败）
+     *
+     *  报告里 `渲染器 WebKit WebGL · GL WebGL 2.0 ()`、**没有 unmasked 显卡名** ✓
+     *  而「上传到显卡 → 失败」花了 **92 秒** —— 这是 SwiftShader（软件光栅器）
+     *  在拿 CPU 一点点啃这个巨大的片元着色器 ✓ 真显卡上几毫秒就完了 ✓
+     *
+     *  典型成因：浏览器关掉了「使用硬件加速」/ 远程桌面 / 虚拟机 / 驱动被禁用 ✓
+     *  → 记下来，报错时**第一句就说这个** ✓ 不然用户照着"换浏览器"折腾半天也没用 ✓
+     */
+    this.softwareGL = detectSoftwareGL(gl);
+
     const prog = gl.createProgram();
     if (!prog) {
       if (ctxLost(gl)) throw shaderErr('CTX_LOST', '着色器程序没建出来：显卡上下文已经丢了');
@@ -1471,7 +1513,14 @@ export class MapRenderer {
     }
     gl.attachShader(prog, compile(gl, gl.VERTEX_SHADER, VERT));
     gl.attachShader(prog, compile(gl, gl.FRAGMENT_SHADER, FRAG));
+    /* ⏱ **量一下链接花了多久** ✗✗（2026-10-18 用户报告：这一段花了 92 秒）
+     *  真显卡几毫秒，软件渲染一两分钟 —— 这个数本身就是"是不是用上显卡"的铁证 ✓
+     *  记进 detail，报告和错误屏都能看到 ✓ */
+    const _linkT0 = (typeof performance !== 'undefined' && performance.now)
+      ? performance.now() : Date.now();
     gl.linkProgram(prog);
+    const linkMs = Math.round(((typeof performance !== 'undefined' && performance.now)
+      ? performance.now() : Date.now()) - _linkT0);
     if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
       /* ⚠ **先问上下文再说着色器** ✗ —— 上下文被收走时 LINK_STATUS 也是 false ✓
        *   这种"失败"等上下文回来重来一次就好了，报成链接失败会把人带偏 ✓ */
@@ -1492,12 +1541,11 @@ export class MapRenderer {
       }
       if (ge === 0x0505) {
         _setupFail('out-of-memory', '着色器链接失败：显存 / 内存不足', gl,
-          { stageAt: 'link', log: info, glError: ge });
+          { stageAt: 'link', log: info, glError: ge, linkMs });
       }
       _setupFail('shader-link',
         info ? '着色器链接失败：' + info : '着色器链接失败（驱动没给日志）', gl,
-        { stageAt: 'link', log: info, glError: ge });
-    }
+        { stageAt: 'link', log: info, glError: ge, linkMs });    }
     this.prog = prog;
 
     this.uni = {};

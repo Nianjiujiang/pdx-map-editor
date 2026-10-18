@@ -533,17 +533,52 @@ def _label_zoom(tiers, era_n: int) -> list[int]:
 
 
 def main() -> int:
-    global DATA
+    global DATA, ERA_DATES, ERA_LABELS, ERA_TIERS
     ap = argparse.ArgumentParser(description="从 EU4 安装目录构建制地图编辑器所需的缓存")
     ap.add_argument("--eu4", help="EU4 安装根目录（含 map/ 与 localisation/）")
     ap.add_argument("--mapdir", help="换一套地图文件（高清 mod 的 map/ 目录）")
+    ap.add_argument("--bookmarks", help="剧本清单目录（mod 的 common/bookmarks）；"
+                                        "不给就用本体的（= 1444/1618/1789 ✓）")
+    ap.add_argument("--eras", help="只做这几年的剧本层，逗号分隔，如 867,1066,1444,1836,1936；"
+                                   "省略 = bookmarks 里有几个做几个（同一天的自动去重 ✓）")
     ap.add_argument("--hanhua", help="汉化 mod 目录或 eu4_names_zh.json；none=不用中文")
     ap.add_argument("--workshop", help="workshop content 目录（自动找汉化用）")
     ap.add_argument("--out", help="缓存写到哪个目录，默认 data_eu4/")
     ap.add_argument("--no-history", action="store_true",
-                    help="顶部三层退回大洲/大区/区域，不用 1444/1618/1800 三个年份视图")
+                    help="顶部三层退回大洲/大区/区域，不用年份视图")
     ap.add_argument("--label", default="EU4 原版", help="这套地图的显示名，写进 meta")
     args = ap.parse_args()
+
+    # 🔴 **剧本日期从 bookmarks 读，不再写死** ✗✗（2026-10-18 风云世纪两千年）
+    #   原来定的是本体那三个（1444/1618/1789）✓ 可 mod 的剧本完全不一样
+    #   （风云世纪两千年 111 个 bookmark，从公元 4 年排到 2025 ✓）
+    #   → 现在：给了 --bookmarks 就读那个目录；再用 --eras 挑你要的年份 ✓
+    if args.bookmarks:
+        bms = E.parse_bookmarks(Path(args.bookmarks))
+        if not bms:
+            raise SystemExit(f"--bookmarks 里一个 date 都没读到：{args.bookmarks}")
+        # 同一天多个 bookmark（不同推荐国家）→ 只留一层 ✓
+        seen = set()
+        picked = []
+        for date, nm in bms:
+            if date in seen:
+                continue
+            seen.add(date)
+            picked.append(date)
+        if args.eras:
+            want = {int(x) for x in re.split(r"[,\s]+", args.eras.strip()) if x.strip()}
+            have = {d[0] for d in picked}
+            缺 = sorted(want - have)
+            if 缺:
+                log(f"⚠ 这些年份在 bookmarks 里没有，跳过：{'、'.join(map(str, 缺))}")
+            picked = [d for d in picked if d[0] in want]
+            if not picked:
+                raise SystemExit("--eras 里没有一个年份能在 bookmarks 里找到")
+        ERA_DATES = tuple(picked)
+        ERA_LABELS = tuple(str(d[0]) for d in ERA_DATES)
+        ERA_TIERS = len(ERA_LABELS)
+        log(f"剧本 {len(ERA_DATES)} 层：" + "、".join(
+            f"{y}.{m}.{d}" for (y, m, d) in ERA_DATES))
 
     # 顶部三层是什么，由 --no-history 决定
     use_eras = not args.no_history

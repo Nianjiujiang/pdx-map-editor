@@ -9165,6 +9165,8 @@ function describeRendererFailure(err) {
     d.unmaskedRenderer ? '显卡 ' + d.unmaskedRenderer
       : (d.renderer ? '渲染器 ' + d.renderer : ''),
     d.version ? 'GL ' + d.version : '',
+    d.softwareGL ? '⚠ 软件渲染（没用上显卡）' : '',
+    d.linkMs ? '着色器链接耗时 ' + d.linkMs + ' ms' + (d.linkMs > 5000 ? '（真显卡通常 <100ms）' : '') : '',
     d.contextLost ? '上下文已丢失' : '',
     d.creationError ? '创建失败原因：' + d.creationError : '',
     d.glError ? 'glError=' + d.glError : '',
@@ -9218,6 +9220,32 @@ function describeRendererFailure(err) {
   }
   if (stage === 'shader-compile' || stage === 'shader-link') {
     const log = String(d.log || '').trim();
+    /* 🔴 **软件渲染要单独说** ✗✗（2026-10-18 用户报：VIC3 那一版链接失败）
+     *
+     *  报告里 `渲染器 WebKit WebGL`（没有 unmasked 显卡名）+「上传到显卡 → 失败」
+     *  花了 **92 秒** —— 这是 SwiftShader 在拿 CPU 硬啃这个巨大的片元着色器 ✓
+     *  （真显卡上几毫秒 ✓）→ 软件光栅器往往连指令数都不够，直接链接失败 ✓
+     *
+     *  这时候说"换浏览器 / 更新驱动"是废话 ✗ 用户照着做还是白屏 ✓
+     *  → 直接点名：**去开硬件加速**，并给出开关在哪 ✓ */
+    if (d.softwareGL) {
+      return {
+        code: stage === 'shader-compile' ? 'SHADER_COMPILE_FAILED' : 'SHADER_LINK_FAILED',
+        title: '这台电脑在用**软件渲染**，扛不住这张地图',
+        body: '浏览器没有用显卡，而是用 CPU 一点点算（软件渲染 / SwiftShader）。'
+          + '这个着色器在真显卡上几毫秒就编完了，在这里要一分多钟，而且常常直接失败。'
+          + (log ? '\n驱动给的日志：' + log : '')
+          + '\n**不是地图坏了，也不是编辑器的问题** —— 是这台机器的浏览器没用上显卡。',
+        steps: [
+          'Edge：设置 → 系统和性能 → 打开「使用图形加速」，重启浏览器',
+          'Chrome：设置 → 系统 → 打开「使用可用的硬件加速」，重启浏览器',
+          '确认不是在远程桌面 / 虚拟机里打开的（那两条路基本都是软件渲染）',
+          '开完可以访问 edge://gpu 或 chrome://gpu，看「WebGL」是不是 Hardware accelerated',
+          '都试过还不行 → 点「导出诊断报告」，里面带着渲染器名字',
+        ],
+        facts,
+      };
+    }
     return {
       code: stage === 'shader-compile' ? 'SHADER_COMPILE_FAILED' : 'SHADER_LINK_FAILED',
       title: stage === 'shader-compile' ? '着色器在这台设备上编译失败' : '着色器在这台设备上链接失败',

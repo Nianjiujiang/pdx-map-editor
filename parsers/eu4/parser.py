@@ -210,6 +210,39 @@ def parse_continents(path: Path) -> dict[str, list[int]]:
     return {name: ints(body) for name, body in parse_groups(path).items()}
 
 
+# ---------------------------------------------------------------- bookmarks
+
+def parse_bookmarks(dir_path: Path) -> list[tuple[tuple[int, int, int], str]]:
+    """``common/bookmarks/*.txt`` → ``[((年, 月, 日), 名字键)]``，按日期排好。
+
+    EU4 的剧本写在这些文件里（一个文件一个 ``bookmark = { name = … date = 1444.11.11 }``），
+    **不是**能拍脑袋定的 —— 尤其 mod：换个 mod 开局日期整个不一样 ✓
+    （风云世纪两千年 111 个 bookmark，从公元 4 年排到 2025 ✓）
+
+    ⚠ 同一个日期可能有好几个 bookmark（不同推荐国家）✓ 去重由调用方做 ✓
+    """
+    out: list[tuple[tuple[int, int, int], str]] = []
+    d = Path(dir_path)
+    if not d.is_dir():
+        return out
+    for fp in sorted(d.glob("*.txt")):
+        try:
+            text = strip_comments(read_text(fp))
+        except OSError:
+            continue
+        rest, inner = cut_block(text, "bookmark")
+        if inner is None:
+            continue
+        dm = re.search(r"\bdate\s*=\s*(\d{1,4})\.(\d{1,2})\.(\d{1,2})", inner)
+        if not dm:
+            continue
+        date = (int(dm.group(1)), int(dm.group(2)), int(dm.group(3)))
+        nm = re.search(r'\bname\s*=\s*"([^"]*)"', inner)
+        out.append((date, nm.group(1) if nm else fp.stem))
+    out.sort(key=lambda x: x[0])
+    return out
+
+
 # ---------------------------------------------------------------- default.map
 
 def parse_map_lists(path: Path, keys) -> dict[str, set[int]]:
