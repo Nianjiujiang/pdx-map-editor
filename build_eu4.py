@@ -1078,10 +1078,15 @@ def main() -> int:
         want |= {tag for arr in owners for tag in arr.values()}
     else:
         want |= used_rg | used_sr | used_ct
-    en = E.parse_localisation_files(
-        [LOC / "prov_names_l_english.yml", LOC / "areas_regions_l_english.yml",
-         LOC / "regions_phase4_l_english.yml", LOC / "text_l_english.yml",
-         LOC / "countries_l_english.yml"], want)
+    # 🔴 **本地化要整目录读，别再手写文件名清单** ✗✗（2026-10-18 风云世纪两千年）
+    #   原来只读顶层那 5 个 `*_l_english.yml` ✓
+    #   可这个 mod 的省份名整份放在 `localisation/replace/bu_prov_names_l_english.yml` ✗
+    #   （`replace/` 是 Paradox 的覆盖机制，`read_loc_dir` 本来就支持 ✓）
+    #   → 64 个省份查不到名字，全退成 `P 5088` 那种编号印在图上 ✓
+    #   现在：整目录递归读（含 replace/，后读的覆盖先读的 ✓）
+    #   ⚠ 汉化那份是"双字节 yml"，`read_loc_file` 里另有分支解 ✓
+    en = E.read_loc_dir(LOC)
+    en = {k: v for k, v in en.items() if k in want}
     zh, zh_from = load_hanhua(args.hanhua, args.workshop)
     log(f"名字：汉化 {len(zh)} 条（{zh_from}） / 游戏英文 {len(en)} 条")
 
