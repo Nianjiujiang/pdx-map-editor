@@ -59,9 +59,23 @@ def strip_comments(src: str) -> str:
 
 
 def read_text(path: Path) -> str:
-    """EU4 几乎所有数据文件都是 cp1252（不是 latin-1 —— 0x9A š、0x97 — 这些
-    高区字节 latin-1 解出来是看不见的控制符，得按 cp1252 映射回标点）。"""
-    return path.read_text(encoding="cp1252", errors="replace")
+    """EU4 数据文件的读法：**先试 UTF-8，不是再按 cp1252** ✓（2026-10-18 修）
+
+    原版 EU4 基本都是 cp1252（0x9A š、0x97 — 这类高区字节 latin-1 解出来是
+    看不见的控制符，得按 cp1252 映射回标点 ✓）。
+
+    🔴 **但中文 mod 会写成 UTF-8** ✗✗ —— 风云世纪两千年的 `definition.csv` 就是
+       UTF-8（`宋卡` = E5 AE 8B E5 8D A1），按 cp1252 硬解就成了 `å®‹å¡` ✓
+       99 个用 `#中文` 当占位名的省份全变成乱码，图上和悬停都读不出来 ✓
+
+    判据：**能按 UTF-8 严格解出来就当 UTF-8**（纯 ASCII 两者等价，无所谓 ✓）；
+    解不出来才退回 cp1252 ✓ —— 这样原版那批一个字节都不变 ✓
+    """
+    raw = path.read_bytes()
+    try:
+        return raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return raw.decode("cp1252", errors="replace")
 
 
 def parse_groups(path: Path) -> dict[str, str]:
