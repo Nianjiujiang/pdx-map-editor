@@ -186,18 +186,55 @@ export class Sha256 {
   }
 }
 
+/** 算 SHA-256：**能用原生就用原生**（快一个数量级：~3ms/MB vs ~100ms/MB ✓）
+ *
+ *  ⚠ 原生 `crypto.subtle.digest` 只能**整块吃** ✗ —— 所以只在"数据装得下"的地方用：
+ *    导入校验喂的是**包里那一层**的原始字节（十几 MB 以内 ✓），不是解压后的省份图 ✓
+ *  ⚠ `file://` 双击打开时有些浏览器没有 `crypto.subtle` → 自动回退到上面那份流式实现 ✓
+ *    两份算出来的值必须一模一样 ✓（check_pack 里两边对着 FIPS 向量各跑一遍 ✓）
+ *  ⚠ 原生那条**失败也回退** ✓ —— 有些环境 subtle 在但 digest 会抛（策略限制 ✓）
+ */
+async function sha256Chunks(chunks, total) {
+  let subtle = null;
+  try { subtle = (typeof crypto !== 'undefined' && crypto && crypto.subtle) || null; } catch (e) { subtle = null; }
+  if (subtle && typeof subtle.digest === 'function') {
+    try {
+      let buf;
+      if (chunks.length === 1) {
+        buf = chunks[0];
+      } else {
+        buf = new Uint8Array(total);
+        let off = 0;
+        for (const c of chunks) { buf.set(c, off); off += c.length; }
+      }
+      const dig = new Uint8Array(await subtle.digest('SHA-256', buf));
+      let out = '';
+      for (let i = 0; i < dig.length; i++) out += dig[i].toString(16).padStart(2, '0');
+      return out;
+    } catch (e) { /* 回退 ✓ */ }
+  }
+  const h = new Sha256();
+  for (const c of chunks) h.update(c);
+  return h.hex();
+}
+
 /** 顺手给别处用（导入时算整包哈希、测试里比向量） */
 export async function sha256Hex(blobOrBytes) {
-  const s = new Sha256();
   if (blobOrBytes instanceof Uint8Array) {
-    s.update(blobOrBytes);
-  } else {
-    const reader = blobOrBytes.stream().getReader();
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      s.update(value);
-    }
+    return sha256Chunks([blobOrBytes], blobOrBytes.length);
+  }
+  const size = Number(blobOrBytes.size) || 0;
+  // 大 Blob 别整块读进来 ✗ —— 退回流式那份 ✓（调用方给的都是小东西，这条只是兜底）
+  if (size <= 16 * 1024 * 1024) {
+    const buf = new Uint8Array(await blobOrBytes.arrayBuffer());
+    return sha256Chunks([buf], buf.length);
+  }
+  const s = new Sha256();
+  const reader = blobOrBytes.stream().getReader();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    s.update(value);
   }
   return s.hex();
 }
@@ -547,13 +584,14 @@ export async function validatePack(zip, opts = {}) {
 
   if (wantHash) {
     // 小文件在别处已经读过/读过一遍了，这里补上它们的哈希 ✓
-    hashed['meta.json'] = new Sha256().update(metaBytes).hex();
-    hashed['titles.json'] = new Sha256().update(titleBytes).hex();
+    hashed['meta.json'] = await sha256Chunks([metaBytes], metaBytes.length);
+    hashed['titles.json'] = await sha256Chunks([titleBytes], titleBytes.length);
     if (zip.has('tiles.json')) {
-      hashed['tiles.json'] = new Sha256().update(tileBytes).hex();
+      hashed['tiles.json'] = await sha256Chunks([tileBytes], tileBytes.length);
     }
     if (zip.has('preview.jpg')) {
-      hashed['preview.jpg'] = new Sha256().update(await smallBytes(zip, 'preview.jpg')).hex();
+      const _pv = await smallBytes(zip, 'preview.jpg');
+      hashed['preview.jpg'] = await sha256Chunks([_pv], _pv.length);
     }
   }
 
@@ -583,7 +621,10 @@ export async function validatePack(zip, opts = {}) {
   for (const e of dataEntries) {
     const isProv = e.name === 'provinces_id.bin';
     const isTm = e.name === 'titlemap.bin';
-    const hasher = wantHash ? new Sha256() : null;
+    /* 哈希口径 = **包里那一层**的原始字节（十几 MB 以内 ✓）→ 攒起来最后一次性算 ✓
+       以前是边扫边喂 JS 流式实现（~100ms/MB ✗）；现在优先原生（~3ms/MB ✓）
+       ⚠ 攒的是**拷贝** ✗ —— 分块的内存不保证还能活到循环外面 ✓ */
+    const hashChunks = wantHash ? [] : null;
 
     const len = await scan(zip, e, PACK_MAX_FILE, (bytes) => {
       if (isProv || isTm) {
@@ -607,7 +648,7 @@ export async function validatePack(zip, opts = {}) {
     }, (chunk) => {
       // 第一层（zip 里那份）：哈希的口径就是它 ——
       // manifest.files 记的是"包里那个文件"的 sha256，不是解压之后的省份图 ✓
-      if (hasher) hasher.update(chunk);
+      if (hashChunks) hashChunks.push(chunk.slice());
       rawDone += chunk.length;
       // 进度**按整数百分比节流** ✓ —— 268 MB 是几千个 chunk，
       // 每个 chunk 都去改一次界面就是自己把自己卡死 ✗
@@ -617,7 +658,10 @@ export async function validatePack(zip, opts = {}) {
       }
     });
     rawTotal += len;                      // 第二层：真正解出来的量，用来卡总上限
-    if (hasher) hashed[e.name] = hasher.hex();
+    /* ⚠ 长度要用**第一层**攒下来的字节数 ✗ —— `len` 是解压后的量（可能几百 MB ✗）
+       拿它去拼缓冲区 → 后面全是 0 → 哈希必然对不上 ✓（我自己踩过一次 ✓）*/
+    if (hashChunks) hashed[e.name] = await sha256Chunks(hashChunks,
+      hashChunks.reduce((s2, c) => s2 + c.length, 0));
 
     // 长度公式：跟 pack_map.py 的 check_data_dir 是同一套，改一边必须改另一边
     if (isProv && len !== W * H * 2) {
