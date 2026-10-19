@@ -190,22 +190,39 @@ void main() {
   gl_Position = vec4(clip.x, -clip.y, 0.0, 1.0);
 }`;
 
+/* 🔴🔴 **2026-10-19：整数纹理整条退役** ✗✗
+ *
+ *  HOI4 那份报告 + 图形体检把根因钉死了（Adreno 616 · Chrome 132）：
+ *     · 「整数纹理采样: 读回 0，应该是 156」    → R16UI + texelFetch 在这台机器上**永远给 0**
+ *     · 「分块数组纹理: 读回 0 / 0 / 0」        → R16UI 的数组纹理更是一层都采不出来
+ *  于是整张图的每个像素都拿到省份 id = 0 → 一帧全是"0 号地块"的颜色，
+ *  而 0 号在 LUT 里是白的 → **地图纯白 255,255,255**，地名（2D canvas）却好好的 ✓
+ *  （报告里写的是老的 WEBGL2_UNAVAILABLE，那是 content:// 那条路的事 ✗ 两码事）
+ *
+ *  → 16 位值改成 **RG8 归一化**（低字节 R、高字节 G ✓ 正好还是 2 字节/像素，
+ *    显存一分不多 ✗）；8 位值改成 **R8 归一化**（跟 uBorderDepth 同一套 ✓）。
+ *    归一化纹理是所有驱动的最快路径，不碰整型采样这条雷 ✓
+ *  代价：着色器里多一句解码（两次乘、一次移位 ✓ 可以忽略）
+ *  收益：**再没有任何整数采样器** ✗ 这一类驱动 bug 整个消失 ✓
+ */
 const FRAG = `#version 300 es
 precision highp float;
 precision highp int;
-precision highp usampler2D;
-precision highp usampler2DArray;   // ← 数组采样器是**独立类型**，精度要单独声明 ✗
-                                   //   （少了这行，编译到 uniform 就会报 No precision specified）
 
-uniform usampler2D uProv;       // R16UI  province id（整张，老路）
+uniform sampler2D uProv;          // RG8    province id（低字节 R · 高字节 G）
 // **分块路径**（原尺寸 16384×8192 用）：每层一块 ✓
-// uUseTiles == 0 时下面的 provAt() 就退化成 texelFetch(uProv, ip, 0)，
+// uUseTiles == 0 时下面的 provAt() 就退化成读 uProv，
 // 跟加这套东西之前**完全等价** ✓ —— 所以半尺寸那套一点不受影响。
-uniform usampler2DArray uProvArr; // R16UI  每层一块
+uniform sampler2DArray uProvArr;  // RG8    每层一块
 uniform ivec2 uProvTiles;         // (tileW, tileH)
 uniform int   uProvCols;          // 每行几块
 uniform int   uUseTiles;          // 0 = 用 uProv（老路）, 1 = 用 uProvArr（分块）
-uniform usampler2D uTitleMap;   // R16UI  (省份, 层级) → 头衔序号（**拍平成一维**存）
+/* **降采样倍数**（2026-10-19 ✓ 只有"数组纹理都采不出来"的设备才 >1）
+ *   那种机器连分块贴图都没了 → 只能把 id 图缩着传（一块 2D 贴图装得下 ✓）
+ *   画面上的省界会粗一点，但**地图能显示、能涂、能悬停** ✓（总比纯白强 ✗）
+ *   ⚠ 取整除法即可（最近邻 ✓ 反正同一个小块里的几格本来就是同一个省 ✓）*/
+uniform int   uProvScale;
+uniform sampler2D uTitleMap;    // RG8    (省份, 层级) → 头衔序号（**拍平成一维**存）
 uniform sampler2D  uColorLut;   // RGBA8  头衔序号 -> 颜色
 uniform sampler2D  uPaint;      // RGBA8  province -> 手绘色（alpha=0 表示没涂）
 /* **距离场**：RGBA8 ✓ 每通道一条主线（R 填色 · G 水岸线 · B 荒地边 · A 本层 ✓）
@@ -229,7 +246,7 @@ uniform sampler2D  uPaint;      // RGBA8  province -> 手绘色（alpha=0 表示
  *     报错长这样：'*' : no operation exists that takes 'highp uint' and 'const float' ✓（踩过 ✓）*/
 uniform sampler2D  uBorderDepth;
 uniform int        uBorderDepthOn;
-uniform usampler2D uPaintLabel; // R16UI  province -> 标记编号+1（0 = 没涂）
+uniform sampler2D  uPaintLabel; // RG8    province -> 标记编号（0 = 没涂）
 uniform ivec2 uMapSize;
 uniform int   uTitleMapW;       // 归属表纹理的宽度
 uniform int   uNumProvinces;    // 省份总数（拍平索引要用）
@@ -274,18 +291,18 @@ uniform int   uHoverPid;        // >0 = 只高亮这一个地块（老包那种�
  *   ⚠ 组号是**每 pid 一个**（EU5 最细层有 3635 组 ✗ 8 位装不下 ✓ 所以走 R16UI ✓）
  *   ⚠ uHoverGroupId == 0 = 没编组（新包 ✓）→ 走 uHoverTid / uHoverPid 那两条 ✓
  *   ⚠ 编组**优先于**下面两条 ✗（新包传的就是 0，所以不会打架 ✓）*/
-uniform usampler2D uHoverGroup; // R16UI  province -> 组号（1..N 海 · N+1.. 荒地 · 0 = 不属于任何一片）
+uniform sampler2D  uHoverGroup; // RG8    province -> 组号（1..N 海 · N+1.. 荒地 · 0 = 不属于任何一片）
 uniform int   uHoverGroupW;     // 那张表的宽度（跟手绘层同一套**拍平**写法 ✓）
 uniform uint  uHoverGroupId;    // != 0 = 亮**这一组**（同一片海的所有地块 ✓ 不是全世界的海 ✗）
 uniform uint  uHoverLabel;      // 要高亮的那一族的**标记编号**（0 = 没涂）✓ 同色不同标记 = 两块 ✗
 uniform vec3  uBackdrop;
-/* 🔴🔴 **底层身份标**（meta.kindMask 传成一张"每 pid 一格"的整数纹理 ✓ 2026-10-15 ✓）
+/* 🔴🔴 **底层身份标**（meta.kindMask 传成一张"每 pid 一格"的表 ✓ 2026-10-15 ✓）
  *   0 = 空位（0 号不用 ✓）/ 1 陆地 / 2 海洋 / 3 湖泊 / 4 河流 /
  *   5 不可通行海域 / 6 不可通行区域 ✓
  *   用途：**每一格按它最底层那个 pid 的身份上色** ✗ —
  *     归属、当前层有没有片，**都不参与** ✓（用户原话见下面 colorOfPid 那段 ✓）
  *   ⚠ uKindOn == 0（老包没这枚标 ✓）→ 整条让开，行为一丝不变 ✓ */
-uniform usampler2D uKindTex;
+uniform sampler2D uKindTex;     // R8     0..6（归一化，取样后 ×255 还原）
 uniform int   uKindOn;
 uniform int   uKindW;           // 拍平宽度（跟 hoverGroup 同一套写法 ✓）
 uniform vec3  uNature[5];       // 2..6 → 海 / 湖 / 河 / 不可通行海域 / 不可通行 ✓
@@ -303,7 +320,7 @@ uniform vec3  uNature[5];       // 2..6 → 海 / 湖 / 河 / 不可通行海域
 uniform int   uWaterBorderOn;
 uniform float uWaterBorderW;    // 粗细（格数，跟其它边界同一个单位 ✓）
 uniform float uWaterBorderA;    // 浓度（0~1 ✓）
-uniform usampler2D uWaterKind;  // R8UI 每 pid 一格：0 = 不是水 / 2..5 = 那四类 ✓
+uniform sampler2D uWaterKind;   // R8    每 pid 一格：0 = 不是水 / 2..5 = 那四类 ✓
 uniform int   uWaterKindW;      // 拍平宽度（跟 kindTex 同一套 ✓）
 
 /* **「荒地 · 边界」那条线**（2026-10-17 ✓ 用户点名要的 ✓）
@@ -331,6 +348,47 @@ const uint NONE = 65535u;
 // 不挡的话，视口一旦越界，采样会被 CLAMP_TO_EDGE 沿边缘拉成一条条横向色带。
 const vec3 OUTSIDE = vec3(0.035, 0.043, 0.052);
 
+/* ============ **归一化解码：16 位值读回来是两个通道** ============
+ *
+ *  🔴 **为什么不再用整数纹理** ✗✗（2026-10-19，HOI4 那份报告 + 图形体检定的）
+ *
+ *     Adreno 616 + Chrome 132 上实测：
+ *       「整数纹理采样: 读回 0，应该是 156」        ← R16UI + texelFetch 恒给 0
+ *       「分块数组纹理: 读回 0 / 0 / 0」            ← R16UI 的数组纹理更是一层都采不出来
+ *     于是每个像素拿到的省份 id 都是 0 → 整张图按 0 号地块上色 → **纯白 255,255,255**，
+ *     而地名走 2D canvas，一点不受影响 ✓（用户看到的正是这个）
+ *
+ *     这是**驱动/ANGLE 翻译层**的毛病，不是我们写错了 ✗ 换写法绕开才是正解：
+ *     16 位值拆成 **R = 低字节 · G = 高字节**，用归一化 RG8 传（还是 2 字节/像素 ✓
+ *     显存一分不多 ✗），着色器里 r×255 + g×255×256 还原 ✓
+ *     8 位值用归一化 R8（跟 uBorderDepth 同一套 ✓ 各家最快路径）
+ *
+ *  ⚠ 采样一律 **NEAREST + texelFetch** ✗ —— 这些格子是枚举值，插值出来的小数毫无意义 ✓
+ *  ⚠ 取整用 **加 0.5 再取整**（不是直接 int()）✗ —— 归一化反算有 ~1e-5 的误差，
+ *    int() 是**朝零截断**，168/255*255 稍有偏小就变成 167 ✓ 整张图会慢慢错位 ✓
+ */
+
+/** R8 归一化取样 → 0..255 的整数 */
+int u8At(sampler2D t, ivec2 xy) {
+  return int(texelFetch(t, xy, 0).r * 255.0 + 0.5);
+}
+
+/** RG8 归一化取样 → 0..65535 的整数（R = 低字节 · G = 高字节） */
+uint u16At(sampler2D t, ivec2 xy) {
+  vec4 c = texelFetch(t, xy, 0);
+  uint lo = uint(c.r * 255.0 + 0.5);
+  uint hi = uint(c.g * 255.0 + 0.5);
+  return lo + hi * 256u;
+}
+
+/** 数组纹理同理（分块路径 ✓） */
+uint u16AtArr(sampler2DArray t, ivec3 xy) {
+  vec4 c = texelFetch(t, xy, 0);
+  uint lo = uint(c.r * 255.0 + 0.5);
+  uint hi = uint(c.g * 255.0 + 0.5);
+  return lo + hi * 256u;
+}
+
 /** (省份, 层级) → 头衔序号。
  *
  *  归属表是**拍平成一维**存的（索引 = 层级 × 省份数 + 省份），不是二维的：
@@ -339,7 +397,7 @@ const vec3 OUTSIDE = vec3(0.035, 0.043, 0.052);
  */
 uint titleAt(uint pid, int tier) {
   int idx = tier * uNumProvinces + int(pid);
-  return texelFetch(uTitleMap, ivec2(idx % uTitleMapW, idx / uTitleMapW), 0).r;
+  return u16At(uTitleMap, ivec2(idx % uTitleMapW, idx / uTitleMapW));
 }
 
 /** 手绘层也是**拍平**存的（索引 = 省份，宽度压在 uPaintW 以内） */
@@ -350,27 +408,27 @@ vec4 paintOf(uint pid) {
 
 uint paintLabelOf(uint pid) {
   int i = int(pid);
-  return texelFetch(uPaintLabel, ivec2(i % uPaintW, i / uPaintW), 0).r;
+  return u16At(uPaintLabel, ivec2(i % uPaintW, i / uPaintW));
 }
 
 /** 这个地块属于哪一片海 / 荒地（0 = 不属于任何一片 ✓）
  *
  *  跟 paintLabelOf 同一套**拍平**索引（宽度另给一个 uniform ✗ 万一以后两者不一样 ✓）
- *  ⚠ 整数纹理一律 texelFetch ✗ 不能拿 sampler 的插值去采它 ✓ */
+ *  ⚠ 这些表一律 texelFetch ✗ 不能拿 sampler 的插值去采它 ✓ */
 uint hoverGroupAt(uint pid) {
   int i = int(pid);
-  return texelFetch(uHoverGroup, ivec2(i % uHoverGroupW, i / uHoverGroupW), 0).r;
+  return u16At(uHoverGroup, ivec2(i % uHoverGroupW, i / uHoverGroupW));
 }
 
 /** 这个地块**最底层那个 pid 的身份** ✓（1 陆地 / 2 海 / 3 湖 / 4 河 / 5 不可通行海域 / 6 不可通行）
  *
  *  ⚠ uKindOn == 0（老包没有 kindMask ✓）→ 一律返回 1（陆地）✓
  *     调用方那条覆盖就会让开 ✓ 画面跟以前一模一样 ✓
- *  ⚠ 整数纹理一律 texelFetch ✗（跟 hoverGroupAt 同一条规矩 ✓ 不能靠采样器插值 ✓） */
+ *  ⚠ 归一化 R8 + texelFetch ✗（跟 hoverGroupAt 同一条规矩 ✓ 不能靠采样器插值 ✓） */
 int kindOf(uint pid) {
   if (uKindOn == 0) return 1;
   int i = int(pid);
-  return int(texelFetch(uKindTex, ivec2(i % uKindW, i / uKindW), 0).r);
+  return u8At(uKindTex, ivec2(i % uKindW, i / uKindW));
 }
 
 /** 身份 → 类色 ✓（七行调色板里那五行：2..6 ✓ 由 JS 侧 applySettings() 灌进来 ✓） */
@@ -451,12 +509,18 @@ vec4 colorOfPid(uint pid) {
   return vec4(mix(uBackdrop, c.rgb, uMix), uShowTitles == 1 || t >= uRealTitles ? 1.0 : 0.0);
 }
 
-/** 地图像素 → 省份 id：老路一张整图，新路按块取（两者结果一致） */
+/** 地图像素 → 省份 id：老路一张整图，新路按块取（两者结果一致）
+ *
+ *  ⚠ 两条路都是**归一化纹理 + texelFetch + 手写解码** ✗（见上面 u16At 那段说明 ✓）
+ *  ⚠ uProvScale > 1 时（只有"数组纹理都采不出来"的机器才 >1 ✓）：
+ *     id 图是**缩着传**的，所以坐标要先除回去 ✓ 取整除法 = 最近邻 ✓
+ *     省界会粗一点，但地图至少**能看、能涂、能悬停** ✓（总比纯白强 ✗）*/
 uint provAt(ivec2 ip) {
-  if (uUseTiles == 0) return texelFetch(uProv, ip, 0).r;
+  if (uProvScale > 1) ip = ip / uProvScale;
+  if (uUseTiles == 0) return u16At(uProv, ip);
   ivec2 t = ivec2(ip.x / uProvTiles.x, ip.y / uProvTiles.y);
   ivec2 l = ivec2(ip.x % uProvTiles.x, ip.y % uProvTiles.y);
-  return texelFetch(uProvArr, ivec3(l, t.y * uProvCols + t.x), 0).r;
+  return u16AtArr(uProvArr, ivec3(l, t.y * uProvCols + t.x));
 }
 
 vec4 colorAt(ivec2 ip) {
@@ -499,7 +563,7 @@ uint waterAt(ivec2 q) {
   uint pid = pidAt(q);
   if (pid == 0u) return 0u;
   int i = int(pid);
-  return texelFetch(uWaterKind, ivec2(i % uWaterKindW, i / uWaterKindW), 0).r;
+  return uint(u8At(uWaterKind, ivec2(i % uWaterKindW, i / uWaterKindW)));
 }
 
 /** 这一格是水（且**算得出水陆**）✓ —— 判据就一句话，收在一处 ✓
@@ -526,7 +590,7 @@ bool wasteIs(ivec2 q) {
   uint pid = pidAt(q);
   if (pid == 0u) return false;
   int i = int(pid);
-  return texelFetch(uKindTex, ivec2(i % uKindW, i / uKindW), 0).r == 6u;
+  return u8At(uKindTex, ivec2(i % uKindW, i / uKindW)) == 6;
 }
 
 /** 手绘层上两个像素算不算不同的块。
@@ -934,7 +998,21 @@ void main() {
   //     看着就是"国家跟无主地之间没画边界"（用户报的 ✓）
   //   · 无主地 ↔ 海、无主地 ↔ 荒地：同理只有半边
   // 该跳过的是**根本没有省份的地图底**（provAt = 0）✓ 无主地照样要算。
+  /* 🔴🔴 **精简版从这里切** ✗✗（2026-10-19 ✓ 见下面 makeLiteFragment）
+   *
+   *  软件渲染（SwiftShader）那台机器会在这段边界射线上**链接失败** ——
+   *  报告里「上传到显卡 → 失败」花了 92 秒，就是 CPU 在硬啃这一坨循环 ✓
+   *  这段整块拿掉之后：颜色 / 涂色 / 悬停全都还在 ✓ 只少了**边界线** ✓
+   *  → 画面能用，比"打开就是一张报错屏"强一万倍 ✓
+   *
+   *  ⚠ 两个标记**必须各占一行、周围不能多写别的** ✗ —— 切法是
+   *     「前半段 + 后半段」直接拼，靠的就是这两行的位置 ✓
+   *  ⚠ 切掉的是**一个完整的 if 块**（连同它的大括号 ✓），所以切完语法还是整的 ✓
+   *     切完会少掉 R / dTitle / ramp 这些只在块里用的变量 —— 它们本来就没出过块 ✓ */
+  /* @@LITE_CUT_BEGIN@@ */
   if (pidAt(ip) != 0u) {
+    /* 🔴 精简版把**整个 if 块**切掉 ✓（从 @@LITE_CUT_BEGIN@@ 到 @@LITE_CUT_END@@）
+     *  块里那几个变量（R / dTitle / dPaint / ramp）全没出过块 ✓ 切完不留孤儿 ✓ */
     // 只要这个半径以内看得见线；半径之外算出来也是 0，不用白找
     // ⚠ 半径按**最粗的那条**算（线宽大于此半径的线会被裁掉 ✓）
     float _bMax = max(uBorderW, uPaintBorderW);
@@ -1101,6 +1179,7 @@ void main() {
       }
     }
   }
+  /* @@LITE_CUT_END@@ */
   /* 🔴 **这个右花括号属于上面那个 if (pidAt(ip) != 0u)** ✗ ——
    *   它以前落在那一堆 dTitle / dPaint 声明后面，把 if **提前闭合**了 ✓
    *   后果：射线那整段跑到块外 —— 连地图底色（provAt = 0）都去跑边界射线 ✗
@@ -1156,6 +1235,30 @@ void main() {
 
   outColor = vec4(col, 1.0);
 }`;
+
+/* ============ **精简版片元着色器**（2026-10-19 ✓ 链接失败时的保底）============
+ *
+ *  为什么要有它 ✗✗：VIC3 那份报告 —— 软件渲染（SwiftShader）上这个着色器
+ *  **链接失败**，而且光链接就烧了 92 秒 ✓ 真显卡几毫秒 ✓
+ *  再让用户"去开硬件加速"是对的（错误屏已经这么说了 ✓），
+ *  但**能画出来**永远比"看得懂报错"强 ✓
+ *
+ *  做法：把主着色器里**唯一那个巨型段落**（逐像素跑边界射线，4 方向 × MAXR 步
+ *  × 最多 6 条通道）整块切掉 ✓ 其余一个字不改 ✓
+ *  切完剩下的：颜色 / 涂色 / 荒地 / 身份色 / 悬停高亮 —— **全都在** ✓
+ *  少掉的就是边界线（那些线本来也要在放大时才好看 ✓）
+ *
+ *  ⚠ 切法靠两个标记行的位置（见 FRAG 里的 @@LITE_CUT_BEGIN/END@@ ✓）
+ *  ⚠ 切完**还是同一份 uniform 名单** ✗ —— 少用的那几个照样要 getUniformLocation
+ *    并每个都传值：GLSL 会把没用的 uniform 优化掉，位置是 null，
+ *    传 null 在 WebGL 里是**静默 no-op** ✓ 不会报错 ✓
+ */
+function makeLiteFragment(src) {
+  const a = src.indexOf('/* @@LITE_CUT_BEGIN@@ */');
+  const b = src.indexOf('/* @@LITE_CUT_END@@ */');
+  if (a < 0 || b < 0 || b <= a) return null;      // 标记被人动过 → 宁可不给精简版 ✓
+  return src.slice(0, a) + src.slice(b);
+}
 
 /** 上下文是不是**被浏览器收走了**（驱动重置 / 切后台 / 显存紧张 ✓）
  *
@@ -1506,50 +1609,85 @@ export class MapRenderer {
      */
     this.softwareGL = detectSoftwareGL(gl);
 
-    const prog = gl.createProgram();
-    if (!prog) {
-      if (ctxLost(gl)) throw shaderErr('CTX_LOST', '着色器程序没建出来：显卡上下文已经丢了');
-      throw shaderErr('LINK', '着色器程序没建出来（createProgram 给了 null）｜ ' + gpuProfile(gl));
-    }
-    gl.attachShader(prog, compile(gl, gl.VERTEX_SHADER, VERT));
-    gl.attachShader(prog, compile(gl, gl.FRAGMENT_SHADER, FRAG));
-    /* ⏱ **量一下链接花了多久** ✗✗（2026-10-18 用户报告：这一段花了 92 秒）
-     *  真显卡几毫秒，软件渲染一两分钟 —— 这个数本身就是"是不是用上显卡"的铁证 ✓
-     *  记进 detail，报告和错误屏都能看到 ✓ */
-    const _linkT0 = (typeof performance !== 'undefined' && performance.now)
-      ? performance.now() : Date.now();
-    gl.linkProgram(prog);
-    const linkMs = Math.round(((typeof performance !== 'undefined' && performance.now)
-      ? performance.now() : Date.now()) - _linkT0);
-    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+    /* ============ **链接：先试完整版，不行就退精简版** ✗✗（2026-10-19）============
+     *
+     *  完整版里那块"逐像素边界射线"在软件渲染上会把编译器拖垮（92 秒 → 链接失败 ✓）
+     *  精简版把它切掉（见 makeLiteFragment ✓）—— **能显示地图**比什么都强 ✓
+     *
+     *  ⚠ 只有**链接**失败才退精简版 ✗ —— 语法错 / 上下文丢了，换个着色器也一样坏 ✓
+     *  ⚠ 退成功之后 `this.liteShader = true` 要一路带进日志和报告 ✗
+     *     不然下次有人拿到报告，会以为"用户没开硬件加速"是唯一原因 ✓
+     */
+    const _linkTry = (fragSrc) => {
+      const prog = gl.createProgram();
+      if (!prog) return { prog: null, info: 'createProgram 给了 null', linkMs: 0 };
+      gl.attachShader(prog, compile(gl, gl.VERTEX_SHADER, VERT));
+      gl.attachShader(prog, compile(gl, gl.FRAGMENT_SHADER, fragSrc));
+      /* ⏱ **量一下链接花了多久** ✗✗（2026-10-18 用户报告：这一段花了 92 秒）
+       *  真显卡几毫秒，软件渲染一两分钟 —— 这个数本身就是"是不是用上显卡"的铁证 ✓ */
+      const t0 = (typeof performance !== 'undefined' && performance.now)
+        ? performance.now() : Date.now();
+      gl.linkProgram(prog);
+      const ms = Math.round(((typeof performance !== 'undefined' && performance.now)
+        ? performance.now() : Date.now()) - t0);
+      if (gl.getProgramParameter(prog, gl.LINK_STATUS)) return { prog, info: '', linkMs: ms };
+      const info = String(gl.getProgramInfoLog(prog) || '').trim();
+      try { gl.deleteProgram(prog); } catch (e) { /* ✓ */ }
+      return { prog: null, info, linkMs: ms };
+    };
+
+    let _r = _linkTry(FRAG);
+    let linkMs = _r.linkMs;
+    let linkLog = _r.info;
+    this.liteShader = false;
+    if (!_r.prog) {
       /* ⚠ **先问上下文再说着色器** ✗ —— 上下文被收走时 LINK_STATUS 也是 false ✓
        *   这种"失败"等上下文回来重来一次就好了，报成链接失败会把人带偏 ✓ */
       if (ctxLost(gl)) {
         throw shaderErr('CTX_LOST', '着色器还没链接完，显卡上下文就被收走了'
           + '（切后台 / 显存紧张 / 驱动重置都会这样）');
       }
-      /* ⚠ 日志**可能是空的** ✗（驱动内部报错时只给个 LINK_STATUS = false ✓）
-         那就把渲染器和版本一起带上 —— 否则报上来只有"链接失败"四个字，
-         根因（指令数超限 / 寄存器不够 / ANGLE 翻译不过）一点都看不出来 ✓ */
-      const info = String(gl.getProgramInfoLog(prog) || '').trim();
-      const lost = !!(gl.isContextLost && gl.isContextLost());
-      const ge = (gl.getError && gl.getError()) || 0;
-      try { gl.deleteProgram(prog); } catch (e) { /* ✓ */ }
-      if (lost || ge === 0x9242) {
+      const ge0 = (gl.getError && gl.getError()) || 0;
+      if (ge0 === 0x9242) {
         _setupFail('context-lost', '着色器链接时 WebGL 上下文丢失', gl,
-          { stageAt: 'link', log: info, glError: ge });
+          { stageAt: 'link', log: linkLog, glError: ge0, linkMs });
       }
-      if (ge === 0x0505) {
-        _setupFail('out-of-memory', '着色器链接失败：显存 / 内存不足', gl,
-          { stageAt: 'link', log: info, glError: ge, linkMs });
+      if (ge0 !== 0x0505) {
+        /* 🔴 **完整版不行 → 立刻试精简版** ✓（这一句就是今天 VIC3 那台的解药）
+         *  ⚠ 只有"像个真着色器问题"时才试 ✗（显存不足再试一次只是白等 92 秒 ✓）*/
+        const _liteSrc = makeLiteFragment(FRAG);
+        if (_liteSrc) {
+          const lr = _linkTry(_liteSrc);
+          if (lr.prog) {
+            _r = lr;
+            this.liteShader = true;
+            this.liteWhy = linkLog || '（驱动没给日志）';
+            this.liteLinkMs = lr.linkMs;
+            linkMs = lr.linkMs;
+            linkLog = '';
+            try {
+              console.warn('[gl] 完整着色器链接失败，已退到精简版（少了边界线）：'
+                + (this.liteWhy || '无日志'));
+            } catch (e) { /* ✓ */ }
+          }
+        }
       }
-      _setupFail('shader-link',
-        info ? '着色器链接失败：' + info : '着色器链接失败（驱动没给日志）', gl,
-        { stageAt: 'link', log: info, glError: ge, linkMs });    }
+      if (!_r.prog) {
+        /* ⚠ 日志**可能是空的** ✗（驱动内部报错时只给个 LINK_STATUS = false ✓）
+            那就把渲染器和版本一起带上 —— 否则报上来只有"链接失败"四个字，
+            根因（指令数超限 / 寄存器不够 / ANGLE 翻译不过）一点都看不出来 ✓ */
+        _setupFail('shader-link',
+          linkLog ? '着色器链接失败：' + linkLog : '着色器链接失败（驱动没给日志）', gl,
+          { stageAt: 'link', log: linkLog, glError: ge0, linkMs,
+            liteTried: !!makeLiteFragment(FRAG),
+            liteLog: (this.liteWhy || ''), softwareGL: this.softwareGL });
+      }
+    }
+    const prog = _r.prog;
     this.prog = prog;
 
     this.uni = {};
-    for (const n of ['uView', 'uProv', 'uProvArr', 'uProvTiles', 'uProvCols', 'uUseTiles', 'uNoAA', 'uTitleMap', 'uColorLut', 'uPaint', 'uPaintLabel', 'uBorderDepth', 'uBorderDepthOn',
+    for (const n of ['uView', 'uProv', 'uProvArr', 'uProvTiles', 'uProvCols', 'uUseTiles', 'uProvScale', 'uNoAA', 'uTitleMap', 'uColorLut', 'uPaint', 'uPaintLabel', 'uBorderDepth', 'uBorderDepthOn',
                      'uMapSize', 'uTitleMapW', 'uNumProvinces', 'uPaintW', 'uTier', 'uEditTier', 'uFineTier',
                      'uShowTitles', 'uShowPaint', 'uMix',
                      'uBorderTitle', 'uBorderPaint', 'uPaintOnly', 'uBorderW', 'uBorderA', 'uPaintBorderW', 'uPaintBorderA', 'uMapPerPx',
@@ -1566,6 +1704,13 @@ export class MapRenderer {
                      'uBackdrop']) {
       this.uni[n] = gl.getUniformLocation(prog, n);
     }
+    this._linkMs = linkMs;
+    this._linkLog = linkLog;
+    /* 数组纹理能不能采（真数据试一遍 ✓ 见 _probeArrTex）——
+     *   ⚠ 只在这里跑一次 ✗：上下文重建会再走一遍 _build ✓ 正好重测 ✓ */
+    const _arr = this._probeArrTex();
+    this.arrOk = _arr.ok;
+    this.arrWhy = _arr.why || '';
 
     const vao = gl.createVertexArray();
     gl.bindVertexArray(vao);
@@ -1588,7 +1733,170 @@ export class MapRenderer {
     return [tid % this.lutW, Math.floor(tid / this.lutW)];
   }
 
-  /** 建一张 R16UI 的 2D 数组纹理（每层一块），并上传第 0 层 */
+  /* ============ **跑一遍"这台机器的纹理到底能不能采"** ✗✗（2026-10-19）============
+   *
+   *  为什么要实测、不能信能力查询 ✗：
+   *    HOI4 那台（Adreno 616）的图形体检里，R16UI 的 texelFetch 读回 **0**、
+   *    R16UI 的数组纹理三层**全是 0** —— 可 `MAX_ARRAY_TEXTURE_LAYERS` 报的是 2048 ✓
+   *    **能力查询说"有"，实际用起来是坏的** ✓ 这种驱动只能拿真数据试出来 ✓
+   *
+   *  所以：建一张 8×8、3 层的 **RG8** 数组纹理，塞几个已知的双字节值，
+   *  用一个 1×1 的离屏帧缓冲画一格、把采到的两个通道读回来比 ✓
+   *    · 对得上 → `arrOk = true`，分块路径照常走 ✓
+   *    · 对不上 → `arrOk = false`，setData 改走「整图缩小」那条（见 uProvScale ✓）
+   *
+   *  ⚠ 用的是**离屏 FBO**，不碰主画布 ✗ —— 主画布这时候还没有地图，画上去只会闪一下 ✓
+   *  ⚠ 任何一步出岔子都**当成不支持**（保守 ✓）：顶多把 id 图缩着传，画面糙一点，
+   *    但**不会白屏** ✓ 反过来误判成支持，就是那台机器原样复发 ✓
+   */
+  _probeArrTex() {
+    const gl = this.gl;
+    /* ⚠ **三态** ✗：'ok' 实测通过 / 'bad' 实测读回不对 / 'unknown' 这次探测做不了
+     *   —— 只有 'bad' 才改道（见 setData ✓）
+     *   探测本身做不成时**不许判坏** ✗：宁可维持老行为（分块照走 ✓），
+     *   也别因为"这台机器不支持离屏帧缓冲"就把画质无缘无故降一档 ✓
+     *   （自检桩里的假 GL 就是这种情况：FBO 状态取不到 ✓ 不能当成"驱动坏了" ✓）*/
+    const out = { ok: 'unknown', why: '' };
+    let tex = null, fb = null, rb = null, prog = null;
+    try {
+      const S = 8, L = 3;
+      /* 已知值：层 c 的 (1,1) 格 = 0x0100 + 44 + c*256？—— 直接用三组好认的数 ✓ */
+      const want = [[0x2C, 0x01], [0x91, 0x5B], [0x75, 0x75]];   // 300 / 23441 / 30069
+      const data = new Uint8Array(S * S * L * 2);
+      for (let l = 0; l < L; l++) {
+        for (let y = 0; y < S; y++) {
+          for (let x = 0; x < S; x++) {
+            const i = ((l * S + y) * S + x) * 2;
+            data[i] = want[l][0];
+            data[i + 1] = want[l][1];
+          }
+        }
+      }
+      tex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D_ARRAY, tex);
+      gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texStorage3D(gl.TEXTURE_2D_ARRAY, 1, gl.RG8, S, S, L);
+      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+      gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, 0, S, S, L,
+        gl.RG, gl.UNSIGNED_BYTE, data);
+
+      /* 1×1 的离屏帧缓冲（RGBA8）—— 只画一格，只读一个像素 ✓ */
+      rb = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, rb);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+      fb = gl.createFramebuffer();
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, rb, 0);
+      if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
+        out.why = '离屏帧缓冲建不起来';
+        return out;
+      }
+
+      const vs = compile(gl, gl.VERTEX_SHADER, `#version 300 es
+in vec2 aPos;
+void main() { gl_Position = vec4(aPos, 0.0, 1.0); }`);
+      const fs = compile(gl, gl.FRAGMENT_SHADER, `#version 300 es
+precision highp float;
+uniform sampler2DArray uArr;
+uniform int uLayer;
+out vec4 o;
+void main() {
+  vec4 c = texelFetch(uArr, ivec3(1, 1, uLayer), 0);
+  o = vec4(c.r, c.g, 0.0, 1.0);
+}`);
+      prog = gl.createProgram();
+      gl.attachShader(prog, vs);
+      gl.attachShader(prog, fs);
+      gl.linkProgram(prog);
+      if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+        out.why = '自检着色器链接失败';
+        return out;
+      }
+      const vao = gl.createVertexArray();
+      gl.bindVertexArray(vao);
+      const vbo = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+      gl.bufferData(gl.ARRAY_BUFFER,
+        new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);   // 盖住整个 1×1
+      const loc = gl.getAttribLocation(prog, 'aPos');
+      gl.enableVertexAttribArray(loc);
+      gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+
+      gl.useProgram(prog);
+      gl.viewport(0, 0, 1, 1);
+      gl.disable(gl.DEPTH_TEST);
+      gl.disable(gl.BLEND);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D_ARRAY, tex);
+      gl.uniform1i(gl.getUniformLocation(prog, 'uArr'), 0);
+      const px = new Uint8Array(4);
+      for (let l = 0; l < 3; l++) {
+        gl.uniform1i(gl.getUniformLocation(prog, 'uLayer'), l);
+        gl.clearColor(0, 0, 0, 1);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+        gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+        if (Math.abs(px[0] - want[l][0]) > 2 || Math.abs(px[1] - want[l][1]) > 2) {
+          out.ok = 'bad';
+          out.why = `第 ${l} 层读回 ${px[0]}/${px[1]}，应该是 ${want[l][0]}/${want[l][1]}`;
+          return out;
+        }
+      }
+      out.ok = 'ok';
+      return out;
+    } catch (e) {
+      out.why = String((e && e.message) || e).slice(0, 120);
+      return out;
+    } finally {
+      /* 收摊：把状态还回去 ✓（上下文这时还没开始画地图，但也别留垃圾 ✓）*/
+      try {
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        gl.bindVertexArray(null);
+        if (tex) gl.deleteTexture(tex);
+        if (rb) gl.deleteTexture(rb);
+        if (fb) gl.deleteFramebuffer(fb);
+        if (prog) gl.deleteProgram(prog);
+        /* ⚠ **有次数上限** ✗✗ —— 这里原来写的是 while(getError() !== NO_ERROR)：
+         *   在自检桩那个假 GL 上，getError 永远返回 1、NO_ERROR 也返回 1（Proxy 给常数）✓
+         *   → 条件恒假？不，是恒真 → **死循环** ✓（真跑起来整台机器卡在开图那一步 ✓）
+         *   清错误码本来就只是"顺手打扫"，最多几个就够 ✓ */
+        for (let i = 0; i < 8; i++) {
+          if (gl.getError() === gl.NO_ERROR) break;
+        }
+      } catch (e) { /* ✓ */ }
+    }
+  }
+
+  /* ============ **归一化编码的工具**（2026-10-19 ✓ 见 FRAG 开头那段说明）============
+   *
+   *  Uint16Array 在**小端**内存里就是一个元素两个字节 { 低字节, 高字节 } ✓
+   *  而 RG8 的 R 通道排在前、G 在后 ✓ —— 两者**逐字节同构** ✓
+   *  所以上传时**不用拆包、不用拷一份**，把它按字节看一眼直接喂给 GL 就行 ✓
+   *  （省掉的那次 40MB 拷贝，正好是手机上最容易出事的那个量级 ✗）
+   */
+  static _bytesOf16(a, count) {
+    if (!a) return null;
+    if (a instanceof Uint8Array) return a;
+    if (a instanceof Uint16Array) {
+      return new Uint8Array(a.buffer, a.byteOffset, Math.min(a.length, count) * 2);
+    }
+    // 普通数组 / 类型不对的：老实转一份 ✓
+    const out = new Uint8Array((count || a.length) * 2);
+    const n = Math.min(a.length, count || a.length);
+    for (let i = 0; i < n; i++) {
+      const v = a[i] | 0;
+      out[i * 2] = v & 255;
+      out[i * 2 + 1] = (v >> 8) & 255;
+    }
+    return out;
+  }
+
+  /** 建一张 **RG8 归一化**的 2D 数组纹理（每层一块 = 每层一块省份 id），并上传第 0 层 */
   makeTileArray(tileW, tileH, layers, first) {
     const gl = this.gl;
     const tex = gl.createTexture();
@@ -1597,10 +1905,11 @@ export class MapRenderer {
     gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    gl.texStorage3D(gl.TEXTURE_2D_ARRAY, 1, gl.R16UI, tileW, tileH, layers);
+    gl.texStorage3D(gl.TEXTURE_2D_ARRAY, 1, gl.RG8, tileW, tileH, layers);
     if (first) {
+      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
       gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, 0, tileW, tileH, 1,
-        gl.RED_INTEGER, gl.UNSIGNED_SHORT, first);
+        gl.RG, gl.UNSIGNED_BYTE, MapRenderer._bytesOf16(first, tileW * tileH));
     }
     return tex;
   }
@@ -1639,14 +1948,17 @@ export class MapRenderer {
     return this.uploadTile(layer, buf);
   }
 
-  /** 把某一块上传到数组纹理的第 layer 层 */
+  /** 把某一块上传到数组纹理的第 layer 层（**RG8 归一化** ✓ 见上面 _bytesOf16） */
   uploadTile(layer, data) {
     const gl = this.gl;
     if (!this.provArrTex || !this.tileInfo) return false;
+    if (!data) return false;
+    const n = this.tileInfo.tileW * this.tileInfo.tileH;
     gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.provArrTex);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
     gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, layer,
       this.tileInfo.tileW, this.tileInfo.tileH, 1,
-      gl.RED_INTEGER, gl.UNSIGNED_SHORT, data);
+      gl.RG, gl.UNSIGNED_BYTE, MapRenderer._bytesOf16(data, n));
     this.uploadedTiles.add(layer);      // 传成功了才记 ✓（早退 false 的那条路不算 ✓）
     this.dirty = true;
     return true;
@@ -1729,27 +2041,72 @@ export class MapRenderer {
          *   而且**不再一次全传**，交给帧循环按视野补（见 app.js 的懒上传 ✓）。
          *   ⚠ 电脑上限 16384 > 图宽 → 根本不走这条路，一行都不变 ✓ */
         layout = pickTileLayout(m.mapWidth, m.mapHeight, lim);
-        const _mb = (layout.cols * layout.rows * layout.tileW * layout.tileH * 2 / 1048576).toFixed(0);
-        console.log(`贴图上限 ${lim}px 装不下 ${m.mapWidth}×${m.mapHeight}`
-          + ` → 就地切成 ${layout.cols}×${layout.rows} 块（每块 ${layout.tileW}×${layout.tileH}，约 ${_mb}MB）`);
-        /* ⚠ 顺手写进"启动里程表" ✗ —— 用户手机上能直接看到走没走这条路 ✓ */
-        try {
-          if (typeof bootMark === 'function') {
-            bootMark('切块' + layout.cols + '×' + layout.rows + ' 每块' + layout.tileW + '×' + layout.tileH + ' 约' + _mb + 'MB');
+        /* 🔴 **数组纹理采不出来就整条改道** ✗✗（2026-10-19 ✓ 见 _probeArrTex）
+         *   那台 Adreno 的体检：分块数组纹理三层**全读回 0** ✓
+         *   而它的贴图上限只有 4096 < 5632 → **必须**切块 → 切块全靠数组纹理 ✗
+         *   所以这种情况下切块这条路根本走不通 ✓ 只能把 id 图**缩着传**：
+         *     scale = ceil(最大边 / 上限)（5632 / 4096 → 2 ✓）
+         *     缩小后单张 2D 就能装下 ✓（2048×1024 而已 ✓ 显存更省 ✓）
+         *   省界会粗一格，但**地图能看、能涂、能悬停** ✓ 总比纯白强 ✗
+         *   ⚠ 只有**实测读回不对**才走 ✗（'bad' 才改道：探测做不成 / 正常手机都不动 ✓
+         *     正常手机 arrOk = 'ok'，一个字节都不变 ✓）*/
+        if (this.arrOk === 'bad' && provinceIds) {
+          const sc = Math.max(1, Math.ceil(Math.max(m.mapWidth, m.mapHeight) / lim));
+          const sw = Math.max(1, Math.floor(m.mapWidth / sc));
+          const sh = Math.max(1, Math.floor(m.mapHeight / sc));
+          const small = new Uint16Array(sw * sh);
+          /* 每格取**块中心那一格**的值（取角上的话，边界会整体偏半块 ✓）*/
+          const half = (sc - 1) >> 1;
+          for (let y = 0; y < sh; y++) {
+            const sy = Math.min(m.mapHeight - 1, y * sc + half);
+            const src = sy * m.mapWidth;
+            const dst = y * sw;
+            for (let x = 0; x < sw; x++) {
+              small[dst + x] = provinceIds[src + Math.min(m.mapWidth - 1, x * sc + half)] || 0;
+            }
           }
-        } catch (e) { /* ✓ */ }
+          layout = null;
+          this.provScale = sc;
+          this.provSmall = { w: sw, h: sh };
+          this._smallIds = small;
+          console.log(`[gl] 数组纹理采不出来（${this.arrWhy}）→ id 图缩 ${sc} 倍传：`
+            + `${sw}×${sh}（原 ${m.mapWidth}×${m.mapHeight}）`);
+          try {
+            if (typeof bootMark === 'function') {
+              bootMark('id图缩' + sc + '倍' + sw + '×' + sh);
+            }
+          } catch (e) { /* ✓ */ }
+        } else {
+          const _mb = (layout.cols * layout.rows * layout.tileW * layout.tileH * 2 / 1048576).toFixed(0);
+          console.log(`贴图上限 ${lim}px 装不下 ${m.mapWidth}×${m.mapHeight}`
+            + ` → 就地切成 ${layout.cols}×${layout.rows} 块（每块 ${layout.tileW}×${layout.tileH}，约 ${_mb}MB）`);
+          /* ⚠ 顺手写进"启动里程表" ✗ —— 用户手机上能直接看到走没走这条路 ✓ */
+          try {
+            if (typeof bootMark === 'function') {
+              bootMark('切块' + layout.cols + '×' + layout.rows + ' 每块' + layout.tileW + '×' + layout.tileH + ' 约' + _mb + 'MB');
+            }
+          } catch (e) { /* ✓ */ }
+        }
       }
     }
 
     this.provTex = layout
-      ? makeTexture(gl, 1, 1, gl.R16UI, gl.RED_INTEGER, gl.UNSIGNED_SHORT,
-                    new Uint16Array(1), gl.NEAREST)
-      : makeTexture(gl, m.mapWidth, m.mapHeight, gl.R16UI,
-                    gl.RED_INTEGER, gl.UNSIGNED_SHORT, provinceIds, gl.NEAREST);
+      ? makeTexture(gl, 1, 1, gl.RG8, gl.RG, gl.UNSIGNED_BYTE,
+                    new Uint8Array([0, 0]), gl.NEAREST)
+      : (this._smallIds
+        ? makeTexture(gl, this.provSmall.w, this.provSmall.h, gl.RG8, gl.RG, gl.UNSIGNED_BYTE,
+                      MapRenderer._bytesOf16(this._smallIds, this.provSmall.w * this.provSmall.h),
+                      gl.NEAREST)
+        : makeTexture(gl, m.mapWidth, m.mapHeight, gl.RG8, gl.RG, gl.UNSIGNED_BYTE,
+                      MapRenderer._bytesOf16(provinceIds, m.mapWidth * m.mapHeight), gl.NEAREST));
 
     // 分块路径：数据目录带了 tiles.json ✓ 或者上面就地切了块 ✓
     this.tileInfo = layout || null;
     this.useTiles = layout ? 1 : 0;
+    // 「id 图缩着传」那条（数组纹理不可用 ✓ 见上面 arrOk 那段）——
+    //   uProvScale 由 render() 每帧传 ✓ 没走那条时恒 1（= 一步不缩 ✓）
+    this.provScale = this.provScale || 1;
+    if (!this._smallIds) this.provScale = 1;
     /* 🔴 **就地切的那条要留着整张 id 数组** ✗✗（2026-10-17）
      *   以前这里一次 `uploadAllTiles` 全传（CK3 那张 = 120MB → 手机上下文丢了 ✓）
      *   现在只留个**引用**（不复制，零额外内存 ✓），帧循环按视野逐块切、逐块传 ✓ */
@@ -1782,8 +2139,9 @@ export class MapRenderer {
     const tmRows = Math.max(1, Math.ceil(total / this.titleMapW));
     const flat = new Uint16Array(this.titleMapW * tmRows);
     flat.set(titlemap);
-    this.titleTex = makeTexture(gl, this.titleMapW, tmRows, gl.R16UI,
-      gl.RED_INTEGER, gl.UNSIGNED_SHORT, flat, gl.NEAREST);
+    this.titleTex = makeTexture(gl, this.titleMapW, tmRows, gl.RG8,
+      gl.RG, gl.UNSIGNED_BYTE,
+      MapRenderer._bytesOf16(flat, this.titleMapW * tmRows), gl.NEAREST);
 
     /* ⚠ **上下文恢复时会再调一次本函数** ✗（见 onContextRestored ✓）
      *   —— 那时候 lutData / paintData 里装的是**用户已经涂好、调好的东西** ✓
@@ -1827,15 +2185,17 @@ export class MapRenderer {
       gl.RGBA, gl.UNSIGNED_BYTE, this.paintFlat, gl.NEAREST);
 
     // 手绘层对应的"标记编号"。描边要区分同色不同标记，颜色那张表塞不下了
-    // （RGB 是颜色、alpha 是"涂没涂"），所以单开一张 R16UI，一个省一格。
+    // （RGB 是颜色、alpha 是"涂没涂"），所以单开一张表，一个省一格。
+    // **RG8 归一化** ✓（16 位 → 两个字节，见 FRAG 开头那段 ✓）
     if (this.paintLabelData && this.paintLabelData.length === this.numProvinces) {
       this.paintDirty = true;
     } else {
       this.paintLabelData = new Uint16Array(this.numProvinces);
     }
     this.paintLabelFlat = new Uint16Array(this.paintW * this.paintRows);
-    this.paintLabelTex = makeTexture(gl, this.paintW, this.paintRows, gl.R16UI,
-      gl.RED_INTEGER, gl.UNSIGNED_SHORT, this.paintLabelFlat, gl.NEAREST);
+    this.paintLabelTex = makeTexture(gl, this.paintW, this.paintRows, gl.RG8,
+      gl.RG, gl.UNSIGNED_BYTE,
+      MapRenderer._bytesOf16(this.paintLabelFlat, this.paintW * this.paintRows), gl.NEAREST);
 
     /* **悬停编组表**（"同一片海"那种 ✓）—— 跟 paintLabel 同一套拍平写法 ✓
      *   ⚠ 一定要建、一定要绑 ✗ —— 采样器指向一张**不完整**的纹理，整个 program
@@ -1848,8 +2208,9 @@ export class MapRenderer {
       this.hoverGroupTier = null;          // 表没了 → 下次悬停按当前层重建 ✓
     }
     this.hoverGroupFlat = new Uint16Array(this.paintW * this.paintRows);
-    this.hoverGroupTex = makeTexture(gl, this.paintW, this.paintRows, gl.R16UI,
-      gl.RED_INTEGER, gl.UNSIGNED_SHORT, this.hoverGroupFlat, gl.NEAREST);
+    this.hoverGroupTex = makeTexture(gl, this.paintW, this.paintRows, gl.RG8,
+      gl.RG, gl.UNSIGNED_BYTE,
+      MapRenderer._bytesOf16(this.hoverGroupFlat, this.paintW * this.paintRows), gl.NEAREST);
 
     /* 🔴 **身份标纹理**（每 pid 一格：1 陆地 / 2 海 / 3 湖 / 4 河 / 5 不可通行海域 /
      *   6 不可通行 ✓ 2026-10-15 ✓）—— 跟 hoverGroup 同一套拍平写法 ✓
@@ -1859,8 +2220,8 @@ export class MapRenderer {
      *   ⚠ 上下文丢失重建时**内容留着**（重传就行 ✓ 跟笔迹一个待遇 ✓）*/
     if (!(this.kindData && this.kindData.length === this.numProvinces)) this.kindData = null;
     this.kindFlat = new Uint8Array(this.paintW * this.paintRows);
-    this.kindTex = makeTexture(gl, this.paintW, this.paintRows, gl.R8UI,
-      gl.RED_INTEGER, gl.UNSIGNED_BYTE, this.kindFlat, gl.NEAREST);
+    this.kindTex = makeTexture(gl, this.paintW, this.paintRows, gl.R8,
+      gl.RED, gl.UNSIGNED_BYTE, this.kindFlat, gl.NEAREST);
     this.kindDirty = true;
     /* **「水域 · 边界」那张表**（每 pid 一格：0 = 不是水 / 2..5 = 那四类 ✓ 2026-10-16 ✓）
      *   ⚠ 一定要建、一定要绑 ✗ —— 采样器指向一张不完整纹理，整个 program 会被
@@ -1875,8 +2236,8 @@ export class MapRenderer {
       this.waterKindData = null;
     }
     this.waterKindFlat = new Uint8Array(this.paintW * this.paintRows);
-    this.waterKindTex = makeTexture(gl, this.paintW, this.paintRows, gl.R8UI,
-      gl.RED_INTEGER, gl.UNSIGNED_BYTE, this.waterKindFlat, gl.NEAREST);
+    this.waterKindTex = makeTexture(gl, this.paintW, this.paintRows, gl.R8,
+      gl.RED, gl.UNSIGNED_BYTE, this.waterKindFlat, gl.NEAREST);
     this.waterKindDirty = true;
     /* **七行里的五行类色**（2..6 → 海 / 湖 / 河 / 不可通行海域 / 不可通行 ✓）
      *   出厂值就是 `build_data.py` 那份类色 ✓ 开图后由 app.js 按设置覆盖 ✓ */
@@ -2022,9 +2383,10 @@ export class MapRenderer {
       gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, this.paintW, this.paintRows,
         gl.RGBA, gl.UNSIGNED_BYTE, this.paintFlat);
       gl.bindTexture(gl.TEXTURE_2D, this.paintLabelTex);
-      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 2);
+      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
       gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, this.paintW, this.paintRows,
-        gl.RED_INTEGER, gl.UNSIGNED_SHORT, this.paintLabelFlat);
+        gl.RG, gl.UNSIGNED_BYTE,
+        MapRenderer._bytesOf16(this.paintLabelFlat, this.paintW * this.paintRows));
       this.paintDirty = false;
     }
     /* **身份标**（换图才动一次 ✓ 每 pid 一字节 ≈ 29 KB ✓）——
@@ -2035,7 +2397,7 @@ export class MapRenderer {
       gl.bindTexture(gl.TEXTURE_2D, this.kindTex);
       gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
       gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, this.paintW, this.paintRows,
-        gl.RED_INTEGER, gl.UNSIGNED_BYTE, this.kindFlat);
+        gl.RED, gl.UNSIGNED_BYTE, this.kindFlat);
       this.kindDirty = false;
     }
     /* **水域表**（换图才动一次 ✓ 跟身份标同一套 ✓）——
@@ -2046,16 +2408,17 @@ export class MapRenderer {
       gl.bindTexture(gl.TEXTURE_2D, this.waterKindTex);
       gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
       gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, this.paintW, this.paintRows,
-        gl.RED_INTEGER, gl.UNSIGNED_BYTE, this.waterKindFlat);
+        gl.RED, gl.UNSIGNED_BYTE, this.waterKindFlat);
       this.waterKindDirty = false;
     }
     /* 悬停编组表**换层才动一次** ✓（EU5 40 KB 一趟 ✗ 每帧传是白烧 ✓）*/
     if (this.hoverGroupDirty && this.hoverGroupData) {
       this.hoverGroupFlat.set(this.hoverGroupData);
       gl.bindTexture(gl.TEXTURE_2D, this.hoverGroupTex);
-      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 2);
+      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
       gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, this.paintW, this.paintRows,
-        gl.RED_INTEGER, gl.UNSIGNED_SHORT, this.hoverGroupFlat);
+        gl.RG, gl.UNSIGNED_BYTE,
+        MapRenderer._bytesOf16(this.hoverGroupFlat, this.paintW * this.paintRows));
       this.hoverGroupDirty = false;
     }
   }
@@ -2471,6 +2834,8 @@ export class MapRenderer {
     gl.uniform2i(u.uProvTiles, _ti.tileW, _ti.tileH);
     gl.uniform1i(u.uProvCols, _ti.cols);
     gl.uniform1i(u.uUseTiles, this.useTiles || 0);
+    // id 图缩着传时 >1（见 setData 里 arrOk 那段 ✓）；正常情况下恒 1 ✓
+    gl.uniform1i(u.uProvScale, this._smallIds ? (this.provScale || 1) : 1);
     gl.uniform1f(u.uMix, this.mix);
     gl.uniform1i(u.uBorderTitle, this.borderTitle ? 1 : 0);
     gl.uniform1i(u.uBorderPaint, this.borderPaint ? 1 : 0);

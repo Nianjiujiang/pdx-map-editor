@@ -9504,6 +9504,23 @@ async function boot() {
       return;                       // 后面全是"渲染器已经建好"的步骤，别硬跑 ✓
     }
     _tick('建渲染器');
+    /* **渲染器这一路走了哪种"降级"** ✗（2026-10-19 加）——
+     *   两份用户报告都是"画面上什么都没有"，可走的路完全不一样：
+     *     · VIC3 那台：链接失败 → 现在会退**精简版**（少边界线 ✓）
+     *     · HOI4 那台：数组纹理采不出来 → 现在会**把 id 图缩着传**
+     *   报告里不写清楚，下次又只能靠猜 ✓ */
+    try {
+      const _mode = [];
+      if (renderer.liteShader) _mode.push('精简着色器（无边界线）');
+      if (renderer._smallIds) _mode.push('id图缩' + (renderer.provScale || 1) + '倍');
+      if (renderer.arrOk === 'bad') _mode.push('数组纹理采不出来');
+      if (_mode.length) {
+        LOG.env('渲染降级', _mode.join(' · ')
+          + (renderer.liteWhy ? '（链接日志：' + String(renderer.liteWhy).slice(0, 200) + '）' : ''));
+      }
+      LOG.env('纹理编码', 'RG8/R8 归一化（整数纹理已退役）'
+        + ' · 数组纹理自检 ' + (renderer.arrOk || '?'));
+    } catch (e) { /* 报告写不进去不该拖垮开图 ✓ */ }
     renderer.onContextLost = () => {
       // 这一条要进日志：白屏的最常见原因之一，而玩家只会说"它黑了" ✓
       LOG.event('WebGL 上下文丢失', '显卡驱动 / 显存（手机切后台最常见）');
