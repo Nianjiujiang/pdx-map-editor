@@ -873,11 +873,33 @@ void main() {
   // 导出整图时**关掉抗锯齿** ✓ —— 那时一个屏幕像素正好等于一个地图像素，
   // 四点超采样会把相邻两个色块的颜色平均出一条混色带，放大看就是"糊的区域"。
   // 屏幕上不动（uNoAA=0），观感保持原样 ✓。
+  /* 🔴 **四个采样点落在同一个地图像素上时，只采一次** ✗✗（2026-10-19）
+   *
+   *  两种时候四个点完全重合：
+   *    · uNoAA=1（pu 是 0）—— 整图 / 高清导出、降分辨率那条路 ✓
+   *    · **放大编辑**（地图一格 ≫ 屏幕一格）—— 平时绝大多数像素 ✓✓
+   *  以前每种都照样跑四遍 colorAt（每遍十来次纹理取样 ✓）→ 白烧三遍 ✓
+   *
+   *  ⚠ 只把同一个颜色**抄给 c1..c3**，下面那段合并算式**一个字不改** ✗
+   *    → 出来的值跟原来**逐位相同** ✓（不是"看起来差不多"✓）
+   *    → 边界上那几圈还是会走四采样的老路 ✓ 抗锯齿效果一点没丢 ✓ */
   float pu = uNoAA == 1 ? 0.0 : uMapPerPx;
-  vec4 c0 = colorAt(ivec2(floor(vMap + vec2( 0.5,      0.16667) * pu)));
-  vec4 c1 = colorAt(ivec2(floor(vMap + vec2(-0.16667,  0.5    ) * pu)));
-  vec4 c2 = colorAt(ivec2(floor(vMap + vec2( 0.16667, -0.5    ) * pu)));
-  vec4 c3 = colorAt(ivec2(floor(vMap + vec2(-0.5,     -0.16667) * pu)));
+  ivec2 q0 = ivec2(floor(vMap + vec2( 0.5,      0.16667) * pu));
+  ivec2 q1 = ivec2(floor(vMap + vec2(-0.16667,  0.5    ) * pu));
+  ivec2 q2 = ivec2(floor(vMap + vec2( 0.16667, -0.5    ) * pu));
+  ivec2 q3 = ivec2(floor(vMap + vec2(-0.5,     -0.16667) * pu));
+  vec4 c0, c1, c2, c3;
+  if (q0 == q1 && q1 == q2 && q2 == q3) {
+    c0 = colorAt(q0);
+    c1 = c0;
+    c2 = c0;
+    c3 = c0;
+  } else {
+    c0 = colorAt(q0);
+    c1 = colorAt(q1);
+    c2 = colorAt(q2);
+    c3 = colorAt(q3);
+  }
 
   vec3  acc = c0.rgb * c0.a + c1.rgb * c1.a + c2.rgb * c2.a + c3.rgb * c3.a;
   float cov = (c0.a + c1.a + c2.a + c3.a) * 0.25;
