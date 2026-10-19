@@ -128,14 +128,47 @@ export async function getPack(id) {
   return v || null;
 }
 
+/** 库里那份东西 → **Blob**（调用方只认 Blob ✓）
+ *
+ *  ⚠ 库里现在存的是 **ArrayBuffer**（不是 Blob ✗ 见 putPack 那段：Safari 写 Blob 会失败 ✓）
+ *    —— 这里统一包回 Blob，`data.js` / 导出备份那些地方**一个字都不用改** ✓
+ *  ⚠ 也认 Blob / Uint8Array：**老版本存进去的就是 Blob** ✓ 读出来照旧能用 ✓
+ *    （用户升级之后，之前导进来的图不能突然读不出来 ✓）*/
+function _asBlob(v) {
+  if (!v) return null;
+  if (typeof Blob !== 'undefined' && v instanceof Blob) return v;
+  return new Blob([v]);
+}
+
 /** 取包里某个文件的字节（Blob）。**按需取** —— 别在选图界面批量取 ✗ */
 export async function getFile(id, name) {
   const mode = await packStoreMode();
   const key = psFileKey(id, name);
-  if (mode === 'memory') return PS_MEM_FILES.get(key) || null;
+  if (mode === 'memory') return _asBlob(PS_MEM_FILES.get(key));
   const tx = psDb().transaction([PS_FILES], 'readonly');
   const v = await psReq(tx.objectStore(PS_FILES).get(key));
-  return v || null;
+  return _asBlob(v);
+}
+
+/** 取包里某个文件的**字节**（Uint8Array）—— 读图走这条 ✓
+ *
+ *  为什么不先包成 Blob：Blob 会把整份字节再拷一遍，而省份 id 图动辄几百 MB，
+ *  手机上多这一份就可能爆；直接给字节省掉这次拷贝。
+ *  老库里存的是 Blob，这里转一次就好（新库是 ArrayBuffer，包一层视图就够）。 */
+export async function getFileBytes(id, name) {
+  const mode = await packStoreMode();
+  const key = psFileKey(id, name);
+  let v;
+  if (mode === 'memory') {
+    v = PS_MEM_FILES.get(key);
+  } else {
+    const tx = psDb().transaction([PS_FILES], 'readonly');
+    v = await psReq(tx.objectStore(PS_FILES).get(key));
+  }
+  if (!v) return null;
+  if (typeof Blob !== 'undefined' && v instanceof Blob) return new Uint8Array(await v.arrayBuffer());
+  if (v instanceof ArrayBuffer) return new Uint8Array(v);
+  return v;                                  // Uint8Array / 其它 TypedArray ✓
 }
 
 /** 这个包在库里的文件名字列表 */
@@ -198,8 +231,22 @@ async function freePackKey(base) {
 export async function putPack(key, manifest, files, onProgress) {
   const mode = await packStoreMode();
   const say = (m, p) => { if (onProgress) onProgress(m, p); };
-  const names = files.map((f) => f.name);
-  const totalBytes = files.reduce((s, f) => s + (f.blob ? f.blob.size : 0), 0);
+
+  /* Safari / WebKit 在临时存储（隐私模式等）下**不收 Blob**：
+   *   UnknownError: Error preparing Blob/File data to be stored in object store
+   * 同一个库存 ArrayBuffer / Uint8Array / 字符串都正常（2026-10-19 实测）。
+   * 所以入库前先统一成字节：优先用调用方给的 `data`，只有老式的 `blob` 才转一次。
+   * 转换必须在开事务之前做完：事务里除了 IDB 请求不许 await 别的。 */
+  const payload = [];
+  for (const f of files) {
+    let data = f.data;
+    if (!data && f.blob && typeof f.blob.arrayBuffer === 'function') data = await f.blob.arrayBuffer();
+    if (!data) data = new ArrayBuffer(0);
+    payload.push({ name: f.name, data, size: (data.byteLength != null ? data.byteLength : (data.size || 0)) });
+  }
+
+  const names = payload.map((f) => f.name);
+  const totalBytes = payload.reduce((s, f) => s + f.size, 0);
   const rec = {
     id: key,                                   // 记录的键 = 实例键
     manifestId: manifest.id,                   // 作者写的 id（展示 / 认重）
@@ -212,7 +259,7 @@ export async function putPack(key, manifest, files, onProgress) {
   say('写入…', 0);
   if (mode === 'memory') {
     PS_MEM_PACKS.set(key, rec);
-    for (const f of files) PS_MEM_FILES.set(psFileKey(key, f.name), f.blob);
+    for (const f of payload) PS_MEM_FILES.set(psFileKey(key, f.name), f.data);
     psLog('导入地图包', `${key}（仅本次会话）`);
     return key;
   }
@@ -235,9 +282,9 @@ export async function putPack(key, manifest, files, onProgress) {
     for (const k of keys || []) await psReq(sf.delete(k));
 
     let doneBytes = 0;
-    for (const f of files) {
-      await psReq(sf.put(f.blob, psFileKey(key, f.name)));
-      doneBytes += f.blob ? f.blob.size : 0;
+    for (const f of payload) {
+      await psReq(sf.put(f.data, psFileKey(key, f.name)));
+      doneBytes += f.size;
       say(`写入 ${f.name}…`, totalBytes ? Math.round(100 * doneBytes / totalBytes) : 100);
     }
     await psReq(sp.put(rec));
@@ -298,10 +345,10 @@ export async function exportPackBytes(id, onStep) {
   const files = [{ name: 'manifest.json', data: new TextEncoder().encode(JSON.stringify(rec.manifest)) }];
   for (const n of rec.files) {
     if (n === 'manifest.json') continue;
-    const blob = await getFile(id, n);
-    if (!blob) throw psFail(`包里缺 ${n}（存储可能被清了）`);
+    const bytes = await getFileBytes(id, n);
+    if (!bytes) throw psFail(`包里缺 ${n}（存储可能被清了）`);
     if (onStep) onStep(`读 ${n}…`);
-    files.push({ name: n, data: new Uint8Array(await blob.arrayBuffer()) });
+    files.push({ name: n, data: bytes });
   }
   psLog('导出备份', `${id}（${files.length} 个条目）`);
   // .bin 已经是 zlib 压过的，makeZipAsync 压不动会自动退回 store ✓
@@ -375,12 +422,12 @@ export async function importPack(blob, opts = {}) {
   /* 要入库的条目：**原样搬**（zip 里那一份字节）✓
      这里读的是"第一层"—— 也就是包里那个文件本身，不做任何再加工 ✓
      manifest.json 用**校验后**的那一份（未知字段保留，跟作者写的一致） */
-  const files = [{ name: 'manifest.json', blob: new Blob([new TextEncoder().encode(JSON.stringify(manifest))]) }];
+  const files = [{ name: 'manifest.json', data: new TextEncoder().encode(JSON.stringify(manifest)) }];
   for (const e of zip.entries) {
     if (e.name === 'manifest.json') continue;
     say(`读 ${e.name}…`, 60);
     const bytes = await zip.bytes(e.name, 512 * 1024 * 1024);
-    files.push({ name: e.name, blob: new Blob([bytes]) });
+    files.push({ name: e.name, data: bytes });
   }
 
   const key = await freePackKey(manifest.id);
