@@ -159,6 +159,16 @@ function makeIndexedDBFake() {
         getAllKeys: (r) => issue(tx, mkReq(), () => Array.from(data().keys()).filter((k) => inRange(r, k))),
         put: (v, k) => issue(tx, mkReq(), () => {
           if (inject.failPut && --inject.failPut === 0) throw new Error('（自测注入）写入失败');
+          /* 🔴 **照 WebKit 的脾气来：IDB 里不收 Blob** ✗✗（2026-10-19 ✓）
+           *   Safari 在 `file://` 下 put(Blob) 必炸：
+           *     UnknownError: Error preparing Blob/File data to be stored in object store
+           *   实测同一只库：ArrayBuffer / Uint8Array / 字符串都正常 ✓ **只有 Blob 不行** ✓
+           *   ⚠ 真机上的后果是"iPad 导不进地图、整个工具用不了"（issue #3 ✓），
+           *     而电脑上 Chrome 一切正常 → 一直没被发现 ✗
+           *   → 桩里照**拒收** ✓ 以后谁再把 Blob 写进 IDB，`check_import` 当场红 ✓ */
+          if (typeof Blob !== 'undefined' && v instanceof Blob) {
+            throw new Error('Error preparing Blob/File data to be stored in object store');
+          }
           const key = k !== undefined ? k : (keyPath ? v[keyPath] : undefined);
           if (key === undefined) throw new Error('这条记录没有主键');
           tx._record(name, key);
