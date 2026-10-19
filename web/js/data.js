@@ -12,7 +12,7 @@
  * 省掉几百 MB 的中间态。
  */
 
-import { getFile } from './packstore.js';
+import { getFileBytes } from './packstore.js';
 
 //: 数据目录。启动时由玩家选一张，默认第一张
 export let DATA = '/data';
@@ -72,9 +72,9 @@ export function isPackMap() { return !!PACK; }
 
 /** 包里的某个文件（原始字节，没解压） */
 async function packBytes(name) {
-  const blob = await getFile(PACK, name);
-  if (!blob) throw new Error(`地图包「${PACK}」里读不到 ${name}（存储可能被清了，重新导入一次）`);
-  return new Uint8Array(await blob.arrayBuffer());
+  const bytes = await getFileBytes(PACK, name);
+  if (!bytes) throw new Error(`地图包「${PACK}」里读不到 ${name}（存储可能被清了，重新导入一次）`);
+  return bytes;
 }
 
 async function packJson(name) {
