@@ -31,6 +31,10 @@ import numpy as np
 import re
 WATER = ("#river", "#lake", "#sea", "#impassable_sea")
 
+#: 汉字判据 —— 用来判断"这个名字已经是中文了，别再拿英文盖它" ✓
+#: （见下面 eu4 那一支的说明 ✓ 2026-10-19）
+HAS_ZH = re.compile(r"[\u4e00-\u9fff]")
+
 #: 定点改名：{（数据目录名, tag）: 新名字} ✓
 NAME_OVERRIDES = {
     ("data_vic3", "CHI"): "大清",   # V3 的中国 → 大清 ✓
@@ -473,9 +477,28 @@ def patch(data_dir: Path | str, quiet: bool = False) -> dict:
             if not nm:
                 pn = T.get("provinceNames") or []
                 nm = pn[pid] if 0 <= pid < len(pn) else ""
-            if nm and T["names"][idx] != nm:
-                T["names"][idx] = nm
-                named += 1
+            if not nm or T["names"][idx] == nm:
+                continue
+            # 🔴🔴 **已经是中文的名字，不许被英文覆盖** ✗✗（2026-10-19 用户报的）
+            #
+            #   症状：图上荒地写着 `Eastern Daba Mountains` / `Vistula Lagoon` ✓
+            #     （用户点名的两个：`wl_5067` 该是「大巴山」、`wl_3139` 该是「喀尔巴阡山脉」）
+            #
+            #   **真凶就是这一支** ✗：它按 `provinceNames[pid]` 覆盖节点名 ✓
+            #   而 `provinceNames` 是**按地块号**的省份名表（`PROV<id>` 查不到时
+            #   退到 `definition.csv` 第 5 列的英文 ✓）—— 荒地省份**不在省份层**里，
+            #   所以那一格常常只有英文 / 甚至是个不对的名字 ✓
+            #   → 一覆盖就把构建期按 `waste_names` 写好的中文盖成英文 ✗
+            #     （`waste_names` 来自 mod 的 `PROV<id>` 本地化 ✓ 那才是图上该显示的 ✓）
+            #
+            #   ⚠ 判据：**节点现在是中文 → 让开** ✓ 一个字节都不动 ✓
+            #     不是中文（CK3 那种"不可通行山地"、或者真没名字）→ 照旧补 ✓
+            #     所以老包 / 别的语种行为不变 ✓
+            cur = str(T["names"][idx] or "")
+            if HAS_ZH.search(cur):
+                continue
+            T["names"][idx] = nm
+            named += 1
     # eu5 / other：名字是真名，一个字都不动 ✓
 
     # ③ 荒地地名不显示

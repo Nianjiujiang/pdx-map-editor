@@ -180,6 +180,29 @@ def eu4_version(root: Path) -> str:
 DEFAULT_WORKSHOP = Path(r"C:\Steam\steamapps\workshop\content")
 
 
+# 🔴 **2026-10-19：这里原来有个 `_fix_waste_names`，已删** ✗✗
+#
+#   它是在**产物上**把 `wl_<省号>` 的名字按 `waste_names` 重写一遍，
+#   用来擦掉"图上荒地显示成 `#大泽山` / `Eastern Daba Mountains`"那个毛病 ✓
+#   加它的人自己也写了"追了七八轮没定位到真凶"✓
+#
+#   **真凶现在找到了**（三条，都在上游）：
+#     ① `definition.csv` 的中文写在 `#` 后面（第 5 列 / 第 6 列两种位置 ✓
+#        ` #大泽山` / `Ravenburg;x #拉文斯堡`）→ 见 parsers/eu4/parser.py 的
+#        `_pick_def_name` ✓ 原来整列照抄，于是名字里带井号、或者只剩英文 ✓
+#     ② `patch_wasteland.py` 的 eu4 那支拿 `provinceNames[pid]` **覆盖**节点名 ✗
+#        —— 荒地块不在省份层，那一格常常只有英文（`Vistula Lagoon`）✓
+#        一覆盖就把构建期写好的中文盖掉了 ✓ 现在"已经是中文就让开"✓
+#     ③ `build_tier_pieces.py` 里逐块荒地的 `name_sink` 值带 `#` 前缀
+#        （`label` 是 `#wasteland` 那种 ✓）→ 已 lstrip ✓
+#
+#   → 源头三条都修完之后，两处补丁都成了空转（实测"改名 0 个"✓）
+#     产物逐字段比对：只有 6 个名字不同，而且**新的更对**
+#     （`wl_3737` 从类名兜底"不可通行荒地"变成真名"吉尔巴吉"✓）
+#     所以这里连函数一起删掉，不留"为什么要有这一步"的疑问 ✓
+
+
+
 def load_hanhua(explicit: str | None, workshop: str | None) -> tuple[dict[str, str], str]:
     """中文名表。返回 (表, 来源说明)。
 
@@ -1074,6 +1097,13 @@ def main() -> int:
     # 12. 名字：中文优先，其次游戏自带的英文，再退回 definition.csv / key
     LOC = root / "localisation"
     want = {f"PROV{p}" for p in used_pr} | used_ar
+    # 🔴 **荒地省份也要进 want** ✗✗（2026-10-18 风云世纪两千年）
+    #   `used_pr` 只装了**省份层**用到的省份 ✓ 荒地（`wl_5xxx`）不在那一层里 ✗
+    #   → 它们的 `PROV<id>` 被这次过滤裁掉 → 名字只能退回 `definition.csv` 的英文
+    #     （用户截图里那条「Northern Taihang Mountains」就是它 ✓）
+    #   荒地节点的 key 就是 `wl_<省号>` ✓ 顺手把它们也加进来 ✓
+    want |= {f"PROV{t.key[3:]}" for t in ordered_all
+             if t.key.startswith("wl_") and t.key[3:].isdigit()}
     if use_eras:
         want |= {tag for arr in owners for tag in arr.values()}
     else:
@@ -1295,6 +1325,10 @@ def main() -> int:
     }
     (DATA / "titles.json").write_text(
         json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    # 2026-10-19：这里原来还有一段"伪头衔名字校正"（写盘后按 key 重写一遍）✗
+    #   已随 `_fix_waste_names` 一起删掉 —— 三条真凶都在上游修好了 ✓
+    #   见文件头那段说明（`definition.csv` 的 `#` 中文 / patch_wasteland 的覆盖 /
+    #   逐块荒地的 `#` 前缀 ✓）保留下来的话，每次构建都要多读多写一遍 1MB 的 json ✓
     log(f"  titles.json  {(DATA / 'titles.json').stat().st_size / 1048576:.1f} MB")
     # 名字汉化（并进构建了）✓
     try:
@@ -1344,6 +1378,9 @@ def main() -> int:
     # 再补一层**空白剧本**（幂等）：放在荒地之后 —— 它照抄的是"最终这版"的背景地形 ✓
     from patch_blank_era import patch as _patch_blank
     _patch_blank(DATA)
+    # 2026-10-19：`_fix_waste_names` 已删 —— 真凶是 patch_wasteland 的 eu4 那支
+    #   拿 `provinceNames` 覆盖节点名（见那个文件里那段说明 ✓）
+    #   源头一修，这里就不用再擦屁股了 ✓
     return 0
 
 

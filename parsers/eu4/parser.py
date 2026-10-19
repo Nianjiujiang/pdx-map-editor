@@ -157,8 +157,58 @@ def humanize(key: str) -> str:
 
 # ---------------------------------------------------------------- definition.csv
 
+#: 中文 mod 把中文塞在 `definition.csv` 两个地方 ✗✗（2026-10-19 查实的）
+#:   · 第 6 列：`Ravensburg;x\t#拉文斯堡`（`x` 是水域/标记位 ✓）—— **273 个**
+#:   · 第 5 列：` #大泽山` / `Eastern Daba Mountains;x #大巴山（东）` —— **475 个**
+#: `#` 之后才是给玩家看的名字 ✓ 之前是原版英文名 / 占位 ✓
+#: ⚠ **不能见 `#` 就切** ✗ —— 原版水域写的是 `Central Atlantic #1`（编号 ✓
+#:   后面是数字 / 英文，不是中文）✓ 所以只有 `#` 后**带汉字**才切 ✓
+_HASH_ZH = re.compile(r"#\s*([^#]*[\u4e00-\u9fff][^#]*)")
+
+
+def _pick_def_name(parts: list[str]) -> str:
+    """从 definition.csv 的一行里挑「给人看的名字」。
+
+    优先级（都是**中文 mod 的写法** ✓ 原版一路走到最后 ✓）：
+      ① 第 6 列里 `#` 后有汉字的 → 取它（`Ravensburg;x #拉文斯堡` ✓）
+      ② 第 5 列里 `#` 后有汉字的 → 取它（`Eastern Daba Mountains;x #大巴山（东）` ✓
+         —— 这一行的 `#` 在第 6 列，第 5 列是纯英文 ✓ 所以上面两条都得有 ✓）
+      ③ 第 5 列原样（原版：`Östergötland` ✓ 或 `Central Atlantic #1` ✓ 编号别切 ✗）
+
+    ⚠ 判据是**汉字**，不是"有没有井号" ✗ —— 见 `_HASH_ZH` 上面那段 ✓
+    """
+    c5 = parts[4].strip() if len(parts) > 4 else ""
+    c6 = parts[5].strip() if len(parts) > 5 else ""
+    for raw in (c6, c5):
+        if "#" not in raw:
+            continue
+        m = _HASH_ZH.search(raw)
+        if m:
+            name = m.group(1).strip()
+            if name:
+                return name
+    # `; #` 这种**空占位**（`#` 后面什么都没有 ✓ mod 里一片纯色块省名字）→ 名字就是空 ✓
+    # ⚠ 不能原样返回 `#` ✗ —— 井号会被当成名字印到图上 ✓
+    if c5.startswith("#"):
+        return ""
+    return c5
+
+
 def parse_definition(path: Path) -> dict[int, tuple[int, int, int, str]]:
-    """``province;red;green;blue;name;x`` —— 分号分隔、cp1252、第 5 列是名字。"""
+    """``province;red;green;blue;name;x`` —— 分号分隔、第 5 列是名字。
+
+    🔴 **名字可能写在 `#` 后面** ✗✗（2026-10-19 用户报的荒地变英文 / 带井号）
+        风云世纪两千年那张图里 **748 个省份**这么写 ✓ 两种位置都有（见 `_pick_def_name`）：
+            ``3210;255;203;198; #大泽山``                              ← 第 5 列
+            ``5067;225;221;146;Eastern Daba Mountains;x #大巴山（东）``  ← 第 6 列
+        · 原来整列照抄 → 名字变成 ``#大泽山``（井号印到图上 ✗
+          那是 EU4 "只当地名、不上地图"的约定 ✓ 不是名字的一部分）
+        · 或者变成 ``Eastern Daba Mountains``（英文 ✓ 中文被扔了）
+        **这才是「名字被改回去」的真凶** ✗ —— 后面那条 `_fix_waste_names`
+        只是在下游打补丁；源头这一列读对了，根本不产生脏名字 ✓
+
+    ⚠ 原版 EU4 的 definition.csv 一个汉字 `#` 都没有 → 一个字节都不变 ✓
+    """
     out: dict[int, tuple[int, int, int, str]] = {}
     for line in read_text(path).splitlines():
         if not line.strip():
@@ -173,7 +223,7 @@ def parse_definition(path: Path) -> dict[int, tuple[int, int, int, str]]:
             continue          # 表头那行
         if pid <= 0:
             continue
-        out[pid] = (r, g, b, parts[4].strip())
+        out[pid] = (r, g, b, _pick_def_name(parts))
     return out
 
 
@@ -431,7 +481,12 @@ def _hanhua_dirs(root: Path) -> list[Path]:
     """能用得上的汉化 localisation 目录：root 自己算一个，workshop 里的再翻一遍。"""
     out: list[Path] = []
     own = root / "localisation"
-    if own.is_dir() and any(is_doublebyte_loc(f) for f in own.glob("*_l_english.yml")):
+    # 🔴 **要递归找** ✗✗（2026-10-18 风云世纪两千年）
+    #   原来只 glob 顶层 `*_l_english.yml` ✓ 可这个 mod 的中文全在
+    #   `localisation/replace/bu_prov_names_l_english.yml` ✗（Paradox 的覆盖机制）
+    #   → own 没被收进来 → `_pick_hanhua` 跑去挑外面的纯汉化包 ✗
+    #   那个包只有 5913 条、没有 `PROV5xxx` ✓ 于是荒地/水域名退成 definition.csv 的英文 ✗
+    if own.is_dir() and any(is_doublebyte_loc(f) for f in own.rglob("*_l_english.yml")):
         out.append(own)
     ws = _workshop_appid_dir(Path(root))
     if ws is not None:
@@ -884,6 +939,17 @@ def load_water_names_by_tier(root: Path, *, lang: str = "zh") -> dict[str, dict[
         out = _water_names_by_tier(p, lang)
     except Exception:                    # 契约：认不出来返回空，别往外抛
         out = {t: {} for t in (*WATER_TIERS, "wasteland")}
+    # 🔴 **名字统一洗一遍** ✗✗（2026-10-19 用户报的）
+    #   · 去掉 `#` 前缀 —— EU4 的地形名常写成 `#大泽山`（"只当地名、不上地图"）✓
+    #     照抄就把 `#` 印到图上了 ✗
+    #   · 去空白 —— 本地化里偶尔带换行 ✓
+    #   （只动**显示用**的名字，判水陆用的省份集合一个字节不动 ✓）
+    for _t in out:
+        for _pid, _nm in list(out[_t].items()):
+            _v = str(_nm).strip()
+            if _v.startswith("#"):
+                _v = _v.lstrip("#").strip()
+            out[_t][_pid] = _v
     _TIER_CACHE[key] = out
     return {t: dict(v) for t, v in out.items()}
 

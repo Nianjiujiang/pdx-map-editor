@@ -270,7 +270,14 @@ def build_special_titles(
             for pid in pc["pids"]:
                 rows[pc["tier"]][pid] = _tid
             if name_sink is not None:
-                name_sink[t.key] = pc["name"]
+                # ⚠ 粗层片名也可能是 `#<地块号>`（`tier_pieces` 里"没名字 → 用它
+                #   自己的地块号"那条 ✓ 井号是防撞前缀、不是给人看的 ✗
+                #   照抄就把 `#3737` 印到图上 ✓（用户 2026-10-19 报的同款 ✓）
+                #   → 这里剥掉井号，退成"没名字"（前端会拿类名 / 空兜底 ✓）
+                _pn = str(pc["name"] or "")
+                if _pn.startswith("#"):
+                    _pn = _pn.lstrip("#").strip()
+                name_sink[t.key] = _pn
             built += 1
         if per_block:
             # 最细那一层：**逐块一个节点**（荒地要能一块块涂 ✓）
@@ -287,7 +294,12 @@ def build_special_titles(
                 waste_pids.append(int(pid))
                 waste_tids.append(tid)
                 if name_sink is not None:
-                    name_sink[wt.key] = (waste_names or {}).get(pid) or label
+                    # ⚠ `#` 前缀是 EU4 那个"只当地名、不上地图"的约定 ✗
+                    #   照抄就把井号印到图上了（用户 2026-10-19 报的 ✓）
+                    _wn = str((waste_names or {}).get(pid) or label)
+                    if _wn.startswith("#"):
+                        _wn = _wn.lstrip("#").strip()
+                    name_sink[wt.key] = _wn
             stats.append(f"→ 逐块 {cand.size} 个")
         stats.append(f"{label} {cand.size} 个 → 每层 {built} 片")
 

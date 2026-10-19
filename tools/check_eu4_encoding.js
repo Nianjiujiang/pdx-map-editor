@@ -53,6 +53,42 @@ function provNames(p) {
   return out;
 }
 
+/** 🔴 **跟 `_pick_def_name` 同一套判据** ✗✗（2026-10-19 加的）
+ *
+ *  中文 mod 把中文塞在 `#` 后面，两种位置都有：
+ *    第 5 列：` #大泽山` / `Eastern Daba Mountains;x #大巴山（东）`
+ *    第 6 列：`Ravensburg;x\t#拉文斯堡`
+ *  ⚠ **不能见 `#` 就切** ✗ —— 原版 `Central Atlantic #1` 是编号，后面没汉字 ✓
+ *  这条复刻的是"`#` 之后必须带汉字"那个判据 ✓
+ */
+const HASH_ZH = /#\s*([^#]*[\u4e00-\u9fff][^#]*)/;
+function pickDefName(parts) {
+  const c5 = (parts[4] || '').trim();
+  const c6 = (parts[5] || '').trim();
+  for (const raw of [c6, c5]) {
+    if (!raw.includes('#')) continue;
+    const m = HASH_ZH.exec(raw);
+    if (m && m[1].trim()) return m[1].trim();
+  }
+  // `; #` 这种空占位 → 空名字 ✓（不能返回 `#` ✗ 见 parser.py 同一段 ✓）
+  if (c5.startsWith('#')) return '';
+  return c5;
+}
+
+/** 按**新**判据取名字（= 烘数据时真正会得到的那个） */
+function provNamesFixed(p) {
+  const out = [];
+  for (const line of readText(p).split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    const parts = line.split(';');
+    if (parts.length < 5) continue;
+    const pid = Number(parts[0]);
+    if (!Number.isInteger(pid) || pid <= 0) continue;
+    out.push(pickDefName(parts));
+  }
+  return out;
+}
+
 // ---- ② 真文件：mod 的 definition.csv 中文名解对了 ----
 const MOD_CSV = path.join(ROOT, '_local', 'fy_root', 'map', 'definition.csv');
 if (fs.existsSync(MOD_CSV)) {
@@ -63,6 +99,37 @@ if (fs.existsSync(MOD_CSV)) {
   ok('没有 `å®‹` 那种典型乱码', !names.some((n) => /å|ã|æ|ç|é¾/.test(n)),
     names.find((n) => /å/.test(n)) || '无');
   ok('坏字节没超过一小撮', bad.length < 20, `${bad.length} 个`);
+
+  /* 🔴 **`#` 后面的中文名要取出来** ✗✗（2026-10-19 用户报的"荒地变英文 / 带井号"）
+   *   这条是那件事**真正的根因**：名字根本没读对，后面的补丁只是擦屁股 ✓
+   *   ⚠ 判据见 `pickDefName` —— 只有 `#` 后**带汉字**才切 ✓
+   *     原版 `Central Atlantic #1` 那种编号**必须原样留着** ✗ */
+  const fixed = provNamesFixed(MOD_CSV);
+  const stillHash = fixed.filter((n) => /^#/.test(n));
+  const hashZh = fixed.filter((n) => /[\u4e00-\u9fa5]/.test(n));
+  ok('第 6 列的中文名也读出来了（`Ravensburg;x #拉文斯堡`）',
+    fixed.length === names.length && hashZh.length > 500,
+    `${hashZh.length} 个带中文`);
+  ok('成品名字不再以 `#` 开头（井号是"不上地图"约定，不能印出来 ✗）',
+    stillHash.length === 0, stillHash.slice(0, 3).join(' | ') || '无');
+  /* 那两个用户点名的省，必须拿到中文 ✓ */
+  {
+    const byPid = new Map();
+    let k = 0;
+    for (const line of readText(MOD_CSV).split(/\r?\n/)) {
+      const parts = line.split(';');
+      if (parts.length < 5) continue;
+      const pid = Number(parts[0]);
+      if (!Number.isInteger(pid) || pid <= 0) continue;
+      byPid.set(pid, pickDefName(parts));
+    }
+    const a = byPid.get(3210) || '';
+    const b = byPid.get(5067) || '';
+    ok('省 3210 拿到「大泽山」（第 5 列的 ` #大泽山` ✓）',
+      /大泽山/.test(a), a || '(空)');
+    ok('省 5067 拿到「大巴山（东）」（第 6 列的 `x #大巴山（东）` ✓）',
+      /大巴山/.test(b), b || '(空)');
+  }
 } else {
   console.log('  · 跳过（没有 _local/fy_root/map/definition.csv）');
 }
@@ -91,6 +158,17 @@ if (fs.existsSync(BASE_CSV)) {
   ok('原版没有乱码', !names.some((n) => /\uFFFD/.test(n)));
   ok('原版的 Ö 还是 Ö（cp1252 那条路没坏）',
     names.some((n) => /Östergötland/.test(n)), names[1]);
+  /* 🔴 **原版的 `# 编号` 一个都不许被切掉** ✗✗（2026-10-19）
+   *   原版有 131 个 `Central Atlantic #1` 这种水域名 ✓
+   *   新加的 `#` 判据要是写宽了，就会把它们切成 `1` ✗ —— 那才是真回归 ✓ */
+  const fixedBase = provNamesFixed(BASE_CSV);
+  const numOnly = fixedBase.filter((n) => /^\d+$/.test(n)).length;
+  const hashKeep = fixedBase.filter((n) => /#\d+$/.test(n)).length;
+  ok('原版的 `Central Atlantic #1` 原样保留（`#` 后没汉字就不切 ✓）',
+    hashKeep >= 100 && numOnly === 0,
+    `保留 ${hashKeep} 个 · 被切成纯数字的 ${numOnly} 个`);
+  ok('原版名字跟改动前逐字一致',
+    fixedBase.length === names.length && fixedBase.every((v, i) => v === names[i]));
 } else {
   console.log('  · 跳过（本机没装 EU4）');
 }
