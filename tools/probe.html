@@ -1,0 +1,573 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>图形能力体检 · PDX 地图编辑器</title>
+<style>
+  :root{
+    --bg:#0d1014; --panel:#151a21; --line:#252d38; --text:#d9dde3; --dim:#8a94a3;
+    --ok:#5fbf7a; --bad:#e06c6c; --warn:#e0b45f;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0;padding:18px 16px 60px;background:var(--bg);color:var(--text);
+    font:14px/1.65 system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+  }
+  h1{font-size:19px;margin:0 0 4px;font-weight:650}
+  .sub{color:var(--dim);font-size:12.5px;margin:0 0 18px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin:0 0 12px}
+  .card h2{font-size:13px;margin:0 0 10px;color:var(--dim);font-weight:600;letter-spacing:.06em}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  td{padding:4px 0;vertical-align:top;border-bottom:1px solid var(--line)}
+  tr:last-child td{border-bottom:0}
+  td.k{color:var(--dim);width:42%;padding-right:10px}
+  td.v{font-family:ui-monospace,Consolas,monospace;word-break:break-all}
+  .ok{color:var(--ok)} .bad{color:var(--bad)} .warn{color:var(--warn)}
+  #verdict{font-size:16px;font-weight:650;line-height:1.7}
+  #verdict .note{display:block;font-size:13px;font-weight:400;color:var(--dim);margin-top:6px}
+  .btn{
+    display:inline-block;margin:14px 8px 0 0;padding:10px 18px;border-radius:10px;border:1px solid #3a4757;
+    background:#1b222c;color:var(--text);font:inherit;font-size:14px;cursor:pointer;
+  }
+  .btn.primary{background:#2f6f5e;border-color:#3c8a74}
+  #copyTip{color:var(--ok);font-size:12.5px;margin-left:10px}
+  details{margin-top:10px;color:var(--dim);font-size:12.5px}
+  pre{white-space:pre-wrap;word-break:break-all;font-size:12px;color:var(--text)}
+  #capCanvas{margin-top:12px}
+  #capCanvas canvas{width:100%;max-width:240px;height:auto;border-radius:8px;border:1px solid var(--line);display:block}
+</style>
+</head>
+<body>
+
+<h1>图形能力体检</h1>
+<p class="sub">打开就会自动跑一遍，全部在本机完成。跑完点「复制结果」，把内容发给作者就行。</p>
+
+<div class="card"><div id="verdict">正在检查…</div></div>
+
+<div class="card">
+  <h2>设备</h2>
+  <table id="envTable"></table>
+</div>
+
+<div class="card">
+  <h2>WebGL</h2>
+  <table id="glTable"></table>
+</div>
+
+<div class="card">
+  <h2>关键能力（编辑器真正用到的）</h2>
+  <table id="capTable"></table>
+  <div id="capCanvas"></div>
+</div>
+
+<button class="btn primary" id="btnCopy">复制结果</button>
+<button class="btn" id="btnRetry">重新体检</button>
+<span id="copyTip"></span>
+
+<details>
+  <summary>原始数据</summary>
+  <pre id="raw"></pre>
+</details>
+
+<script>
+(function () {
+  'use strict';
+
+  var results = [];
+  var lines = [];
+
+  function put(key, value, state) {
+    results.push({ key: key, value: String(value), state: state || '' });
+    lines.push(key + ': ' + value);
+  }
+
+  function cell(text, cls) {
+    var td = document.createElement('td');
+    td.className = cls || '';
+    td.textContent = text;
+    return td;
+  }
+
+  function fillTable(id, rows) {
+    var tb = document.getElementById(id);
+    tb.innerHTML = '';
+    rows.forEach(function (r) {
+      var tr = document.createElement('tr');
+      tr.appendChild(cell(r.key, 'k'));
+      tr.appendChild(cell(r.value, 'v ' + (r.state || '')));
+      tb.appendChild(tr);
+    });
+  }
+
+  /* 把原始数据写进 <details>，复制按钮用的就是这份 */
+  function flushRaw() {
+    var el = document.getElementById('raw');
+    if (el) el.textContent = lines.join('\n');
+  }
+
+  var verdictEl = document.getElementById('verdict');
+
+  function setVerdict(text, state, note) {
+    verdictEl.innerHTML = '';
+    var span = document.createElement('span');
+    span.className = state || '';
+    span.textContent = text;
+    verdictEl.appendChild(span);
+    if (note) {
+      var n = document.createElement('span');
+      n.className = 'note';
+      n.textContent = note;
+      verdictEl.appendChild(n);
+    }
+  }
+
+  /* ---------------- 环境 ---------------- */
+  function checkEnv() {
+    var ua = navigator.userAgent || '';
+    var env = [
+      { key: '地址', value: location.href },
+      { key: '协议', value: location.protocol },
+      { key: '浏览器', value: ua },
+      { key: '屏幕', value: screen.width + '×' + screen.height + ' @' + (window.devicePixelRatio || 1) + 'x' },
+      { key: '窗口', value: window.innerWidth + '×' + window.innerHeight },
+      { key: 'CPU 核数', value: navigator.hardwareConcurrency || '取不到' },
+      { key: '设备内存', value: (navigator.deviceMemory || '取不到') + (navigator.deviceMemory ? ' GB' : '') },
+      { key: '语言', value: navigator.language || '' }
+    ];
+    fillTable('envTable', env);
+    env.forEach(function (e) { put(e.key, e.value); });
+  }
+
+  /* ---------------- WebGL 基本信息 ---------------- */
+  function glFacts(gl) {
+    var out = {};
+    try {
+      out.version = gl.getParameter(gl.VERSION);
+      out.shading = gl.getParameter(gl.SHADING_LANGUAGE_VERSION);
+      out.vendor = gl.getParameter(gl.VENDOR);
+      out.renderer = gl.getParameter(gl.RENDERER);
+      var dbg = gl.getExtension('WEBGL_debug_renderer_info');
+      if (dbg) {
+        out.unmaskedVendor = gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL);
+        out.unmaskedRenderer = gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL);
+      }
+      out.maxTex = gl.getParameter(gl.MAX_TEXTURE_SIZE);
+      out.maxRB = gl.getParameter(gl.MAX_RENDERBUFFER_SIZE);
+      out.maxUnits = gl.getParameter(gl.MAX_TEXTURE_IMAGE_UNITS);
+      out.maxCombined = gl.getParameter(gl.MAX_COMBINED_TEXTURE_IMAGE_UNITS);
+      out.maxArrayLayers = gl.getParameter(gl.MAX_ARRAY_TEXTURE_LAYERS);
+      out.exts = (gl.getSupportedExtensions() || []).slice();
+    } catch (e) {
+      out.factsError = String((e && e.message) || e);
+    }
+    return out;
+  }
+
+  var ATTRS = {
+    alpha: false, antialias: false, depth: false, stencil: false,
+    premultipliedAlpha: false, preserveDrawingBuffer: false
+  };
+
+  function probeGL() {
+    var canvas = document.createElement('canvas');
+    canvas.width = 64;
+    canvas.height = 64;
+
+    var creationError = '';
+    canvas.addEventListener('webglcontextcreationerror', function (e) {
+      creationError = String((e && e.statusMessage) || '');
+    }, false);
+
+    var gl = null, thrown = '';
+    try { gl = canvas.getContext('webgl2', ATTRS); }
+    catch (e) { thrown = String((e && e.message) || e); }
+    if (!gl) {
+      try { gl = canvas.getContext('webgl2'); } catch (e2) { thrown = thrown || String((e2 && e2.message) || e2); }
+    }
+
+    var rows = [];
+    if (!gl) {
+      rows.push({ key: 'WebGL2', value: '❌ 建不出来' + (creationError || thrown ? '（' + (creationError || thrown) + '）' : ''), state: 'bad' });
+      put('WebGL2', '失败');
+      var gl1 = null;
+      try { gl1 = canvas.getContext('webgl') || canvas.getContext('experimental-webgl'); } catch (e3) {}
+      rows.push({ key: 'WebGL1', value: gl1 ? '✅ 能建' : '❌ 建不出来', state: gl1 ? 'warn' : 'bad' });
+      put('WebGL1', gl1 ? '正常' : '失败');
+      fillTable('glTable', rows);
+      setVerdict('这台设备的浏览器没给 WebGL2', 'bad',
+        gl1 ? 'WebGL1 还能建，说明显卡/驱动没废，是浏览器把 WebGL2 关了（常见于 App 内置浏览器、旧 WebView、关了硬件加速）。换 Chrome / Edge 打开这个文件再试。'
+            : '连 WebGL1 都没有：基本是浏览器没开硬件加速，或者显卡驱动 / 系统被限制了。');
+      return null;
+    }
+
+    var f = glFacts(gl);
+    rows.push({ key: 'WebGL2', value: '✅ 能建', state: 'ok' });
+    rows.push({ key: '版本', value: f.version || '' });
+    rows.push({ key: 'GLSL', value: f.shading || '' });
+    rows.push({ key: '渲染器', value: (f.unmaskedRenderer || f.renderer || '') });
+    rows.push({ key: '厂商', value: (f.unmaskedVendor || f.vendor || '') });
+    rows.push({ key: '最大纹理', value: (f.maxTex || '?') + ' px' });
+    rows.push({ key: '数组纹理层数', value: String(f.maxArrayLayers || '?') });
+    rows.push({ key: '纹理单元', value: String(f.maxUnits || '?') + ' / 合计 ' + String(f.maxCombined || '?') });
+    rows.push({ key: '扩展数', value: String((f.exts || []).length) });
+    put('WebGL2', '正常');
+    put('版本', f.version || '');
+    put('渲染器', f.unmaskedRenderer || f.renderer || '');
+    put('最大纹理', f.maxTex);
+    put('数组纹理层数', f.maxArrayLayers);
+    fillTable('glTable', rows);
+
+    return { gl: gl, canvas: canvas, facts: f };
+  }
+
+  /* ---------------- 画布：一律用真顶点缓冲（不用 gl_VertexID，有些驱动不认） ---------------- */
+  var QUAD = new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1]);
+
+  function makeDraw(w, h) {
+    var canvas = document.createElement('canvas');
+    canvas.width = w || 96;
+    canvas.height = h || 96;
+    var gl = null;
+    try { gl = canvas.getContext('webgl2', { alpha: false, antialias: false, depth: false, preserveDrawingBuffer: true }); } catch (e) {}
+    if (!gl) return null;
+    gl.viewport(0, 0, canvas.width, canvas.height);
+    return { gl: gl, canvas: canvas };
+  }
+
+  function makeProgram(gl, fsSrc) {
+    var vsSrc = [
+      '#version 300 es',
+      'in vec2 aPos;',
+      'void main(){ gl_Position = vec4(aPos, 0.0, 1.0); }'
+    ].join('\n');
+
+    function sh(type, src) {
+      var s = gl.createShader(type);
+      gl.shaderSource(s, src);
+      gl.compileShader(s);
+      if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+        throw new Error((type === gl.VERTEX_SHADER ? '顶点' : '片元') + '着色器：' + gl.getShaderInfoLog(s));
+      }
+      return s;
+    }
+
+    var prog = gl.createProgram();
+    gl.attachShader(prog, sh(gl.VERTEX_SHADER, vsSrc));
+    gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, fsSrc));
+    gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+      throw new Error('链接：' + gl.getProgramInfoLog(prog));
+    }
+
+    var vao = gl.createVertexArray();
+    gl.bindVertexArray(vao);
+    var buf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.bufferData(gl.ARRAY_BUFFER, QUAD, gl.STATIC_DRAW);
+    var loc = gl.getAttribLocation(prog, 'aPos');
+    gl.enableVertexAttribArray(loc);
+    gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+    gl.useProgram(prog);
+    return prog;
+  }
+
+  function drawAndRead(gl, canvas, prog) {
+    gl.useProgram(prog);
+    gl.clearColor(0, 0, 0, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+    var px = new Uint8Array(4);
+    gl.readPixels(Math.floor(canvas.width / 2), Math.floor(canvas.height / 2), 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    return px;
+  }
+
+  /* ---------------- 四项测试 ---------------- */
+
+  /* ① 控制组：纯红三角形。它能画出来，说明着色器 / 顶点缓冲 / 上屏这条链是通的 */
+  function controlTest() {
+    var d = makeDraw(96, 96);
+    if (!d) return { text: '❌ 建不出上下文', state: 'bad' };
+    try {
+      var prog = makeProgram(d.gl, '#version 300 es\nprecision highp float;\nout vec4 o;\nvoid main(){ o = vec4(1.0, 0.0, 0.0, 1.0); }');
+      var px = drawAndRead(d.gl, d.canvas, prog);
+      var ok = px[0] > 240 && px[1] < 15 && px[2] < 15;
+      return { text: (ok ? '✅ 画出来了（' : '❌ 没画出来（') + px[0] + ',' + px[1] + ',' + px[2] + '）', state: ok ? 'ok' : 'bad' };
+    } catch (e) {
+      return { text: '❌ 着色器/程序出错：' + String((e && e.message) || e).slice(0, 160), state: 'bad' };
+    }
+  }
+
+  /* ② 归一化 R8 纹理（边界深度图用的就是它） */
+  function r8Test() {
+    var d = makeDraw(96, 96);
+    if (!d) return { text: '❌ 建不出上下文', state: 'bad' };
+    var gl = d.gl, S = 256, want = 200;
+    try {
+      var tex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      var data = new Uint8Array(S * S);
+      data.fill(want);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, S, S, 0, gl.RED, gl.UNSIGNED_BYTE, data);
+      if (gl.getError()) return { text: '❌ 上传报错', state: 'bad' };
+
+      var prog = makeProgram(gl, [
+        '#version 300 es',
+        'precision highp float;',
+        'precision highp sampler2D;',
+        'uniform sampler2D uTex;',
+        'out vec4 o;',
+        'void main(){ float v = texelFetch(uTex, ivec2(10, 10), 0).r; o = vec4(v, 0.0, 0.0, 1.0); }'
+      ].join('\n'));
+      gl.useProgram(prog);
+      gl.uniform1i(gl.getUniformLocation(prog, 'uTex'), 0);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      var px = drawAndRead(gl, d.canvas, prog);
+      var ok = Math.abs(px[0] - want) <= 8;
+      return { text: (ok ? '✅ 采对了（读回 ' : '❌ 读回 ') + px[0] + '，应该是 ' + want + '）', state: ok ? 'ok' : 'bad' };
+    } catch (e) {
+      return { text: '❌ 异常：' + String((e && e.message) || e).slice(0, 160), state: 'bad' };
+    }
+  }
+
+  /* ③ 整数纹理 R16UI —— **已退役**，只留在 ⑤ 当参考 ✓
+   *   旧实现（整张 id 图直传）已经不走了 ✗ 删掉，免得体检结果误导人 ✓
+   *   想看它坏没坏，看下面 ⑤ 那一栏 ✓ */
+
+  /* ④ 数组纹理 RG8（整张装不下时的切块路径，只有手机才走） */
+  /* ============ 🔴 2026-10-19：这里的测试项**换了编码** ✗✗ ============
+   *
+   *  旧版测的是 R16UI + usampler2DArray —— Adreno 616 上三项全读回 0 ✓
+   *  但那个 0 后来发现是"整数采样这条路在驱动上就是坏的"，**不是我们的用法错** ✓
+   *  所以编辑器已经改成 **RG8 / R8 归一化**（见 gl.js 开头那段 ✓）——
+   *  体检页也得跟着测**现在真正用的那条路** ✗ 不然测出来的红绿没有意义 ✓
+   *
+   *  同时补两项（用户那份报告里有、这一版还没有）：
+   *    · 大纹理上传：一块 4096×2048 的 RG8 传上去要多久（手机最容易卡在这）
+   *    · 画面检查：画一块色，读回来颜色对不对（比"纯色三角形"更接近真实路径）
+   */
+  function r16ArrayTest() {
+    var d = makeDraw(96, 96);
+    if (!d) return { text: '❌ 建不出上下文', state: 'bad' };
+    var gl = d.gl, W = 2048, H = 2048, L = 3;
+    var want = [[0x2C, 0x01], [0x91, 0x5B], [0x75, 0x75]];   // 300 / 23441 / 30069
+    try {
+      var tex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D_ARRAY, tex);
+      gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texStorage3D(gl.TEXTURE_2D_ARRAY, 1, gl.RG8, W, H, L);
+      var e1 = gl.getError();
+      for (var i = 0; i < L; i++) {
+        var data = new Uint8Array(W * H * 2);
+        for (var k = 0; k < data.length; k += 2) { data[k] = want[i][0]; data[k + 1] = want[i][1]; }
+        gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, i, W, H, 1,
+          gl.RG, gl.UNSIGNED_BYTE, data);
+      }
+      var e2 = gl.getError();
+      if (e1 || e2) return { text: '❌ 建/传报错（glError=' + (e1 || e2) + '）', state: 'bad' };
+
+      var prog = makeProgram(gl, [
+        '#version 300 es',
+        'precision highp float;',
+        'uniform sampler2DArray uArr;',
+        'uniform int uLayer;',
+        'out vec4 o;',
+        'void main(){ vec4 c = texelFetch(uArr, ivec3(10, 10, uLayer), 0); o = vec4(c.r, c.g, 0.0, 1.0); }'
+      ].join('\n'));
+      gl.useProgram(prog);
+      gl.uniform1i(gl.getUniformLocation(prog, 'uArr'), 0);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D_ARRAY, tex);
+      var got = [];
+      for (var j = 0; j < L; j++) {
+        gl.uniform1i(gl.getUniformLocation(prog, 'uLayer'), j);
+        var px = drawAndRead(gl, d.canvas, prog);
+        got.push(px[0] + '/' + px[1]);
+      }
+      var okAll = got.every(function (v, k) {
+        var p = v.split('/');
+        return Math.abs(Number(p[0]) - want[k][0]) <= 2 && Math.abs(Number(p[1]) - want[k][1]) <= 2;
+      });
+      var expect = want.map(function (v) { return v[0] + '/' + v[1]; }).join(' / ');
+      return { text: (okAll ? '✅ 三层都采对（读回 ' : '❌ 读回 ') + got.join(' / ') + '，应该是 ' + expect + '）', state: okAll ? 'ok' : 'bad' };
+    } catch (e) {
+      return { text: '❌ 异常：' + String((e && e.message) || e).slice(0, 160), state: 'bad' };
+    }
+  }
+
+  /* ⑤ 整数纹理 R16UI —— **只当"参考"**，编辑器已经不用它了 ✗
+   *   它坏不坏**不影响**能不能用编辑器 ✓ 但留着一栏很有用：
+   *   下次再有人报白屏，这一栏要是 ❌ 而上面那条 ✅，就说明我们的绕法生效了 ✓ */
+  function r16UintRefTest() {
+    var d = makeDraw(96, 96);
+    if (!d) return { text: '❌ 建不出上下文', state: 'bad' };
+    var gl = d.gl, S = 512, want = 40000;
+    try {
+      var tex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      var data = new Uint16Array(S * S);
+      data.fill(want);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.R16UI, S, S, 0, gl.RED_INTEGER, gl.UNSIGNED_SHORT, data);
+      if (gl.getError()) return { text: '❌ 上传报错', state: 'bad' };
+      var prog = makeProgram(gl, [
+        '#version 300 es',
+        'precision highp float;',
+        'precision highp int;',
+        'precision highp usampler2D;',
+        'uniform usampler2D uTex;',
+        'out vec4 o;',
+        'void main(){ uint v = texelFetch(uTex, ivec2(10, 10), 0).r; o = vec4(float(v) / 65535.0, 0.0, 0.0, 1.0); }'
+      ].join('\n'));
+      gl.useProgram(prog);
+      gl.uniform1i(gl.getUniformLocation(prog, 'uTex'), 0);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      var px = drawAndRead(gl, d.canvas, prog);
+      var expect = Math.round(want / 65535 * 255);
+      var okv = Math.abs(px[0] - expect) <= 8;
+      return {
+        text: (okv ? '✅ 采对了（读回 ' : '⚠️ 读回 ') + px[0] + '，应该是 ' + expect + '）'
+          + (okv ? '' : '（不影响使用：编辑器已改用归一化纹理 ✓）'),
+        state: okv ? 'ok' : 'warn',
+      };
+    } catch (e) {
+      return { text: '⚠️ 异常：' + String((e && e.message) || e).slice(0, 120) + '（不影响使用 ✓）', state: 'warn' };
+    }
+  }
+
+  /* ⑥ 大纹理上传（手机最容易卡的一步：一块 4096×2048 的 RG8） */
+  function bigUploadTest() {
+    var d = makeDraw(64, 64);
+    if (!d) return { text: '❌ 建不出上下文', state: 'bad' };
+    var gl = d.gl;
+    var W = 4096, H = 2048;
+    try {
+      var tex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      var data = new Uint8Array(W * H * 2);
+      data.fill(7);
+      var t0 = (window.performance && performance.now) ? performance.now() : Date.now();
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG8, W, H, 0, gl.RG, gl.UNSIGNED_BYTE, data);
+      var ge = gl.getError();
+      gl.finish && gl.finish();
+      var ms = Math.round(((window.performance && performance.now) ? performance.now() : Date.now()) - t0);
+      if (ge) return { text: '❌ 上传报错（glError=' + ge + '）', state: 'bad' };
+      return {
+        text: '✅ 可以 · ' + W + '×' + H + ' RG8（' + (data.length / 1048576).toFixed(1) + 'MB），用时 ' + ms + ' ms',
+        state: ms > 2000 ? 'warn' : 'ok',
+      };
+    } catch (e) {
+      return { text: '❌ 异常：' + String((e && e.message) || e).slice(0, 160), state: 'bad' };
+    }
+  }
+  /* 画一块能看见的色块，肉眼也能确认"到底能不能画" */
+  function visualTest() {
+    var d = makeDraw(160, 60);
+    if (!d) return;
+    var gl = d.gl;
+    gl.clearColor(0.1, 0.1, 0.12, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    try {
+      var prog = makeProgram(gl, [
+        '#version 300 es',
+        'precision highp float;',
+        'out vec4 o;',
+        'void main(){ o = vec4(0.25, 0.7, 0.9, 1.0); }'
+      ].join('\n'));
+      gl.useProgram(prog);
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
+    } catch (e) { /* 上面的测试项会报它 */ }
+    var wrap = document.getElementById('capCanvas');
+    if (wrap) wrap.appendChild(d.canvas);
+  }
+
+  /* ---------------- 跑 ---------------- */
+  function run() {
+    results = []; lines = [];
+    document.getElementById('copyTip').textContent = '';
+    ['glTable', 'capTable'].forEach(function (id) { document.getElementById(id).innerHTML = ''; });
+    var wrap = document.getElementById('capCanvas');
+    if (wrap) wrap.innerHTML = '';
+    setVerdict('正在检查…');
+
+    checkEnv();
+    var ctx = probeGL();
+    if (!ctx) { flushRaw(); return; }
+
+    var ctrl = controlTest();
+    var r8 = r8Test();
+    var big = bigUploadTest();
+    var arr = r16ArrayTest();
+    var ref = r16UintRefTest();
+
+    var rows = [
+      { key: '① 画面检查（纯色三角形）', value: ctrl.text, state: ctrl.state },
+      { key: '② 普通纹理 R8（边界深度图）', value: r8.text, state: r8.state },
+      { key: '③ 大纹理上传 4096×2048 RG8', value: big.text, state: big.state },
+      { key: '④ 分块数组纹理 RG8（整张装不下时走这条）', value: arr.text, state: arr.state },
+      { key: '⑤ 整数纹理 R16UI（仅参考 · 编辑器已不用）', value: ref.text, state: ref.state }
+    ];
+    fillTable('capTable', rows);
+    rows.forEach(function (r) { put(r.key, r.value); });
+    visualTest();
+
+    /* ⚠ **只有 bad 才算"过不去"** ✗ —— ⑤ 那一栏是 warn（编辑器已经绕开了 ✓
+     *   拿它当失败会让人以为"这台机器不能用"，其实完全能用 ✓ */
+    var bad = rows.filter(function (r) { return r.state === 'bad'; });
+    if (!bad.length) {
+      setVerdict('这台设备的关键能力都过关 ✅', 'ok', '如果还白屏，问题在具体绘制步骤或合成层，把这份结果发给作者。');
+    } else if (ctrl.state === 'bad') {
+      setVerdict('连纯色三角形都画不出来', 'bad', '这不是数据问题：着色器 / 绘制这条链在这台机器上就断了，基本是浏览器 GPU 层的事（换浏览器、开硬件加速）。');
+    } else if (big.state === 'bad') {
+      setVerdict('大纹理传不上去（4096×2048）', 'bad', '编辑器要把省份图整块传进显存，这一步挂掉地图就是空的。把这份结果发给作者。');
+    } else if (arr.state === 'bad') {
+      setVerdict('分块数组纹理采不出来', 'bad', '手机贴图上限 4096 装不下大图时会切块走这条。这台机器上它不通 —— 新版编辑器会自动改成「整图缩小」那条路，但仍请把结果发给作者。');
+    } else {
+      setVerdict('有几项没过：' + bad.map(function (r) { return r.key.replace(/^[①②③④⑤⑥]\s*/, ''); }).join('、'), 'bad', '把这份结果发给作者。');
+    }
+    flushRaw();
+  }
+
+  document.getElementById('btnCopy').addEventListener('click', function () {
+    var text = '【图形能力体检】\n' + lines.join('\n');
+    var done = function () { document.getElementById('copyTip').textContent = '复制好了 ✓'; };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, function () { fallbackCopy(text, done); });
+    } else {
+      fallbackCopy(text, done);
+    }
+  });
+
+  function fallbackCopy(text, done) {
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.cssText = 'position:fixed;opacity:0';
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); done(); } catch (e) { alert(text); }
+    document.body.removeChild(ta);
+  }
+
+  document.getElementById('btnRetry').addEventListener('click', run);
+
+  run();
+})();
+</script>
+</body>
+</html>
