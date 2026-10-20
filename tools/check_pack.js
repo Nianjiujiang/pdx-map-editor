@@ -290,6 +290,16 @@ function synth(over = {}) {
     'prov_pos.bin': bin(provPos, over.posPlain),
   };
 
+  /* 让**里面那层 zlib** 后面挂几个垃圾字节：zip 结构没坏、哈希也对得上，
+     只有解压会失败 —— 真机上就是"包传坏/被改了一个字节"✓
+     （2026-10-19 变异测试抓到：这种以前会把底层英文报错直接漏到界面上 ✗）*/
+  if (over.posJunk) {
+    const base = bins['prov_pos.bin'];
+    const out = new Uint8Array(base.length + 4);
+    out.set(base, 0);
+    bins['prov_pos.bin'] = out;      // 后四个字节是 0 ✓
+  }
+
   // 哈希算的是**包里那一份**（zip 解完看到的字节）✓
   const hashes = {};
   const smallHash = (t) => { const h = new ex.Sha256(); h.update(new TextEncoder().encode(t)); return h.hex(); };
@@ -466,6 +476,18 @@ async function testBadPacks() {
       ok('合成包（不改）通过', false, e.message);
     }
   }
+
+  // ---- 解压流本身坏了：zip 结构没坏、哈希对得上，是里面那层 zlib 被改了
+  //      要求：给一句中文，别把底层那句英文（甚至空 TypeError）直接漏出去
+  await bad('prov_pos.bin 的解压流坏了', () => synth({ posJunk: true }).bytes, ['解压失败']);
+
+  // ---- 结尾记录后面还有东西：假签名 / 没传完
+  await bad('zip 结尾记录后面还有东西', () => {
+    const a = synth().bytes;
+    const out = new Uint8Array(a.length + 4);
+    out.set(a, 0);
+    return out;
+  }, ['结尾记录']);
 
   // ---- manifest 层
   await bad('缺 manifest.json', () => synth({ dropFile: 'manifest.json' }).bytes, ['manifest']);

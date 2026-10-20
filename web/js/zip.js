@@ -307,7 +307,14 @@ export async function readZip(blob) {
   if (nAll === 0xFFFF || cdSize === 0xFFFFFFFF || cdOff === 0xFFFFFFFF) {
     throw new Error('这是 zip64 格式的包，不支持（换个打包工具，别开大文件模式）');
   }
-  if (at + 22 + commentLen > tail.length) throw new Error('zip 结尾记录不完整（文件被截断了）');
+  /* ⚠ **结尾记录必须正好顶到文件末尾** ✗（2026-10-19 变异测试）
+   *   注释字段是 zip 的最后一段 ✓ 所以 EOCD 后面只该是注释、然后就是 EOF
+   *   只判"不超过"的话，**注释里塞一个假签名**也会被当成真的 ✗
+   *   （从尾巴往回扫第一次就扫到它 ✓ 然后按假的中央目录去读 ✓ 轻则报错、重则读到别处）
+   *   反过来：真的 EOCD + 注释正好占满尾部 → 这个等式成立 ✓ 不影响任何正常包 ✓ */
+  if (at + 22 + commentLen !== tail.length) {
+    throw new Error('zip 结尾记录对不上（文件被截断了，或者结尾有假签名）');
+  }
   if (cdOff + cdSize > size || cdOff + cdSize < cdOff) throw new Error('zip 中央目录越界（文件被截断了）');
 
   const cd = await sliceBytes(blob, cdOff, cdSize);
