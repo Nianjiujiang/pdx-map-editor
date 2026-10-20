@@ -347,7 +347,17 @@ async function scan(zip, e, cap, onChunk, onLayer1) {
 
   let raw = 0;
   for (;;) {
-    const { done, value } = await reader.read();
+    let step;
+    try {
+      step = await reader.read();
+    } catch (err) {
+      /* 解压流自己坏了（文件被改过 / 没传完）✗ —— 底层给的是英文，
+         有的环境甚至只有一个空 TypeError ✓ 直接上屏等于没说 ✗
+         （2026-10-19 变异测试抓到的：改坏一个字节就能撞出这种）*/
+      try { await reader.cancel(); } catch (e2) { /* 取消失败无所谓，反正要抛了 */ }
+      fail(`「${e.name}」解压失败（文件坏了或者没传完）`, e.name);
+    }
+    const { done, value } = step;
     if (done) break;
     raw += value.length;
     if (raw > cap) {
