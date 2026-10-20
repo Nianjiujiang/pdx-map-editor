@@ -2695,13 +2695,16 @@ function paintAt(pid, tid) {
  * 界面上的涂色一律走 `paintAt → paintTargetsAt/pidsOf → paintPids`（落笔单位是地块 ✓），
  * 所以这里**不再**维护"头衔 → 颜色/名字"那两张表（`paintColor` / `titleLabel` 已经删了 ✓）
  */
-function paintTitle(tid, rgb, noHistory) {
+function paintTitle(tid, rgb, noHistory, noRecompute) {
   const pids = pidsOf(tid);
   if (!pids.length) return;                 // 没头衔的头衔号：动作等于没做 ✓（涂色单位本来就是地块 ✓）
   const c = [rgb[0] | 0, rgb[1] | 0, rgb[2] | 0];
   const _snap = noHistory ? null : snapshotPidsList(pids);
   paintPids(pids, c);
-  recomputePainted();
+  /* ⚠ `noRecompute` 给**批量**用 ✗（导入涂色那种成千上万个头衔的场合 ✓）
+     `recomputePainted()` 是 O(省份数) ✓ 每涂一个跑一次 = 几千 × 一万多 ≈ 上亿次操作 ✗
+     → 界面会整个冻住十几秒（用户只当是死机了 ✗）。批量的话由调用方最后算**一次** ✓ */
+  if (!noRecompute) recomputePainted();
   if (_snap) pushPatches(_snap);            // noHistory：调用方（整族涂）自己合成一条 ✓
 }
 
@@ -5547,9 +5550,12 @@ function applyProject(data) {
     if (tid == null || !Array.isArray(rgb) || rgb.length < 3) continue;
     if (t.tiers[tid] >= TIER_COUNT) continue;   // ''荒地不给'
     setBrushLabel(labels[key] || t.names[tid]);
-    paintTitle(tid, [rgb[0] | 0, rgb[1] | 0, rgb[2] | 0]);
+    /* 每涂一个**先别重算账本** ✓ —— 一个几千个头的工程会卡十几秒 ✗
+       整批涂完在下面算一次就够 ✓（读数完全一样 ✓ 只是不再白算 N 遍 ✓）*/
+    paintTitle(tid, [rgb[0] | 0, rgb[1] | 0, rgb[2] | 0], false, true);
     n++;
   }
+  if (n) recomputePainted();                 // 整批只算这一次 ✓（账本 + 「改动 N」都在这儿 ✓）
 
   setBrushLabel(savedLabel);
   if (n) { blocksDirty = true; labelDirty = true; }
