@@ -91,6 +91,134 @@ html, body {
   gap: 1px;
 }
 
+/* 🔴 **层级多了别把顶栏顶成好几行** ✗✗（2026-10-19 ✓）
+ *
+ *   EU4 现在 18 层（12 剧本 + 空白 + 5 地理），风云世纪两千年更是 121 层 ✓
+ *   `.toolbar` 有 `flex-wrap: wrap`，所以按钮多了**不会坏**，
+ *   但会一行行往上堆 —— 顶栏能吃掉小半个屏幕 ✗
+ *
+ *   → 只给"视图"这一条加**横向滚动** ✓
+ *     · 层数少的时候宽度还是自适应，**跟原来一模一样** ✓（不会有滚动条 ✓）
+ *     · 太多了就在这一条里滑，顶栏高度恒定 ✓
+ *     · 滚动条藏起来（手机上那一小截很难看 ✓ 照样能滑 ✓）
+ *
+ *  ⚠ 只动 `#tier-group`，工具那一排 / 手机版布局都不受影响 ✓
+ *  ⚠ 用户说过"先不做 UI，等剧本多到挤了再说" ✓ —— 这不是改版式，
+ *    是**防止溢出** ✓ 版式一点没变 ✓ */
+#tier-group { min-width: 0; flex: 0 1 auto; }
+#tier-group .segmented {
+  max-width: min(62vw, 920px);
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+#tier-group .segmented::-webkit-scrollbar { height: 0; }
+
+/* ------------------------------------------------------------ 剧本下拉栏
+ *  🔴 2026-10-19 ✓ 用户要求："给剧本做一个下拉栏UI" ✓
+ *  剧本层能有上百个（风云世纪两千年 116 个 ✓）—— 摆按钮摆不下 ✗
+ *  → 一个按钮 + 一个面板，多少个都不怕 ✓
+ *
+ *  ⚠⚠ **类名必须避开 `.dropdown`** ✗✗（2026-10-19 踩过 ✓）
+ *     `.dropdown` 是**右上角「导出 ▾」那个菜单**的类 ✓ 它长得完全不一样：
+ *        position: absolute; top: calc(100% + 6px); right: 0; flex-direction: column
+ *     我一开始图省事也叫 `.dropdown` → **剧本那个按钮整块被绝对定位到别处** ✗
+ *     现象：顶栏只剩一个「剧本」标签，按钮**凭空消失** ✓
+ *     看着像"没渲染"，其实是飘到 `right: 0` 那边去了 ✓
+ *  → 这里一律用 `era-drop`（剧本专用 ✓）不跟别人抢通用名 ✓
+ */
+.era-drop { position: relative; }
+/* ⚠ `hidden` 属性会被 `.tool-group { display: flex }` 盖掉 ✗（作者样式的优先级高于
+ *   浏览器默认的 `[hidden]{display:none}` ✓）—— 没有剧本层的图本来该把整块藏起来，
+ *   不写这条就藏不住 ✓ 2026-10-19 补 ✓ */
+#era-group[hidden] { display: none; }
+
+.dd-btn {
+  appearance: none;
+  display: flex; align-items: center; gap: 5px;
+  background: #0f141a;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 4px 9px;
+  color: var(--text-dim);
+  font: inherit; font-size: 11.5px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background .12s, color .12s, border-color .12s;
+}
+.dd-btn:hover { background: #1d252f; color: var(--text); }
+/* 正在看这个剧本 —— 跟地理层那排的"选中"同一个金色 ✓ */
+.dd-btn.on {
+  background: linear-gradient(180deg, #3a3016, #2b2410);
+  color: #f0d98a;
+  border-color: #6b5420;
+}
+/* 没在看，但配色还沿用着它（"粒度"那一档）—— 弱一档的蓝 ✓ */
+.dd-btn.grain {
+  color: #9ec5e8;
+  border-color: #2c4a66;
+}
+.dd-caret { font-size: 9px; opacity: .7; }
+
+.dd-panel {
+  display: none;
+  position: absolute;
+  top: calc(100% + 5px);
+  left: 0;
+  z-index: 60;
+  min-width: 190px;
+  max-height: min(62vh, 460px);
+  overflow-y: auto;
+  background: #12171d;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 4px;
+  box-shadow: 0 14px 34px rgba(0, 0, 0, .55);
+  scrollbar-width: thin;
+}
+.dd-panel.open { display: block; }
+
+.dd-item {
+  appearance: none;
+  display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
+  width: 100%;
+  border: 0; background: transparent;
+  color: var(--text-dim);
+  font: inherit; font-size: 12px;
+  padding: 5px 8px;
+  border-radius: 5px;
+  cursor: pointer;
+  text-align: left;
+  white-space: nowrap;
+}
+.dd-item:hover { background: #1d252f; color: var(--text); }
+.dd-item.on { background: linear-gradient(180deg, #3a3016, #2b2410); color: #f0d98a; }
+.dd-item.grain { color: #9ec5e8; }
+.dd-item-sub { font: 10px/1 var(--mono); opacity: .6; }
+
+/* ------------------------------------------------------------ 顶栏折叠（手机版用）
+ *  🔴 2026-10-19 ✓ 用户要求："手机版的栏加一个收起折叠功能" ✓
+ *  手机上顶栏本来就挤，剧本下拉 + 地理层 + 工具，一行根本放不下 ✓
+ *  → `#toolbar-fold` 那个按钮把**工具那一排**收起来 ✓
+ *    地图本身一点不挡（工具栏是透明的覆盖层 ✓）
+ *  ⚠ 默认**不收**（跟原来一样 ✓）—— 玩家点了才收 ✓
+ *    变了默认态的话，老用户会以为按钮没了 ✓
+ */
+#toolbar-fold {
+  appearance: none;
+  display: none;                 /* 桌面不显示 ✓ 手机版才出来 ✓ */
+  align-items: center; gap: 4px;
+  background: #0f141a;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 4px 8px;
+  color: var(--text-dim);
+  font: inherit; font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+#toolbar-fold:hover { background: #1d252f; color: var(--text); }
+
 .segmented button {
   appearance: none;
   border: 0;
@@ -566,11 +694,22 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin
 @media (max-width: 1200px) {
   .group-label { display: none; }
   .toolbar { gap: 7px; }
+  /* 🔴 **窄屏才出折叠按钮** ✓（2026-10-19 ✓ 用户要求"手机版的栏加收起折叠"✓）
+   *   桌面地方大，不需要收；触屏/小屏上顶栏是透明的覆盖层，收起来能多露一截地图 ✓ */
+  #toolbar-fold { display: flex; }
 }
 
 @media (max-width: 900px) {
   .sidebar { width: 268px; }
+  /* 太窄的时候剧本下拉和视图那排各占一行也放得下 ✓ 不再强迫挤一起 ✓ */
+  #era-group [data-role="era-panel"] { min-width: min(86vw, 240px); }
 }
+
+/* 🔴 **收起来的样子** ✓（顶栏折叠，2026-10-19 ✓）
+ *  `body.tb-folded` 时把工具那一排藏掉 —— 品牌、剧本、视图、文件都还在 ✓
+ *  ⚠ 只藏 `#tool-group`（工具）✗ 不藏视图 / 剧本 ✓ 那两个是看图的刚需 ✓ */
+body.tb-folded #tool-group { display: none; }
+#toolbar-fold .fold-caret { font-size: 9px; opacity: .7; }
 
 
 /* 左栏里的「工具」和「导入导出」（从顶栏搬过来的；左栏 322px，得允许换行） */

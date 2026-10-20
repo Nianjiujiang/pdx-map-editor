@@ -44,6 +44,21 @@ if (location.protocol === 'file:') {
       <span class="brand-text">地图编辑器</span>
     </div>
 
+    <!-- 🔴 **剧本 / 地理分成两块** ✗✗（2026-10-19 ✓ 用户要求）
+          剧本层可能有上百个（风云世纪两千年 116 个 ✓）——
+          全摆成按钮的话顶栏就没法看了 ✗
+          → 剧本收进**下拉栏**，地理层照旧摆按钮 ✓
+      ⚠ `data-role="era"` 是剧本那几个，`data-role="tier"` 只放地理层 ✓
+        （`refreshTierButtons()` 和快捷键都按这个分开 ✓） -->
+    <div class="tool-group" id="era-group" hidden>
+      <span class="group-label">剧本</span>
+      <div class="era-drop" id="era-dd">
+        <button class="dd-btn" data-role="era-btn" id="era-btn" aria-haspopup="listbox"
+                aria-expanded="false"><span class="dd-label">—</span><span class="dd-caret">▾</span></button>
+        <div class="dd-panel" data-role="era-panel" id="era-panel" role="listbox"></div>
+      </div>
+    </div>
+
     <div class="tool-group" id="tier-group">
       <span class="group-label">视图</span>
       <div class="segmented" data-role="tier"></div>
@@ -53,6 +68,13 @@ if (location.protocol === 'file:') {
       <span class="group-label">工具</span>
       <div class="segmented" data-role="tool"></div>
     </div>
+
+    <!-- 🔴 **顶栏折叠**（2026-10-19 ✓ 用户要求"手机版的栏加一个收起折叠功能"✓）
+         只在窄屏出现（`#toolbar-fold` 在 `max-width: 1200px` 里才 display:flex ✓）
+         收起来时把**工具那一排**藏掉，视图 / 剧本 / 文件都还留着 ✓ -->
+    <button id="toolbar-fold" type="button" aria-expanded="true">
+      <span class="fold-label">收起</span><span class="fold-caret">▴</span>
+    </button>
 
     <!-- **教程 + 署名：紧跟在左侧工具栏右边** ✓（用户要求）
          ⚠ `author-row` 这个**容器 id 得留着** ✗ —— 手机版按它找（`$('author-row')`）

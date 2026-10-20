@@ -136,3 +136,79 @@ def parse_country_colors(game: Path, tags: dict[str, str]) -> dict[str, tuple[in
                     out[tag] = rgb
                 break
     return out
+
+
+# ---------------------------------------------------------------- 附庸关系
+
+#: 哪些关系算「附庸」—— 编辑地图时都该跟着宗主上色 ✓
+#:  ⚠ `tributary_state`（朝贡）**不算** ✗ —— 朝贡只是进贡，地图上历来是**独立着色**的 ✓
+#:    用户点名的是「附庸」✓ 那就只收真正的从属关系 ✓
+_SUBJECT_KEYS = ("vassal", "march", "client_state", "personal_union", "union")
+
+
+def parse_subject_relations(history_dir: Path) -> list[tuple[str, str, tuple[int, int, int], tuple[int, int, int] | None]]:
+    """``history/diplomacy/*.txt`` → [(宗主, 附庸, 起始日, 结束日)]。
+
+    文件长这样（2026-10-19 从原版 1.37 抄的 ✓）：
+    ```
+    # Tibet and Manchu
+    vassal = {
+        first = QNG
+        second = UTS
+        start_date = 1724.1.1
+        end_date = 1792.11.1
+    }
+    ```
+    ``first`` 是宗主、``second`` 是附庸 ✓（这俩名字反直觉，别搞反 ✗）
+
+    ⚠ `end_date` 可以没有（= 一直持续 ✓）
+    ⚠ 文件是 ANSI（cp1252）编码 ✓ 跟省份历史同一个口径 ✓
+    ⚠ 解析不来的一律跳过 —— **宁可少合并，也别合并错** ✓
+    """
+    out: list[tuple[str, str, tuple[int, int, int], tuple[int, int, int] | None]] = []
+    d = Path(history_dir) / "diplomacy"
+    if not d.is_dir():
+        return out
+
+    def _date(v) -> tuple[int, int, int] | None:
+        if not isinstance(v, str):
+            return None
+        m = _DATE_KEY.match(v.strip())
+        if m is None:
+            return None
+        return (int(m.group(1)), int(m.group(2)), int(m.group(3)))
+
+    for fp in sorted(d.glob("*.txt")):
+        try:
+            text = fp.read_text(encoding="latin-1", errors="replace")
+        except OSError:
+            continue
+        for key, value in parse_script(text):
+            if key not in _SUBJECT_KEYS or not isinstance(value, list):
+                continue
+            a = block_get(value, "first")
+            b = block_get(value, "second")
+            if not isinstance(a, str) or not isinstance(b, str):
+                continue
+            start = _date(block_get(value, "start_date"))
+            if start is None:
+                start = (1, 1, 1)          # 没写起始日 = 从头就有 ✓
+            end = _date(block_get(value, "end_date"))
+            out.append((_clean_tag(a) or a, _clean_tag(b) or b, start, end))
+    return out
+
+
+def subject_at(rels, date: tuple[int, int, int]) -> dict[str, str]:
+    """某个日期上，谁是谁的附庸 → {附庸: 宗主}。
+
+    ⚠ 同一天可能有多条（历史上换过宗主 ✓）—— **后面的覆盖前面的** ✓
+      （文件按名字排完再读，同一份里靠后的那条就是后写的 ✓）
+    """
+    out: dict[str, str] = {}
+    for overlord, subject, start, end in rels:
+        if date < start:
+            continue
+        if end is not None and date >= end:
+            continue
+        out[subject] = overlord
+    return out

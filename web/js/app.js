@@ -4504,6 +4504,24 @@ function blankTierIndex() {
   return state._blankTier;
 }
 
+/** **剧本块**有几层 = 年份层 + 紧跟其后的「空白剧本」（2026-10-19 加 ✓）
+ *
+ *  ⚠ 别拿它替换 `eraTierCount()` ✗ 两者问的不是一件事：
+ *    · `eraTierCount()`  = "哪些层是**有主**的年份视图"（逻辑用：粒度 / 取色 / 涂色）
+ *    · `eraBlockCount()` = "哪几层该**收进剧本下拉栏**"（UI 用 ✓）
+ *    空白层**不是**年份视图（它全无主 ✓）但它是剧本块的一部分 ✓
+ *    —— 摆在"视图"那一排会很怪（"空白剧本"四个字像个视图名 ✗）
+ *       而跟年份一起收进下拉栏正合适 ✓
+ *
+ *  实测：EU4 12 个年份 + 空白 = 13 → 地理层从第 13 层（大洲）开始 ✓
+ *        CK3 1066 + 空白 = 2 → 地理层从第 2 层（帝国）开始 ✓
+ */
+function eraBlockCount() {
+  const n = eraTierCount();
+  const b = blankTierIndex();
+  return (n > 0 && b === n) ? n + 1 : n;
+}
+
 /**
  * **离当前视图最近的那个"有主"剧本层** ✓
  *
@@ -4722,7 +4740,12 @@ function gotoLevel(tier) {
   if (n > 0 && tier < n) setGrain(null);
 }
 
-/** 视图那一排的高亮：视图一个（金色），粒度一个（弱一档的蓝） */
+/** 视图那一排的高亮：视图一个（金色），粒度一个（弱一档的蓝）
+ *
+ *  ⚠ **剧本层不在那一排** ✓（2026-10-19 拆进下拉栏了 ✓）
+ *    所以这里的 `[data-role="tier"] button` 里**只有地理层** ✓
+ *    剧本的高亮 / 标签由下面 `refreshEraPicker()` 单独管 ✓
+ */
 function refreshTierButtons() {
   const n = eraTierCount();
   const inEra = n > 0 && state.tier >= 0 && state.tier < n;
@@ -4731,6 +4754,47 @@ function refreshTierButtons() {
     const i = Number(b.dataset.tier);
     b.classList.toggle('on', i === state.tier);
     b.classList.toggle('grain', grain != null && i === grain);
+  }
+  refreshEraPicker();
+}
+
+/** 剧本下拉栏：按钮上的字 + 面板里的高亮（2026-10-19 ✓）
+ *
+ *  三种状态：
+ *    · 正在看某个剧本       → 按钮写那个剧本的名字，那一行高亮 ✓
+ *    · 在地理层但**带着剧本粒度** → 按钮还写剧本名，但标"粒度"淡蓝 ✓
+ *      （那正是"1618 配色 + 省份粒度"的意思 ✓ 见 pressTier 的注释 ✓）
+ *    · 在地理层、没带粒度   → 按钮写最近看过的那个剧本（`lastEraTier`）
+ *      后面加个"·未用"提示 ✓ —— 别让人以为现在就是那个年代 ✗
+ */
+function refreshEraPicker() {
+  const btn = document.querySelector('[data-role="era-btn"]');
+  const panel = document.querySelector('[data-role="era-panel"]');
+  if (!btn || !panel) return;
+  /* ⚠ 高亮要按**剧本块**算 ✓ —— 空白剧本也在下拉栏里，它选中了也得亮 ✓
+   *   （`eraTierCount()` 不含空白层 ✗ 拿它算的话空白层那一项永远不亮 ✓）*/
+  const nBlock = eraBlockCount();
+  const n = eraTierCount();
+  if (nBlock <= 0) return;
+  const names = state.meta.tierNames || [];
+  const inEra = state.tier >= 0 && state.tier < n;          // "有主的年份视图" ✓
+  const inBlock = state.tier >= 0 && state.tier < nBlock;   // "剧本块里"（含空白层 ✓）
+  const grain = inEra ? state.grain : null;
+  // 按钮标签取哪个剧本：在看 → 当前；不在看但有粒度 → 粒度那个；
+  //   都没有 → 最近看过的（`lastEraTier`），再没有就用第一个
+  let show = inBlock ? state.tier : (grain != null ? grain : (state.lastEraTier | 0));
+  if (!(show >= 0 && show < nBlock)) show = 0;
+  const label = names[show] || '—';
+  const lab = btn.querySelector('.dd-label');
+  /* 空白剧本 / 不在这个块里 → 后面加"·未用"提示 ✓
+   *   （别让人以为现在看的就是那个年代 ✗ 见上面那段说明 ✓）*/
+  if (lab) lab.textContent = inEra ? label : `${label} ·未用`;
+  btn.classList.toggle('on', inEra);
+  btn.classList.toggle('grain', !inEra && grain != null);
+  for (const it of panel.querySelectorAll('[data-role="era-item"]')) {
+    const i = Number(it.dataset.tier);
+    it.classList.toggle('on', i === state.tier);
+    it.classList.toggle('grain', grain != null && i === grain);
   }
 }
 
@@ -4913,25 +4977,108 @@ function applyGameText() {
     // 层级数按数据来（V3 只有 4 层），快捷键就顺势给 1..N
     TIER_KEYS = meta.tiers || TIER_KEYS;
     TIER_COUNT = TIER_KEYS.length;
-    TIER_HOTKEY = TIER_KEYS.map((_, i) => String(i + 1));
+    /* 🔴 **热键只给地理层编，剧本层不占号** ✗✗（2026-10-19 ✓ 用户要求）
+     *   原先是 `TIER_KEYS.map((_, i) => String(i + 1))` —— 每层一个号 ✓
+     *   可剧本一多（116 个）就变成 1..121 的热键表 ✗ 根本按不过来 ✓
+     *   → 只编**地理层那一段**：1..(总层数 - 剧本层数) ✓
+     *   ⚠ `syncGameTerms()` 里拿不到 `eraTierCount()` 的时机问题？
+     *     不会 —— 它读的是 `state.meta`，这里 meta 刚赋值完 ✓
+     *     （`eraTierCount()` 自己就是读 state.meta 算的 ✓ 见那个函数 ✓）*/
+    {
+      const _eraN = eraBlockCount();
+      const _geoN = Math.max(0, TIER_KEYS.length - _eraN);
+      /* ⚠ 最多给 9 个号 ✗ —— 两位数要连按两下，跟"一键切视图"的直觉不符 ✓
+       *   地理层本来就 5~6 个，9 够用 ✓ 超过的只能点按钮（反正也就一两个 ✓）*/
+      TIER_HOTKEY = Array.from({ length: Math.min(_geoN, 9) }, (_, i) => String(i + 1));
+    }
   }
 }
 
 function buildToolbar() {
   const tierBox = document.querySelector('[data-role="tier"]');
-  // 年份那几层就是剧本层：日期和名字都是从游戏里common/bookmarks 读的
-  // （DLC 会改那些文件），tooltip 里带上剧本名和日期
+  const eraGroup = $('era-group');
+  const eraBtn = document.querySelector('[data-role="era-btn"]');
+  const eraPanel = document.querySelector('[data-role="era-panel"]');
+
+  /* 🔴🔴 **剧本和地理层分开摆** ✗✗（2026-10-19 ✓ 用户要求）
+   *
+   *   用户原话："给剧本做一个下拉栏UI，手机版的栏加一个收起折叠功能。
+   *            另外快捷键不要对剧本层生效。"✓
+   *
+   *   为什么非拆不可：剧本层是**跟着 bookmarks 走**的 —— 原版 EU4 12 个、
+   *   风云世纪两千年 **116 个** ✓ 全摆成按钮的话顶栏能横出去几米 ✗
+   *
+   *   分工：
+   *     · `data-role="era"`   → 剧本（下拉栏 ✓ 一行搞定，多少个都不怕）
+   *     · `data-role="tier"`  → 地理层（照旧摆按钮 ✓ 5~6 个，本来就是按钮好）
+   *   ⚠ 两边的 `dataset.tier` 存的都是**全局层号** ✓ 不是各自的序号 ✗
+   *     这样 pressTier / setTier / 归属表全都不用改 ✓
+   */
+  const names = state.meta.tierNames || [];
+  /* ⚠ 用 `eraBlockCount()` 而不是 `eraTierCount()` ✓ —— 空白剧本也要收进下拉栏 ✓
+   *   （两者差一层，见 `eraBlockCount` 的说明 ✓）*/
+  const eraN = eraBlockCount();
   const bms = (state.meta && state.meta.bookmarks) || [];
-  state.meta.tierNames.forEach((label, i) => {
+
+  // ---- 剧本下拉栏（没有剧本层的图就整个藏起来 ✓ CK3 有 1066 那层，也算）
+  if (eraGroup && eraBtn && eraPanel) {
+    if (eraN > 0) {
+      eraGroup.hidden = false;
+      eraPanel.innerHTML = '';
+      for (let i = 0; i < eraN; i++) {
+        const b = document.createElement('button');
+        b.dataset.tier = i;
+        /* ⚠ 用 `setAttribute` 而不是 `dataset.role` ✗ ——
+         *   真浏览器里两者等价，但**测试桩的 dataset 是个普通对象**（不写回属性 ✓）
+         *   桩里的 `querySelectorAll('[data-role="era-item"]')` 就一个都找不到 ✗
+         *   → 高亮永远不生效，测试红得莫名其妙 ✓（2026-10-19 踩过 ✓）
+         *   用 setAttribute：真浏览器照样能 `dataset.role` 读到 ✓ 两边都通 ✓ */
+        b.setAttribute('data-role', 'era-item');
+        b.setAttribute('role', 'option');
+        b.className = 'dd-item';
+        const bm = bms[i];
+        // 剧本名 + 日期。日期没有（空白层 / 老包）就只写名字 ✓
+        const sub = bm && bm.date ? bm.date : '';
+        b.innerHTML = `<span class="dd-item-name">${names[i]}</span>`
+          + (sub ? `<span class="dd-item-sub">${sub}</span>` : '');
+        b.onclick = () => { closeEraPanel(); pressTier(i); };
+        eraPanel.appendChild(b);
+      }
+      eraBtn.onclick = (e) => {
+        e.stopPropagation();
+        const open = eraPanel.classList.toggle('open');
+        eraBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+      };
+      // 点别处就收起来 ✓（只绑一次 ✓）
+      if (!eraBtn.__outsideBound) {
+        eraBtn.__outsideBound = true;
+        document.addEventListener('click', (e) => {
+          const dd = $('era-dd');
+          if (dd && !dd.contains(e.target)) closeEraPanel();
+        });
+        document.addEventListener('keydown', (e) => {
+          if (e.key === 'Escape') closeEraPanel();
+        });
+      }
+    } else {
+      eraGroup.hidden = true;
+    }
+  }
+
+  // ---- 地理层按钮（**快捷键只属于这一排** ✓ 用户点名要的）
+  tierBox.innerHTML = '';
+  for (let i = eraN; i < names.length; i++) {
     const b = document.createElement('button');
     b.dataset.tier = i;
-    b.innerHTML = `${label}<span class="k">${TIER_HOTKEY[i]}</span>`;
-    const bm = bms[i];
+    // 热键从 1 开始，**只数地理层** ✓ 剧本层不占号 ✓
+    const hk = TIER_HOTKEY[i - eraN] || '';
+    b.innerHTML = `${names[i]}${hk ? `<span class="k">${hk}</span>` : ''}`;
     b.onclick = () => pressTier(i);
     tierBox.appendChild(b);
-  });
+  }
 
   const toolBox = document.querySelector('[data-role="tool"]');
+  toolBox.innerHTML = '';
   for (const t of TOOLS) {
     const b = document.createElement('button');
     b.dataset.tool = t.id;
@@ -4939,6 +5086,45 @@ function buildToolbar() {
     b.onclick = () => setTool(t.id);
     toolBox.appendChild(b);
   }
+}
+
+/** 收起剧本下拉栏（点外面 / 按 Esc / 选中一项之后都走这里 ✓） */
+function closeEraPanel() {
+  const panel = document.querySelector('[data-role="era-panel"]');
+  const btn = document.querySelector('[data-role="era-btn"]');
+  if (panel) panel.classList.remove('open');
+  if (btn) btn.setAttribute('aria-expanded', 'false');
+}
+
+/** 顶栏折叠（2026-10-19 ✓ 用户要求："手机版的栏加一个收起折叠功能"✓）
+ *
+ *  手机上顶栏是**盖在地图上的透明层** ✓ 收起来就能多露一截地 ✓
+ *  收的只是**工具那一排** —— 视图 / 剧本 / 文件都留着（那几样是看图的刚需 ✓）
+ *  ⚠ 默认**不收**（跟原来一样 ✓）—— 老用户不会以为按钮没了 ✓
+ *  ⚠ 状态记在 localStorage 里（`kb` 前缀）—— 手机上切来切去就记住了 ✓
+ */
+function bindToolbarFold() {
+  const btn = $('toolbar-fold');
+  if (!btn) return;
+  const KEY = 'tb-folded';
+  const apply = (folded) => {
+    document.body.classList.toggle('tb-folded', folded);
+    btn.setAttribute('aria-expanded', folded ? 'false' : 'true');
+    const lab = btn.querySelector('.fold-label');
+    const car = btn.querySelector('.fold-caret');
+    if (lab) lab.textContent = folded ? '展开' : '收起';
+    if (car) car.textContent = folded ? '▾' : '▴';
+  };
+  let folded = false;
+  try { folded = localStorage.getItem(KEY) === '1'; } catch (e) { /* 隐私模式读不到就算了 ✓ */ }
+  apply(folded);
+  btn.onclick = () => {
+    folded = !document.body.classList.contains('tb-folded');
+    apply(folded);
+    try { localStorage.setItem(KEY, folded ? '1' : '0'); } catch (e) { /* 同上 ✓ */ }
+    // 折叠改了可视区域 → 画布尺寸得重算 ✓（不然地图会留一条空白 ✗）
+    if (typeof resize === 'function') { try { resize(); } catch (e) {} }
+  };
 }
 
 // ================================================================ 搜索
@@ -5824,8 +6010,22 @@ function bindEvents() {
       else if (k === 'y') { e.preventDefault(); redo(); }
       return;
     }
-    const ti = TIER_HOTKEY.indexOf(e.key);
-    if (ti >= 0) return pressTier(ti);      // 快捷键跟按钮同一套语'
+    /* 🔴 **快捷键只管地理层，剧本层一个都不占** ✗✗（2026-10-19 ✓ 用户点名要的）
+     *
+     *   用户原话："另外快捷键不要对剧本层生效。"✓
+     *
+     *   为什么：剧本最多能有 116 个（风云世纪两千年 ✓）——
+     *   按 1..116 排热键既按不过来，也会跟别的快捷键打架 ✗
+     *   而且剧本本来就得靠"挑"，不是靠"数" ✓ 下拉栏里点更合适 ✓
+     *
+     *   ⚠ `TIER_HOTKEY` 里是**地理层那一段**的号（1..N ✓ 见 buildToolbar ✓）
+     *     所以这里算出来的是**地理层内部的序号** ✓ 要加 `eraTierCount()` 才是层号 ✗
+     *     （以前两者相等，因为剧本层也在那一排 ✓ 现在不等了 ✓）*/
+    {
+      const _eraN = eraBlockCount();
+      const ti = TIER_HOTKEY.indexOf(e.key);
+      if (ti >= 0 && ti + _eraN < state.meta.tierNames.length) return pressTier(ti + _eraN);
+    }
     const tool = TOOLS.find((t) => t.key.toLowerCase() === k);
     if (tool) return setTool(tool.id);
 
@@ -9683,6 +9883,7 @@ async function boot() {
 
     applyGameText();
     buildToolbar();
+    bindToolbarFold();          // 顶栏折叠（手机版可见 ✓ 2026-10-19）
     bindEvents();
     setBrush(state.brush, false);
     setBrushLabel(state.brushLabel);      // 「标记」框里一开始就写着「请输入文本」✓

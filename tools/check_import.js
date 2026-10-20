@@ -583,7 +583,18 @@ async function testReloadPersistence() {
 
   ex2.setPackMap(PACK_ID);
   const tm = await ex2.api.titlemap();
-  ok('刷新之后：数据还读得出来', tm.length === 34594, `${tm.length} 项`);
+  /* 🔴 **2026-10-19：别写死 34594** ✗✗
+   *   那个数是 `7 层 × 4942 省` —— **7 层时代**的乘积 ✓
+   *   现在 EU4 是 18 层（12 剧本 + 空白 + 5 地理）→ 88956 ✓
+   *   层级以后还会变（这正是 v1.10 在干的事）✗ 所以按包里那份 meta 现算 ✓ */
+  const _wantLen = await (async () => {
+    try {
+      const m = await ex2.api.meta();
+      return (m.tiers ? m.tiers.length : 1) * m.numProvinces;
+    } catch (e) { return 34594; }        // 读不到就退回老数（宁可红也不炸 ✓）
+  })();
+  ok('刷新之后：数据还读得出来', tm.length === _wantLen,
+     `${tm.length} 项（按 meta 应为 ${_wantLen}）`);
 
   const booting = ex2.boot();
   await waitCards(env2, 2);

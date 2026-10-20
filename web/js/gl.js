@@ -208,6 +208,21 @@ void main() {
 const FRAG = `#version 300 es
 precision highp float;
 precision highp int;
+/* 🔴🔴 **采样器的精度必须单独声明** ✗✗（2026-10-19 用户实测踩到 ✓）
+ *
+ *  GLSL ES 3.00 里 **sampler 类型没有默认精度** —— 不写就在**部分驱动上编译不过**：
+ *      ERROR: 0:9:   'sampler2DArray' : No precision specified
+ *      ERROR: 0:178: 'sampler2DArray' : No precision specified
+ *  （用户那台 AMD Radeon 610M · ANGLE D3D11 ✓ ANGLE 会较真，桌面原生 GL 常常糊过去 ✓
+ *    所以本地怎么试都好的，一到 ANGLE 就白屏 ✓ —— 2026-10-19 真机上逮到的 ✓）
+ *
+ *  ⚠ v1.9 里这两行是「precision highp usampler2D;」「precision highp usampler2DArray;」✓
+ *    我退役整数纹理时**把 usampler 那两行删了、却没补归一化的** ✗
+ *    → 采样器一下子全变成「没精度」✓ 全平台的隐患 ✓
+ *  ⚠ sampler2DArray 和 sampler2D 是**两个独立类型**，各声明一次 ✓
+ *    （写了 sampler2D 不会顺带管住 sampler2DArray ✓ 就是这么坑 ✓）*/
+precision highp sampler2D;
+precision highp sampler2DArray;
 
 uniform sampler2D uProv;          // RG8    province id（低字节 R · 高字节 G）
 // **分块路径**（原尺寸 16384×8192 用）：每层一块 ✓
@@ -1824,6 +1839,7 @@ in vec2 aPos;
 void main() { gl_Position = vec4(aPos, 0.0, 1.0); }`);
       const fs = compile(gl, gl.FRAGMENT_SHADER, `#version 300 es
 precision highp float;
+precision highp sampler2DArray;
 uniform sampler2DArray uArr;
 uniform int uLayer;
 out vec4 o;

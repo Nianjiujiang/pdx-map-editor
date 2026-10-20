@@ -406,8 +406,36 @@ class El {
              right: this.clientWidth, bottom: this.clientHeight };
   }
   getContext(kind) { return kind === '2d' ? ctx2d() : fakeGL(); }
-  querySelectorAll() { return []; }
-  querySelector() { return null; }
+  /* 🔴 **子树查询要真的能查** ✗✗（2026-10-19 ✓）
+   *   原来是两个空壳（`return []` / `return null`）✓
+   *   剧本下拉栏那段用 `btn.querySelector('.dd-label')`、`panel.querySelectorAll('[data-role="era-item"]')`
+   *   —— 空壳会让它们拿不到东西 ✓ 于是测试里"下拉栏按钮上的字"永远是空的 ✓
+   *   这里按**咱们自己用到的三种写法**实现，够用就行（不是要造个 DOM）：
+   *     `[data-role="x"]`  按属性查
+   *     `.cls`             按 class 查
+   *     `#id`              按 id 查
+   *   末尾带 ` button` 之类再按标签名收一道 ✓ */
+  _all(sel, out) {
+    const s = String(sel || '').trim();
+    for (const c of this.children) {
+      if (!c || !c._all) continue;
+      let hit = false;
+      const dr = /\[data-role\s*=\s*["']([^"']+)["']\]/.exec(s);
+      const cl = /(?:^|[\s>])\.([\w-]+)/.exec(s);
+      const idm = /#([\w-]+)/.exec(s);
+      const tagm = /([a-zA-Z][\w-]*)\s*$/.exec(s.replace(/\[[^\]]*\]/g, '').trim() || '');
+      if (dr) hit = c._attrs && c._attrs['data-role'] === dr[1];
+      else if (cl) hit = c.classList && c.classList.contains(cl[1]);
+      else if (idm) hit = c.id === idm[1];
+      else hit = false;
+      if (hit && tagm && c.tagName && String(c.tagName).toLowerCase() !== tagm[1].toLowerCase()) hit = false;
+      if (hit) out.push(c);
+      c._all(sel, out);          // 继续往下翻（真 DOM 也是全子树 ✓）
+    }
+    return out;
+  }
+  querySelectorAll(sel) { return this._all(sel, []); }
+  querySelector(sel) { return this._all(sel, [])[0] || null; }
   click() { this.dispatchEvent({ type: 'click', target: this }); }
   /** 递归拼出子树里的文本，方便断言
    *  （innerHTML 现在会真造子节点，所以有子节点就以子节点为准 ——
@@ -530,9 +558,36 @@ function makeEnv(opt = {}) {
     getElementById: get,
     createElement: (t) => new El(t),
     addEventListener: listen(listeners.document),
-    querySelector: (sel) => (sel.includes('tier') ? containers.tier : containers.tool),
-    querySelectorAll: (sel) => (sel.includes('tier') ? containers.tier.children
-                               : sel.includes('tool') ? containers.tool.children : []),
+    querySelector: (sel) => {
+      if (sel.includes('tier')) return containers.tier;
+      if (sel.includes('tool')) return containers.tool;
+      /* 🔴 剧本下拉栏那几个（2026-10-19 ✓）—— 桩不解析 index.html，
+       *   所以按 `data-role` **懒建一个**再记住 ✓ 跟 getElementById 一个套路 ✓ */
+      const m = /\[data-role\s*=\s*["']([^"']+)["']\]/.exec(sel);
+      if (m) {
+        const key = 'role:' + m[1];
+        if (!els.has(key)) {
+          const el = new El(m[1] === 'era-btn' ? 'button' : 'div');
+          el._attrs['data-role'] = m[1];
+          els.set(key, el);
+        }
+        return els.get(key);
+      }
+      return bodyEl.querySelector(sel);
+    },
+    querySelectorAll: (sel) => {
+      if (sel.includes('tier')) return containers.tier.children
+        .filter((c) => !/\bbutton\b/.test(sel) || String(c.tagName).toLowerCase() === 'button');
+      if (sel.includes('tool')) return containers.tool.children
+        .filter((c) => !/\bbutton\b/.test(sel) || String(c.tagName).toLowerCase() === 'button');
+      const m = /\[data-role\s*=\s*["']([^"']+)["']\]/.exec(sel);
+      if (m) {
+        const key = 'role-list:' + m[1];
+        if (!els.has(key)) els.set(key, new El('div'));
+        return els.get(key).children;
+      }
+      return [];
+    },
     elementFromPoint: () => null,
     body: bodyEl,
     documentElement: new El('html'),
@@ -721,6 +776,11 @@ Object.defineProperty(_C, 'labels', { get: function () { return labels; }, enume
    测"选了一张 EU4 的图，术语应该跟着变成 EU4"就会假失败 ✗ —— 所以也改成活取 ✓ */
 Object.defineProperty(_C, 'GAME', { get: function () { return GAME; }, enumerable: true });
 Object.defineProperty(_C, 'TIER_BADGE', { get: function () { return TIER_BADGE; }, enumerable: true });
+/* ⚠ TIER_HOTKEY 也是 boot 里按层数**重新生成**的模块级 let ✓
+ *   拷值 = 永远停在初值 1~5 ✗ 测"快捷键只编地理层"就会假失败 ✓
+ *   ⚠ 这段在**模板字符串**里 ✗ 注释里不许出现反引号（会把模板截断 ✓）
+ *     2026-10-20 我又踩了一次 ✓ 所以改成全角引号 ✓ */
+Object.defineProperty(_C, 'TIER_HOTKEY', { get: function () { return TIER_HOTKEY; }, enumerable: true });
 return _C;`;
   const s = env.sandbox;
   const factory = new Function(

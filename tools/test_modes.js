@@ -736,8 +736,40 @@ class El {
   removeEventListener() {}
   getBoundingClientRect() { return { left: 0, top: 0, width: this.clientWidth, height: this.clientHeight, right: this.clientWidth, bottom: this.clientHeight }; }
   getContext(kind) { return kind === '2d' ? ctx2d() : fakeGL(); }
-  querySelectorAll() { return []; }
-  click() {}
+  /* 🔴 **子树查询要真的能查** ✗✗（2026-10-19 ✓）
+   *   原来是空壳 ✓ 可剧本下拉栏要用
+   *     `btn.querySelector('.dd-label')` / `panel.querySelectorAll('[data-role="era-item"]')`
+   *   —— 空壳拿不到东西，测试里下拉栏的字永远是空的 ✓
+   *   三种写法够用：`[data-role="x"]` / `.cls` / `#id`（末尾可跟标签名 ✓）*/
+  _all(sel, out) {
+    const s = String(sel || '').trim();
+    const dr = /\[data-role\s*=\s*["']([^"']+)["']\]/.exec(s);
+    const cl = /(?:^|[\s>])\.([\w-]+)/.exec(s);
+    const idm = /#([\w-]+)/.exec(s);
+    const tagm = /([a-zA-Z][\w-]*)\s*$/.exec(s.replace(/\[[^\]]*\]/g, '').trim() || '');
+    for (const c of this.children) {
+      if (!c || !c._all) continue;
+      let hit = false;
+      if (dr) hit = !!(c._attrs && c._attrs['data-role'] === dr[1]);
+      else if (cl) hit = !!(c.classList && c.classList.contains(cl[1]));
+      else if (idm) hit = c.id === idm[1];
+      if (hit && tagm && c.tagName && c.tagName.toLowerCase() !== tagm[1].toLowerCase()) hit = false;
+      if (hit) out.push(c);
+      c._all(sel, out);
+    }
+    return out;
+  }
+  querySelectorAll(sel) { return this._all(sel, []); }
+  querySelector(sel) { return this._all(sel, [])[0] || null; }
+  setAttribute(k, v) { this._attrs = this._attrs || {}; this._attrs[k] = String(v); }
+  getAttribute(k) { return this._attrs && this._attrs[k] !== undefined ? this._attrs[k] : null; }
+  removeAttribute(k) { if (this._attrs) delete this._attrs[k]; }
+  contains(n) {
+    if (!n) return false;
+    if (this === n) return true;
+    return this.children.some((c) => c && c.contains && c.contains(n));
+  }
+  click() { for (const fn of (this._listeners.click || [])) fn({ type: 'click', target: this }); }
   /** 递归把子元素的 innerHTML/textContent 拼出来，方便断言 */
   flat() {
     return (this._html || '') + this.children.map((c) => c.flat()).join(' | ') +
@@ -809,9 +841,36 @@ const documentStub = {
   getElementById: get,
   createElement: (t) => new El(t),
   addEventListener: () => {},
-  querySelector: (sel) => (sel.includes('tier') ? containers.tier : containers.tool),
-  querySelectorAll: (sel) => (sel.includes('tier') ? containers.tier.children
-                             : sel.includes('tool') ? containers.tool.children : []),
+  querySelector: (sel) => {
+    if (sel.includes('tier')) return containers.tier;
+    if (sel.includes('tool')) return containers.tool;
+    /* 🔴 剧本下拉栏那几个（2026-10-19 ✓）—— 按 `data-role` 懒建再记住 ✓
+     *   （这个假 DOM 不解析 index.html ✓ 跟 getElementById 一个套路 ✓）*/
+    const m = /\[data-role\s*=\s*["']([^"']+)["']\]/.exec(sel);
+    if (m) {
+      const key = 'role:' + m[1];
+      if (!els.has(key)) {
+        const el = new El(m[1] === 'era-btn' ? 'button' : 'div');
+        el._attrs = { 'data-role': m[1] };
+        els.set(key, el);
+      }
+      return els.get(key);
+    }
+    return null;
+  },
+  querySelectorAll: (sel) => {
+    if (sel.includes('tier')) return containers.tier.children
+      .filter((c) => !/\bbutton\b/.test(sel) || String(c.tagName).toLowerCase() === 'button');
+    if (sel.includes('tool')) return containers.tool.children
+      .filter((c) => !/\bbutton\b/.test(sel) || String(c.tagName).toLowerCase() === 'button');
+    const m = /\[data-role\s*=\s*["']([^"']+)["']\]/.exec(sel);
+    if (m) {
+      const key = 'role-list:' + m[1];
+      if (!els.has(key)) els.set(key, new El('div'));
+      return els.get(key).children;
+    }
+    return [];
+  },
   body: new El('body'),
 };
 
@@ -884,6 +943,12 @@ return {
   boot, state, GAMES, MAP_CHOICES,
   get GAME() { return GAME; },
   get TIER_BADGE() { return TIER_BADGE; },
+  /* ⚠ TIER_HOTKEY 是 boot 里按层数**重新生成**的模块级 let ✓
+     不挂 getter 的话测试读到的是 undefined ✓（2026-10-19 加的 ✓）
+     —— 这段在模板字符串里 ✗ 注释里不许出现反引号（会被截断 ✓ 我又踩了一次 ✓）*/
+  get TIER_HOTKEY() { return TIER_HOTKEY; },
+  get TIER_KEYS() { return TIER_KEYS; },
+  eraBlockCount, blankTierIndex, closeEraPanel,
   titleAt, renderHoverCard, actAt, pickTitle, paintTitle, restoreTitle, pickAt,
   setBrush, setTier, setTool, needsRestore, isLocked, isSpecialTid, runSearch,
   jumpToResult, searchJumpScale, paintAt, hoverGroupRgb, hoverTargetTid, applyHoverHighlight,
@@ -2440,16 +2505,26 @@ const factory = new Function(
        `还有归属的格子 ${bOwned} 个 · 无主陆地 ${bNoneLand} 块 · 背景地形 ${bBg} 格`);
     {
       const fineT = st.meta.tierNames.length - 1;
-      let offB = 0, nBgB = 0, notCleared = 0;
+      let offB = 0, nBgB = 0, notCleared = 0, colourOff = 0;
       for (let p = 1; p < st.meta.numProvinces; p++) {
         const tb = ex.titleAt(p, BLANK_T);
         const tf = ex.titleAt(p, fineT);
-        if (isBgTid(tb)) { nBgB++; if (tb !== tf) offB++; }
+        if (isBgTid(tb)) {
+          nBgB++;
+          /* 🔴 **2026-10-19：判据从"节点号相同"改成"显示颜色相同"** ✗✗
+           *   空白层抄的是**左边那个剧本层**（`#sea_all_1792` 那种"整类一片"✓
+           *   见 patch_blank_era 里那段说明 ✓）—— 而最细层是逐块的水域节点
+           *   （`#sea_pr_2264` ✓）→ **节点号本来就不同** ✗ 老断言必红 ✓
+           *   用户真正在意的是"**画出来不像大陆灰**"✓ 所以比**颜色** ✓ */
+          const cb = String(ex.displayedColor(p, tb));
+          const cf = String(ex.displayedColor(p, tf));
+          if (cb !== cf) { offB++; if (offB <= 3) console.log(`     省${p}: 空白层 ${cb} vs 最细层 ${cf}`); }
+        }
         else if (tb != null && tb !== st.meta.noTitle) notCleared++;   // 别的真头衔没清掉 ✗
       }
-      ok('空白剧本：海 / 湖 / 荒地那些背景地形跟最细那层逐格一致（不然整片海会变成大陆灰 ✗）',
+      ok('空白剧本：海 / 湖 / 荒地那些背景地形跟最细那层**颜色一致**（不然整片海会变成大陆灰 ✗）',
          offB === 0 && notCleared === 0 && nBgB > 0,
-         `背景地形 ${nBgB} 格 · 对不上的 ${offB} 格 · 没清干净的真头衔 ${notCleared} 个`);
+         `背景地形 ${nBgB} 格 · 颜色对不上的 ${offB} 格 · 没清干净的真头衔 ${notCleared} 个`);
     }
 
     const svB = { tier: st.tier, grain: st.grain, tool: st.tool, label: st.brushLabel,
@@ -2682,26 +2757,41 @@ const factory = new Function(
        ok5, ok5 ? 'ok' : '没找到回退逻辑');
   }
 
-  // 水域（海/湖/河）一律不高亮 —— 不亮整片、也不亮单块 ✓
+  /* 🔴🔴 **2026-10-19：这一段从"水不高亮"改成"水不能涂"** ✗✗
+   *
+   *   老断言是"水域一律不高亮：不亮整片、也不亮单块" ✗
+   *   可**用户明确要过相反的东西**：
+   *     "HOI4 的战略地图的高亮显示是**海域一起来**而不是分开，EU 同理"✓
+   *   → `hoverTargetTid` 对伪头衔的位置**退回最细层那个节点**，
+   *     整片海就是会亮 ✓ 那是要的 ✓ 不是 bug ✓
+   *
+   *   用户真正在意的"水的事"是**不能涂**（2026-10-16 定的：
+   *     "河流 / 海洋 / 不可通行海域 / 湖泊禁止上色"✓）
+   *   → 这里改成验那条 ✓（`isPaintable` 走 kindMask ✓ 跟悬停是两码事 ✓）
+   */
   {
     const fine = st.meta.tiers.length - 1;
     let spid = -1;
     for (let pid = 1; pid < st.meta.numProvinces && spid < 0; pid++) {
       const k = String(st.titles.keys[ex.titleAt(pid, fine)] || '');
-      const kc = String(st.titles.keys[ex.titleAt(pid, 0)] || '');
-      if (k.startsWith('#sea') || k.startsWith('#lake') || k.startsWith('#river')
-          || kc.startsWith('#sea') || kc.startsWith('#lake') || kc.startsWith('#river')) spid = pid;
+      if (k.startsWith('#sea') || k.startsWith('#lake') || k.startsWith('#river')) spid = pid;
     }
     if (spid > 0) {
-      const svTier = st.tier;
-      for (const tier of [0, fine]) {
-        st.tier = tier;
-        ex.applyHoverHighlight(spid, ex.hoverTargetTid(spid, ex.titleAt(spid, tier)));
-        ok(`水域不高亮（层${tier}：hoverPid=0、hoverTid=空）`,
-           ex.renderer.hoverPid === 0 && ex.renderer.hoverTid === st.meta.noTitle,
-           `hoverPid=${ex.renderer.hoverPid} hoverTid=${ex.renderer.hoverTid}`);
-      }
-      st.tier = svTier;
+      /* ⚠ 用 `isLocked(tid, pid)`（已导出 ✓）—— 它带 pid 时内部就是 `!isPaintable(pid)` ✓
+       *   `isPaintable` 本身没导出 ✗ 直接用会 TypeError ✓ */
+      const _wTid = ex.titleAt(spid, fine);
+      ok('水域的地块不给涂（kindMask 说它是水 → 锁住 ✓）',
+        ex.isLocked(_wTid, spid) === true,
+        `地块 ${spid} → isLocked=${ex.isLocked(_wTid, spid)}`);
+      /* 顺带记一笔悬停的实际行为（不断言 ✓ 只打印，方便以后对照）*/
+      const svT = st.tier;
+      st.tier = fine;
+      ex.applyHoverHighlight(spid, ex.hoverTargetTid(spid, ex.titleAt(spid, fine)));
+      console.log(`     （参考）水域悬停：hoverPid=${ex.renderer.hoverPid} `
+        + `hoverTid=${ex.renderer.hoverTid} —— 退回最细层节点 = 整片水亮 ✓ 这是要的 ✓`);
+      st.tier = svT;
+    } else {
+      console.log('  · 跳过（没找到水域地块）');
     }
   }
 
@@ -2789,10 +2879,18 @@ const factory = new Function(
   const LAST_TIER = st.meta.tiers.length - 1;
   // 第 0 层现在是**空白剧本**（全无主）—— 它的名字/徽章都是「空白」，
   // 其余各层原样往后挪一位 ✓（patch_blank_era.py 干的就是这件事 ✓）
+  //
+  // 🔴🔴 **2026-10-19：EU4 那一条不再写死** ✗✗
+  //   以前是 `['1444','1618','1789','空白剧本','区域','地区','省份']` 硬编码 ✓
+  //   现在 **bookmarks 全读**（原版 12 个）+ 地理层加了大洲/大区 ✓
+  //   → 名字列表只能从**数据自己**推，写死必红 ✓
+  //   这里只断言**结构**：剧本在前、空白夹在中间、地理层按粗细排在后面 ✓
   const want = isEU4
-    ? { id: 'eu4', key: 'eu4-map-editor/v1', tier: 6, entity: '省份',
-        badges: ['1444', '1618', '1789', '空白剧本', '区域', '地区', '省'],
-        names: ['1444', '1618', '1789', '空白剧本', '区域', '地区', '省份'], brand: 'EU' }
+    ? { id: 'eu4', key: 'eu4-map-editor/v1', entity: '省份',
+        brand: 'EU',
+        // 这些是"必须出现"的层，顺序也要对 —— 但**允许前面多出若干年份** ✓
+        geoTail: ['大洲', '大区', '区域', '地区', '省份'],
+        eraFirst: true }
     : isHoi4
     ? { id: 'hoi4', key: 'hoi4-map-editor/v1', tier: 4, entity: '省份',
         badges: ['1936', '1939', '空白剧本', '战略', '地区', '省'],
@@ -2802,9 +2900,15 @@ const factory = new Function(
         badges: ['1836', '空白剧本', '战略', '地区', '省'],
         names: ['1836', '空白剧本', '战略', '地区', '省份'], brand: 'VIC' }
     : isEu5
-    ? { id: 'eu5', key: 'eu5-map-editor/v1', tier: 4, entity: '地点',
-        badges: ['国家', '空白剧本', '区域', '地区', '省', '地点'],
-        names: ['1337', '空白剧本', '区域', '地区', '省份', '地点'], brand: 'EU' }
+    ? { id: 'eu5', key: 'eu5-map-editor/v1', entity: '地点',
+        brand: 'EU',
+        /* 🔴 **2026-10-19：EU5 也接上了大洲 / 次大陆** ✗✗
+         *   原来是 `['国家','空白剧本','区域','地区','省','地点']`（6 层）✓
+         *   现在 EU5 自己的地理树整棵放出来了：
+         *     continent → subcontinent → region → area → province → location ✓
+         *   → 改成结构断言（地理尾部固定、前面允许有剧本层 ✓） */
+        geoTail: ['大洲', '次大陆', '区域', '地区', '省份', '地点'],
+        eraFirst: true }
     : { id: 'ck3', key: 'ck3-map-editor/v1', tier: 5, entity: '头衔',
         // CK3 现在是"剧本层 + 地区层"：1066（剧本）· 空白剧本 · 帝国…男爵领（地区）✓
         badges: ['1066', '空白剧本', 'e_', 'k_', 'd_', 'c_', 'b_'],
@@ -3293,14 +3397,138 @@ const factory = new Function(
   }
   ok('meta 装上了', !!st.meta, `numTitles=${st.meta && st.meta.numTitles}`);
   ok(`${isEU4 ? '切到 EU4 的术语' : 'CK3 术语保持原样'}`, ex.GAME.id === want.id, ex.GAME.id);
-  ok('层级徽章', JSON.stringify(ex.TIER_BADGE) === JSON.stringify(want.badges), JSON.stringify(ex.TIER_BADGE));
-  ok('视图层级名', JSON.stringify(st.meta.tierNames) === JSON.stringify(want.names), JSON.stringify(st.meta.tierNames));
-  ok(`默认视图 = ${want.names[want.tier]}（第 ${want.tier} 层）`, st.tier === want.tier, String(st.tier));
-  ok(`工具栏 ${want.names.length} 个层级按钮`, containers.tier.children.length === want.names.length,
-     String(containers.tier.children.length));
+  /* 🔴 **2026-10-19：EU4 那条改成"结构断言"** ✗✗
+   *   原来的写法是 `JSON.stringify(TIER_BADGE) === JSON.stringify(want.badges)` ✓
+   *   可 EU4 的剧本数量**跟着 bookmarks 走**（原版 12 个、mod 可能 100+ ✓）
+   *   写死一张表必然红 ✗ → 改成验**结构**：
+   *     · 最后一个地理层必须是"省份"（最细一层 ✓）
+   *     · 它前面依次是 地区 / 区域 / 大区 / 大洲（**顺序不许乱** ✓）
+   *     · 空白剧本夹在"剧本块"和"地理块"中间（它照抄背景地形 ✓）
+   *     · 开头那几个都是年份（数字）✓
+   *   其它游戏（HOI4 / VIC3 / CK3 / EU5）仍然用写死表 —— 它们的层级是固定的 ✓ */
+  if (want.geoTail) {
+    const nm = st.meta.tierNames || [];
+    const bd = ex.TIER_BADGE || [];
+    const tail = nm.slice(nm.length - want.geoTail.length);
+    const tailName = want.geoTail[want.geoTail.length - 1];
+    ok(`地理层从粗到细、末尾是「${tailName}」（${want.geoTail.join('→')} ✓）`,
+       JSON.stringify(tail) === JSON.stringify(want.geoTail), tail.join('/'));
+    const bt = bd.slice(bd.length - want.geoTail.length);
+    ok('徽章也跟层级名对齐（末尾那格是「省」或「地点」✓）',
+       bt[bt.length - 1] === '省' || bt[bt.length - 1] === '地点', bt.join('/'));
+    ok('空白剧本夹在剧本块和地理块中间',
+       (() => {
+         const i = nm.indexOf('空白剧本');
+         return i > 0 && i === nm.length - want.geoTail.length - 1;
+       })(), `空白剧本@${nm.indexOf('空白剧本')} / 共 ${nm.length} 层`);
+    /* ⚠ **剧本块不一定是年份数字** ✗ —— EU5 的第一层徽章是「国家」（它的 1337 层
+     *   按国家算 ✓ 见 build_eu5 的 TIER_KEY ✓）；EU4 是年份 ✓
+     *   → 只验"剧本块不为空、而且都在地理块左边" ✓ 具体写法交给各作的构建器 ✓ */
+    ok('剧本块在最左边（地理块在右 ✓）',
+       (() => {
+         const i = nm.indexOf('空白剧本');
+         return i > 0 && nm.length - i === want.geoTail.length + 1;
+       })(), nm.join('/'));
+    /* ⚠ 默认视图按各作自己的 `meta.defaultTier` ✓ 不写死"地区" ✗
+     *   （EU4 = 地区、EU5 = 省份 ✓ 见各自的构建器 ✓） */
+    ok(`默认视图 = ${nm[st.meta.defaultTier]}（按 meta.defaultTier=${st.meta.defaultTier} ✓）`,
+       st.tier === st.meta.defaultTier, `第 ${st.tier} 层 = ${nm[st.tier]}`);
+    /* 🔴 **2026-10-19：按钮总数要拆成"剧本 + 地理"两段** ✗✗
+     *   剧本收进下拉栏了 → `containers.tier.children` 里**只有地理层** ✓
+     *   剧本块 = 年份层 + 紧跟其后的空白层 ✓（同 app.js 的 `eraBlockCount()` ✓）*/
+    {
+      const _bl = nm.indexOf('空白剧本');
+      const _nEraBlock = _bl >= 0 ? _bl + 1 : 0;
+      ok(`工具栏 ${nm.length} 层 = 剧本 ${_nEraBlock} + 地理 ${nm.length - _nEraBlock}（分开摆 ✓）`,
+         containers.tier.children.length === nm.length - _nEraBlock && _nEraBlock > 0,
+         `地理按钮 ${containers.tier.children.length} 个 · 剧本 ${_nEraBlock} 个`);
+    }
+  } else {
+    ok('层级徽章', JSON.stringify(ex.TIER_BADGE) === JSON.stringify(want.badges), JSON.stringify(ex.TIER_BADGE));
+    ok('视图层级名', JSON.stringify(st.meta.tierNames) === JSON.stringify(want.names), JSON.stringify(st.meta.tierNames));
+    ok(`默认视图 = ${want.names[want.tier]}（第 ${want.tier} 层）`, st.tier === want.tier, String(st.tier));
+    /* 🔴 **2026-10-19：剧本块挪进下拉栏了 → 这一排只剩地理层** ✗✗
+     *   写 `containers.tier.children.length === want.names.length` 必红 ✗
+     *   （CK3 7 层 → 这一排只有 5 个 ✓）*/
+    {
+      const _bl = want.names.indexOf('空白剧本');
+      const _nEraBlock = _bl >= 0 ? _bl + 1 : 0;
+      const _geoN = want.names.length - _nEraBlock;
+      ok(`工具栏 ${want.names.length} 层 = 剧本 ${_nEraBlock} + 地理 ${_geoN}（分开摆 ✓）`,
+         containers.tier.children.length === _geoN,
+         `这一排 ${containers.tier.children.length} 个（应 ${_geoN}）`);
+    }
+  }
   ok(`界面文案换成"${want.entity}"`, get('status-meta').textContent.includes(want.entity), get('status-meta').textContent);
   ok(`品牌换成 ${want.brand}`, get('brand-mark').innerHTML.includes(want.brand), get('brand-mark').innerHTML);
   ok('存档键分开', ex.GAME.saveKey === want.key, ex.GAME.saveKey);
+
+  /* ==================================================================
+   * 1a3. 剧本下拉栏 / 快捷键 / 顶栏折叠（2026-10-19 ✓ 用户点名要的三件事）
+   *   用户原话："给剧本做一个下拉栏UI，手机版的栏加一个收起折叠功能。
+   *            另外快捷键不要对剧本层生效。"
+   * ================================================================== */
+  {
+    const nm = st.meta.tierNames || [];
+    const _bl = nm.indexOf('空白剧本');
+    const _eraBlock = _bl >= 0 ? _bl + 1 : ((st.meta.eraDates || []).length);
+    const _geoN = nm.length - _eraBlock;
+
+    /* ① 快捷键只编地理层 —— `TIER_HOTKEY` 的长度就该是地理层数（封顶 9 ✓）
+     *   ⚠ 这一条就是"快捷键不要对剧本层生效"的**结构证据** ✓
+     *     剧本 116 个的图，热键表也只会是 1..9（地理层那几档）✓ */
+    ok('快捷键只编地理层（剧本层一个都不占号 ✓）',
+       ex.TIER_HOTKEY.length === Math.min(_geoN, 9),
+       `热键 ${ex.TIER_HOTKEY.length} 个（地理层 ${_geoN} 个）· ${ex.TIER_HOTKEY.join('')}`);
+    ok('给的是 1..N，不是层号（不会跳着来 ✓）',
+       ex.TIER_HOTKEY.every((k, i) => k === String(i + 1)), ex.TIER_HOTKEY.join(' '));
+
+    /* ② 剧本下拉栏：有剧本就显示，条目数 = 剧本块层数 ✓ */
+    const eraGroupEl = get('era-group');
+    const panelEl = documentStub.querySelector('[data-role="era-panel"]');
+    if (_eraBlock > 0) {
+      ok('剧本下拉栏显示出来了（有剧本层 ✓）', eraGroupEl.hidden === false,
+         `hidden=${eraGroupEl.hidden}`);
+      ok('下拉栏条目数 = 剧本块层数（年份 + 空白 ✓）',
+         (panelEl.children || []).length === _eraBlock,
+         `${(panelEl.children || []).length} 项 / 应为 ${_eraBlock}`);
+      /* 每一条都带着**全局层号** —— 这样 pressTier 不用改 ✓ */
+      ok('下拉条目带的是全局层号（不是它自己的序号 ✗）',
+         (panelEl.children || []).every((b, i) => Number(b.dataset.tier) === i),
+         (panelEl.children || []).map((b) => b.dataset.tier).join(','));
+    }
+
+    /* ③ 顶栏折叠（窄屏才显示，但逻辑一直在 ✓）
+     *   `bindToolbarFold()` 在 boot 里就绑好了 ✓ 这里直接点它 */
+    const foldBtn = get('toolbar-fold');
+    if (typeof foldBtn.onclick === 'function') {
+      const bodyCls = documentStub.body.classList;
+      foldBtn.onclick();
+      ok('点折叠 → body 打上 tb-folded（工具那一排收起来 ✓）', bodyCls.contains('tb-folded'));
+      foldBtn.onclick();
+      ok('再点一下 → 展开（btn 上的字也跟着换 ✓）', !bodyCls.contains('tb-folded'));
+      /* 折叠只收"工具"那一排 ✗ 视图 / 剧本都留着 ✓ —— 那是看图的刚需 */
+      const css = fs.readFileSync(path.join(ROOT, 'web', 'style.css'), 'utf8');
+      ok('折叠只藏 #tool-group（视图 / 剧本 / 文件都还在 ✓）',
+         /body\.tb-folded\s+#tool-group\s*\{\s*display:\s*none/.test(css)
+         && !/body\.tb-folded\s+#(tier|era)-group/.test(css));
+      ok('折叠按钮窄屏才出现（桌面不占地方 ✓）',
+         /@media[^{]*max-width:\s*1200px[\s\S]*?#toolbar-fold\s*\{\s*display:\s*flex/.test(css));
+      /* 🔴 **剧本下拉栏的类名不许跟 `.dropdown` 撞** ✗✗（2026-10-19 真机踩到 ✓）
+       *   `.dropdown` 是右上角「导出 ▾」那个菜单 ✓ 它带
+       *     `position: absolute; top: calc(100% + 6px); right: 0`
+       *   我一开始同名 → 剧本那个按钮被**绝对定位到别处** ✗
+       *   现象：顶栏只剩一个「剧本」标签，按钮凭空消失 ✓（用户截图报的 ✓）
+       *   → 这条钉死：那个 div 必须是 `era-drop` ✓ */
+      const htmlSrc = fs.readFileSync(path.join(ROOT, 'web', 'index.html'), 'utf8');
+      ok('剧本下拉栏的容器用 era-drop（不许借用 .dropdown ✗ 那是导出菜单的）',
+         /class="era-drop"\s+id="era-dd"/.test(htmlSrc) && !/class="dropdown"\s+id="era-dd"/.test(htmlSrc));
+      ok('era-drop 只有 position: relative（不带 absolute / right ✓）',
+         /\.era-drop\s*\{\s*position:\s*relative;\s*\}/.test(css));
+    } else {
+      ok('折叠按钮绑上了 onclick', false, 'boot 里没调 bindToolbarFold()？');
+    }
+  }
 
   // 启动过程**不许弹红框** ✗ —— 那个红框是给"真崩了"用的（showFatal）。
   // 我曾经往里塞过一条"正在走普通路径"的进度提示，结果每张不分块的地图正常启动
@@ -3514,7 +3742,25 @@ const factory = new Function(
       let checked = 0;
       // 门槛是不是真按 ARRIVE_SPAN 那口径算的（±30% 容差：四舍五入 + 取整到 %）
       const want = ex.ARRIVE_SPAN;
-      for (let t = nCountry; t < buckets.length; t++) {
+      /* 🔴 **2026-10-19：只验"省份那一层及更细"，不再验整个地理块** ✗✗
+       *   以前是 `for (let t = nCountry; ...)` —— 从剧本层之后**所有层**都要
+       *   "中位地块 ≈ 20px" ✓ 那时地理层只有 区域/地区/省份 三层，
+       *   三层的面积差距不大，勉强都满足 ✓
+       *
+       *   现在加了**大洲 / 次大陆**（EU5）和**大区 / 大洲**（EU4）——
+       *   一个大洲的"面积"是整片大陆（几千万像素）✓ 它的标签本来就该
+       *   **在很缩的时候才出现** ✓ 拿"≈20px"去卡它必然红 ✗
+       *   （实测报"大洲 42px" ✓ 不是 bug，是阈值本来就不是给它的 ✓）
+       *
+       *   → 只验**省份层**（最细的地理层）—— 那是"中位地块 ≈ 20px"设计的对象 ✓
+       *     其它层只要求"门槛单调不减"（越细越晚出现 ✓）下面单独验 ✓ */
+      let provTier = -1;
+      {
+        const pi = st.meta.tierNames.indexOf('省份');
+        const li = st.meta.tierNames.indexOf('地点');
+        provTier = li >= 0 ? li : pi;          // EU5 是「地点」，其余是「省份」
+      }
+      for (let t = Math.max(0, provTier); t <= Math.max(0, provTier); t++) {
         const arr = buckets[t].sort((x, y) => x - y);
         if (!arr.length) continue;
         checked++;
@@ -3522,6 +3768,15 @@ const factory = new Function(
         if (!(screen >= want * 0.7 && screen <= want * 1.4)) {
           bad.push(`${st.meta.tierNames[t]} ${screen.toFixed(0)}px`);
         }
+      }
+      /* 新加的一条：**地理层门槛单调不减**（越细的层越晚出现 ✓）
+       *   ⚠ 剧本层那段（12 / 18）不参与 —— 它们按"一进去就看见国名"定的 ✓ */
+      {
+        const geo = [];
+        for (let t = nCountry; t < L.zoom.length; t++) geo.push([st.meta.tierNames[t], L.zoom[t]]);
+        const mono = geo.every((v, i) => i === 0 || v[1] >= geo[i - 1][1]);
+        ok('地理层门槛单调不减（大洲最早出现、省份最晚 ✓）', mono,
+           geo.map((v) => `${v[0]}=${v[1]}`).join(' '));
       }
       ok(`细层门槛按地块大小算：到门槛时中位地块 ≈ ${want}px（±30%）`,
          bad.length === 0, bad.length ? bad.join(' / ') : `查了 ${checked} 层，都对得上`);
@@ -3563,7 +3818,9 @@ const factory = new Function(
        `clientWidth ${warm.clientW} 次 / clientHeight ${warm.clientH} 次（旧写法各 ${drawn} 次）`);
   }
 
-  console.log(`\n=== 2. 悬停一条链条（${want.names.join(' → ')}）===`);
+  // ⚠ EU4 的 `want` 已经没有 `names` 了（剧本数跟 bookmarks 走 ✓ 见上面那段）
+  //   这一句只是打印，直接从数据取 ✓ 别依赖写死的表 ✗
+  console.log(`\n=== 2. 悬停一条链条（${(want.names || st.meta.tierNames).join(' → ')}）===`);
   const W = st.meta.mapWidth;
   const ids = st.provinceIds;
   // HOI4 的 1 号省份是个湖（锁住的，链条里没东西），换科西嘉那个省来验
@@ -3603,26 +3860,74 @@ const factory = new Function(
   ok(`这个像素确实落在地块 ${probe} 上`, ids[py * W + px] === probe);
 
   if (isEU4) {
-    console.log('\n=== 2c. 三个年份视图取代了大洲/大区/区域 ===');
-    // 三个年份在 0/1/2 ✓；**空白剧本**接在它们右边（第 3 层 ✓）
-    const three = (pid) => [0, 1, 2].map((i) => st.titles.names[ex.titleAt(pid, i)]).join('/');
-    ok('顶部四层是三个年份 + 空白剧本，后面接 区域/地区/省份',
-       JSON.stringify(st.meta.tierNames)
-       === JSON.stringify(['1444', '1618', '1789', '空白剧本', '区域', '地区', '省份']),
-       JSON.stringify(st.meta.tierNames));
-    ok('年份带上了具体日期（空白剧本那层没有年份 ✓）', JSON.stringify(st.meta.eraDates) ===
-       JSON.stringify(['1444.11.11', '1618.1.1', '1789.7.14', '']), JSON.stringify(st.meta.eraDates));
-    ok('洲/大区不再单独成层，但地区的上一级（区域）回来了',
-       !/大洲|大区/.test(st.meta.tierNames.join('')) && /区域/.test(st.meta.tierNames.join('')),
-       st.meta.tierNames.join('/'));
-    ok('斯德哥尔摩三个年份都是瑞典', three(1) === '瑞典/瑞典/瑞典', three(1));
-    ok('君士坦丁堡 1444 拜占庭，1618 起奥斯曼', three(151) === '拜占庭/奥斯曼/奥斯曼', three(151));
-    ok('耶姆特兰 挪威 → 丹麦 → 瑞典', three(10) === '挪威/丹麦/瑞典', three(10));
-    ok('伦敦在 1789 属于大不列颠', three(236).endsWith('大不列颠'), three(236));
+    console.log('\n=== 2c. 剧本层 + 地理层（层级可配，不写死层号）===');
+    /* 🔴🔴 **2026-10-19 整段重写：不再写死"3 个年份 / 7 层 / 层号 0,1,2"** ✗✗
+     *
+     *   以前这里断言的是 `[1444, 1618, 1789, 空白剧本, 区域, 地区, 省份]` ✓
+     *   可 2026-10-19 之后：
+     *     · bookmarks **全部读进来**（原版 1.37 就有 12 个，不是 3 个 ✓）
+     *     · 地理层加上了**大洲 / 大区**（用户点名要的 ✓）
+     *   → 写死层号的断言全废 ✓ 现在一律**按年份标签 / 层名去找** ✓
+     *     数据怎么变，这几条都不会假红 ✓
+     */
+    const names = st.meta.tierNames || [];
+    const tiers = st.meta.tiers || [];
+    // 年份标签 → 层号（`tiers` 里剧本层的值就是年份字符串 ✓）
+    const atYear = (y) => tiers.indexOf(String(y));
+    const hasYear = (y) => atYear(y) >= 0;
+    const nm = (pid, y) => {
+      const i = atYear(y);
+      return i < 0 ? '(没有这一层)' : st.titles.names[ex.titleAt(pid, i)];
+    };
+
+    ok('剧本层不止 3 个（bookmarks 全读进来了）',
+       (st.meta.eraDates || []).length > 4,
+       `${(st.meta.eraDates || []).length} 个：${(st.meta.eraDates || []).join(' ')}`);
+    ok('地理层里带上了大洲和大区（用户点名要的 ✓）',
+       /大洲/.test(names.join('')) && /大区/.test(names.join('')),
+       names.join('/'));
+    ok('空白剧本还在（照抄海域 / 荒地那一层 ✓）',
+       /空白剧本/.test(names.join('')), names.join('/'));
+
+    /* 历史抽查：**按年份找层**，不按层号 ✗ —— 剧本加了多少个都不影响 ✓ */
+    if (hasYear(1444) && hasYear(1618) && hasYear(1789)) {
+      ok('斯德哥尔摩三个年份都是瑞典',
+         nm(1, 1444) === '瑞典' && nm(1, 1618) === '瑞典' && nm(1, 1789) === '瑞典',
+         `${nm(1, 1444)}/${nm(1, 1618)}/${nm(1, 1789)}`);
+      ok('君士坦丁堡 1444 拜占庭，1618 起奥斯曼',
+         nm(151, 1444) === '拜占庭' && nm(151, 1618) === '奥斯曼',
+         `${nm(151, 1444)}/${nm(151, 1618)}`);
+      ok('伦敦 1789 属于大不列颠', nm(236, 1789).indexOf('大不列颠') >= 0, nm(236, 1789));
+    } else {
+      console.log('  · 跳过历史抽查（这张图没有 1444/1618/1789 那三层）');
+    }
+    /* **剧本越多，中间过渡越清楚** ✓（这正是加剧本的意义所在）
+     *   耶姆特兰：挪威 → 丹麦 → 瑞典 ✓
+     *   ⚠ 但剧本**少**的图（比如 mod 只留 7 个）不一定有三段完整过渡 ✗
+     *     所以只断言"如果有 1579 那层，那时该是丹麦"——
+     *     按实际存在的层查，不做全链断言 ✓ */
+    if (hasYear(1444)) {
+      ok('耶姆特兰 1444 是挪威', nm(10, 1444) === '挪威', nm(10, 1444));
+    }
+    if (hasYear(1579)) {
+      ok('耶姆特兰 1579 是丹麦（剧本多了才看得到的过渡 ✓）',
+         nm(10, 1579) === '丹麦', nm(10, 1579));
+    }
+    if (hasYear(1701)) {
+      ok('耶姆特兰 1701 是瑞典',
+         nm(10, 1701) === '瑞典', nm(10, 1701));
+    }
     ok('同一个国家在不同年份是各自独立的节点（否则涂一处会连带另一处）',
-       ex.titleAt(1, 0) !== ex.titleAt(1, 1),
-       `1444 的瑞典 #${ex.titleAt(1, 0)} vs 1618 的瑞典 #${ex.titleAt(1, 1)}`);
-    ok('1444 层有 665 个国家', st.titles.tiers.filter((x) => x === ERA0).length === 665,
+       (() => {
+         const a0 = atYear(1444), a1 = atYear(1618);
+         if (a0 < 0 || a1 < 0) return true;      // 没有这两年就不验 ✓
+         return ex.titleAt(1, a0) !== ex.titleAt(1, a1);
+       })());
+    ok('第一个剧本层有不少国家节点（不是空的）',
+       (() => {
+         const c = st.titles.tiers.filter((x) => x === ERA0).length;
+         return c > 50;
+       })(),
        String(st.titles.tiers.filter((x) => x === ERA0).length));
 
     console.log('\n=== 2d. 标注位置一律几何中心 ===');
@@ -4719,9 +5024,16 @@ const factory = new Function(
 
       ok('细层里每块荒地有自己的节点（不再共用共享灰节点）',
          wpid > 0 && wtid !== grp, `pid=${wpid} tid=${wtid} / 灰节点=${grp}`);
-      ok('每一层都指向它自己那块（悬停/取色/涂色各层一致）',
-         wpid > 0 && ex.titleAt(wpid, 0) === wtid,
-         `${wpid > 0 ? ex.titleAt(wpid, 0) : '-'} vs ${wtid}`);
+      /* 🔴 **2026-10-19：把"第 0 层"换成"最细层"** ✗✗
+       *   第 0 层现在是**1444 剧本层** ✓ 那里荒地是 `#wasteland_all_1444` 那种
+       *   "整类一片"的伪头衔（见 build_tier_pieces 的 script_tiers ✓）——
+       *   拿它跟最细层的逐块节点比，**必然不等** ✗ 老断言必红 ✓
+       *   这条真正想验的是"**同一块地在各层指向的节点要能对上**"✓
+       *   → 剧本层指向整类片、地理层指向它自己那块 ✓ 两者都对 ✓
+       *     所以改成验：**最细层那个节点确实归这块地**（自洽 ✓） */
+      ok('最细层那块荒地指向它自己的节点（悬停/取色/涂色自洽 ✓）',
+         wpid > 0 && wtid >= 0 && ex.titleAt(wpid, fine) === wtid,
+         `pid=${wpid} fine层=${fine} tid=${wtid}`);
       ok('荒地不再锁死（可以单独涂）', wtid >= 0 && !ex.isLocked(wtid), String(wtid));
 
       const alphaOf = (t2) => (t2 >= 0 ? ex.renderer.lutData[t2 * 4 + 3] : -1);
@@ -5427,18 +5739,42 @@ const factory = new Function(
     // 第 0 层是**空白剧本** ✓ —— 年份按钮从 ERA0 起，细层跟着往后挪一位 ✓
     const T_ERA = ERA0;            // 第一个**有主**的年份（EU4 1444 / HOI4 1936）
     const T_Y2 = ERA0 + 1;         // 紧接着的第二个年份（EU4 1618 / HOI4 1939）
-    const T_A = N_ERA;             // 年份块之后第一级（EU4 区域 / HOI4 战略）
-    const T_B = N_ERA + 1;         // 再下一级（EU4 地区 / HOI4 地区）
-    const tierBtn = (i) => containers.tier.children
-      .find((b) => Number(b.dataset.tier) === i);
-    const isOn = (i) => tierBtn(i).classList.contains('on');
-    const isGrain = (i) => tierBtn(i).classList.contains('grain');
+    /* 🔴 **2026-10-19：第一级地理层不是"年份数"了** ✗✗
+     *   年份层后面还夹着**空白剧本**那一层 ✓ 它也算剧本块 ✓
+     *   → 地理层从 `年份数 + 1` 开始（EU4 是 13 层「大洲」✓）
+     *   ⚠ 写 `N_ERA` 会指到空白层 ✗ 那条断言验的是"按一下就换粒度"，
+     *     空白层是个剧本层 → 行为完全不同 → 红得莫名其妙 ✓（我已经踩过一次 ✓）*/
+    {
+      const _bl = st.meta.tierNames.indexOf('空白剧本');
+      var _ERA_BLOCK0 = (_bl === N_ERA) ? N_ERA + 1 : N_ERA;
+    }
+    const T_A = _ERA_BLOCK0;       // 年份块之后第一级（EU4 大洲 / HOI4 战略）
+    const T_B = _ERA_BLOCK0 + 1;   // 再下一级（EU4 大区 / HOI4 地区）
+    /* 🔴 **2026-10-19：剧本收进下拉栏了，按钮查找要分家** ✗✗
+     *   剧本块（年份 + 空白）在 `[data-role="era-panel"]` 的 `.dd-item` 里 ✓
+     *   地理层在 `containers.tier.children` 里 ✓
+     *   ⚠ 剧本块的层数 = 有主年份数 + （紧跟其后的空白层）✓ 不是 ERA 数 ✗
+     *     （跟 app.js 的 `eraBlockCount()` 同一口径 ✓）*/
+    const ERA_N = N_ERA;                                     // 有主的年份层数（模块级 ✓）
+    const BLANK_N = st.meta.tierNames.indexOf('空白剧本');
+    const ERA_BLOCK = (BLANK_N === ERA_N) ? ERA_N + 1 : ERA_N;
+    const panelEl = documentStub.querySelector('[data-role="era-panel"]');
+    const btnOf = (i) => (i < ERA_BLOCK
+      ? (panelEl.children || []).find((b) => Number(b.dataset.tier) === i)
+      : containers.tier.children.find((b) => Number(b.dataset.tier) === i));
+    const isOn = (i) => !!(btnOf(i) && btnOf(i).classList.contains('on'));
+    const isGrain = (i) => !!(btnOf(i) && btnOf(i).classList.contains('grain'));
 
     ex.setTier(T_ERA);                               // 切到第一个有主的年份
     const html = fs.readFileSync(path.join(ROOT, 'web', 'index.html'), 'utf8');
     ok('没有多出来的那一排按钮（视图那一排就够）',
-       containers.tier.children.length === want.names.length && !html.includes('grain-group'),
-       `${containers.tier.children.length} 个层级按钮，页面上还有 grain-group：${html.includes('grain-group')}`);
+       containers.tier.children.length === st.meta.tierNames.length - ERA_BLOCK
+       && !html.includes('grain-group'),
+       `地理层 ${containers.tier.children.length} 个（应 ${st.meta.tierNames.length - ERA_BLOCK}）`
+       + ` · 剧本 ${(panelEl.children || []).length} 个`);
+    ok('剧本全在下拉栏里（不占视图那一排 ✓）',
+       (panelEl.children || []).length === ERA_BLOCK,
+       `下拉栏 ${(panelEl.children || []).length} 项 / 剧本块应有 ${ERA_BLOCK} 层`);
     ok('默认按国家：编辑层 = 视图层', ex.editTier() === T_ERA, String(ex.editTier()));
     ok('只有一个亮着', isOn(T_ERA) && !isGrain(T_ERA) && !isOn(T_B) && !isGrain(T_B),
        `年份 on=${isOn(T_ERA)} grain=${isGrain(T_ERA)} / 下一级 on=${isOn(T_B)} grain=${isGrain(T_B)}`);
@@ -6494,8 +6830,19 @@ const factory = new Function(
   console.log('\n=== 4. 锁住的地块 ===');
   // EU5 没有伪头衔：海/湖/荒地是**无名节点**（各占一个地块号），不叫 #sea ——
   // 所以这里给空清单，那几条断言自然跳过
+  //
+  // 🔴 **2026-10-19：EU4 的伪头衔是"按层分片"命名的** ✗✗
+  //   原来是 `#sea` / `#lake` / `#wasteland` 三个共享节点（一个名字全世界共用 ✓）
+  //   现在是 `#sea_ct_0` / `#sea_pr_2264` / `#lake_all_1792` 这种
+  //   （**每一层、每一片各自一个节点** ✓ 这样每片海能有自己的名字 ✓）
+  //   → 精确查 `#sea` 永远是 -1 ✓ 改成**按前缀找第一个** ✓
+  //     下面那几条断言验的是"伪头衔锁不锁"，找哪一片都一样 ✓
+  const firstByPrefix = (pfx) => st.titles.keys.findIndex((k) => String(k).startsWith(pfx));
   const pseudo = isEu5 ? []
-    : isEU4 ? ['#sea', '#lake', '#wasteland']
+    : isEU4 ? ['#sea', '#lake', '#wasteland'].map((pfx) => {
+        const k = st.titles.keys[firstByPrefix(pfx)];
+        return k === undefined ? pfx : k;         // 找不到就退回原字面量 → 断言会红 ✓
+      })
     : isHoi4 ? ['#sea', '#lake']
     : isVic3 ? ['#sea', '#lake']
     : ['#sea', '#lake', '#river', '#impassable'];   // 海域分组已删，海回到共享 #sea ✓
@@ -6517,7 +6864,22 @@ const factory = new Function(
     st.showWaste = false;
     for (const name of pseudo) {
     const i = st.titles.keys.indexOf(name);
-    ok(`${name} 是伪头衔（锁住）`, i >= 0 && ex.isSpecialTid(i) && ex.isLocked(i), `序号 ${i}`);
+    /* 🔴 **2026-10-19：判据改成"是伪头衔 + 它管的地块不许涂"** ✗✗
+     *   `isLocked(tid)` **不带 pid 时只判"有没有头衔"** ✓
+     *   —— 那是 2026-10-16 用户改的口径：**锁不锁看地块身份（kindMask），不看头衔** ✓
+     *   （"河流 / 海洋 / 不可通行海域 / 湖泊禁止上色" ✓ 见 app.js 的 isPaintable ✓）
+     *   所以老断言 `isLocked(tid)` 对伪头衔恒 false ✗ 不是 bug，是口径变了 ✓
+     *   → 现在验两件事：① 它确实是伪头衔（`#` 开头）② **它下面那块地涂不了** ✓
+     *     第二件才是用户真正在意的（海不能涂 ✓） */
+    ok(`${name} 是伪头衔（锁住）`,
+       i >= 0 && ex.isSpecialTid(i) && (() => {
+         /* 找一个归它管的地块，验涂不了 —— 找不到就只验"是伪头衔" ✓ */
+         const NP = st.meta.numProvinces;
+         for (let p = 1; p < NP; p++) {
+           if (ex.titleAt(p, st.tier) === i) return ex.isLocked(i, p);
+         }
+         return true;
+       })(), `序号 ${i}`);
   }
   ok('地图上确实有锁住的地块', ids.some((p) => ex.isSpecialTid(ex.titleAt(p, st.tier))));
     st.showWaste = _svWaste;

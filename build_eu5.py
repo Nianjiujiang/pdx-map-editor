@@ -51,23 +51,54 @@ DATA = ROOT / "data_eu5"
 #: 六层，从粗到细
 #: 第 0 层 = **1337 年的归属**（来自 eu5_1337_location_owners.csv，
 #: 就是那份 1337.4.1 开局档解出来的），后面六层是 EU5 自己的地理分类。
-#: 因为多了一层，树里的层级号要整体 +1 才是它在归属表里的行号。
 ERA_TIER = "1337"
 ERA_ROW = 0
-TREE_ROW0 = 1
 #: 层级树里的层级号 → 归属表行号。
-#: 树里是 continent0 → sub1 → region2 → area3 → province4 → location5，
-#: 归属表行是 0=1337、1=区域、2=地区、3=省份、4=地块 —— 所以 region 及更细才有行，
-#: 大洲/次大陆（0、1）没有行 → 给一个"超出范围"的号（前端据此判为锁住、不可涂）。
+#:
+#: 树里是 continent0 → sub1 → region2 → area3 → province4 → location5 ✓
+#:
+#: 🔴🔴 **2026-10-19：大洲 / 次大陆接进来了** ✗✗（用户："加入大区和大洲"✓
+#:   EU5 这边对应的是"大洲 / 次大陆"两层 ✓）
+#:
+#:   原来这两层**故意不要** ✗ —— 注释写的是"前端按序号超范围判为锁住"✓
+#:   可它们是 EU5 真实存在的两层地理（continent / subcontinent ✓），
+#:   白解析了一遍却不让看 ✓ 用户要的就是把它们放出来 ✓
+#:   → 现在树层号**原样**当行号：cont0 → 行 0？不行，行 0 是 1337 ✗
+#:     所以整体后移 1：cont → 1、sub → 2、reg → 3、area → 4、prov → 5、loc → 6 ✓
+#:     （行 0 留给 1337 剧本层 ✓）
 def tree_row(lv: int) -> int:
-    return lv - 1 if lv >= 2 else len(TIER_ORDER)
-#: **1337 + 区域 / 地区 / 省份 / 地块**（大洲、次大陆两层不要）。
-#: 层级树里那两层节点还在，但没有对应行 → 前端按"序号超范围"判为锁住，不可涂。
-TIER_ORDER = (ERA_TIER, "reg", "area", "prov", "loc")
+    return lv + 1
+#: **1337 + 大洲 / 次大陆 / 区域 / 地区 / 省份 / 地点**（七层）
+TIER_ORDER = (ERA_TIER, "cont", "sub", "reg", "area", "prov", "loc")
 TIER_NAME = {"1337": "1337", "cont": "大洲", "sub": "次大陆", "reg": "区域",
              "area": "地区", "prov": "省份", "loc": "地点"}
 TIER_KEY = {"1337": "国家", "cont": "大洲", "sub": "次大陆", "reg": "区域",
             "area": "地区", "prov": "省份", "loc": "地点"}
+
+
+def _label_zoom() -> list[int]:
+    """每层"标签从多大缩放开始出现"—— **按层数现生成** ✓（2026-10-19 加）
+
+    剧本层统一 12：EU5 的地图很大（8192 宽的全图视角约 16% ✓
+      1337 那层得**低于**全图视角才看得见国名 ✓ 12 够 ✓）
+    地理层从 30 等差排到 240（大洲最粗、地点最细 ✓）
+
+    ⚠ 以前这里是**写死的 5 个数** ✗ —— 加了大洲 / 次大陆之后是 8 层，
+      前两层取不到值（undefined）→ 那层**一个标签都不画** ✓
+    用户看不出"为什么大洲那层没名字"，只会觉得坏了 ✓ 所以按层数生成 ✓
+    """
+    out: list[int] = []
+    # 剧本层有几个：`ERA_TIER`（1337）在 TIER_ORDER 里占几格就算几层 ✓
+    #   ⚠ EU5 只有 1337 这一层 ✓ 以后要是学 EU4 加年份层，这里自动跟上 ✓
+    n_era = sum(1 for t in TIER_ORDER if t == ERA_TIER)
+    out += [12] * n_era
+    rest = len(TIER_ORDER) - n_era
+    if rest > 0:
+        if rest == 1:
+            out.append(120)
+        else:
+            out += [int(round(30 + (240 - 30) * (i / (rest - 1)))) for i in range(rest)]
+    return out
 
 
 def find_eu5(explicit: str | None = None) -> Path:
@@ -180,21 +211,11 @@ def main() -> int:
     log(f"节点共 {n_nodes} 个（其中无名色 {len(extra_of_pid)} 个）")
     log(f"颜色匹配：{known}/{len(uniq)} 种认出来了（覆盖 {100.0*int(hit[inverse].sum())/ids.size:.1f}% 的像素）")
 
-    # 4. 归属表（六层）
+    # 4. 归属表（七层：1337 + 大洲 / 次大陆 / 区域 / 地区 / 省份 / 地点）
     titlemap = np.full((len(TIER_ORDER), n_prov), NO_TITLE, dtype=np.uint16)
-    for name, idx in loc_index.items():
-        # location 自己
-        rgb = ncolor.get(name)
-        # 往上一层一层填祖先
-        cur = name
-        lv = level.get(name, 5)
-        while cur is not None and lv >= 0:
-            key = TIER_ORDER[lv] if lv < len(TIER_ORDER) else None
-            if key:
-                titlemap[lv] = titlemap[lv]  # noop，保持结构清晰
-            cur = parent.get(cur)
-            lv -= 1
-    # 上面那种写法太绕，直接用 pid → location 反查表
+    # ⚠ 这里原来是 `for name, idx in loc_index.items(): ... titlemap[lv] = titlemap[lv]`
+    #   一个**纯 noop 的循环**（自己赋值给自己 ✓ 注释也写着"太绕"✓）——
+    #   真正的填表在下面那段 pid → location 反查里 ✓ 2026-10-19 删掉 ✓
     loc_id_to_name = {v: k for k, v in loc_ord.items()}
     for pid in np.unique(ids):
         if pid == 0:
@@ -209,12 +230,12 @@ def main() -> int:
         guard = 0
         while cur is not None and guard < 12:
             lv = level.get(cur)
-            # 注意：这里要判**行号**，不能判树层级号 —— 层级树一直是 0~5，
-            # 而 TIER_ORDER 现在只有 4 层，写 `lv < len(TIER_ORDER)` 会把
-            # 省份(4)/地块(5) 整层跳过（之前 1618/1789 那种「两层空掉」就是这么来的）。
+            # ⚠ 判的是**行号**（`tree_row(lv)`），不是树层级号 ✗ ——
+            #   树层号一直是 0~5，而行号是 0=1337 + 1..6=地理层 ✓
+            #   （写 `lv < len(TIER_ORDER)` 会把大洲/次大陆整层跳过 —— 那正是改之前的样子 ✓）
             if lv is not None and cur in index_of:
                 _row = tree_row(lv)
-                if _row < len(TIER_ORDER):        # 没有行的那三层（大洲/次大陆/区域）跳过
+                if 0 <= _row < len(TIER_ORDER):
                     titlemap[_row, pid] = index_of[cur]
             cur = parent.get(cur)
             guard += 1
@@ -931,7 +952,14 @@ def main() -> int:
         # 默认停在**省份**层 —— EU5 最细那层是「地点」，跟 EU4 / V3 的"省份"不是
         # 一个东西；写 `len(TIER_ORDER) - 1` 会默认落到「地点」，跟已发布的行为、
         # 以及 EU5 那条测试的期望都不一致 ✗
-        "defaultTier": TIER_ORDER.index("prov"), "labelZoom": [12, 30, 60, 120, 240],   # 1337 那层门槛要低于全图视角（8192 宽的图约 16%）
+        "defaultTier": TIER_ORDER.index("prov"),
+        # 🔴 **2026-10-19：按层数生成，不再写死 5 个** ✗✗
+        #   原来是 `[12, 30, 60, 120, 240]` 五个数 —— 那是**6 层时代**（1337+reg/area/prov/loc）✓
+        #   加了大洲/次大陆之后是 8 层 → 数组只有 6 个 → 前两层（大洲/次大陆）
+        #   **取不到门槛**（undefined）→ 那层标签永远不出现 ✗
+        #   （测试当场报"大洲 42px"✓ 逮住了 ✓）
+        #   现在：剧本层统一 12（一进去就该看见国名 ✓）、地理层从 30 等差排到 240 ✓
+        "labelZoom": _label_zoom(),
         "eraDates": ["1337.4.1"], "noTitle": NO_TITLE, "specialPrefix": "#",
         "colorLutWidth": 256, "lockedKinds": [],
         # 荒地（不可通行）：哪些节点算荒地（前端据此决定"荒漠涂色"关着时显示灰），

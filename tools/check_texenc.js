@@ -128,6 +128,107 @@ console.log('\n=== F. 报告里写清楚走了哪条降级路 ===');
   ok('报告有「渲染降级」和「纹理编码」两条', /LOG\.env\('渲染降级'/.test(APP) && /LOG\.env\('纹理编码'/.test(APP));
 }
 
+console.log('\n=== G. 采样器精度（ANGLE 上不写就是编译不过）===');
+{
+  /* 🔴🔴 **2026-10-19 真机踩到的** ✗✗
+   *   用户那台 AMD Radeon 610M · ANGLE D3D11 直接报：
+   *       ERROR: 0:9:   'sampler2DArray' : No precision specified
+   *       ERROR: 0:178: 'sampler2DArray' : No precision specified
+   *   GLSL ES 3.00 里 **sampler 类型没有默认精度** ✓ 必须显式声明 ✓
+   *   桌面原生 GL 常常糊过去 → **本地怎么试都好，一上 ANGLE 就白屏** ✗
+   *
+   *   ⚠ 这个 bug 是退役整数纹理时带进来的：v1.9 有
+   *       `precision highp usampler2D;` / `precision highp usampler2DArray;`
+   *     我删了 usampler 那两行，**却没补归一化的** ✗
+   *   → 这条断言以后死死盯着：**用到的每个采样器类型，都必须有精度声明** ✓
+   *
+   *  ⚠ `sampler2D` 和 `sampler2DArray` 是**两个独立类型** ✗ 各写一次 ✓
+   *  ⚠ 只看**代码**（注释里出现 `sampler2D` 不算 ✓ 先剥注释 ✓）
+   */
+  const code = stripComments(FRAG);
+  // 用到的采样器类型（`uniform <type> <name>` 那张表里出现的 ✓）
+  const used = new Set();
+  for (const m of code.matchAll(/\buniform\s+(?:highp\s+|mediump\s+|lowp\s+)?(\w*sampler\w*)\s+/g)) {
+    used.add(m[1]);
+  }
+  const declared = new Set();
+  for (const m of code.matchAll(/\bprecision\s+\w+\s+(\w*sampler\w*)\s*;/g)) {
+    declared.add(m[1]);
+  }
+  ok('着色器里确实用了采样器（不然这条断言是空转的）', used.size > 0,
+    [...used].join(' '));
+  const missing = [...used].filter((t) => !declared.has(t));
+  ok('每个用到的采样器类型都有 precision 声明（ANGLE 上不写就编译不过 ✗）',
+    missing.length === 0,
+    missing.length ? `缺：${missing.join(' / ')}` : `用了 ${[...used].join(' ')} · 都声明了 ✓`);
+  /* **数组采样器单独一条** —— 它最容易漏（写了 sampler2D 不管用 ✗）*/
+  if (used.has('sampler2DArray')) {
+    ok('sampler2DArray 单独声明了精度（写 sampler2D 管不住它 ✗）',
+      declared.has('sampler2DArray'));
+  }
+  /* 贪心抓一遍整个 gl.js：所有含 `#version 300 es` 的片元着色器模板都要有 ✓
+     （主着色器 / 自检着色器 / 以后新加的 —— 一个都不许漏 ✓）*/
+  {
+    const shaders = [...GL.matchAll(/`#version 300 es[\s\S]*?`/g)]
+      .map((m) => m[0])
+      .filter((s) => /\buniform\s+\w*sampler\w*/.test(s) || /\buniform\s+\w+\s+\w*sampler/.test(s));
+    let bad = 0;
+    for (const s of shaders) {
+      const u = new Set([...s.matchAll(/\buniform\s+(?:highp\s+|mediump\s+|lowp\s+)?(\w*sampler\w*)\s+/g)]
+        .map((m) => m[1]));
+      const d = new Set([...s.matchAll(/\bprecision\s+\w+\s+(\w*sampler\w*)\s*;/g)].map((m) => m[1]));
+      for (const t of u) if (!d.has(t)) bad++;
+    }
+    ok('gl.js 里每一段片元着色器都写了采样器精度（不止主着色器 ✓）',
+      shaders.length > 0 && bad === 0,
+      `${shaders.length} 段着色器 · 漏声明 ${bad} 处`);
+  }
+}
+
+console.log('\n=== H. 着色器模板完整性（反引号不许进注释）===');
+{
+  /* 🔴🔴 **一个坑我踩了两次，所以钉死它** ✗✗（2026-10-19 ✓）
+   *
+   *  着色器是**模板字符串**（反引号括起来的 ✓）—— 只要注释里出现一个反引号，
+   *  模板就**当场截断**：后面那段变成 JS 代码 → SyntaxError 或着色器残缺 ✓
+   *
+   *  · 第一次（退役整数纹理那天）：注释里写「`整数纹理采样`」→
+   *      SyntaxError: Unexpected identifier '整数纹理采样' ✓ 页面直接白屏 ✓
+   *  · 第二次（就是刚才修 ANGLE 精度那次）：我在精度说明里写了
+   *      `sampler2DArray` 和 `sampler2D` —— 模板从 41311 字符截到 **459** ✗
+   *      而且**语法居然还过**（两个反引号凑成了合法的表达式 ✓）
+   *      → 只有编译着色器时才会炸，又一次"本地测不出来"✓
+   *  → 这条断言：**FRAG 模板里出现任何反引号就红** ✓
+   */
+  const src = GL;
+  const bt = String.fromCharCode(96);
+  // FRAG 从 `const FRAG = ` + 反引号 开始，到**下一个反引号**为止 —— 正常应该是几万字符
+  const m = new RegExp('const FRAG = ' + bt + '([\\s\\S]*?)' + bt).exec(src);
+  ok('FRAG 模板找得到', !!m);
+  if (m) {
+    const body = m[1];
+    ok('FRAG 里一个反引号都没有（有一个就会把模板截断 ✗）',
+      body.indexOf(bt) < 0,
+      body.indexOf(bt) < 0 ? `${body.length} 字符，干净 ✓`
+        : `在第 ${body.indexOf(bt)} 字符处混进了一个反引号 ✗`);
+    /* **长度兜底**：正常 FRAG 是几万字符 ✓ 只有几百 = 被截断了 ✓
+       （这条防的是"两个反引号凑成合法语法"那种 —— 光看有没有反引号看不出来 ✓）*/
+    ok('FRAG 长度正常（几万字符，不是被截断的几百）',
+      body.length > 5000, `${body.length} 字符`);
+    ok('FRAG 结尾是完整的那几句（uWaterKind / 主函数收尾 ✓）',
+      /void main\s*\(/.test(body) && body.trim().endsWith(bt === '' ? '' : '}'),
+      `结尾：…${body.trim().slice(-40)}`);
+  }
+  /* 整个 gl.js 里所有着色器模板都要过这一关 ✓（以后新加的也算 ✓）*/
+  {
+    const re = new RegExp(bt + '#version 300 es([\\s\\S]*?)' + bt, 'g');
+    const all = [...src.matchAll(re)];
+    ok('gl.js 里每段着色器都完整（共 ' + all.length + ' 段 ✓）',
+      all.length >= 2 && all.every((x) => x[1].length > 60 || /^[\s\S]{0,60}$/.test(x[1])),
+      all.map((x) => x[1].length).join(' / '));
+  }
+}
+
 console.log(`\n通过 ${oks.length} 条，失败 ${fails.length} 条`);
 if (fails.length) {
   console.log('失败项：');

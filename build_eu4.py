@@ -561,25 +561,53 @@ def main() -> int:
     ap.add_argument("--eu4", help="EU4 安装根目录（含 map/ 与 localisation/）")
     ap.add_argument("--mapdir", help="换一套地图文件（高清 mod 的 map/ 目录）")
     ap.add_argument("--bookmarks", help="剧本清单目录（mod 的 common/bookmarks）；"
-                                        "不给就用本体的（= 1444/1618/1789 ✓）")
+                                        "省略 = 自动用「安装根目录下 common/bookmarks」"
+                                        "（原版 1.37 里有 12 个剧本，不是三个 ✓）")
     ap.add_argument("--eras", help="只做这几年的剧本层，逗号分隔，如 867,1066,1444,1836,1936；"
                                    "省略 = bookmarks 里有几个做几个（同一天的自动去重 ✓）")
+    ap.add_argument("--max-eras", type=int, default=None,
+                    help="剧本层最多做几个（按年份从小到大取前 N 个）；"
+                         "省略 = 不限制。剧本太多（几百个）时用它截断 ✓")
     ap.add_argument("--hanhua", help="汉化 mod 目录或 eu4_names_zh.json；none=不用中文")
     ap.add_argument("--workshop", help="workshop content 目录（自动找汉化用）")
     ap.add_argument("--out", help="缓存写到哪个目录，默认 data_eu4/")
+    ap.add_argument("--geo", default=None,
+                    help="地理层，逗号分隔（从粗到细）。可选 ct 大洲 / sr 大区 / "
+                         "rg 区域 / ar 地区；细层 pr 省份 与最细层自动保留。"
+                         "省略 = 全都要（ct,sr,rg,ar）")
     ap.add_argument("--no-history", action="store_true",
-                    help="顶部三层退回大洲/大区/区域，不用年份视图")
+                    help="不要年份剧本层，只做地理层")
     ap.add_argument("--label", default="EU4 原版", help="这套地图的显示名，写进 meta")
     args = ap.parse_args()
 
-    # 🔴 **剧本日期从 bookmarks 读，不再写死** ✗✗（2026-10-18 风云世纪两千年）
-    #   原来定的是本体那三个（1444/1618/1789）✓ 可 mod 的剧本完全不一样
+    # 🔴🔴 **剧本日期从 bookmarks 读，不写死** ✗✗（2026-10-18 起；2026-10-19 再放松一层）
+    #
+    #   原来定的是本体那三个（1444/1618/1789）✗ 可 mod 的剧本完全不一样
     #   （风云世纪两千年 111 个 bookmark，从公元 4 年排到 2025 ✓）
-    #   → 现在：给了 --bookmarks 就读那个目录；再用 --eras 挑你要的年份 ✓
-    if args.bookmarks:
-        bms = E.parse_bookmarks(Path(args.bookmarks))
+    #
+    #   **2026-10-19 用户原话**："EU4 的游戏剧本其实有不少，你说的三个是脚本写死的，
+    #    能不能不要那么死板，构建程序这些都应该可以自定义才对"✓
+    #
+    #   → 现在的行为：
+    #     · **不给 --bookmarks** → 自动去「安装根目录/common/bookmarks」找 ✓
+    #       （原版就是那三个；mod 合并根里有几个读几个 ✓ **不再要求手写** ✓）
+    #     · 给了 --eras → 只做这几个年份（老的用法，仍然保留 ✓）
+    #     · 给了 --max-eras N → 按年份从早到晚取前 N 个（剧本几百个时截断 ✓）
+    #     · 都没有 → **bookmarks 里有几个做几个** ✓ 一个都不丢 ✓
+    if not args.no_history:
+        bm_dir = Path(args.bookmarks) if args.bookmarks else None
+        if bm_dir is None:
+            # 安装根目录下自己找（原版 / 合并根都长这样 ✓）
+            _try = [Path(p) / "common" / "bookmarks" for p in (args.eu4, args.mapdir) if p]
+            bm_dir = next((p for p in _try if p.is_dir()), None)
+            if bm_dir is None:
+                raise SystemExit(
+                    "找不到 bookmarks 目录。传 --bookmarks <目录>，或者确认 "
+                    "「<--eu4>/common/bookmarks」存在（原版就在那儿 ✓）")
+            log(f"bookmarks：自动找到 {bm_dir}")
+        bms = E.parse_bookmarks(bm_dir)
         if not bms:
-            raise SystemExit(f"--bookmarks 里一个 date 都没读到：{args.bookmarks}")
+            raise SystemExit(f"--bookmarks 里一个 date 都没读到：{bm_dir}")
         # 同一天多个 bookmark（不同推荐国家）→ 只留一层 ✓
         seen = set()
         picked = []
@@ -597,20 +625,47 @@ def main() -> int:
             picked = [d for d in picked if d[0] in want]
             if not picked:
                 raise SystemExit("--eras 里没有一个年份能在 bookmarks 里找到")
+        elif args.max_eras and len(picked) > args.max_eras:
+            _all = [tuple(d) for d in picked]
+            log(f"⚠ 剧本太多了（{len(_all)} 个），按 --max-eras {args.max_eras} 截断"
+                f"（取年份最早的 {args.max_eras} 个；要全做就去掉 --max-eras ✓）")
+            picked = _all[:args.max_eras]
         ERA_DATES = tuple(picked)
         ERA_LABELS = tuple(str(d[0]) for d in ERA_DATES)
         ERA_TIERS = len(ERA_LABELS)
         log(f"剧本 {len(ERA_DATES)} 层：" + "、".join(
             f"{y}.{m}.{d}" for (y, m, d) in ERA_DATES))
 
-    # 顶部三层是什么，由 --no-history 决定
+    # 顶部那几层是什么，由 --no-history / --geo 决定
+    #
+    # 🔴🔴 **2026-10-19：把大区 / 大洲接进来** ✗✗（用户："加入大区和大洲"）
+    #
+    #   解析器早就读出来了（`parse_superregions` / `parse_continents` ✓），
+    #   但这里**只用了 rg/ar/pr** ✗ —— 那 25 个大区、6 个大洲白解析了 ✓
+    #   → 现在默认全接：ct 大洲 → sr 大区 → rg 区域 → ar 地区 → pr 省份
+    #     （EU4 层级树本来就是这么长的：continent → superregion → region → area → province ✓）
+    #
+    #   ⚠ `--geo` 可以自选（从粗到细 ✓），比如只要 `--geo sr,rg,ar` ✓
+    #     细层 pr 自动保留（它是地块之上的最后一层，去掉就没得涂了 ✗）
+    #   ⚠ `--no-history` 时只有地理层，没有年份剧本 ✓
     use_eras = not args.no_history
+    GEO_ORDER = tuple(x.strip() for x in (args.geo or "ct,sr,rg,ar").split(",") if x.strip())
+    _bad = [g for g in GEO_ORDER if g not in ("ct", "sr", "rg", "ar")]
+    if _bad:
+        raise SystemExit(f"--geo 里有不认识的层：{_bad}（只认 ct / sr / rg / ar ✓）")
+    # 细层永远是最后一个 ✓（`pr` 不能由 --geo 指定顺序 —— 它必须是"地块之上"那一层 ✓）
+    GEO_ALL = GEO_ORDER + ("pr",)
+    _gn = {"ct": "大洲", "sr": "大区", "rg": "区域", "ar": "地区", "pr": "省份"}
+    _gk = {"ct": "洲", "sr": "大区", "rg": "区域", "ar": "地区", "pr": "省"}
     if use_eras:
-        TIER_ORDER = tuple(ERA_LABELS) + ("rg", "ar", "pr")   # rg 区域：地区的上一级
-        TIER_NAME = {**{y: y for y in ERA_LABELS}, "rg": "区域", "ar": "地区", "pr": "省份"}
-        TIER_KEY = {**{y: y for y in ERA_LABELS}, "rg": "区域", "ar": "地区", "pr": "省份"}
+        TIER_ORDER = tuple(ERA_LABELS) + GEO_ALL
+        TIER_NAME = {**{y: y for y in ERA_LABELS}, **{g: _gn[g] for g in GEO_ALL}}
+        TIER_KEY = {**{y: y for y in ERA_LABELS}, **{g: _gk[g] for g in GEO_ALL}}
     else:
-        TIER_ORDER, TIER_NAME, TIER_KEY = E.TIER_ORDER, E.TIER_NAME, E.TIER_KEY
+        TIER_ORDER = GEO_ALL
+        TIER_NAME = {g: _gn[g] for g in GEO_ALL}
+        TIER_KEY = {g: _gk[g] for g in GEO_ALL}
+    log(f"层级（{len(TIER_ORDER)} 层）：" + " → ".join(TIER_NAME[t] for t in TIER_ORDER))
 
     root = find_eu4(args.eu4)
     overlay = Path(args.mapdir).resolve() if args.mapdir else None
@@ -711,6 +766,27 @@ def main() -> int:
     if use_eras:
         hist = EH.load_province_history(root / "history" / "provinces")
         log(f"省份归属历史：{len(hist)} 个省有记录")
+        # 🔴🔴 **2026-10-19：藏（UTS）当清朝附庸时并入清朝** ✗✗
+        #
+        #   用户原话："原版EU4的剧本如果藏（UTS）是清朝附庸，就改成并入清朝"✓
+        #
+        #   原来这里是一句 `if y == "1789"` + 一堆写死的 tag ✗ ——
+        #   "1789 把西藏并入中国"是当初**手点的一条规则** ✓
+        #   可真实数据里，西藏当清朝附庸是 **1724.1.1 → 1792.11.1**（见
+        #   `history/diplomacy/Chinese_alliances.txt` 那条 vassal ✓）——
+        #   所以 1789 **和 1792 这两个剧本都该并** ✓ 写死一年永远是漏的 ✓
+        #
+        #   → 现在：**按 diplomacy 里那条附庸关系自己判**，哪年有效就哪年并 ✓
+        #
+        #   ⚠⚠ **只并西藏，不许并别的附庸** ✗✗
+        #     我第一版是"所有附庸都并入宗主"—— 那会把挪威并进丹麦（18 省）、
+        #     立陶宛并进波兰（48 省）、葡萄牙并进西班牙（81 省）……
+        #     **整张欧洲地图全糊成几坨** ✗ 用户要的根本不是这个 ✓
+        #     EU4 地图上附庸本来就该**分开着色** ✓ 只有西藏是用户点名要并的 ✓
+        #   ⚠ `TIB` 一起收着（版本差异：有的版本西藏是 TIB 不是 UTS ✓）
+        subj_rels = EH.parse_subject_relations(root / "history")
+        log(f"附庸关系：{len(subj_rels)} 条（history/diplomacy ✓）")
+        MERGE_SUBJECTS = ("UTS", "TIB")      # 只并这一家（用户点名 ✓）
         for d, y in zip(ERA_DATES, ERA_LABELS):
             arr: dict[int, str] = {}
             for p in used_pr:
@@ -718,18 +794,27 @@ def main() -> int:
                 o = EH.owner_at(base, tl, d)
                 if o:
                     arr[p] = o
-            # 需求：**1789 那层把西藏并入中国**（当时西藏在清朝治下）。
-            # 只动这一层，别的年份照历史来 —— 数据上就是把这些省的 owner 换掉。
-            if y == "1789":
-                has_cn = [t2 for t2 in ("QNG", "MNG", "CHI") if t2 in set(arr.values())]
-                cn = has_cn[0] if has_cn else "QNG"
-                # EU4 里西藏的 tag 是 **UTS**（名字就叫「藏」），不是 TIB —— TIB 一起收着以防版本差异
-                moved = [p for p, t2 in arr.items() if t2 in ("UTS", "TIB")]
-                for p in moved:
-                    arr[p] = cn
-                log(f"    （西藏 {len(moved)} 省并入中国 {cn}）")
+            # 那天 UTS/TIB 是不是别人的附庸？是的话并进宗主 ✓
+            note = ""
+            if subj_rels:
+                subj_map = EH.subject_at(subj_rels, d)
+                for sub in MERGE_SUBJECTS:
+                    lord = subj_map.get(sub)
+                    if not lord:
+                        continue
+                    if sub not in set(arr.values()):
+                        continue          # 那天它没地，没什么可并的 ✓
+                    if lord not in set(arr.values()):
+                        continue          # 宗主那天没地 → 并过去变无主 ✗ 不并
+                    moved = [p for p, t2 in arr.items() if t2 == sub]
+                    if not moved:
+                        continue
+                    for p in moved:
+                        arr[p] = lord
+                    note = f"　（{sub} 是 {lord} 的附庸 → {len(moved)} 省并入）"
+                    break
             owners.append(arr)
-            log(f"  {y}：有主 {len(arr)} 省 / {len(set(arr.values()))} 个国家")
+            log(f"  {y}：有主 {len(arr)} 省 / {len(set(arr.values()))} 个国家{note}")
     else:
         log(f"用得上的节点：大洲 {len(used_ct)} / 大区 {len(used_sr)} / 区域 {len(used_rg)}"
             f" / 地区 {len(used_ar)} / 省份 {len(used_pr)}")
@@ -768,6 +853,12 @@ def main() -> int:
     index_of: dict[str, int] = {}
     hue_of: dict[str, float] = {}
 
+    #: 层名 → 归属表行号（不在这一版层级里就 -1 ✓）
+    #  ⚠ **必须定义在组树之前** ✗ —— 下面建节点时要用它判断"这一层要不要建" ✓
+    #    （我第一版写在归属表那段，结果第 831 行就用了 → NameError ✓）
+    def _slot(name: str) -> int:
+        return TIER_ORDER.index(name) if name in TIER_ORDER else -1
+
     def add(t: Node) -> Node:
         index_of[t.key] = len(ordered)
         ordered.append(t)
@@ -784,7 +875,7 @@ def main() -> int:
                 t = add(Node(f"{year}_{tag}", year))
                 t.color = tag_colors.get(tag) or (128, 128, 128)
                 n_era += 1
-        log(f"三个年份共 {n_era} 个国家节点（配色取 common/countries 的国旗色）")
+        log(f"{len(ERA_LABELS)} 个年份共 {n_era} 个国家节点（配色取 common/countries 的国旗色）")
         # 地区配色还是按"区域"分家族，只是区域本身不再单独成层
         # ① 区域名先按黄金角撒开 —— 它就是**地区层**的家族基色（786 行查的就是它）
         for i, rn in enumerate(sorted(used_rg)):
@@ -793,6 +884,32 @@ def main() -> int:
         #    上面那把种子里没有大区键，不撒的话全族都从 200 起步挤一个色相带
         sup_hue = {sn: (i * 137.508) % 360.0
                    for i, sn in enumerate(sorted({region_super.get(rn, "") for rn in used_rg}))}
+        # 🔴🔴 **2026-10-19：剧本模式下也要建大洲 / 大区节点** ✗✗
+        #   （用户："加入大区和大洲"✓）
+        #   原来这条分支**只建 rg** ✗ —— 因为当时层级里只有 rg/ar/pr ✓
+        #   现在层级里加了大洲 / 大区，不建的话点进那两层是**一片空白** ✓
+        #   ⚠ 必须**先建父级再建子级** ✗（下面 region 的 parent 要指向 sr ✓
+        #     顺序反了 parent 就挂不上 ✓ 跟 --no-history 那支同一个道理 ✓）
+        #   ⚠ 只建**这一版层级里有的层** ✗（`--geo sr,rg,ar` 时 ct 不建 ✓）
+        if _slot("ct") >= 0:
+            for cn in sorted(used_ct):
+                t = add(Node(cn, "ct"))
+                t.color = continent_color(cn)
+        if _slot("sr") >= 0:
+            groups = {}
+            for sn in sorted(used_sr):
+                groups.setdefault(sup_cont.get(sn, ""), []).append(sn)
+            for parent, kids in sorted(groups.items()):
+                base = CONTINENT_HUE.get(parent, 200)
+                placed: list = []
+                for i, sn in enumerate(kids):
+                    col = pick_color(base, 90.0, placed)
+                    placed.append(col)
+                    t = add(Node(sn, "sr"))
+                    # 父级是 ct 且**它真建了**才挂 ✓（--geo 里没 ct 时就当根 ✓）
+                    t.parent = parent if (parent and parent in index_of) else None
+                    t.color = col
+                    hue_of[sn] = child_hue(base, i, 90.0)
         # **区域节点照样要建**（它是地区的上一级）：不建的话点进那一层一片空白 ✗
         groups = {}
         for rn in sorted(used_rg):
@@ -875,17 +992,40 @@ def main() -> int:
     log(f"真头衔 {n_real} 个（其中地区用官方配色 {official} 个，其余 {n_real - official - len(used_pr)} 个是生成的）")
 
     # 8. 归属表：每个省份、每个层级分别属于谁
+    #
+    # 🔴🔴 **2026-10-19：全部改成「按层名索引」，不再用相对位置** ✗✗
+    #
+    #   原来是 `len(TIER_ORDER)-1` 省份 / `-2` 地区 / `[2]` 区域 / `[1]` 大区 / `[0]` 大洲 ✗
+    #   这套硬编码**只在"5 层"时成立** ✓ 一旦在顶部插入大洲 / 大区，
+    #   整个表就整体错位一格 —— 而且错得**不报错**（只是涂的地方不对 ✗）
+    #   这种 bug 最难查，所以索性改成 `_slot("rg")` 这种按名取 ✓
+    #   加层 / 减层 / 调整顺序，这里一个字都不用动 ✓
     titlemap = np.full((len(TIER_ORDER), n_prov), NO_TITLE, dtype=np.uint16)
+
+    # ⚠ `_slot()` 定义在上面「组树」那段 ✗ 这里别重复定义
+    _S_PR = _slot("pr")
+    _S_AR = _slot("ar")
+    _S_RG = _slot("rg")
+    _S_SR = _slot("sr")
+    _S_CT = _slot("ct")
     missing_chain = 0
     for p in used_pr:
-        titlemap[len(TIER_ORDER) - 1, p] = index_of[prov_key(p)]   # 省份（最细一层）
+        if _S_PR >= 0:
+            titlemap[_S_PR, p] = index_of[prov_key(p)]            # 省份（最细一层）
         an = prov_area[p]
-        titlemap[len(TIER_ORDER) - 2, p] = index_of[an]            # 地区
-        # **区域**（地区的上一级）：按名字取行号，加层也不会错位 ✓
-        if "rg" in TIER_ORDER:
-            rn2 = area_region.get(an)
-            if rn2 and rn2 in index_of:
-                titlemap[TIER_ORDER.index("rg"), p] = index_of[rn2]
+        rn2 = area_region.get(an)
+        sn2 = region_super.get(rn2) if rn2 else None
+        cn2 = prov_cont.get(p)
+        if _S_AR >= 0 and an in index_of:
+            titlemap[_S_AR, p] = index_of[an]                     # 地区
+        if _S_RG >= 0 and rn2 and rn2 in index_of:
+            titlemap[_S_RG, p] = index_of[rn2]                    # 区域
+        if _S_SR >= 0 and sn2 and sn2 in index_of:
+            titlemap[_S_SR, p] = index_of[sn2]                    # 大区
+        if _S_CT >= 0 and cn2 and cn2 in index_of:
+            titlemap[_S_CT, p] = index_of[cn2]                    # 大洲
+        if rn2 and rn2 not in index_of:
+            missing_chain += 1
         if use_eras:
             for i, year in enumerate(ERA_LABELS):
                 tag = owners[i].get(p)
@@ -893,20 +1033,8 @@ def main() -> int:
                     k = f"{year}_{tag}"
                     if k in index_of:
                         titlemap[i, p] = index_of[k]
-        else:
-            rn = area_region.get(an)
-            if rn and rn in index_of:
-                titlemap[2, p] = index_of[rn]
-                sn = region_super.get(rn)
-                if sn and sn in index_of:
-                    titlemap[1, p] = index_of[sn]
-            else:
-                missing_chain += 1
-            cn = prov_cont.get(p)
-            if cn and cn in index_of:
-                titlemap[0, p] = index_of[cn]
     if missing_chain:
-        log(f"  {missing_chain} 个省份的地区没挂到区域上，中间那层留空")
+        log(f"  {missing_chain} 个省份的区域没建出来，中间那层留空")
 
     # 9. 海/湖/荒地 —— 水域**不再是伪头衔**（2026-10-14 ✓ 用户要求 ✓）
     blank = np.all(titlemap == NO_TITLE, axis=0) & present
@@ -1251,15 +1379,31 @@ def main() -> int:
         "tierKeys": [TIER_KEY[t] for t in TIER_ORDER],
         "entity": "省份",
         # 年份模式 6 层，省份 = ERA_TIERS+2；非年份模式只有 5 层，取最后一层
-        "defaultTier": (ERA_TIERS + 2) if use_eras else (len(TIER_ORDER) - 1),
+        # 🔴 **默认停在"地区"层** ✓（2026-10-19 改成按层名取，不再算偏移）
+        #   原来是 `ERA_TIERS + 2` ✗ —— 那是按"剧本数 + rg/ar 两个前缀层"推的，
+        #   一旦地理层变成 4 个（大洲/大区/区域/地区），它就指到别处去了 ✓
+        #   用户打开一张图最先想看的是"地区"（EU4 习惯的地图粒度 ✓）
+        "defaultTier": (TIER_ORDER.index("ar") if "ar" in TIER_ORDER else len(TIER_ORDER) - 1),
         # 年份那三层节点少（几百个国家）、彼此还挤在一起，门槛比大洲那套高一点
         # **全部 tag** 的名字 + 颜色（含当前年代没地盘的）—— 搜索/取色要用 ✓
         # 名字先放 tag —— 中文名由 patch_wasteland 从 titles.json 里统一补 ✓
         "countryTags": {tag: {"n": tag, "c": list(col)}
                         for tag, col in sorted(tag_colors.items())},
-        "labelZoom": _label_zoom(TIER_ORDER, ERA_TIERS) if use_eras else [5, 10, 20, 70, 110],
-        # 三个年份视图是什么时候的地图（空 = 用的是大洲/大区/区域那套）
+        "labelZoom": _label_zoom(TIER_ORDER, ERA_TIERS) if use_eras else [5, 10, 20, 20, 70, 110],
+        # 年份视图是什么时候的地图（空 = 用的是地理那套）
         "eraDates": [f"{y}.{m}.{d}" for (y, m, d) in ERA_DATES] if use_eras else [],
+        # 🔴 **剧本的名字和日期也要带上** ✗✗（2026-10-19）
+        #   前端 `buildToolbar()` 会读 `meta.bookmarks` 给层级按钮加 tooltip
+        #   （"1066.9.15 · 1066" 那种 ✓）—— 一直没有这个字段，所以剧本多的图
+        #   顶栏只有光秃秃的年份数字 ✓ 现在按层号对齐写进去 ✓
+        #   ⚠ 下标 = 层号：前 N 层是剧本，第 N 层是空白层（给 null ✓）
+        "bookmarks": (
+            [{"date": f"{y}.{m}.{d}", "key": str(y), "name": str(y),
+              "default": (i == 0)}
+             for i, (y, m, d) in enumerate(ERA_DATES)]
+            + ([{"date": "", "key": "blank", "name": "空白剧本", "default": False}]
+               if use_eras else [])
+        ) if use_eras else [],
         "noTitle": NO_TITLE,
         "specialPrefix": "#",
         "colorLutWidth": 256,
