@@ -80,7 +80,29 @@ function findPack() {
 
   ok('数组纹理坏了 → 不再走分块（tileInfo 为空）', !r.tileInfo, JSON.stringify(r.tileInfo));
   ok('也不再往数组纹理里传块', caught.length === 0, `传了 ${caught.length} 块`);
-  ok('改走了「id 图缩着传」', !!r._smallIds, r._smallIds ? `${r.provSmall.w}×${r.provSmall.h}` : '没走');
+  /* ⚠ **这张图本来就装得下 4096** ✗ —— 缩图那条路压根不会启用 ✓
+   *   （它只在"整张 id 图放不进一张贴图"的时候才走 ✓）
+   *   普通夹具（96×48 那种）到这里就该**明说跳过** ✓
+   *   以前会接着往下断言 → `r.provSmall` 是 undefined → TypeError ✗
+   *   → 既没有汇总、也看不出"只是缺一张大图" ✓（跟 check_hover_card 那次同一类 ✓）
+   *   ⚠ **先判图是不是真的小** ✗ —— 图比 4096 大却没走缩图，那是真坏了 ✓
+   *     那种情况不能跳过，要当场红 ✓
+   *   要看这一条：换一张**宽过 4096** 的图（真 CK3 9216 / EU5 8192 ✓）再跑 ✓ */
+  if (!r._smallIds) {
+    const LIMIT = 4096;
+    if (Math.max(W, Hh) > LIMIT) {
+      ok('改走了「id 图缩着传」', false,
+        `这张图 ${W}×${Hh} 比 ${LIMIT} 大，却没走缩图 ✗`);
+      console.log(`\n通过 ${oks.length} 条，失败 ${fails.length} 条`);
+      fails.forEach((f) => console.log('  ✘ ' + f));
+      process.exit(1);
+    }
+    console.log(`  ·（跳过缩图那几条：这张图 ${W}×${Hh} 本来就装得进 ${LIMIT}，`
+      + '走不到缩图那条路 ✓ —— 要宽过 4096 的图才测得到 ✓）');
+    console.log(`\n跳过：${oks.length} 条通过 · 0 条失败`);
+    process.exit(0);
+  }
+  ok('改走了「id 图缩着传」', !!r._smallIds, `${r.provSmall.w}×${r.provSmall.h}`);
   ok('缩放倍数是整数、且缩完装得下', Number.isInteger(r.provScale) && r.provScale >= 2
     && Math.max(r.provSmall.w, r.provSmall.h) <= 4096,
     `缩 ${r.provScale} 倍 → ${r.provSmall.w}×${r.provSmall.h}（上限 4096）`);
