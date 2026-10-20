@@ -86,7 +86,21 @@ function findPack() {
   /* ---- ① 块尺寸：总字节最小 ---- */
   const ti = r.tileInfo;
   ok('进的是合成切块模式', !!(ti && ti.synthetic), JSON.stringify(ti));
-  if (!ti || !ti.synthetic) { console.log('✘ 没进合成切块，后面不测了'); process.exit(1); }
+  if (!ti || !ti.synthetic) {
+    /* ⚠ **图本来就装得下 4096** → 合成切块压根不会启用 ✓ 这是**跳过**，不是失败 ✗
+     *   （普通夹具 96×48 就是这样 ✓ 以前一句"后面不测了" + 状态码 1 ✗
+     *     → 没大图的人每次跑都是红的，还看不出只是缺夹具 ✓
+     *      跟 check_hover_card 那次同一类问题 ✓）
+     *   ⚠ 反过来：图**比 4096 大**却没切块 → 那是真坏了 ✓ 照旧红 ✓ */
+    if (Math.max(W, Hh) > 4096) {
+      console.log('  ✘ 图比 4096 大，却没进合成切块 ✗');
+      process.exit(1);
+    }
+    console.log(`  ·（跳过：这张图 ${W}×${Hh} 本来就装得进 4096，走不到合成切块 ✓`
+      + ' —— 要宽过 4096 的图才测得到 ✓）');
+    console.log('\n跳过：0 条失败');
+    process.exit(0);
+  }
   const bytes = ti.cols * ti.rows * ti.tileW * ti.tileH * 2;
   const rawBytes = W * Hh * 2;
   ok('总显存压到接近整图（≤ 整图 × 1.15）', bytes <= rawBytes * 1.15,
