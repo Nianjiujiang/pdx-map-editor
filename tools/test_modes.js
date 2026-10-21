@@ -3615,6 +3615,51 @@ const factory = new Function(
          /class="era-drop"\s+id="era-dd"/.test(htmlSrc) && !/class="dropdown"\s+id="era-dd"/.test(htmlSrc));
       ok('era-drop 只有 position: relative（不带 absolute / right ✓）',
          /\.era-drop\s*\{\s*position:\s*relative;\s*\}/.test(css));
+
+      /* 🔴 **白天模式下，剧本下拉栏的选中态不许是亮金** ✗✗（2026-10-21 ✓ 用户截图报的）
+       *   "剧本在白天模式时字体是亮金色会很难看见，推测是多剧本情况下的字体
+       *    没有沿用单剧本的情况" ✓ —— 猜对了 ✓
+       *
+       *   根子**不是"白天没做"**，而是两套按钮各写一套选中样式 ✓：
+       *     · 剧本 < 4 个（回退）→ 剧本是 `.segmented button` ✓
+       *       白天那条把**底色和字色都重写了** ✓
+       *     · 剧本 ≥ 4 个（下拉栏）→ 剧本是 `.dd-btn` ✓
+       *       白天那条**只重写了 background** ✗ 漏了 color ✗
+       *       → `.dd-btn.on` 里写死的 `#f0d98a` 原样活下来 ✓
+       *   浅底 #f6f8fa 配亮金 → 对比度 **1.12:1**，等于隐形 ✓
+       *
+       *   → 钉三条：
+       *     ① 白天必须有一条 `.dd-btn.on` 的 color（且不是亮金）
+       *     ② `.dd-item.on`（面板里那一行）同样
+       *     ③ `.grain`（借用粒度）那两档也不许是 #bcc9d8 / #9ec5e8
+       *        —— 那些是给深色底配的浅字 ✓ 浅底上一样看不见 ✓
+       */
+      {
+        /* 取某条白天规则块里的声明（选择器必须一字不差地出现 ✓） */
+        const lightDecl = (sel) => {
+          const i = css.indexOf(sel + ' {');
+          if (i < 0) return '';
+          const j = css.indexOf('}', i);
+          return j < 0 ? '' : css.slice(i, j);
+        };
+        const btnOn = lightDecl('html[data-theme="light"] .dd-btn.on');
+        const itemOn = lightDecl('html[data-theme="light"] .dd-item.on');
+        const btnGrain = lightDecl('html[data-theme="light"] .dd-btn.grain');
+        const BRIGHT_GOLD = /#f0d98a|#c9a94e|#e8cf7a/i;
+        ok('白天：下拉按钮选中态自己写了 color（不靠 .dd-btn 那条兜 ✗）',
+           /color\s*:/.test(btnOn) && !BRIGHT_GOLD.test(btnOn),
+           btnOn ? btnOn.replace(/\s+/g, ' ').trim().slice(0, 90) : '没有这条规则');
+        ok('白天：下拉面板里那一行选中也写了 color（同一个亮金问题 ✓）',
+           /color\s*:/.test(itemOn) && !BRIGHT_GOLD.test(itemOn),
+           itemOn ? itemOn.replace(/\s+/g, ' ').trim().slice(0, 90) : '没有这条规则');
+        ok('白天：借用粒度那一档不许用深色底的浅蓝字（#bcc9d8 / #9ec5e8 ✗）',
+           !/#bcc9d8|#9ec5e8/i.test(btnGrain + lightDecl('html[data-theme="light"] .dd-item.grain')
+             + lightDecl('html[data-theme="light"] .segmented button.grain')),
+           btnGrain ? '已换成深靛蓝 ✓' : '没有这条规则');
+        /* 夜间那套必须原样留着 ✓ —— 上面三条只该动 light，别把 dark 一起改了 */
+        ok('夜间：下拉选中还是暖金（#f0d98a 没被误伤 ✓）',
+           /\.dd-btn\.on\s*\{[^}]*color:\s*#f0d98a/.test(css));
+      }
     } else {
       ok('折叠按钮绑上了 onclick', false, 'boot 里没调 bindToolbarFold()？');
     }

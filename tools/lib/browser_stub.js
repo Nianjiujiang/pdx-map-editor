@@ -293,13 +293,48 @@ class El {
     this.children = [];
     this.style = {};
     this.dataset = {};
+    /* ⚠ `add` / `remove` 要收**多个参数** ✗✗（2026-10-21 修）
+     *   真 DOM 支持 `classList.add('a', 'b')` ✓ 但桩原来只认第一个 ✓
+     *   → `th.classList.add('mob-btn', 'mob-theme')` 只会加上 `mob-btn` ✓
+     *   → 主题按钮的 `.mob-theme`（手机顶栏那套样式）**永远没加上** ✓
+     *   自检里看着像"补丁没写"，其实写了、被桩吃掉了 ✓
+     *   （这是同一类坑的第三次了：**桩比真 DOM 弱** → 测试冤枉代码 ✓）*/
     this.classList = {
       _s: new Set(),
-      add: (c) => this.classList._s.add(c),
-      remove: (c) => this.classList._s.delete(c),
-      toggle: (c, on) => (on ? this.classList._s.add(c) : this.classList._s.delete(c)),
+      add: (...cs) => { for (const c of cs) if (c) this.classList._s.add(c); },
+      remove: (...cs) => { for (const c of cs) if (c) this.classList._s.delete(c); },
+      toggle: (c, on) => {
+        const want = on === undefined ? !this.classList._s.has(c) : !!on;
+        if (want) this.classList._s.add(c); else this.classList._s.delete(c);
+        return want;
+      },
       contains: (c) => this.classList._s.has(c),
     };
+    /* 🔴 **`className` 必须跟 `classList` 是同一份数据** ✗✗（2026-10-21 补）
+     *
+     *   桩原来根本没实现 `className` —— 往里写只是挂了个普通字段 ✓
+     *   于是 `el.className = 'mob-group'` 之后 `classList.contains('mob-group')`
+     *   还是 **false** ✓（真 DOM 里这两者是同一个东西 ✓）
+     *
+     *   后果：手机版那些 `g.className = 'mob-group'` / `pane.className = 'mob-pane'`
+     *   造出来的节点，在自检里**全都没有 class** ✓
+     *   → `.mob-group[data-group="display"]` 一条都查不到 ✓
+     *   → 自检报"设置面板没建出来" ✓ 可**真机上它是好的** ✓
+     *   —— 这种"测试撒谎"最坑：它会让人去改本来没坏的代码 ✓
+     *
+     *   ⚠ 反过来 `classList.add()` 之后读 `className` 也得能读到 ✓
+     *     两边都走 `_s` 这个 Set 就行 ✓ */
+    Object.defineProperty(this, 'className', {
+      get: () => [...this.classList._s].join(' '),
+      set: (v) => {
+        this.classList._s.clear();
+        for (const c of String(v || '').split(/\s+/)) {
+          if (c) this.classList._s.add(c);
+        }
+      },
+      configurable: true,
+      enumerable: true,
+    });
     this._html = '';
     this.textContent = '';
     this.value = '';
@@ -369,7 +404,27 @@ class El {
   removeChild(c) {
     const i = this.children.indexOf(c);
     if (i >= 0) this.children.splice(i, 1);
+    if (c) c.parentNode = null;
     return c;
+  }
+  /* ⚠ 手机版教程那段用的是 `parentNode.replaceChild(fresh, help)`
+   *   —— 桩没这个的话，**教程按钮换监听**那一步就静默跳过了 ✓（2026-10-21 补）
+   *
+   * 🔴 **换完之后必须把 id 索引指向新节点** ✗✗（2026-10-21 再补）
+   *   不更新的话：`get('btn-tutorial')` 仍然返回**那个已经被摘下来的旧节点** ✓
+   *   → 自检在上面派发 click ✓ 打中的是没有监听的空壳 ✓
+   *   → "点教程弹介绍窗"永远是空的 ✓ 又是一次"看着测了、其实没测" ✓
+   *   （真 DOM 里 `getElementById` 是按树找的 ✓ 换了节点自然就换 ✓ 桩是查表 ✓
+   *     所以这里得手动把表改过来 ✓）
+   */
+  replaceChild(newNode, oldNode) {
+    const i = this.children.indexOf(oldNode);
+    if (i >= 0) this.children[i] = newNode;
+    else this.children.push(newNode);
+    if (newNode) newNode.parentNode = this;
+    if (oldNode) oldNode.parentNode = null;
+    if (El.onReplace && newNode && newNode.id) El.onReplace(newNode);
+    return oldNode;
   }
   addEventListener(t, fn) { (this._listeners[t] || (this._listeners[t] = [])).push(fn); }
   removeEventListener() {}
@@ -386,10 +441,77 @@ class El {
   hasAttribute(k) { return this._attrs[k] !== undefined; }
   focus() {}
   blur() {}
+  /* 🔴 **`remove()` / `cloneNode()` 必须真有** ✗✗（2026-10-21 补）
+   *
+   *   桩一直缺这两个，而手机补丁里有两处真用到了：
+   *     · `menu.remove()`   —— 「文件」下拉摊平之后把空壳摘掉 ✓
+   *     · `help.cloneNode(true)` —— 教程按钮换掉旧监听（克隆一份，旧监听自然失效 ✓）
+   *   桩没有 → 那两步各自抛进 `wait()` 的 catch 里**静默跳过** ✓
+   *   → 自检一直报"通过"，但那两条路径**其实一次都没跑到** ✗
+   *     （报错只在控制台里留下一行 `[手机版] xxx is not a function` ✓ 没人看 ✓）
+   *   现在补上：文件面板和教程按钮那两条路才真的被验到 ✓
+   */
+  remove() {
+    const p = this.parentNode;
+    if (!p || !p.children) return;
+    const i = p.children.indexOf(this);
+    if (i >= 0) p.children.splice(i, 1);
+    this.parentNode = null;
+  }
+  cloneNode(deep) {
+    const c = new El(this.tagName.toLowerCase(), this.id);
+    c._html = this._html;
+    c.textContent = this.textContent;
+    c.value = this.value;
+    c.title = this.title;
+    c.hidden = this.hidden;
+    c.disabled = this.disabled;
+    c.checked = this.checked;
+    c.style = Object.assign({}, this.style);
+    c.dataset = Object.assign({}, this.dataset);
+    c._attrs = Object.assign({}, this._attrs);
+    for (const k of this.classList._s) c.classList._s.add(k);
+    if (deep) {
+      // ⚠ 深拷贝只搬结构（子节点挂新父 ✓）—— 监听器**故意不复制** ✓
+      //   真 DOM 的 cloneNode 也不复制通过 addEventListener 挂上的监听 ✓
+      for (const ch of this.children) {
+        const cc = ch.cloneNode ? ch.cloneNode(true) : null;
+        if (cc) { cc.parentNode = c; c.children.push(cc); }
+      }
+    }
+    return c;
+  }
   contains(n) {
     if (!n) return false;
     if (this === n) return true;
     return this.children.some((c) => c && c.contains && c.contains(n));
+  }
+  /* 🔴🔴 **`closest(sel)`**（2026-10-21 补 ✓ 第 7 个模拟 DOM 缺口）
+   *
+   *   ⚠⚠ 这个缺口**一直在骗测试** ✗✗
+   *     真 DOM 里 `e.target.closest('.zoom-box')` 能一路往上找 ✓
+   *     桩里**根本没有 `closest`** ✓ → `t.closest` 是 `undefined` ✓
+   *     → 凡是写成 `t.closest && t.closest(...)` 的守门**永远返回 false** ✓
+   *   → 于是"点缩放按钮会不会误涂色"这种 bug **测不出来** ✓
+   *     （用户 2026-10-21 报的正是这条 ✓ 我加完守门、跑测试却全绿 ✓
+   *       因为那个守门在桩里压根没生效 ✓）
+   *
+   *   ⚠ 语义要跟真 DOM 一致：**从自己开始往上** ✓ 第一个匹配的就行 ✓
+   *     `matches` 也一并补上 ✓ `closest` 就是靠它判断的 ✓ */
+  matches(sel) {
+    const s = String(sel || '').trim();
+    if (!s) return false;
+    return this._matchSel(s);
+  }
+  closest(sel) {
+    const s = String(sel || '').trim();
+    if (!s) return null;
+    /* 逗号分组：只要命中其中一个就算 ✓ */
+    const parts = s.split(',').map((x) => x.trim()).filter(Boolean);
+    for (let n = this; n; n = n.parentNode) {
+      if (n._matchSel && parts.some((p) => n._matchSel(p))) return n;
+    }
+    return null;
   }
   /** 在子树里按 id 找（真 DOM 的 getElementById 语义）—— 手机端"造出来再按 id 取回来"要用 ✓ */
   findById(id) {
@@ -406,30 +528,59 @@ class El {
              right: this.clientWidth, bottom: this.clientHeight };
   }
   getContext(kind) { return kind === '2d' ? ctx2d() : fakeGL(); }
-  /* 🔴 **子树查询要真的能查** ✗✗（2026-10-19 ✓）
+  /* 🔴 **子树查询要真的能查** ✗✗（2026-10-19 ✓ 2026-10-21 升级）
    *   原来是两个空壳（`return []` / `return null`）✓
    *   剧本下拉栏那段用 `btn.querySelector('.dd-label')`、`panel.querySelectorAll('[data-role="era-item"]')`
    *   —— 空壳会让它们拿不到东西 ✓ 于是测试里"下拉栏按钮上的字"永远是空的 ✓
-   *   这里按**咱们自己用到的三种写法**实现，够用就行（不是要造个 DOM）：
-   *     `[data-role="x"]`  按属性查
-   *     `.cls`             按 class 查
-   *     `#id`              按 id 查
-   *   末尾带 ` button` 之类再按标签名收一道 ✓ */
+   *
+   *  🔴🔴 **2026-10-21：从"一次只认一种"改成"复合选择器逐项都验"** ✗✗
+   *   原来那段是 if / else 链 ✓ 只看**一种**写法：
+   *     `if (dr) … else if (cl) … else if (idm) …`
+   *   → `.mob-group[data-group="display"]` 这种**类名 + 属性**的组合 ✗
+   *     它只会走 `cl` 那一支 → **把所有 `.mob-group` 全命中了** ✓
+   *     （`env.documentStub.querySelector('.mob-group[data-group="display"]')`
+   *       返回的是第一个 .mob-group（color 那个）✓ 于是"设置面板"永远找不到 ✓）
+   *   ⚠ 而且属性只认 `data-role` 一个名字 ✗ `data-group` / `data-pane` 全当没看见 ✓
+   *
+   *   现在：把选择器切成"单个复合段"，**每一段里的 #id / .class / [attr] / tag
+   *   必须同时满足** ✓ 段与段之间按后代处理（整棵子树都翻 ✓ 够用 ✓）*/
+  _matchSel(sel) {
+    /* ⚠ 参数**只有一个**（选择器字符串）✗ 一开始我写成 `_matchSel(c, s)`
+     *   可调用处是 `c._matchSel(s)` —— `c` 就是 this 本身，不用再传 ✓
+     *   结果：`String(sel)` 拿到的是 undefined → 空 → 恒 false ✓
+     *   （所以那会儿读 @ts-check 是没用的，得**真跑一次**才看得出来 ✓）*/
+    const s = String(sel || '');
+    // 取最后一段复合选择器（空格 / > 之后那段）—— 桩不做父子精确，后代语义就够 ✓
+    const parts = s.trim().split(/[\s>]+/).filter(Boolean);
+    const seg = parts[parts.length - 1] || '';
+    if (!seg) return false;
+    const c = this;
+    // 按 token 逐个验，**全部满足**才算命中 ✓（这就是复合选择器的意思）
+    const tokens = seg.match(/#[\w-]+|\.[\w-]+|\[[^\]]+\]|[a-zA-Z][\w-]*/g) || [];
+    if (!tokens.length) return false;
+    for (const t of tokens) {
+      if (t[0] === '#') {
+        if (c.id !== t.slice(1)) return false;
+      } else if (t[0] === '.') {
+        if (!(c.classList && c.classList.contains(t.slice(1)))) return false;
+      } else if (t[0] === '[') {
+        // [attr] / [attr="v"] / [attr='v'] 都认 ✓（属性名不再写死 data-role ✓）
+        const m = /^\[\s*([\w-]+)\s*(?:=\s*['"]?([^'"\]]*)['"]?)?\s*\]$/.exec(t);
+        if (!m) return false;
+        const got = c._attrs ? c._attrs[m[1]] : undefined;
+        if (m[2] === undefined) { if (got === undefined) return false; }
+        else if (String(got) !== m[2]) return false;
+      } else {
+        if (!c.tagName || String(c.tagName).toLowerCase() !== t.toLowerCase()) return false;
+      }
+    }
+    return true;
+  }
   _all(sel, out) {
     const s = String(sel || '').trim();
     for (const c of this.children) {
       if (!c || !c._all) continue;
-      let hit = false;
-      const dr = /\[data-role\s*=\s*["']([^"']+)["']\]/.exec(s);
-      const cl = /(?:^|[\s>])\.([\w-]+)/.exec(s);
-      const idm = /#([\w-]+)/.exec(s);
-      const tagm = /([a-zA-Z][\w-]*)\s*$/.exec(s.replace(/\[[^\]]*\]/g, '').trim() || '');
-      if (dr) hit = c._attrs && c._attrs['data-role'] === dr[1];
-      else if (cl) hit = c.classList && c.classList.contains(cl[1]);
-      else if (idm) hit = c.id === idm[1];
-      else hit = false;
-      if (hit && tagm && c.tagName && String(c.tagName).toLowerCase() !== tagm[1].toLowerCase()) hit = false;
-      if (hit) out.push(c);
+      if (c._matchSel && c._matchSel(s)) out.push(c);
       c._all(sel, out);          // 继续往下翻（真 DOM 也是全子树 ✓）
     }
     return out;
@@ -525,6 +676,10 @@ function fakeGL() {
 function makeEnv(opt = {}) {
   const root = opt.root || ROOT;
   const els = new Map();
+  /* ⚠ **`replaceChild` 换掉带 id 的节点时，索引也得跟着换** ✗
+   *   真 DOM 的 `getElementById` 是按树找的 ✓ 换节点自然就换 ✓
+   *   桩是查表 ✓ 不更新就永远返回旧节点 ✓（2026-10-21 踩过）*/
+  El.onReplace = (n) => { if (n && n.id) els.set(n.id, n); };
   const containers = { tier: new El(), tool: new El() };
   const bodyEl = new El('body');
   /**
@@ -553,6 +708,176 @@ function makeEnv(opt = {}) {
     els.set(id, fresh);
     return fresh;
   };
+
+  /* ==========================================================================
+   * 🔴 **桌面设置页的骨架**（2026-10-21 加）
+   *
+   *   桩从来不解析 index.html ✗ —— `$('settings')` 拿到的是个**懒建的空 div** ✓
+   *   于是手机版那句 `modal.querySelector('.set-grid')` 永远 null ✓
+   *   → 「把桌面设置搬进手机面板」那段**一次都没真正跑过** ✓
+   *     自检一直是绿的，因为搬失败也不抛错（外面套着 `wait()` 的 catch ✓）
+   *
+   *   要验"搬对了没有"，起码得让那几个节点**存在** ✓
+   *   这里按 index.html 的真实结构懒建一份（**只建选择器要用到的那几层** ✗
+   *   不是要造一整个 DOM ✓）：
+   *     #settings.modal > .modal-box.set-box
+   *       ├ .set-tabs (四个 .set-tab[data-group] + #btn-theme + #set-close)
+   *       ├ .set-grid#set-grid[data-active]
+   *       │   └ section.set-col[data-group=color|border|label|legend]
+   *       └ .set-foot > #set-dirty + #set-reset-group + #set-reset
+   *
+   *   ⚠ 每个 `.set-col` 里放**一个好认的控件** ✓ 够验"它落到哪一页" ✓
+   *     真实控件（set-bg / set-pa / set-font-place / set-legend-title）
+   *     本来就由 `get()` 懒建 ✓ 这里把它们的 id 记进对应那一栏 ✓
+   *     —— 这样"搬完之后控件在哪一页"就查得出来了 ✓
+   * ========================================================================== */
+  const settingsStub = {
+    cols: null,           // { color: el, border: el, ... }
+    foot: null,
+    ensure() {
+      if (this.cols) return;
+      const modal = get('settings');
+      modal.classList.add('modal', 'drawer');
+      modal.hidden = true;
+
+      const box = new El('div');
+      box.className = 'modal-box set-box';
+      modal.appendChild(box);
+
+      const tabs = new El('div');
+      tabs.className = 'set-tabs';
+      tabs.id = 'set-tabs';
+      box.appendChild(tabs);
+      for (const g of ['color', 'border', 'label', 'legend']) {
+        const b = new El('button');
+        b.className = 'set-tab' + (g === 'color' ? ' on' : '');
+        b._attrs['data-group'] = g;
+        b.textContent = { color: '颜色', border: '边界线', label: '名称', legend: '图例' }[g];
+        tabs.appendChild(b);
+      }
+      const sp = new El('span');
+      sp.className = 'set-tabs-sp';
+      tabs.appendChild(sp);
+      // #btn-theme 由 get() 懒建 ✓ 这里只把它挂进标签行（手机版要把它搬去顶栏 ✓）
+      tabs.appendChild(get('btn-theme'));
+
+      const grid = new El('div');
+      grid.className = 'set-grid';
+      grid.id = 'set-grid';
+      grid._attrs['data-active'] = 'color';
+      box.appendChild(grid);
+
+      this.cols = {};
+      /* 每一栏放一个"好认的控件" ✓ id 跟 index.html 里真实的一致 ✓ */
+      const SPEC = {
+        color: ['set-bg', '无主地 / 地形底色'],
+        border: ['set-pa', '省份边界浓度'],
+        label: ['set-font-place', '地块名字体'],
+        legend: ['set-legend-title', '图例标题'],
+      };
+      for (const g of ['color', 'border', 'label', 'legend']) {
+        const col = new El('section');
+        col.className = 'set-col';
+        col._attrs['data-group'] = g;
+        grid.appendChild(col);
+        this.cols[g] = col;
+
+        const sub = new El('div');
+        sub.className = 'set-sub';
+        sub.textContent = SPEC[g][1];
+        col.appendChild(sub);
+
+        const [id, label] = SPEC[g];
+        const row = new El('label');
+        row.className = 'set-row';
+        const l = new El('span');
+        l.className = 'set-l';
+        l.textContent = label;
+        row.appendChild(l);
+        const ctl = get(id);           // ⚠ get() 懒建的那个才是**全局唯一**那个 ✓
+        row.appendChild(ctl);
+        col.appendChild(row);
+      }
+      /* 桌面分页会把非当前页藏起来 ✓ 照做 —— 手机版**必须**把它们清掉 ✓
+       *   （这条正是 2026-10-21 那个 bug 的现场：清了才对，不清就是"节点在、看不见"）*/
+      for (const g of ['border', 'label', 'legend']) this.cols[g].hidden = true;
+
+      const foot = new El('div');
+      foot.className = 'set-foot';
+      box.appendChild(foot);
+      this.foot = foot;
+      const dirty = get('set-dirty'); dirty.className = 'set-dirty'; dirty.textContent = '已改动 0 项';
+      foot.appendChild(dirty);
+      const rg = get('set-reset-group'); rg.className = 'btn ghost'; rg.hidden = true;
+      foot.appendChild(rg);
+      const rs = get('set-reset'); rs.className = 'btn'; rs.textContent = '全部恢复默认';
+      foot.appendChild(rs);
+
+      // 隐藏的桌面弹窗：内容搬走之前它一直隐藏着 ✓（真机上就是这样 ✓）
+      modal.hidden = true;
+    },
+  };
+
+  /* 🔴🔴 **顶栏最小骨架**（2026-10-21 加 ✓ 第 8 个模拟 DOM 缺口）
+   *
+   *   ⚠⚠ 桩**从来不解析 `index.html`** ✗
+   *   → `$('btn-tutorial')` 拿到的是**懒建的空 div、没有 parentNode** ✓
+   *   → 凡是要"从父节点上换掉它"的写法（`cloneNode` + `replaceChild` ✓
+   *     用来摘掉别的模块挂上的监听 ✓）在测试里**第一句就 return 了** ✓
+   *   → 于是"点教程弹什么"根本测不到 ✓ 自检还说全绿 ✓（2026-10-21 就这样）
+   *
+   *   这里只补**够用**的那几个：`#btn-sidebar` / `.brand` / `#help-row > #btn-tutorial` ✓
+   *   ⚠ 别贪多 ✗ 补得越多、跟真 `index.html` 走偏的风险越大 ✓
+   *     真需要整条顶栏时，请照 `index.html` 一比一地补 ✓ 别凭印象编 ✓
+   */
+  const toolbarStub = {
+    done: false,
+    ensure() {
+      if (this.done) return;
+      this.done = true;
+      const app = get('app');
+      if (app.querySelector && app.querySelector('.toolbar')) return;
+
+      const header = new El('header');
+      header.className = 'toolbar';
+
+      const sb = new El('button', 'btn-sidebar');
+      sb.className = 'btn ghost';
+      sb.textContent = '☰';
+
+      const brand = new El('div');
+      brand.className = 'brand';
+      const brandMark = new El('span', 'brand-mark');
+      brandMark.className = 'brand-mark';
+      brandMark.textContent = 'PDX';
+      brand.appendChild(brandMark);
+
+      const help = new El('div', 'help-row');
+      help.className = 'tool-group actions';
+      const tut = new El('button', 'btn-tutorial');
+      tut.className = 'btn ghost';
+      tut.textContent = '教程';
+      help.appendChild(tut);
+
+      header.appendChild(sb);
+      header.appendChild(brand);
+      header.appendChild(help);
+      app.appendChild(header);
+
+      /* ⚠ 必须登记进 `els` ✗ 不然 `get()` 还会另建一个空的 ✓ 那就白搭了 ✓ */
+      els.set('btn-sidebar', sb);
+      els.set('btn-tutorial', tut);
+      els.set('help-row', help);
+      els.set('brand-mark', brandMark);
+    },
+  };
+
+  /* **手机版/桌面版都要有一份设置骨架** ✓
+   *   桌面版 app.js 的 `applyTab` 会 `grid.querySelectorAll('.set-col')` ✓
+   *   桩里没有的话那一步也是空转 ✓（不抛错，但也没测到东西 ✓）
+   *   → 默认为真，建一份 ✓ */
+  if (opt.settingsStub !== false) settingsStub.ensure();
+  if (opt.toolbarStub !== false) toolbarStub.ensure();
 
   /* **window / document 上的监听别一律丢掉** ✗
    *   原来是个空函数 ✓ 于是"回到前台"（visibilitychange）这类

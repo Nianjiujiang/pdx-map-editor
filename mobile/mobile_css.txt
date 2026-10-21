@@ -19,7 +19,11 @@
   min-height: 38px; padding: 0 14px; border-radius: 19px;
   border: 1px solid #2b3743; background: rgba(13, 19, 26, .92); color: #e8eef6;
   font: 600 14px/1 "Microsoft YaHei", system-ui, sans-serif;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, .45); backdrop-filter: blur(6px);
+  /* ⚠ **前缀两行都要** ✗ iOS Safari 只认 `-webkit-` ✓（2026-10-21 补）
+   *   原来只写了无前缀的 → 苹果手机上这颗按钮一点模糊都没有 ✓ */
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .45);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
 }
 .mob-btn.gold { border-color: #c9a94e; color: #f0d98a; }
 .mob-btn:active { transform: translateY(1px); }
@@ -148,27 +152,69 @@
   display: flex; flex-wrap: wrap; gap: 8px;
   padding-bottom: 12px; margin-bottom: 10px; border-bottom: 1px solid #1d2833;
 }
-/* **设置这一栏高度锁死** ✓ 换标签时不许变 ✗
- * ⚠ 2026-10-13 用户要求："**设置高度减去 30%**" ✓
- *   基准是原来的 **58vh** → 58 × 0.5 ≈ **29vh** ✓
- *
- * 🔴🔴 **类名必须跟 JS 一致** ✗✗（用户报"根本没看到，高度仍然遵循界面最高的"✓ 就是这个）
- *   JS 那边用的是 **`mob-tall`**（`sheet.classList.toggle('mob-tall', …)` ✓ 见 mobile_js.txt）
- *   而这里原来写的是 **`.tall`** ✗ —— 那个类**谁也没加过** ✓
- *   → 这三条规则全是**死代码** ✗ 高度当然没变 ✓
- *   ✅ 现在两个名字都写上（`.tall` 留着以防别处还在用 ✗ 反正不冲突 ✓）
- *
- * 🔴 **两件事一起做才有用** ✗ 光设 height 不够：
- *   ① flex 子项的 `min-height` 默认是 `auto` ✓ → 内容会把父容器**顶高** ✓
- *      所以 `#mob-sheet-body` 必须补 `min-height: 0` ✓（原来漏了 ✓）
- *   ② `#mob-sheet` 自身要 `overflow: hidden` ✓ → 不然溢出内容照样画在外面 ✓
- *      （看着就是"高度按内容走"✓ 用户说的"怎么不把多余内容收进去"✓）
- *   下面那行 `.mob-panes { overflow-y: auto }` 就是滑条 ✓ 内容放得下 ✓
- *
- * ⚠ 「颜色什么的当然不变」✓ —— `.set-row input[type=color]` 那几条
- *   （`-webkit-color-swatch`）是修"手机上色块露灰"的 ✓ 跟高度无关 ✓ 别动 ✓
- * ⚠ 跟上面 `#mob-sheet` 那个 `max-height` 是一对 ✗ 两个都按三成降过了 ✓ */
-#mob-sheet.tall, #mob-sheet.mob-tall { height: 29vh; max-height: 29vh; }
+
+/* ===========================================================================
+   🔴 **晨昏按钮那一行**（2026-10-21 ✓ 用户："晨昏按钮还是放设置顶部吧（不是屏幕顶部）"）
+   ---------------------------------------------------------------------------
+   位置：**设置面板自己的顶部** —— 标题行下面、五个标签上面 ✓
+     （见 mobile_js.txt 的「白天 / 黑夜」那段 ✓ 它把按钮搬进 `.mob-theme-bar` ✓）
+   ⚠ 它在 `.mob-panes` **外面** ✗ 所以换页、滚动都不会把它带走 ✓
+     那是这一行和"一页"的根本区别 ✓ 界面主题不是哪一页的设置 ✓
+   ⚠ 视觉上要比标签行**轻一档** ✗ 它是全局开关，不是一级导航 ✓
+     所以用细线分隔、标签写小灰字 ✓ 让标签行仍然是"最上层的东西"✓
+   =========================================================================== */
+.mob-theme-bar {
+  display: flex; align-items: center; gap: 10px;
+  padding: 0 2px 10px; margin-bottom: 2px;
+}
+.mob-theme-lab {
+  flex: 1 1 auto;
+  font: 600 12.5px/1 "Microsoft YaHei", system-ui, sans-serif;
+  color: #8b9aab; letter-spacing: .5px;
+}
+/* 按钮本身：**贴右**、圆角、可点区域够大 ✓ */
+.mob-theme-bar .theme-btn {
+  flex: 0 0 auto;
+  min-height: 34px; padding: 0 16px; border-radius: 17px;
+  font: 600 13.5px/1 "Microsoft YaHei", system-ui, sans-serif;
+  border: 1px solid rgba(255, 255, 255, .14);
+  background: rgba(255, 255, 255, .07);
+  color: #dfe7f0;
+  cursor: pointer;
+  -webkit-backdrop-filter: blur(10px) saturate(145%);
+  backdrop-filter: blur(10px) saturate(145%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .08);
+}
+.mob-theme-bar .theme-btn:active { transform: translateY(1px); }
+/* 日间：白玻璃 ✓ */
+html[data-theme="light"] .mob-theme-lab { color: #5b6877; }
+html[data-theme="light"] .mob-theme-bar .theme-btn {
+  background: rgba(255, 255, 255, .62);
+  border-color: rgba(24, 36, 50, .14);
+  color: #1a232e;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .9);
+}
+/* ===========================================================================
+   🔴 **「更高」的高度：这里不再写死数值** ✗✗（2026-10-21 收敛 ✓）
+   ---------------------------------------------------------------------------
+   原来这里是一条：
+     `#mob-sheet.mob-tall { height: 38vh !important; max-height: 38vh !important; }`
+   ⚠ 它把 `mobile_js.txt` 的 `place()` 算出来的**内联** `max-height` / `height`
+     **一起压掉了** ✗ —— 那条 `!important` 权重比内联样式还高 ✓
+   于是：
+     · 不管屏幕多大，「更高」永远 38vh ✓（小屏太满、大屏太矮 ✓）
+     · 用户在 2026-10-13 / 10-17 那几轮"调高度没反应"，根子都在这儿 ✓
+       （跟更早那个 `.tall` 死类是同一个病：**两个地方写同一个数** ✓）
+   ✅ 现在：**高度只由 JS 算** ✓（见 mobile_js.txt 的 `_f` / `_cap`）
+     这里只留一条**兜底**：JS 还没跑起来的那一瞬，面板别塌成一条线 ✓
+     ⚠ 兜底**不许带 !important** ✗ 也不许跟 JS 抢数值 ✓
+   =========================================================================== */
+#mob-sheet.mob-tall { max-height: 60vh; }          /* 兜底：JS 一算就被内联盖掉 ✓ */
+
+/* 链子那几条（`#mob-sheet.mob-tall` 下的 flex 传导）**必须留着** ✓
+   ⚠ 它们只管"能不能滚"，不管高度数值 ✓ 跟上面那条不是一回事 ✓
+   链子是 `#mob-sheet-body`（flex 列）→ `.mob-group` → `.mob-tabs` + `.mob-panes` ✓
+   少一环 `.mob-panes` 的 `flex: 1` 就撑不开、滑条永远不出现 ✓ */
 #mob-sheet.tall #mob-sheet-body, #mob-sheet.mob-tall #mob-sheet-body {
   display: flex; flex-direction: column;
   min-height: 0;            /* ← 不加这句，内容会把面板顶回原高度 ✓ */
@@ -306,25 +352,12 @@
      ③ 颜色那几条（`.set-row input[type=color]` / `-webkit-color-swatch`）是修
         "手机上色块露灰"的 ✓ 跟疏密无关 ✓ —— 这一段里**一个 color 字样都没有** ✓
 
-   ⚠ **高度只加在 `.mob-tall` 那一档** ✗：
-     `#mob-sheet` 的 25vh 是常规二级面板（工具 / 颜色那些，内容本来就短）共用的 ✓
-     能进"更高"模式的才是内容多的那几页 ✓ 所以 +15% 加在那儿最合适 ✓
-     29vh × 1.15 ≈ 33vh（实际 +13.8% ✓ 就按 15% 算 ✓）
-     ⚠ 后来又加过一次 → 现在是 **38vh** ✓（见下面那行 ✓）
-   ⚠ `#mob-sheet` 的 max-height 也**必须一起跟着改** ✗ ——
-     两个是一对 ✓ 只改一个等于没改（另一个兜着 ✓）
-   ⚠ 那个 `!important` 是必须的 ✗：上面 `.tall, .mob-tall` 那条是 `height: 29vh`
-     同权重、而且它在**后面**? —— 不，它在前面 ✓ 但 `.mob-tall` 只一个类、
-     这条两个类（`#mob-sheet.mob-tall`）权重更高 ✓ 不加也能赢 ✓
-     留着 `!important` 只是防以后有人插一条更狠的 ✓
+   ⚠ **高度的来历**（这一节只讲疏密 ✓ 高度已经整条搬走了 ✓）：
+     2026-10-13 用户要"设置高度减 30%" → 2026-10-17 又要"+15%" ✓
+     那两轮加的 `#mob-sheet.mob-tall { height: 38vh !important }` **2026-10-21 已删** ✗
+     原因：它把 JS `place()` 算出来的内联高度一起压掉了 ✓
+     高度现在只由 `mobile_js.txt` 的 `_f` / `_cap` 管 ✓ 见那一节的长注释 ✓
    =========================================================================== */
-/* 🔴 **2026-10-17 再 +15%**（用户："手机版的高度再提升15%"✓）
-   上一版 29vh → 33vh（+13.8% ✓）· 这一版 33 × 1.15 = 37.95 ≈ **38vh** ✓
-   ⚠ **两份都要改** ✗ —— `height` 跟 `max-height` 是一对 ✓
-     只改一个 = 另一个兜着 = 等于没改 ✓（上一版就是为这才写两遍 ✓）
-   ⚠ 高度**不写死**也成 ✗ —— JS 的 `place()` 会按内容把它顶到算出来的上限 ✓
-     这里给的是**上限** ✓ 内容少的时候它照样矮（贴着底部往上长 ✓）*/
-#mob-sheet.mob-tall { height: 38vh !important; max-height: 38vh !important; }
 
 /* ── 疏密：每一行的"手感"往下压一档 ─────────────────────────────────
    压的是**留白**，不是字号 ✗（字号再小就影响读了 ✓ 用户只说"紧凑" ✓）
@@ -349,6 +382,13 @@
 /* ── 地图：一级界面就它一个 ───────────────────────────────────────── */
 .toolbar { display: none !important; }        /* 顶栏全部搬进面板了 ✓ */
 .sidebar { display: none !important; }        /* 左栏内容也搬进去了 ✓ */
+/* 🔴 **「☰ 侧栏」那个折叠按钮手机上也藏掉** ✗✗（2026-10-21）
+ *   它是这一轮给**电脑版**加的（用户："电脑版的显示左侧栏改成…可收起"）
+ *   手机版侧栏本来 `display:none`、内容全在面板里 ✓
+ *   这个按钮在手机上点了什么都不会发生 ✓ 纯属多一个废按钮 ✓
+ *   ⚠ 它是**顶栏里的**，顶栏整条已经藏了 ✓ 这条是兜底
+ *     （万一以后谁把顶栏挪出来，别让它跟着冒出来 ✓）*/
+#btn-sidebar { display: none !important; }
 
 /* 「更高」那个按钮**不做动画** ✓（用户要求去掉 ✓）
    曾经给 #mob-sheet 加过 height 过渡 ✓ 但那要求高度一直是显式 px ✗
@@ -391,8 +431,20 @@
 .legend-row { min-height: 44px; }
 
 /* 启动页：单列大按钮（⚠ 2026-10-17 起**电脑版也统一一列** ✓
-   这里只把宽度 / 间距调到手指友好；`.boot-inner` 不许超宽 ✓）*/
-.boot-inner { width: 100%; padding: 16px 14px; }
+   这里只把宽度 / 间距调到手指友好；`.boot-inner` 不许超宽 ✓）
+   🔴🔴 **2026-10-21：`width: 100%` 必须只在真手机上生效** ✗✗
+   （用户截图报的："电脑上的手机版怎么变这样了" ✓）
+   ·
+   原来这条是**无条件**的 ✓ 桌面那份 `.boot-inner` 写的是固定 340px ✓
+   → 在电脑上一开手机版：`#app` 被下面那条 561px 的媒体查询收成了 430px ✓
+     可 `width: 100%` 是按**视口**算的 ✗ → 2549px ✗
+   → 于是启动页的进度条**横贯整个屏幕**、文字缩在中间那一小条 ✓
+     （就是用户截图里那个样子 ✓）
+   ✅ 现在：`100%` 只给**窄屏**（真手机）✓
+      宽屏交给下面那条 @media —— 它会把宽度收进 430px 的手机框 ✓ */
+@media (max-width: 560px) {
+  .boot-inner { width: 100%; padding: 16px 14px; }
+}
 .boot-title { font-size: 24px; }
 .map-pick-list { grid-template-columns: 1fr !important; gap: 10px; }
 .map-pick-list > * { min-height: 56px; }
@@ -407,8 +459,96 @@
 }
 
 /* ===========================================================================
+   🔴 **顶栏那个白天/黑夜开关**（2026-10-21 新搬进来的 ✓ 见 mobile_js.txt）
+   —— 它原来是桌面设置弹窗里的 `.theme-btn` ✓ 搬进顶栏后那个壳不适用了 ✓
+      CSS 里给的底子是半透明的（给玻璃面板用的）→ 这里补成 `.mob-btn` 同款 ✓
+   ⚠ 那两条 `☀ / ☾` 的字从 `app.js` 的 LABEL() 来 ✓ 这里只管长相 ✓
+   =========================================================================== */
+#mob-topbar .mob-theme {
+  min-height: 34px; padding: 0 12px; border-radius: 17px;
+  border: 1px solid #2b3743; background: rgba(13, 19, 26, .92);
+  color: #e8eef6; font: 600 13px/1 "Microsoft YaHei", system-ui, sans-serif;
+  white-space: nowrap; flex: none;
+}
+/* 白天模式下顶栏自己也得跟着亮 ✓（不然那排胶囊还是黑的 ✓）
+   🔴 **2026-10-21：这里原来那条"白渐隐"已经删掉了** ✗✗
+   原因见文件后面「液态玻璃 · 手机版 ⑦」那一节的长注释 ✓
+   （一句话：白色渐隐叠在深色地图上 = 一道灰泥 ✓ 浅色顶栏必须够实 ✓）
+   ⚠ **别再在这里补第二份** ✗ 顶栏的日间配色**只有一个来源** ✓
+     两份并存的话，改一处忘一处 ✓ 上次就是这么出的问题 ✓ */
+html[data-theme="light"] #mob-dock button {
+  background: rgba(255, 255, 255, .94); border-color: #bcc8d4; color: #1a232e;
+}
+html[data-theme="light"] #mob-dock button.on {
+  border-color: #2f5f8f; color: #26598a; background: rgba(47, 95, 143, .16);
+}
+html[data-theme="light"] #mob-sheet {
+  background: #f7fafc; border-color: #bcc8d4;
+  box-shadow: 0 -14px 44px rgba(24, 36, 50, .22);
+}
+html[data-theme="light"] #mob-sheet-head { border-bottom-color: #dde4ec; }
+html[data-theme="light"] #mob-sheet-head b { color: #26598a; }
+html[data-theme="light"] #mob-sheet-head span { color: #5b6877; }
+html[data-theme="light"] #mob-sheet-x {
+  background: #eef2f6; border-color: #bcc8d4; color: #1a232e;
+}
+html[data-theme="light"] .mob-tab {
+  background: #eef2f6; border-color: #bcc8d4; color: #333f4c;
+}
+html[data-theme="light"] .mob-tab.on {
+  border-color: #2f5f8f; color: #26598a; background: rgba(47, 95, 143, .16);
+}
+/* 设置页里那些行 / 开关 / 小标题，白天也要跟着翻 ✓
+   （它们本来吃的是 `style.css` 的变量 ✓ 但手机版给过一批写死的深色 ✗ 这里盖回来）*/
+html[data-theme="light"] #mob-sheet .group-label { color: #5b6877; }
+html[data-theme="light"] #mob-sheet .set-row > span:first-child { color: #27313d; }
+html[data-theme="light"] #mob-sheet .switch { color: #333f4c; }
+html[data-theme="light"] #mob-sheet .panel-head h2 { color: #414e5d; }
+html[data-theme="light"] .mob-era .dd-btn {
+  background: #eef2f6; border-color: #bcc8d4; color: #333f4c;
+}
+html[data-theme="light"] .mob-era .dd-btn.on {
+  border-color: #2f5f8f; color: #26598a; background: rgba(47, 95, 143, .16);
+}
+html[data-theme="light"] .mob-era .dd-item { color: #333f4c; }
+html[data-theme="light"] .mob-era .dd-item.on { color: #26598a; background: rgba(47, 95, 143, .16); }
+html[data-theme="light"] #mob-backdrop { background: rgba(24, 36, 50, .28); }
+
+/* **设置底栏（已改动 / 恢复默认）**搬进「其他」页之后的样子 ✓
+   ⚠ 它原来是 `.set-box` 的 flex 子项（贴着抽屉底）✗ 现在是个普通块 ✓ */
+.mob-set-foot {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  margin: 12px 0 0; padding-top: 10px; border-top: 1px dashed #26313d;
+}
+.mob-set-foot .set-dirty { flex: 1 1 auto; font-size: 12.5px; color: #8b9aab; }
+.mob-set-foot .btn { min-height: 34px; padding: 0 12px; font-size: 13px; }
+html[data-theme="light"] .mob-set-foot { border-top-color: #ccd5df; }
+html[data-theme="light"] .mob-set-foot .set-dirty { color: #5b6877; }
+
+/* ===========================================================================
    宽屏打开时（电脑上调试）：把一切收进一个手机大小的框里居中 ✓
    真手机上窗口本来就窄，这条不生效 ✓
+
+   🔴🔴 **2026-10-21：必须把桌面那条 `@media (min-width: 761px)` 的定位盖掉** ✗✗
+   （用户截图报的："在电脑上的手机版怎么变这样了" ✓ 启动页进度条横贯全屏）
+
+   桌面 `style.css` 里有一条只给桌面用的：
+     `@media (min-width: 761px) {
+        .toolbar { position: fixed; … }
+        .body    { position: fixed; inset: 0; }
+        .stage   { position: absolute; inset: 0; }
+      }`
+   在电脑上（视口 > 761）它**和下面这条 561 同时生效** ✓
+   → `#app` 确实被收成了 430px ✓ 可 `.body` / `.stage` 被 `fixed; inset:0`
+     **按视口铺满整个屏幕** ✗ → 里面的启动页、进度条、地图全顶出手机框 ✓
+   → 用户看到的就是"文字挤在中间一小条、进度条横贯 2549px" ✓
+
+   ✅ 修法：宽屏这条里**显式把它们改回来** ✓
+     · `.body`  → `position: static`（让 `#app` 的 flex 正常排）
+     · `.stage` → `position: relative`（它是 `.body` 的 flex 子项）
+   ⚠ 别指望靠书写顺序蒙过去 ✗ —— 这是**两个不同的媒体查询**，
+     谁生效只看视口，跟先后无关 ✓ 必须在自己这条里显式覆盖 ✓
+   ⚠ 真手机（≤560）压根不匹配 761 那条 ✓ 所以只在这里改就够 ✓
    =========================================================================== */
 @media (min-width: 561px) {
   body { display: flex; align-items: center; justify-content: center; background: #06090c; }
@@ -419,8 +559,29 @@
   }
   #mob-sheet, #mob-backdrop, #mob-ui, #mob-intro, #rename { position: absolute; }
   #mob-backdrop { border-radius: 24px; }
+  /* 🔴 **教程那三个也要收** ✗✗（2026-10-21 补）
+   *   桌面 `style.css` 里 `#tutRing` / `#tutPing` / `#tutCard` 全是 `position: fixed` ✓
+   *   不定死就是"按视口算坐标" → 高亮圈和步骤卡会飘到手机框外面 ✓
+   *   ⚠ 手机版现在不用逐步教程（换成介绍弹窗了 ✓ 见 mobile_js.txt）✗
+   *     但这几条留着兜底 —— 万一以后用回来，别让它在宽屏上飘 ✓ */
+  #tutLayer, #tutRing, #tutPing, #tutCard { position: absolute; }
   #tutLayer { position: absolute; }
-  .boot-inner { padding: 16px 14px; }
+  /* **设置抽屉 / 改名弹窗 / 介绍窗**：桌面的 `.modal` 是 `fixed; inset:0` ✓
+   *   手机版要跟着**手机框**走，所以改成 absolute ✓（`inset:0` 保留 —— 它相对 #app ✓）*/
+  .modal { position: absolute; inset: 0; }
+  /* 🔴 **把桌面那套 fixed 布局收回来** ✗✗（见上面那段）
+     ⚠ 顶栏 / 侧栏在手机版是 `display: none` ✓ 不用管 ✓
+       要管的只有 `.body` 和 `.stage` —— 它们是"地图那一片"的容器 ✓ */
+  .body { position: static; height: 100%; }
+  .stage { position: relative; inset: auto; width: 100%; height: 100%; }
+  /* 🔴 **启动页的宽度必须收进手机框** ✗✗（用户截图报的）
+   *   手机版上面那条 `.boot-inner { width: 100% }` 现在只在 ≤560px 生效 ✓
+   *   宽屏这里**显式写死一个手机宽度** ✓ 别指望回落到桌面那份 340px ✗
+   *   （桌面那份是 340px ✓ 但手机卡片本身有 16px 内边距，340 会显得偏窄 ✓
+   *     430 - 14×2 = 402 ✓ 就用它 ✓）
+   *   ⚠ `.boot` 是 `position: absolute; inset: 0` ✓ 它跟着 `.stage` 走 ✓
+   *     `.stage` 一回到 `relative`，`.boot` 就只铺满手机框 ✓ */
+  .boot-inner { width: 100%; max-width: 402px; padding: 16px 14px; }
 }
 
 /* 导出下拉里那些项，摊到面板里要长得像按钮 ✓ */
@@ -621,7 +782,10 @@
   min-height: 32px; padding: 0 12px 0 8px; border-radius: 16px;
   border: 1px solid #2b3743; background: rgba(13, 19, 26, .92); color: #e8eef6;
   font: 600 13px/1 "Microsoft YaHei", system-ui, sans-serif;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, .45); backdrop-filter: blur(6px);
+  /* ⚠ 前缀两行都要 ✓（同 `.mob-btn` 那条，2026-10-21 补）*/
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .45);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
 }
 #mob-now.on { border-color: #c9a94e; color: #f0d98a; }
 #mob-now .mn-sw {
@@ -762,6 +926,37 @@
 }
 #mob-sheet .mob-tallbtn.on { border-color: #c9a94e; color: #f0d98a; }
 
+/* ===========================================================================
+   🔴 **「更高」那个小圆钮的日间配色**（2026-10-21 ✓ 用户截图："这个按钮为什么没有跟随晨昏变化"）
+   ---------------------------------------------------------------------------
+   它上面那条是**写死的深色** ✗：
+     `background: #101820; color: #9fb0c2; border-color: #2b3743`
+   一个 `html[data-theme]` 都没写 ✓ 所以白天模式开着，它**仍然是黑板一块** ✓
+   —— 用户截图里那个突兀的黑圆钮就是这个 ✓
+
+   ⚠ **别指望它继承面板的颜色** ✗
+     它在 `.mob-tabs` 那一行里 ✓ 而标签按钮有自己的玻璃底 ✓
+     这颗按钮是**另写了一套写死的值** ✓ 跟面板那套完全没关系 ✓
+
+   ⚠ **`.on` 那档也要单独写** ✗
+     它只改了边框和字色（金色 ✓）✓ 底色还是继承上面那条的 `#101820` ✓
+     所以白天必须**两条都盖** ✓ 只盖一条会得到"白底 + 金边 + 深字"或者
+     "黑底 + 金边"这种半吊子 ✓
+
+   → 白天：跟旁边那几个标签按钮**同一个白玻璃** ✓（这才是"跟随晨昏"的意思 ✓）
+     `.on`（已经拔高了）：浅蓝玻璃 + 蓝边 ✓ 跟「显示」那个选中标签一个口径 ✓
+   =========================================================================== */
+html[data-theme="light"] #mob-sheet .mob-tallbtn {
+  background: rgba(255, 255, 255, .6);
+  border-color: rgba(24, 36, 50, .14);
+  color: #414e5d;
+}
+html[data-theme="light"] #mob-sheet .mob-tallbtn.on {
+  background: rgba(47, 95, 143, .16);
+  border-color: rgba(47, 95, 143, .55);
+  color: #26598a;
+}
+
 /* 高度**不写死** ✗ —— JS 会把它顶到 place() 算出来的那个上限（贴着底部往上长 ✓）
    写死 88vh 会顶出屏幕（用户报过 ✓）；而且列表还被上限卡着 → 下面留一大块空地 ✗
 
@@ -893,4 +1088,553 @@
   font-size: 14px;
   padding: 0 10px;
   display: flex; align-items: center;
+}
+
+/* ===========================================================================
+   🔴🔴 **液态玻璃 · 手机版**（2026-10-21 ✓ 用户："更多更多液态玻璃"）
+   ---------------------------------------------------------------------------
+   ⚠⚠ **先搞清楚"玻璃"到底是什么** ✗✗（用户："液态玻璃明明是需要透明的"）
+
+   玻璃 = **半透明的底** + **背后那张图被糊掉** ✓ 两个都做到才有那味儿 ✓
+
+   手机版原来**一条都没做到** ✗：
+     · 顶栏       `rgba(13,19,26,.92)`   → 92% 实心，等于不透明 ✗
+     · 底部入口   `rgba(13,19,26,.94)`   → 同上 ✗
+     · 二级面板   `#0d131a`              → **纯色** ✗ 连 .92 都没有 ✗
+     · 很多按钮   `#101820` / `#131b23`  → 纯色 ✗
+     · 全文件只有两处 `backdrop-filter`（顶栏按钮的 `blur(6px)`）✓ 而且**没带 -webkit-** ✗
+   → 所以手机上看起来是"一块块深色板子" ✓ 地图在地底下，一点都透不上来 ✓
+
+   ✅ 这一节干三件事：
+     ① 把这批底全换成**真正的半透明**（.5~.78 档，见下面分档理由）
+     ② 给需要透的地方补上 `backdrop-filter`（**带 -webkit- 前缀** ✓）
+     ③ 玻璃"厚度"：顶边一道内高光 ✓ 看着像一片有厚度的玻璃而不是一块色纸 ✓
+
+   ⚠⚠ **三条硬规矩**
+     ① **底越"薄"（面板/顶栏），模糊要越强** ✗ 反过来会糊成一片 ✓
+        顶栏 .62 + blur 20、面板 .74 + blur 24、按钮 .82 + blur 12 ✓
+        （按钮小、字又密，透太多就读不清 ✓ 所以它最实 ✓）
+     ② **`backdrop-filter` 必须两种写法都有** ✗
+        只写无前缀的 → iOS Safari 上**完全不生效** ✓ 表现就是"苹果上是黑板" ✓
+     ③ **别给每个列表行加模糊** ✗
+        一行一层 GPU ✓ 手机上滑起来直接卡 ✓
+        列表只给淡白高光，模糊交给它外面那层面板 ✓
+
+   ⚠ **真手机上地图是满屏的** ✗ 玻璃后面永远是地图 ✓ 所以透出来的一定是颜色 ✓
+     不会出现"透过玻璃看见窗口背景"那种怪事 ✓
+   ⚠ 宽屏（电脑调试）时 `#app` 是个 430px 的手机框 ✓
+     框外是 `body` 的深底 ✓ 玻璃透的就是框里的地图 ✓ 照样成立 ✓
+   =========================================================================== */
+
+/* ---- ① 顶栏：最容易看出玻璃的地方（它压在地图最上沿）---- */
+/* 🔴🔴 **2026-10-21 晚：顶栏太突兀** ✗✗（用户截图里那条深灰长条）
+ *
+ *   三个原因叠在一起：
+ *     ① 底子到**底边**还有 .12 的浓度 → 下沿是一道**可见的硬边** ✓
+ *     ② `blur(20px)` 糊的是**栏内那条 54px 的带子** ✗
+ *        它下面紧接着就是清晰的地图 → 一糊一清，边界特别扎眼 ✓
+ *     ③ 背景本来就有个"从上到下渐隐"（`linear-gradient(#0b0f14f2, #0b0f1400)`）✓
+ *        我把它整条盖掉了 ✗ 那才是不突兀的关键 ✓
+ *
+ *   → 现在：**一路淡到 0** ✓ 下沿彻底没有边界 ✓
+ *     顶栏就是"地图往上慢慢变暗"，而不是"上面贴了一条板子"✓
+ *   ⚠ 浓度不能一味调低 ✗ 顶栏上的胶囊按钮要读得清 ✓
+ *     它们自己有 .58 的底 ✓ 所以栏本身可以淡 ✓ 两件事分开算 ✓
+ */
+/* 🔴🔴 **2026-10-21 晚（第四版）：顶栏做成下方栏的镜像** ✗✗
+ *   （用户："上方栏那个渐变完全可以像下方栏的渐变一样呀"）
+ *
+ *   ⚠⚠ **这一版的根子在这儿 —— 之前三轮都在改错东西** ✗
+ *
+ *   下方栏（`#mob-dock`）为什么好看？去翻它的 CSS 就明白：
+ *     `#mob-dock { background: linear-gradient(180deg, 透明 → .5@52% → .82); }`
+ *     **容器上根本没有 `backdrop-filter`** ✗ 只有一个纯 alpha 渐变 ✓
+ *     模糊全在**按钮**上（`#mob-dock button` 那条）✓
+ *
+ *   顶栏之前为什么难看？我给它**容器**加了 `blur(20px)` ✗
+ *     → 那层模糊只在 **54px 栏内**生效 ✓
+ *     → 栏下面紧接着就是**没被模糊的地图** ✓
+ *     → 于是一条"糊的 / 清的"**硬接缝**横在 y=54 那儿 ✓
+ *     那道灰泥其实是**模糊的边界**，不是渐变本身 ✓（我前三轮全在调 alpha ✓ 白忙）
+ *
+ *   → 现在照下方栏镜像：
+ *     · 容器：**去掉 `backdrop-filter`** ✗ 只留纯渐变 ✓
+ *     · 渐变：把下方栏那三档**上下翻过来** ✓
+ *         下方栏 = 顶透明 → 底(.5@52%) → 底(.82)
+ *         顶  栏 = 顶(.82) → (.5@48%) → 底透明
+ *       这样两条栏在地图上下对称 ✓ 眼睛一看就是一套 ✓
+ *     · 模糊：留给**按钮**（下面那条 `#mob-topbar .mob-btn` 本来就有 ✓）
+ *
+ *   ⚠ 深色和浅色**各写一条**，但两边都是"镜像下方栏" ✓ 别再各造一套 ✓
+ */
+#mob-topbar {
+  background: linear-gradient(180deg,
+    rgba(10, 15, 21, .82) 0%,
+    rgba(10, 15, 21, .50) 48%,
+    rgba(10, 15, 21, 0) 100%);
+}
+/* 顶栏上那些胶囊按钮：**比顶栏实一档** ✓ 不然字压在地图花纹上读不清 ✓ */
+#mob-topbar .mob-btn,
+#mob-topbar .mob-theme,
+#mob-topbar .mob-author {
+  background: rgba(12, 17, 24, .72);
+  -webkit-backdrop-filter: blur(12px) saturate(150%);
+  backdrop-filter: blur(12px) saturate(150%);
+  border-color: rgba(255, 255, 255, .14);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, .3), inset 0 1px 0 rgba(255, 255, 255, .12);
+}
+
+/* ---- ② 底部四个入口 ---- */
+/* ⚠ 这一条**只给容器**加上下渐隐 ✓ 真正的玻璃在按钮上 ✓
+ *   容器本身铺满整条底边，给它上模糊没意义（底下没有地图可糊 ✓ 只有按钮）✓ */
+#mob-dock {
+  background: linear-gradient(180deg, rgba(10, 15, 21, 0), rgba(10, 15, 21, .5) 52%, rgba(10, 15, 21, .82));
+}
+#mob-dock button {
+  /* ⚠ **底栏按钮要够实** ✗✗ —— 它背后是**画笔色渐变**（JS 每 0.4 秒刷一次 ✓）
+   *   透太多就会被画笔颜色染上去 ✓ 日间那版被这个坑染成粉色过 ✓
+   *   玻璃感靠**内高光 + 细边**做 ✓ 不靠透明度 ✓（见 2026-10-21 那条长注释）*/
+  background: rgba(13, 19, 26, .92);
+  -webkit-backdrop-filter: blur(14px) saturate(150%);
+  backdrop-filter: blur(14px) saturate(150%);
+  border-color: rgba(255, 255, 255, .12);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .34), inset 0 1px 0 rgba(255, 255, 255, .1);
+}
+/* 当前那个入口：亮一档 + 金色边 ✓ 让它在一片玻璃里认得出来 ✓ */
+#mob-dock button.on {
+  background: rgba(58, 45, 20, .95);
+  border-color: rgba(201, 169, 78, .85);
+}
+
+/* ---- ③ 二级面板：最大的一块玻璃 ---- */
+/* ⚠ 它原来写的是纯色 `#0d131a` ✗ 一点不透 ✓ 现在是整块玻璃 ✓
+ *   面板比按钮大得多，底子要更薄（.74）、模糊要更强（24px）✓
+ *   否则在大面板上"薄底 + 弱模糊"= 背后的地图花纹直接读得出来 ✓ 字就乱了 ✓ */
+#mob-sheet {
+  /* 🔴🔴 **2026-10-21 晚：再透一档** ✗✗（用户："更多更多液态玻璃"）
+   *   上一版 .74 —— 太实了 ✓ 透光只剩 26%，深色叠在深色地图上
+   *   看着跟"实心板子"几乎没差 ✓（自检截图里就是这样 ✓）
+   *
+   *   算过对比度（`#c8d4e2` 的文字）：
+   *     alpha .74 → 海面底 11.8 / 陆地底 9.1
+   *     alpha .54 → 海面底 11.2 / 陆地底 6.6   ← 文字仍然稳稳达标（AA 要 4.5）
+   *   → 取 **.54** ✓ 透光 46% ✓ 地图轮廓明显浮上来了 ✓
+   *   ⚠ 再往下（.48 → 陆地底 5.9）就开始"地图花纹抢字"了 ✓ 别贪 ✓
+   *   ⚠ 这是**深色模式**的值 ✓ 日间那套单独在下面写 ✓ 别混 ✓ */
+  background:
+    linear-gradient(160deg, rgba(255, 255, 255, .12), transparent 46%),
+    rgba(13, 19, 26, .54);
+  -webkit-backdrop-filter: blur(24px) saturate(165%);
+  backdrop-filter: blur(24px) saturate(165%);
+  border-color: rgba(255, 255, 255, .16);
+  box-shadow: 0 -14px 44px rgba(0, 0, 0, .5), inset 0 1px 0 rgba(255, 255, 255, .14);
+}
+/* 面板头部（标题 + 收起）：别再叠一层实色 ✗ 直接透面板的玻璃 ✓ */
+#mob-sheet-head {
+  background: linear-gradient(180deg, rgba(255, 255, 255, .05), transparent);
+  border-bottom-color: rgba(255, 255, 255, .1);
+}
+#mob-sheet-x {
+  background: rgba(255, 255, 255, .08);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  border-color: rgba(255, 255, 255, .16);
+}
+
+/* ---- ④ 面板里的按钮 / 分段 / 标签页：小一号的玻璃片 ---- */
+/* ⚠ 这些是**密排的控件** ✗ 底子要给到 .78（比面板实）✓
+ *   不然一排几十个按钮、每个都透出地图花纹 → 一片花 ✓
+ *   ⚠ 模糊只给 8~10px ✓ 小元素上大模糊纯属浪费 GPU ✓ */
+.mob-tab,
+#mob-sheet .segmented button,
+.mob-pane .segmented button,
+.mob-group .segmented button,
+.mob-era .dd-btn,
+#mob-sheet .btn,
+.mob-io .btn {
+  background: rgba(255, 255, 255, .07);
+  -webkit-backdrop-filter: blur(10px) saturate(145%);
+  backdrop-filter: blur(10px) saturate(145%);
+  border-color: rgba(255, 255, 255, .12);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .08);
+}
+/* 选中的那几个：金色玻璃 ✓（跟顶栏/桌面的选中态一个口径 ✓）*/
+#mob-sheet .segmented button.on,
+.mob-pane .segmented button.on,
+.mob-group .segmented button.on,
+.mob-era .dd-btn.on,
+.mob-tab.on {
+  background: linear-gradient(180deg, rgba(201, 169, 78, .24), rgba(201, 169, 78, .12));
+  border-color: rgba(201, 169, 78, .7);
+  color: #f6dfa0;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .16), 0 2px 10px rgba(0, 0, 0, .28);
+}
+/* 🔴🔴 **2026-10-21 晚：选中态在白天要换成深蓝** ✗✗
+ *   （用户截图："这里的字怎么还是亮金色的（白天模式下）" —— 指「涂抹」那一项）
+ *
+ *   根因跟**最开始那个剧本下拉**是同一个毛病 ✗：
+ *     上面那条只给夜间写了 `color: #f6dfa0`（亮金 ✓ 深底上是 9.3:1 ✓ 好看 ✓）
+ *     而白天底子是**白玻璃**（`rgba(255,255,255,.6)` ✓）
+ *     → 亮金压在浅底上 = **1.3:1** ✓ 基本看不见 ✓（跟当初那个 1.12:1 一模一样）
+ *
+ *   ⚠ **为什么我的日间扫子没抓到它** ✗
+ *     那个扫子只查"**写死深色**、却没有日间版" ✓（比如 `#101820` 底 ✗）
+ *     这里是**浅色字 × 浅色底** ✓ 方向反了 ✓ 扫子的判据得两边都管 ✓
+ *     （扫子已经补上了 ✓ 见 tools/check_mobile_parity.js 第 ⑥ 组 ✓）
+ *
+ *   → 白天用 `#26598a` ✓ 这是全项目"选中态在浅底上"的**统一色** ✓
+ *     5.35:1 ✓ 跟「颜色/边界/名字」那几个标签、跟桌面那条 `--gold` 日间版一个值 ✓
+ *   ⚠ 别在这儿另调一个蓝色 ✗ 选中态全项目只有一个蓝 ✓ 换一处改一处 ✓ */
+html[data-theme="light"] #mob-sheet .segmented button.on,
+html[data-theme="light"] .mob-pane .segmented button.on,
+html[data-theme="light"] .mob-group .segmented button.on,
+html[data-theme="light"] .mob-era .dd-btn.on,
+html[data-theme="light"] .mob-tab.on {
+  background: linear-gradient(180deg, rgba(47, 95, 143, .18), rgba(47, 95, 143, .10));
+  border-color: rgba(47, 95, 143, .55);
+  color: #26598a;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .9);
+}
+/* 剧本下拉的面板：**浮在面板之上** ✓ 它是"面板里的浮层"✓ 底子要更实一点 ✓ */
+.mob-era .dd-panel {
+  background: rgba(16, 22, 30, .88);
+  -webkit-backdrop-filter: blur(20px) saturate(150%);
+  backdrop-filter: blur(20px) saturate(150%);
+  border-color: rgba(255, 255, 255, .14);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, .5);
+}
+
+/* ---- ⑤ 列表 / 输入框：**不给模糊**（性能）---- */
+/* ⚠ 一行一层 GPU ✗ 手机上滑列表直接卡 ✓
+ *   → 只给淡白高光 ✓ 模糊由外层面板负责 ✓ */
+#mob-sheet .result,
+#mob-sheet .chain-row,
+#mob-sheet .legend-row,
+#mob-sheet .legend-list {
+  background: rgba(255, 255, 255, .045);
+  border-color: rgba(255, 255, 255, .1);
+}
+#mob-sheet .legend-list { border-radius: 10px; }
+/* 输入框：比按钮实一点（要能读清打的字 ✓）*/
+#mob-sheet input[type="text"],
+#mob-sheet input[type="number"],
+#mob-sheet input[type="search"],
+#mob-sheet select {
+  background: rgba(255, 255, 255, .09);
+  border-color: rgba(255, 255, 255, .16);
+}
+
+/* ---- ⑥ 弹窗：介绍窗 / 改名 / 设置底部那几条 ---- */
+#mob-intro .modal-box,
+#mob-intro .mi-box,
+#rename .modal-box {
+  background:
+    linear-gradient(160deg, rgba(255, 255, 255, .08), transparent 42%),
+    rgba(13, 19, 26, .86);
+  -webkit-backdrop-filter: blur(24px) saturate(160%);
+  backdrop-filter: blur(24px) saturate(160%);
+  border: 1px solid rgba(255, 255, 255, .14);
+}
+/* 遮罩：**别做全黑** ✗ 玻璃要透，遮罩太狠就成"黑底玻璃"了 ✓ */
+#mob-backdrop { background: rgba(4, 8, 12, .34); }
+
+/* ===========================================================================
+   ⑦ **日间模式：同一套玻璃换成白玻璃**
+   ---------------------------------------------------------------------------
+   ⚠ 深色玻璃是"半透明黑" ✓ 浅色下必须换"半透明白" ✗
+     直接拿深色那套 → 白底上浮一块灰板 ✓ 比不做还难看 ✓
+   ⚠ **只动底 / 边 / 影，不碰字色** ✗
+     字色那一批在文件前半段（`html[data-theme="light"]` 那几条）已经写好了 ✓
+     这里再写一遍就是两个来源 ✓ 以后改一处忘一处 ✓
+   =========================================================================== */
+html[data-theme="light"] #mob-topbar {
+  /* 🔴🔴 **2026-10-21 晚（第四版）：浅色顶栏 = 浅色下方栏的镜像** ✗✗
+   *   （用户："上方栏那个渐变完全可以像下方栏的渐变一样呀" —— 说得对 ✓）
+   *
+   *   ⚠ 前三版我都在调 alpha ✗ 白忙 ✓ 真正的问题**不在渐变** ✓
+   *     是给容器加了 `backdrop-filter` ✓ 那层模糊只在 54px 栏内生效 ✓
+   *     栏外是清晰地图 ✓ → y=54 那儿一条"糊/清"的硬接缝 ✓
+   *     用户看到的灰泥是**模糊边界**✓（详见上面 `#mob-topbar` 深色那条的注释 ✓）
+   *
+   *   → 照下方栏镜像，**连数值都对着抄** ✓
+   *     下方栏浅色：`透明 → .55@52% → .88`（rgb 248,251,254 起、244,248,252 收）
+   *     顶  栏浅色：`.88 → .55@48% → 透明`（同一组色，把首尾对调 ✓）
+   *     这样上下一对，眼睛一看就是同一套 ✓
+   *
+   *   ⚠ 不再加**细线 / 投影** ✗ 下方栏没有 ✓ 顶栏也不该有 ✓
+   *     两条栏必须"同一套语言"，多一笔就露怯 ✓
+   */
+  background: linear-gradient(180deg,
+    rgba(244, 248, 252, .88) 0%,
+    rgba(248, 251, 254, .55) 48%,
+    rgba(248, 251, 254, 0) 100%);
+}
+html[data-theme="light"] #mob-topbar .mob-btn,
+html[data-theme="light"] #mob-topbar .mob-theme,
+html[data-theme="light"] #mob-topbar .mob-author {
+  /* ⚠ 按钮要**比顶栏更白** ✗ 不然渐变最上面那截已经 .88 了、
+   *   按钮再 .82 就糊在一起 ✓ 给到接近纯白 ✓ 靠"更白 + 细边"浮起来 ✓
+   *   ⚠ 按钮**保留自己的模糊** ✓（下方栏按钮也是这么干的 ✓ 一致 ✓）*/
+  background: rgba(255, 255, 255, .96);
+  border-color: rgba(24, 36, 50, .13);
+  color: #1a232e;
+  box-shadow: 0 2px 8px rgba(24, 36, 50, .10);
+  -webkit-backdrop-filter: blur(12px) saturate(150%);
+  backdrop-filter: blur(12px) saturate(150%);
+}
+html[data-theme="light"] #mob-dock {
+  background: linear-gradient(180deg, rgba(248, 251, 254, 0), rgba(248, 251, 254, .55) 52%, rgba(244, 248, 252, .88));
+}
+/* 🔴🔴 **底部入口的底色必须够实** ✗✗（2026-10-21 用户截图："底部按钮发粉"）
+ *
+ *   底栏背后有个**会变色的东西** ✗：
+ *     `mobile_js.txt` 每 0.4 秒拿**当前画笔颜色**给 `#mob-dock` 铺一条渐变 ✓
+ *     （"底部渐变 = 当前颜色"✓ 那是用户 2026-10 要的 ✓ 别删 ✓）
+ *   所以底栏那片**永远不是中性色** ✓ 拿它当玻璃底 → 按钮跟着画笔变粉/变红/变绿 ✗
+ *
+ *   → 底栏按钮的底子要**接近不透明**（.94）✓
+ *     它跟面板里那些按钮不是一回事：那些透的是地图 ✓ 这个透的是画笔色 ✗
+ *   ⚠ 别为了"更玻璃"把它降到 .8 ✗ 会重现这个 bug ✓
+ *     想要玻璃感可以给它**内高光 + 细边**（下面那行 box-shadow 就是）✓
+ *     那不靠透明度也能做出"一片玻璃"的厚度 ✓
+ */
+html[data-theme="light"] #mob-dock button {
+  background: rgba(252, 253, 255, .94);
+  border-color: rgba(24, 36, 50, .14);
+  box-shadow: 0 6px 18px rgba(24, 36, 50, .14), inset 0 1px 0 rgba(255, 255, 255, .9);
+}
+html[data-theme="light"] #mob-dock button.on {
+  /* 🔴 **选中态也要够实** ✗✗（2026-10-21 用户截图：底栏那颗红按钮）
+   *   原来 `.2 / .1` 两档蓝 —— 淡得几乎看不见 ✗
+   *   而底栏背后是**画笔色渐变**（当前是红色）→ 透上来就成一颗**红按钮** ✓
+   *   用户说的"太突兀"就是这个 ✓
+   *   → 底子提到 .95 ✓ 跟旁边那几颗白按钮一个"厚度" ✓
+   *     选中态靠**蓝底 + 蓝边**区分 ✓ 不靠透明度 ✓ */
+  background: linear-gradient(180deg, rgba(226, 237, 248, .97), rgba(212, 227, 242, .95));
+  border-color: rgba(47, 95, 143, .75);
+  box-shadow: 0 6px 18px rgba(24, 36, 50, .16), inset 0 1px 0 rgba(255, 255, 255, .95);
+}
+html[data-theme="light"] #mob-sheet {
+  background:
+    linear-gradient(160deg, rgba(255, 255, 255, .55), transparent 46%),
+    rgba(247, 250, 253, .78);
+  border-color: rgba(24, 36, 50, .16);
+  box-shadow: 0 -14px 44px rgba(24, 36, 50, .18), inset 0 1px 0 rgba(255, 255, 255, .9);
+}
+html[data-theme="light"] #mob-sheet-head {
+  background: linear-gradient(180deg, rgba(255, 255, 255, .5), transparent);
+  border-bottom-color: rgba(24, 36, 50, .1);
+}
+html[data-theme="light"] #mob-sheet-x {
+  background: rgba(255, 255, 255, .7);
+  border-color: rgba(24, 36, 50, .16);
+}
+html[data-theme="light"] .mob-tab,
+html[data-theme="light"] #mob-sheet .segmented button,
+html[data-theme="light"] .mob-pane .segmented button,
+html[data-theme="light"] .mob-group .segmented button,
+html[data-theme="light"] .mob-era .dd-btn,
+html[data-theme="light"] #mob-sheet .btn {
+  background: rgba(255, 255, 255, .6);
+  border-color: rgba(24, 36, 50, .14);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .9);
+}
+html[data-theme="light"] .mob-era .dd-panel {
+  background: rgba(252, 253, 255, .95);
+  border-color: rgba(24, 36, 50, .16);
+  box-shadow: 0 10px 30px rgba(24, 36, 50, .18);
+}
+html[data-theme="light"] #mob-sheet .result,
+html[data-theme="light"] #mob-sheet .chain-row,
+html[data-theme="light"] #mob-sheet .legend-row,
+html[data-theme="light"] #mob-sheet .legend-list {
+  background: rgba(255, 255, 255, .5);
+  border-color: rgba(24, 36, 50, .12);
+}
+html[data-theme="light"] #mob-sheet input[type="text"],
+html[data-theme="light"] #mob-sheet input[type="number"],
+html[data-theme="light"] #mob-sheet input[type="search"],
+html[data-theme="light"] #mob-sheet select {
+  background: rgba(255, 255, 255, .92);
+  border-color: rgba(24, 36, 50, .18);
+}
+html[data-theme="light"] #mob-backdrop { background: rgba(24, 36, 50, .22); }
+
+/* ===========================================================================
+   🔴🔴 **手机版「日间模式」补完**（2026-10-21 ✓ 用户截图："这个按钮为什么没有跟随晨昏变化"）
+   ---------------------------------------------------------------------------
+   那个按钮是「更高」的小圆钮 ✓ 已经单独修了（见上面 `.mob-tallbtn` 那节）✓
+   但问题**不止它一个** ✗ —— 我写了个小扫子（`_local/moblightaudit.js`）
+   把整个文件里"**写死了深色、却没有任何 `html[data-theme="light"]` 覆盖**"
+   的规则全列出来，一共 **15 条** ✓
+
+   真正影响白天观感的是下面这些（滚动条那两个不影响，跳过 ✓）：
+     · `.mob-btn` —— 顶栏那排胶囊的**基础样式**（白天另有几条盖着 ✓ 但兜底也得有）
+     · `#mob-topbar .mob-author` / `.mob-theme` / `#mob-mid .btn` —— 同一类
+     · `.modal-head` / `#mob-intro .modal-head` —— 介绍窗和改名窗的**吸顶标题条**
+     · `.mob-group .menu-item` / `#export-menu button` —— 「文件」面板里那排按钮
+     · `#mob-now` —— 左上角那个"当前工具/颜色"的小胶囊
+     · `#app` 的边框、`#rename` / `#mob-intro` 的边框
+
+   ⚠⚠ **这一节统一用 `.mob-btn` 那一套的口径** ✗ 不要各写各的：
+     底 = `rgba(255,255,255,.58~.62)` ✓
+     边 = `rgba(24,36,50,.14)` ✓
+     字 = `#1a232e` ✓
+   跟前面「液态玻璃 · 手机版 ⑦」那节是同一个语言 ✓ 别再造第三套白色 ✓
+   =========================================================================== */
+
+/* ---- ① 顶栏胶囊的兜底（`#mob-topbar` 那几条之外的也管）---- */
+html[data-theme="light"] .mob-btn {
+  background: rgba(255, 255, 255, .82);
+  border-color: rgba(24, 36, 50, .16);
+  color: #1a232e;
+  box-shadow: 0 4px 14px rgba(24, 36, 50, .12);
+}
+html[data-theme="light"] #mob-topbar .mob-author,
+html[data-theme="light"] #mob-mid .btn,
+html[data-theme="light"] #mob-mid a {
+  background: rgba(255, 255, 255, .82);
+  border-color: rgba(24, 36, 50, .16);
+  color: #1a232e;
+}
+html[data-theme="light"] #mob-topbar .mob-theme {
+  background: rgba(255, 255, 255, .82);
+  border-color: rgba(24, 36, 50, .16);
+  color: #1a232e;
+}
+/* 撤销 / 重做那两颗小图标钮（带 !important 那条也盖）*/
+html[data-theme="light"] .mob-icobtn {
+  background: rgba(255, 255, 255, .82) !important;
+  border-color: rgba(24, 36, 50, .16) !important;
+  color: #27313d !important;
+}
+
+/* ---- ② 弹窗的吸顶标题条 ---- */
+/* ⚠ 它白天是**一块深色板子贴在白弹窗顶上** ✓ 特别扎眼 ✓
+ *   改成跟弹窗同色的半透明白 ✓ 再补一条细底边区分层次 ✓ */
+html[data-theme="light"] .modal-head,
+html[data-theme="light"] #mob-intro .modal-head {
+  background: rgba(250, 252, 254, .96);
+  border-bottom: 1px solid rgba(24, 36, 50, .1);
+}
+
+/* ---- ③ 「文件」面板里那排按钮 ---- */
+/* ⚠ 它们带 `!important` ✗ 所以这边也得带 ✓ 不然盖不住 ✓ */
+html[data-theme="light"] .mob-group .menu-item,
+html[data-theme="light"] .mob-group #export-menu button,
+html[data-theme="light"] .mob-group[data-group="io"] button,
+html[data-theme="light"] .mob-group[data-group="io"] .menu-item,
+html[data-theme="light"] .mob-group[data-group="io"] a.btn {
+  background: rgba(255, 255, 255, .82) !important;
+  border-color: rgba(24, 36, 50, .16) !important;
+  color: #1a232e !important;
+}
+
+/* ---- ④ 左上角那个"当前工具 / 颜色"小胶囊 ---- */
+/* ⚠ 它默认是**隐藏的**（见 mobile_js.txt：这一版不挂了 ✓）
+ *   但样式留着 ✓ 哪天用回来得有日间版 ✓ */
+html[data-theme="light"] #mob-now {
+  background: rgba(255, 255, 255, .86);
+  border-color: rgba(24, 36, 50, .16);
+  color: #1a232e;
+}
+
+/* ---- ⑤ 手机框 / 弹窗的边框 ---- */
+/* ⚠ 宽屏调试时 `#app` 是个带圆角的手机框 ✓ 边框深色在浅底上像一道黑边 ✓ */
+html[data-theme="light"] #app { border-color: rgba(24, 36, 50, .16); }
+html[data-theme="light"] #mob-intro .modal-box { border-color: rgba(24, 36, 50, .16) !important; }
+html[data-theme="light"] #rename .modal-box { border-color: rgba(24, 36, 50, .16) !important; }
+
+/* ---- ⑥ 滚动条：白天那根深色条在浅底上像一道黑缝 ---- */
+html[data-theme="light"] *::-webkit-scrollbar-thumb { background: #b7c3cf; }
+html[data-theme="light"] *::-webkit-scrollbar-thumb:hover { background: #9fb0c0; }
+html[data-theme="light"] * { scrollbar-color: #b7c3cf transparent; }
+
+/* 🔴 **宽屏调试时手机框外面那片底色**（2026-10-21 补 ✓ 同日间补完那条一起）
+ *   `@media (min-width: 561px)` 里把 `body` 刷成了 `#06090c` ✓ 用来衬手机框 ✓
+ *   白天模式下那片还是黑的 ✗ → 手机框像贴在一口黑井里 ✓ 很突兀 ✓
+ *   ⚠ 只改**框外那圈** ✓ 手机框里由 `#app` 自己的底管着 ✓ 两件事 ✓
+ *   ⚠ 必须放回同一个媒体查询里 ✗ 不然真手机上 body 也变浅 ✓ 没意义 ✓ */
+@media (min-width: 561px) {
+  html[data-theme="light"] body { background: #dfe4ea; }
+}
+
+/* ===========================================================================
+   🔴🔴 **手机版「亮色字」的日间补完**（2026-10-21 ✓ 用户截图："这里的字怎么还是亮金色的"）
+   ---------------------------------------------------------------------------
+   上面那节扫的是"**写死深色**没日间版" ✓（底/边 ✗ 白天还是黑的 ✓）
+   可还有**反方向**的一种 ✗✗：
+     · 深色界面里，文字为了醒目写成**亮金 / 近白** ✓ 深底上对比度 9:1+ ✓
+     · 到了白天，底子换成白玻璃 ✓ 亮字压浅底 → **1.3:1** ✓ 基本看不见 ✓
+   跟最开始那个剧本下拉（1.12:1）是**一类**毛病 ✓
+
+   扫出来 9 条，其中真要紧的是**介绍窗整篇**（`.mi-body` 那一族）：
+     正文 `#cdd7e2` / 小标题 `#f0d98a` / 强调 `#fff` / 导语 `#e8eef6`
+     → 白天点开「介绍」会是**一整屏白字压白底** ✓ 直接读不了 ✓ 比那个金色按钮严重得多 ✓
+
+   ⚠ 统一换成项目里"浅底上的字"那一套 ✓ 别各写各的：
+     正文 `#2b3743` / 次级 `#414e5d` / 金色强调 → `#26598a`（全项目统一那个蓝 ✓）
+   ⚠ **只动字色**，不动字号/行高/间距 ✗ 那些跟主题无关 ✓
+   =========================================================================== */
+
+/* ---- ① 介绍窗（`.mi-body` 一整族）---- */
+html[data-theme="light"] .mi-body { color: #2b3743; }
+html[data-theme="light"] .mi-body .mi-lead { color: #414e5d; }
+html[data-theme="light"] .mi-body h4 { color: #26598a; }
+/* ⚠ `<strong>` 原来写的是**纯白** ✗ 浅底上等于消失 ✓ 换成深底上的强调色 ✓ */
+html[data-theme="light"] .mi-body strong { color: #16202b; font-weight: 700; }
+/* 介绍窗吸顶标题：底子已经改白了 ✓ 字也得跟着深 ✓ */
+html[data-theme="light"] #mob-intro .modal-head h2 { color: #26598a; }
+
+/* ---- ② 左上角那个"当前工具"胶囊的选中态 ---- */
+/* ⚠ 它这一版是隐藏的（mobile_js 不挂它 ✓）但样式留着 ✓ 用回来时得有日间版 ✓ */
+html[data-theme="light"] #mob-now.on { color: #26598a; border-color: rgba(47, 95, 143, .6); }
+
+/* ---- ③ 金色按钮（`.mob-btn.gold`）---- */
+/* ⚠ 理论上它已经被 `html[data-theme="light"] .mob-btn` 的 `color:#1a232e` 盖掉了
+ *   （specificity 0,2,1 胜过 0,2,0 ✓）✓ 但**别指望这个巧合** ✗
+ *   显式写一条 ✓ 以后谁改 `.mob-btn` 那条也不会把这个连带弄坏 ✓ */
+html[data-theme="light"] .mob-btn.gold {
+  color: #26598a;
+  border-color: rgba(47, 95, 143, .5);
+}
+
+/* ===========================================================================
+   🔴🔴 **介绍窗 / 改名窗在白天要改成白卡**（2026-10-21 ✓ 用户截图："教程怎么在白天是这样的"）
+   ---------------------------------------------------------------------------
+   用户看到的：**深色卡片 + 深色字** ✓ 比改之前更难读 ✓
+
+   为什么会这样 —— 是我上一轮**只改了一半** ✗✗：
+     · 上一轮我把 `.mi-body` 那一族的**字色**改深了 ✓（`#2b3743` / `#26598a` ✓）
+     · 可卡片**底**还是 `rgba(13, 19, 26, .86)`（深色 ✓）✗ 一点没动 ✓
+     → 深字压深底 ✓ 两头都暗 ✓（改之前至少字是亮的、还能看 ✓）
+   教训：**改一侧必须改另一侧** ✗ 字和底是一对的 ✓
+
+   ⚠⚠ **为什么扫子没抓到** —— 它自己也有 bug ✗（2026-10-21 修）
+     那个 `background` 的值是：
+       `linear-gradient(160deg, rgba(255,255,255,.08), transparent 42%), rgba(13,19,26,.86)`
+     扫子的 `isDark()` **只取第一个颜色** ✗ → 拿到的是那条**白色高光** ✓
+     → 判成"这条不是深色" ✓ 整条漏掉 ✓ 断言恒绿 ✓
+     → 现在 `isDark()` 改成**扫全部颜色**（值里出现任何深色就算 ✓）✓
+       这条正是改完扫子之后才浮出来的 ✓
+
+   ⚠ 白的深浅：介绍窗是**长文** ✗ 底要够实 ✓ 用 `.96`，别搞半透明
+     后面还有地图在动的话，长文字压着花纹根本读不下去 ✓
+     ⚠ 改名窗内容少 ✓ 可以透一点 ✓ `.90`
+   ⚠ 边框：原来 `!important` 那些 ✓ 这里只改背景 ✗ 边框另有规则管 ✓ 别重复
+   =========================================================================== */
+html[data-theme="light"] #mob-intro .modal-box {
+  background:
+    linear-gradient(160deg, rgba(255, 255, 255, .9), transparent 42%),
+    rgba(250, 252, 254, .96);
+  box-shadow: 0 18px 48px rgba(24, 36, 50, .22);
+}
+html[data-theme="light"] #mob-intro .mi-box {
+  background: transparent;      /* 内层别再叠一层底 ✓ 交给外面那张卡 ✓ */
+}
+html[data-theme="light"] #rename .modal-box {
+  background:
+    linear-gradient(160deg, rgba(255, 255, 255, .85), transparent 42%),
+    rgba(250, 252, 254, .90);
+  box-shadow: 0 18px 48px rgba(24, 36, 50, .2);
 }

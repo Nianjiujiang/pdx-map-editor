@@ -216,6 +216,179 @@ function readScript(htmlPath) {
     ok('回到前台：强制重画一帧', r2.dirty === true);
   }
 
+  /* ==================================================================
+   * ④ **界面结构：桌面有的，手机版搬到了没有**（2026-10-21 加）
+   *
+   *   这一节是这次重构的验收标准 ✓
+   *   起因：桌面 2026-10-20 把设置改成 `data-group` 分页、把 `<h3>` 全删了 ✗
+   *     而手机版还按 h3 的中文标题正则认页 ✓ → 一条都匹配不上 →
+   *     **设置页除了「显示」之外全是空的** ✓（用户："设置什么的其实根本没跟上"）
+   *   这种"静默失配"不会抛错、不会崩，只有打开那个面板才看得见 ✓
+   *   → 所以必须从**真跑完的 DOM** 上验，不能只看源码 ✓
+   *
+   *   静态那一半在 tools/check_mobile_parity.js（秒出 ✓ 盯"代码里点了名没有"）
+   *   这里验的是**搬完之后 DOM 里到底有什么** ✓
+   * ================================================================== */
+  console.log('\n---- 界面结构：设置页 / 顶栏 ----');
+  {
+    /* ⚠ **从 `#mob-ui` 往下查** ✗ 别用 `env.documentStub.querySelector` ✓
+     *   documentStub 那个 querySelector 是个**特判桩**（只认 tier / tool / data-role ✓
+     *   见 browser_stub.js）✓ 它不会去翻整棵树 ✓
+     *   而面板挂在 `#app → #mob-ui → #mob-sheet → #mob-sheet-body → .mob-group` ✓
+     *   → 必须从**真·挂载点** `#mob-ui` 上查 ✓（Element 的 querySelector 是真遍历 ✓）*/
+    const ui = env.get('mob-ui');
+    const disp = ui ? ui.querySelector('.mob-group[data-group="display"]') : null;
+    ok('「设置」面板建出来了', !!disp, disp ? '有 ✓' : '没有 ✗');
+
+    if (disp) {
+      const panes = disp.querySelectorAll('.mob-pane');
+      ok('设置面板里有五个页', panes.length === 5,
+         `${panes.length} 个：${panes.map((p) => p.getAttribute('data-pane')).join(' / ')}`);
+
+      /* 🔴 核心那条：桌面的每个 data-group 都得有个**非空**的页 ✓
+       *   ⚠ 判据是"页里有东西"（子节点 > 0）✗ 不是"页存在" ✓
+       *     空页 = 搬失败了 ✓ 正是用户报的那个毛病 ✓ */
+      const deskGroups = [...fs.readFileSync(path.join(H.ROOT, 'web', 'index.html'), 'utf8')
+        .matchAll(/<section class="set-col" data-group="([^"]+)"/g)].map((m) => m[1]);
+      for (const g of deskGroups) {
+        const pane = disp.querySelector(`.mob-pane[data-pane="${g}"]`);
+        const n = pane ? (pane.children || []).length : -1;
+        ok(`桌面分组「${g}」搬进手机版了、而且不是空的`,
+           !!pane && n > 0, pane ? `${n} 个子节点` : '没有这一页 ✗');
+      }
+
+      /* 那四页里最关键的一个控件：确认**真的搬到了**（不是只有个空 shell）
+       *   取一个每页各一个、id 好认的 ✓ */
+      const MUST = [
+        ['set-bg', 'color', '底图背景色'],
+        ['set-pa', 'border', '省份边界浓度'],
+        ['set-font-place', 'label', '地块名字体'],
+        ['set-legend-title', 'legend', '图例标题'],
+      ];
+      for (const [id, pane, label] of MUST) {
+        const el = env.get(id);
+        let owner = null;
+        for (let n = el; n; n = n.parentNode) {
+          if (n.getAttribute && n.getAttribute('data-pane')) { owner = n.getAttribute('data-pane'); break; }
+        }
+        ok(`「${label}」落在「${pane}」页里`, !!el && owner === pane,
+           el ? `在 ${owner || '(不在任何页)'} 页` : '元素都没了 ✗');
+      }
+
+      /* **搬进来的分栏不许还是 hidden** ✗✗
+       *   桌面分页会把非当前页的 `.set-col` 设成 hidden ✓ 搬过来必须清掉 ✓
+       *   不清的话：节点在了、但**看不见** ✓ 跟没搬一样 ✓ */
+      const hiddenCols = [];
+      for (const col of disp.querySelectorAll('.set-col')) {
+        if (col.hidden) hiddenCols.push(col.getAttribute('data-group'));
+      }
+      ok('搬进来的设置分栏都不是隐藏的（hidden 已清 ✓）',
+         hiddenCols.length === 0, hiddenCols.length ? `还藏着：${hiddenCols.join(',')}` : '都显出来了 ✓');
+
+      /* 底栏（已改动 / 恢复默认）也得搬 ✓ */
+      const foot = disp.querySelector('.mob-set-foot');
+      ok('设置底栏（已改动 · 恢复默认）搬进来了', !!foot,
+         foot ? '有 ✓' : '没搬 ✗ 手机上够不着「恢复默认」');
+      if (foot) {
+        ok('底栏里那个「全部恢复默认」还在', env.get('set-reset') && !!foot.querySelector
+           ? !!env.get('set-reset') : false);
+      }
+    }
+
+    /* 🔴 **主题开关：在「设置面板」的顶部** ✗✗
+     *   （2026-10-21 ✓ 用户两次纠正：
+     *     "晨昏按钮放在设置的【其他】页面" → 然后又改成
+     *     "晨昏按钮还是放设置顶部吧（**不是屏幕顶部**）"）
+     *
+     *   最终位置：`#mob-sheet-body` 里那个 `.mob-theme-bar` ✓
+     *     · 在 `.mob-tabs` **前面**（标签上面 ✓ 一开面板就看得到）
+     *     · 在 `.mob-panes` **外面**（跟着换页滚走的就不对了 ✗）
+     *     · **不是顶栏** ✗（那是"屏幕顶部"✓ 用户明确否掉了）
+     *
+     *   ⚠ 判据要**两件事同时成立**：
+     *     ① 它在一个 `.mob-theme-bar` 里，而那根 bar 的父级是 `#mob-sheet-body`
+     *     ② 它**不在**任何 `.mob-pane` / `.mob-panes` 里（否则换页就没了）
+     */
+    const top = env.get('mob-topbar');
+    const th = env.get('btn-theme');
+    ok('白天/黑夜开关还在（没在搬家的路上丢掉 ✓）', !!th, th ? '有 ✓' : '按钮没了 ✗');
+    if (th) {
+      let bar = null;
+      for (let n = th.parentNode; n; n = n.parentNode) {
+        if (n.classList && n.classList.contains('mob-theme-bar')) { bar = n; break; }
+      }
+      ok('主题开关在设置面板顶部的 `.mob-theme-bar` 里',
+         !!bar, bar ? '有那一行 ✓' : '没在 bar 里 ✗');
+
+      /* 那根 bar 得挂在 `#mob-sheet-body` 下（面板自己的顶部 ✓ 不滚 ✓）*/
+      let barInBody = false;
+      for (let n = bar; n; n = n.parentNode) {
+        if (n.id === 'mob-sheet-body') { barInBody = true; break; }
+      }
+      ok('那一行挂在面板 body 里（不是某一页里 ✓ 换页不会消失）', barInBody,
+         barInBody ? '在 body 里 ✓' : '挂错地方了 ✗');
+
+      /* 不在任何 .mob-pane / .mob-panes 里 ✓ */
+      let inPane = false;
+      for (let n = th; n; n = n.parentNode) {
+        if (n.classList && (n.classList.contains('mob-pane') || n.classList.contains('mob-panes'))) {
+          inPane = true; break;
+        }
+      }
+      ok('主题按钮不在任何一页里（跟着换页滚走就不对了 ✗）', !inPane,
+         inPane ? '在某一页里 ✗' : '在页外面 ✓');
+
+      ok('主题按钮不在顶栏里（用户明确说"不是屏幕顶部" ✗）',
+         !th.parentNode || th.parentNode !== top,
+         th.parentNode === top ? '还在顶栏 ✗' : '不在顶栏 ✓');
+
+      /* ⚠ 位置顺序：bar 必须在 `.mob-tabs` 之前 ✓
+       *   ⚠ 别用补丁里的 `gDisp` ✗ 那是 `bindMobile` 的局部变量 ✓
+       *     测试里根本没有它 ✓（我第一版就写了它 → ReferenceError ✓）
+       *   → 从 `bar.parentNode` 拿父级 ✓ 那才是面板本身 ✓ */
+      const host = bar ? bar.parentNode : null;
+      const tabsEl = host && host.querySelector ? host.querySelector('.mob-tabs') : null;
+      if (bar && tabsEl && host.children) {
+        const kids = host.children;
+        const iBar = Array.prototype.indexOf.call(kids, bar);
+        const iTabs = Array.prototype.indexOf.call(kids, tabsEl);
+        ok('那一行在标签行上面（一开面板就看得到 ✓）',
+           iBar >= 0 && iTabs >= 0 && iBar < iTabs, `bar@${iBar} / tabs@${iTabs}`);
+      } else {
+        ok('那一行在标签行上面（一开面板就看得到 ✓）', false, '找不到 bar 或 tabs ✗');
+      }
+
+      /* onclick 得还在 —— 搬元素不会丢监听 ✓ 但万一哪天改成 cloneNode 就会丢 ✓ */
+      ok('主题按钮的点击处理还在（搬来搬去没丢 onclick ✓）',
+         typeof th.onclick === 'function', typeof th.onclick === 'function' ? '在 ✓' : '丢了 ✗');
+      /* 点一下真能翻主题 ✓ */
+      const rootEl = env.sandbox.document.documentElement;
+      const before = rootEl ? rootEl.getAttribute('data-theme') : null;
+      if (typeof th.onclick === 'function' && rootEl) {
+        th.onclick();
+        const after = rootEl.getAttribute('data-theme');
+        const flipped = (before === 'light') !== (after === 'light');
+        ok('点它真的能切白天/黑夜（手机上不再是永远夜间 ✓）', flipped,
+           `${before || '夜间'} → ${after || '夜间'}`);
+        th.onclick();     // 复原，别影响后面的断言 ✓
+      }
+      /* 全页只能有一颗 ✗ 两颗的话另一颗点了没反应 ✓ */
+      let nTh = 0;
+      const walk = (n) => {
+        if (!n) return;
+        if (n.id === 'btn-theme') nTh++;
+        for (const c of (n.children || [])) walk(c);
+      };
+      walk(ui);
+      ok('手机上只有一个主题按钮（两颗的话有一颗点了没反应 ✗）', nTh === 1, `${nTh} 个`);
+    }
+
+    /* 底栏四个入口一个不少 ✓ */
+    const dock = env.get('mob-dock');
+    ok('底部四个入口都在（设置 / 颜色 / 工具 / 视图）',
+       !!dock && dock.children.length === 4, dock ? `${dock.children.length} 个` : '没有 ✗');
+  }
+
   console.log('\n==========================================================');
   console.log(`通过 ${oks.length} 条，失败 ${fails.length} 条`);
   if (fails.length) {

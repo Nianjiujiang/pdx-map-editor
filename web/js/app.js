@@ -6441,7 +6441,24 @@ function bindEvents() {
     });
   }, { passive: false });
 
+  /* 🔴🔴 **浮在画布上的控件不能把点击漏给地图** ✗✗
+   *   （2026-10-21 ✓ 用户："这三个小按钮点击的同时会涂色被点击的地块"）
+   *
+   *   `.zoom-box`（缩放 − ＋ ⤢）、`.toast`、`#hover-card` 都是 `.stage` 的**子元素** ✓
+   *   而 `mousedown` 是挂在 `stage` 上的 ✓ 事件会**冒泡上来** ✓
+   *   → 点"＋"也被当成"在这一点涂了一下" ✓ 顺手把地块改了 ✓ 很危险（改的是真数据 ✓）
+   *
+   *   ⚠ 手机版早就有这个守门（`mobile_js.txt` 的 `onWidget` ✓）
+   *     桌面版**一直没有** ✗ 这次补上 ✓ 两边判据保持**同一份清单** ✓
+   *     清单以后要加东西，两边都加 ✗ 只加一边就会各坏各的 ✓
+   */
+  const onWidget = (t) => !!(t && t.closest
+    && t.closest('.zoom-box, button, input, a, select, .modal, .toast, #hover-card, #boot'));
+
   stage.addEventListener('mousedown', (e) => {
+    /* ⚠ **第一句就得挡** ✗ 拖到下面任何一个分支才挡就晚了 ✓
+     *   （不改 `panning` / 不落笔 / 也不 `preventDefault` —— 让按钮自己的 click 正常走 ✓）*/
+    if (onWidget(e.target)) return;
     if (e.button === 1 || (e.button === 0 && state.tool === 'view')) {
       panning = { x: e.clientX, y: e.clientY, cx: state.cam.cx, cy: state.cam.cy };
       $('map').style.cursor = 'grabbing';
@@ -6496,6 +6513,10 @@ function bindEvents() {
 
   // 右键取色（顺便把浏览器菜单挡掉）
   stage.addEventListener('contextmenu', (e) => {
+    /* ⚠ **右键取色也得挡** ✗（同一个毛病 ✓ 2026-10-21）
+     *   在「＋」上点右键会被当成"取这一格的颜色" ✓ 面板里那些按钮同理 ✓
+     *   → 只阻止浏览器的菜单，**不取色** ✓ */
+    if (onWidget(e.target)) { e.preventDefault(); return; }
     e.preventDefault();
     pickAt(e.clientX, e.clientY);
   });
@@ -6775,7 +6796,10 @@ function bindEvents() {
   // 「设置」二级面板（右上角开，改完立刻生效 ✓）
   {
     const _panel = $('settings');
-    const _open = () => {
+    /* ⚠ 这个函数**只负责把控件填成当前值** ✗ 不负责显示/隐藏 ✓
+     *   （原来它叫 `_open` 而且最后自己 `hidden = false` ✓ 现在拆开 ✓
+     *    因为开合要带动画 ✓ 显示那一步得单独控制 ✓）*/
+    const _fill = () => {
       if (!_panel) return;
       const s = state.set || {};
       const _now = (key) => {
@@ -6854,9 +6878,102 @@ function bindEvents() {
       if (_lpEl0) _lpEl0.value = s.legendPos || 'tl';
       rebuildLegendPanel();
       syncAllCtls();              // 所有数值控件的当前值 / HEX / 不限那两个勾 ✓
-      _panel.hidden = false;
     };
-    if ($('btn-settings')) $('btn-settings').onclick = _open;
+
+    /* ============================================================ 开 / 合
+     * 🔴 2026-10-21 ✓ 用户："给设置按钮也做个类似的那种显示动画，同时也是
+     *    按一下弹出按一下隐藏，而不依靠那个小叉叉"
+     *
+     *  跟「☰ 侧栏」那套是**同一手感**：同一条曲线 `.24s cubic-bezier(.16,1,.3,1)` ✓
+     *  方向相反：侧栏往左滑出、设置从右滑入 ✓
+     *
+     * ⚠⚠ **为什么要用 setTimeout 收尾，不能光靠 CSS** ✗✗
+     *   `#settings[hidden] { display: none !important }` ✓
+     *   `display` 由 `block` 变 `none` 是**瞬间跳变** ✓ transition 根本不跑 ✓
+     *   → 关的时候：**先摘 `.open`**（触发滑出动画 ✓）→ **等它跑完再 `hidden`** ✓
+     *   → 开的时候反过来：`hidden = false` 之后**等一帧**再加 `.open` ✓
+     *     同一帧里改两个属性，浏览器会合并成"最终状态" ✓ 动画不会触发 ✓
+     *
+     * ⚠ 关闭的 240ms 里抽屉仍然 `display:block` ✗
+     *   CSS 那边给 `#settings:not(.open) { pointer-events: none }` ✓ 所以不吃点击 ✓
+     */
+    const CLOSE_MS = 240;
+    let _closeTimer = 0;
+    /* ⚠ **序号**：开合靠 rAF 异步完成 ✗
+     *   用户"点开 → 立刻又点关"时，那个还没跑的 rAF 会把面板**又打开** ✓
+     *   → 每次开/合都 +1 ✓ rAF 里比对 ✓ 对不上就直接放弃 ✓ */
+    let _seq = 0;
+    /* 🔴 **开合状态用布尔量记，别看瞬时样式** ✗✗（2026-10-21 踩过）
+     *   我第一版判断写的是：`if (!hidden && classList.contains('open')) 关` ✓
+     *   可 `.open` 是 rAF 之后才加的 ✓
+     *   → 用户"点开 → 立刻又点"时，那一刻 `.open` 还**没有** ✓
+     *   → 条件不成立 → 走 `openSettings()` ✓ **又开了一次** ✗
+     *     （用户看到的就是"连点两下没关掉"✓）
+     *   → 现在用 `_wantOpen` 记**意图** ✓ 不受动画时序影响 ✓ */
+    let _wantOpen = false;
+
+    const _syncBtn = () => {
+      const b = $('btn-settings');
+      if (!b) return;
+      b.setAttribute('aria-expanded', _wantOpen ? 'true' : 'false');
+    };
+
+    const openSettings = () => {
+      if (!_panel) return;
+      clearTimeout(_closeTimer);
+      _wantOpen = true;
+      _fill();                       // 每次打开都按当前状态回填 ✓
+      _panel.hidden = false;
+      const my = ++_seq;
+      /* ⚠ 等一帧再加 `.open` ✗ 同一帧里改 `hidden` 和 `class` 会被浏览器合并 ✓
+       *   合成"最终状态" ✓ 动画根本不触发 ✓
+       *   套两层是稳妥写法 ✓（第一层等样式结算、第二层等布局）✓ */
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          if (!_panel || my !== _seq) return;   // ← 期间被关掉了就别开 ✓
+          _panel.classList.add('open');
+          _syncBtn();
+        });
+      });
+      _syncBtn();
+    };
+
+    const closeSettings = () => {
+      if (!_panel) return;
+      ++_seq;                        // ← 作废上面那些还没跑的 rAF ✓
+      _wantOpen = false;
+      _panel.classList.remove('open');   // ← 这一步触发滑出 ✓
+      _syncBtn();
+      clearTimeout(_closeTimer);
+      _closeTimer = setTimeout(() => {
+        /* ⚠ 这 240ms 里用户可能又点开了 ✗ 所以收尾前确认一下 ✓
+         *   ⚠ 必须判 `_wantOpen` ✗ 不能判 `.open`
+         *     "刚点开、rAF 还没跑"的那一瞬间 `.open` 是**没有**的 ✓
+         *     判 `.open` 就会把刚打开的面板又藏起来 ✓（闪一下就没）*/
+        if (_panel && !_wantOpen) _panel.hidden = true;
+      }, CLOSE_MS);
+    };
+
+    const toggleSettings = () => {
+      if (!_panel) return;
+      /* ⚠ 判 `_wantOpen`（意图）✗ 不判 `.open`（瞬时样式）
+       *   原因见上面 `_wantOpen` 那段注释 ✓ */
+      if (_wantOpen) closeSettings();
+      else openSettings();
+    };
+
+    /* 把这两个也挂到 window 上 ✓ 手机版那边要用（它填完值要**悄悄关掉** ✓
+     * 直接写 `hidden = true` 会留下一个 `.open` ✓ 下次桌面打开就没动画了 ✗）*/
+    try { window.__pdxSettings = { open: openSettings, close: closeSettings, toggle: toggleSettings }; } catch (e) { /* ✓ */ }
+
+    const _sb = $('btn-settings');
+    if (_sb) _sb.onclick = toggleSettings;
+    _syncBtn();
+    /* ESC 关掉 ✓ 抽屉开着的时候才有反应 ✓ */
+    document.addEventListener('keydown', (e) => {
+      if (e.key !== 'Escape' || !_panel || _panel.hidden) return;
+      closeSettings();
+    });
 
   /* ---- 顶栏高度写进 CSS 变量 ----
    * 侧栏要浮在"顶栏下面"，可顶栏会换行、高度不固定 ✓
@@ -6908,10 +7025,65 @@ function bindEvents() {
       };
     }
   }
+
+  /* ============================================================ 左侧栏折叠
+   * 🔴 2026-10-21 ✓ 用户："电脑版的显示左侧栏改成和设置栏一样可打开可收起的模式"
+   *
+   *  跟「设置」抽屉同一个口径：**顶栏一个按钮，按一下开、再按一下关** ✓
+   *  · 收起 = 侧栏滑出屏幕 + **宽度归零**（地图吃满 ✓ 见 CSS 那条长注释）
+   *  · 状态记在 `pdx-sidebar`（`'0'` = 收起 ✓ 缺省 = 展开 ✓）
+   *
+   *  ⚠ 默认**展开** ✗ —— 老用户一进来发现侧栏没了会以为坏了 ✓
+   *  ⚠ **手机版不要跑这个** ✗
+   *    手机版侧栏本来就是 `display: none`（内容全搬进面板了 ✓）
+   *    这里只加个 `body` 的类 ✓ 手机版不认这个类 ✓ 不会互相打架 ✓
+   *  ⚠ 收起之后要**让画布重算尺寸** ✗
+   *    地图宽度变了 ✓ 不重算的话画面会被拉伸 / 留白 ✓
+   */
+  {
+    const btn = $('btn-sidebar');
+    const apply = (folded) => {
+      try { document.body.classList.toggle('sb-folded', folded); } catch (e) { /* ✓ */ }
+      if (btn) btn.setAttribute('aria-expanded', folded ? 'false' : 'true');
+      /* 布局变了 → 让上游重算画布 + 重画一帧 ✓
+       * ⚠ `resize()` 那边有它自己的节流 ✓ 这里直接调也安全 ✓ */
+      try {
+        if (typeof renderer !== 'undefined' && renderer && renderer.resize) renderer.resize();
+      } catch (e) { /* 渲染器还没建好就跳过 ✓ */ }
+      try { if (typeof invalidate === 'function') invalidate(); } catch (e) { /* ✓ */ }
+    };
+    /* 开机：读上次的状态 ✓ */
+    let folded = false;
+    try { folded = localStorage.getItem('pdx-sidebar') === '0'; } catch (e) { folded = false; }
+    apply(folded);
+
+    if (btn) {
+      btn.onclick = () => {
+        const now = !document.body.classList.contains('sb-folded');
+        apply(now);
+        try { localStorage.setItem('pdx-sidebar', now ? '0' : '1'); } catch (e) { /* 无痕模式 ✓ */ }
+      };
+    }
+    /* 快捷键：`\`（反斜杠）开关 ✓
+     * ⚠ 输入框里打字时别抢 ✗（改名、搜索、HEX 都在用键盘 ✓）*/
+    document.addEventListener('keydown', (e) => {
+      if (e.key !== '\\' || e.ctrlKey || e.metaKey || e.altKey) return;
+      const t = e.target;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT'
+                || t.isContentEditable)) return;
+      e.preventDefault();
+      if (btn) btn.onclick();
+    });
+  }
     // 署名那两个入口在文件开头就挂过了 ✓ 这里再挂一次只是兜底（幂等 ✓）
     bindAuthorLinks();
-    if ($('set-close')) $('set-close').onclick = () => { if (_panel) _panel.hidden = true; };
-    if (_panel) _panel.addEventListener('click', (e) => { if (e.target === _panel) _panel.hidden = true; });
+    /* 🔴 **那个小叉叉还留着，但不再是唯一出路** ✗（2026-10-21 ✓ 用户要求）
+     *   现在：顶栏「设置」按钮**按一下开、再按一下关** ✓（见上面的 toggleSettings ✓）
+     *   叉叉和 ESC 只是"顺手也能关" ✓ 不是必须的 ✓
+     *   ⚠ 三条路都得走 `closeSettings` ✗ 直接写 `hidden = true` 会跳过滑出动画 ✓
+     *     （而且会留下一个 `.open` ✓ 下次打开就不动了 ✗）*/
+    if ($('set-close')) $('set-close').onclick = () => closeSettings();
+    if (_panel) _panel.addEventListener('click', (e) => { if (e.target === _panel) closeSettings(); });
     const bindColor = (id, key) => {
       const el = $(id);
       if (!el) return;
@@ -10830,3 +11002,100 @@ boot();
 
 // 新手引导：就绪后挂上顶栏那个「教程」按钮 ✓（本文件是独立小模块，不碰主逻辑）
 if (typeof window.initTutorial === 'function') window.initTutorial();
+
+/* ===========================================================================
+   🔴🔴 **电脑版「教程」= 介绍弹窗**（2026-10-21 ✓ 用户："电脑版的教程按钮也改成
+      和手机版一样显示那些东西，原来的教程注释但是别删就行"）
+   ---------------------------------------------------------------------------
+   手机版的「教程」已经是**一篇介绍长文**了 ✓（`mobile_js.txt` 的 `introHTML` ✓）
+   电脑版还停在老那套逐步引导 ✓ → 统一成同一个介绍窗 ✓
+
+   ⚠⚠ **老教程模块一个字都不删** ✗✗（用户明确要求 ✓）
+     `web/js/tutorial.js` 原封不动留着 ✓（步骤、圈高亮、注释全在 ✓）
+     只是**按钮不再指向它** ✓
+
+   ⚠ **怎么"摘掉"教程模块挂在按钮上的监听** ✗✗
+     它是 `btn.addEventListener('click', start)` ✓ addEventListener 摘不掉
+     （除非记着当初那个函数引用 ✓ 那是另一个模块的内部变量 ✓ 拿不到 ✓）
+   → 用**克隆换掉原节点** ✓ 克隆**不带**监听器 ✓ 老监听自然全失效 ✓
+     手机版当初也是这么干的（`mobile_js.txt` 同款 ✓）✓ 两边一个套路 ✓
+   ⚠ 克隆之后 `#btn-tutorial` 那个 id 还在 ✓ 别的代码按 id 找仍然找得到 ✓
+
+   ⚠ 文案里凡是指"顶栏那排"的，**电脑版要按电脑版说** ✗
+     手机版那句"单指按住 / 两根手指"直接抄过来会是错的 ✓
+     → 这边重写一份**桌面口吻**的 ✓ 结构跟手机版一模一样 ✓
+       （.mi-lead / h4 / p / strong ✓ 样式共用 ✓）
+   =========================================================================== */
+(function initDesktopIntro() {
+  if (typeof document === 'undefined') return;
+
+  const introHTML =
+    '<p class="mi-lead">把 P 社五款游戏的<strong>真实地图</strong>拿来上色、修改国界、导出成图，'
+    + '全部都在这个网页里面完成，不用安装游戏、不用注册账号，也不需要联网。</p>'
+
+    + '<h4>怎么在地图上动手</h4>'
+    + '<p>左边那排工具选一个，然后在图上<strong>按住左键拖动</strong>就能涂。'
+    + '<strong>中键拖动</strong>（或者选「查看」之后左键拖）是平移画面，<strong>滚轮</strong>是缩放。<br>'
+    + '想让某一块土地的颜色进入调色板吗？<strong>右键点它一下</strong>，等于取色。</p>'
+
+    + '<h4>左边那栏「显示」</h4>'
+    + '<p>管整张图**画成什么样**：地块 / 势力 / 水域 / 荒地各自的<strong>边界、名称、颜色</strong>开关，'
+    + '还有边界浓度、字号、底图背景色。<br>'
+    + '这一栏可以<strong>收起来</strong>（左上角那个「☰」，或者按 <strong>\</strong> 键），'
+    + '收起来之后地图会吃满整个宽度。</p>'
+
+    + '<h4>上面那条</h4>'
+    + '<p><strong>剧本</strong>：点开才是年份（1444、1936 这种，整张地图的国界与配色都会跟着更换）。<br>'
+    + '<strong>视图</strong>：地理层级，大洲 → 大区 → 区域 → 地区 → 省份，越往右边越细。<br>'
+    + '<strong>工具</strong>：查看、吸管、填色、涂抹、橡皮、改名，一共六个。'
+    + '涂抹是按住拖出一片；<strong>填色</strong>是点一下变化一次（担心手滑就用它）；橡皮擦回原样。<br>'
+    + '<strong>文件</strong>：导出整图 PNG、导出高清地图、导出涂色存档、导入存档，还有撤销、重做、清除。<br>'
+    + '<strong>设置</strong>：颜色、边界线、名称、其他（界面白天 / 黑夜、导出图例）。设置面板也是按一下开、再按一下收。</p>'
+
+    + '<h4>两个小提示</h4>'
+    + '<p>涂错了就点「文件 → 撤销」（<strong>Ctrl + Z</strong>），或者直接用「清除」重新开始，'
+    + '随便尝试也不会弄乱真正的文件。<br>'
+    + '想留住作品就选「文件 → 导出」，存下来的涂色下次导入依然可以接着修改。</p>';
+
+  /** 造/取介绍窗（懒建 ✓ 只在第一次点「教程」时建 ✓ 不拖慢启动 ✓）
+   *  ⚠⚠ **用自己的变量缓存节点，别每次 `getElementById` 去探** ✗✗
+   *   原来写的是 `let box = document.getElementById('app-intro');
+   *              if (!box) { 建 }` ✓
+   *   真浏览器里没错 ✓ 但**测不了** ✗：
+   *     模拟 DOM 的 `getElementById` 是"找不到就懒建一个空 div" ✓
+   *     （它必须这么干，否则 `$('settings')` 那些拿不到节点 ✓）
+   *   → 那句 `if (!box)` **永远不成立** ✓ 窗从来不会被真正建出来 ✓
+   *   → 自检里"点教程 → 有介绍窗"永远是空的 ✓ 测了个寂寞 ✓
+   *   真机上都对、只有测试里坏 ✓ 这种坑最难查 ✓
+   *   → 现在用闭包变量记着 ✓ 建一次就够 ✓ 也少一次 DOM 查询 ✓ */
+  let boxEl = null;
+  const showIntro = () => {
+    if (!boxEl) {
+      boxEl = document.createElement('div');
+      boxEl.id = 'app-intro';
+      boxEl.className = 'modal';
+      boxEl.hidden = true;
+      boxEl.innerHTML =
+        '<div class="modal-box">'
+        + '<div class="modal-head"><h2>这是什么？</h2>'
+        +   '<button type="button" class="btn ghost" id="app-intro-close">知道啦</button></div>'
+        + '<div class="mi-box"><div class="mi-body">' + introHTML + '</div></div>'
+        + '</div>';
+      document.getElementById('app').appendChild(boxEl);
+      /* 点窗外关掉 ✓ 点「知道啦」也关 ✓ */
+      boxEl.addEventListener('click', (e) => { if (e.target === boxEl) boxEl.hidden = true; });
+      const cb = boxEl.querySelector('#app-intro-close');
+      if (cb) cb.addEventListener('click', () => { boxEl.hidden = true; });
+    }
+    boxEl.hidden = false;
+    /* 每次打开滚回顶上 ✓ 不然上次读到哪儿、这次一进来就在半截 ✓ */
+    try { boxEl.querySelector('.mi-box').scrollTop = 0; } catch (e) { /* ✓ */ }
+  };
+
+  const old = document.getElementById('btn-tutorial');
+  if (!old || !old.parentNode) return;
+  /* ⚠ 先克隆、再换节点 ✗ 顺序反了的话旧监听会跟着新节点跑 ✓ */
+  const fresh = old.cloneNode(true);
+  old.parentNode.replaceChild(fresh, old);
+  fresh.addEventListener('click', showIntro);
+})();

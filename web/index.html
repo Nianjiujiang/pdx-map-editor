@@ -41,6 +41,15 @@ if (location.protocol === 'file:') {
 <div id="app">
 
   <header class="toolbar">
+    <!-- 🔴🔴 **2026-10-21：侧栏按钮挪到顶栏最左** ✗✗
+         用户原话："侧栏按钮移动到上方栏最左边"
+         → 它原来住在右边那排（挨着「教程」✓）✓ 跟「文件 / 设置」挤在一块 ✗
+         → 现在**顶栏第一个**，连标题都在它右边 ✓
+         ⚠ 它管的是"左边那条栏" ✓ 所以放在左边，方向上也对 ✓
+         ⚠ 手机版这个按钮是 `display: none` ✓（见 mobile_css.txt ✓）-->
+    <button class="btn ghost" id="btn-sidebar" type="button"
+            aria-controls="sidebar" aria-expanded="true" title="收起 / 展开左侧栏（\\）">☰</button>
+
     <div class="brand">
       <span class="brand-mark" id="brand-mark">PDX</span>
       <span class="brand-text">悖论制图</span>
@@ -82,6 +91,8 @@ if (location.protocol === 'file:') {
          ⚠ `author-row` 这个**容器 id 得留着** ✗ —— 手机版按它找（`$('author-row')`）
            搬进「设置」面板；换成别的名字那边就搬不到了 ✓ -->
     <div class="tool-group actions" id="help-row">
+      <!-- ⚠ 「☰ 侧栏」**不在这儿了** ✗ 已挪到顶栏最左（见 header 开头那条注释 ✓）
+           这里原来放着它 ✓ 2026-10-21 按用户要求换位置 ✓ -->
       <button class="btn ghost" id="btn-tutorial">教程</button>
       <div class="tool-group actions" id="author-row">
         <a class="btn ghost" id="btn-author">永夜廿九</a>
@@ -96,10 +107,16 @@ if (location.protocol === 'file:') {
       <button class="btn ghost" id="btn-redo" disabled>↷</button>
     </div>
 
-    <!-- 回选地图那一页 ✓（键盘上按 Esc 也一样 ✓） -->
-    <div class="tool-group actions" id="home-row">
-      <button class="btn ghost" id="btn-home">主菜单</button>
-    </div>
+    <!-- 🔴🔴 **2026-10-21：电脑版「主菜单」按钮删掉了** ✗✗
+         用户原话："主菜单按钮在电脑版也删掉，用原有的 esc 代替即可"
+         → 那个按钮原来在这儿（`#btn-home` ✓）✓ 现在只留 **Esc** ✓
+         ⚠ 逻辑**一个字没动** ✗ `app.js` 里的 `goHome()` 还在 ✓
+           Esc 那条监听还调它 ✓（连"回主菜单前先存进暂存区"也在 ✓）
+           只是**少了那个按钮** ✓ 想再放回来：把 `<button id="btn-home">` 加回去就行 ✓
+         ⚠ 手机版那边**不搬这个按钮**（它本来就在顶栏里、手机顶部有「← 返回」✓）
+           删掉之后手机版不受影响 ✓ 那边按的是 `#mob-topbar` 里的返回 ✓
+    -->
+    <div class="tool-group actions" id="home-row" hidden></div>
 
     <!-- **「文件」：顶栏最右边** ✓（用户要求：导入 / 导出 / 清除都收进这一个菜单 ✓）
          ⚠ 容器 id 必须还是 export-row、菜单还是 export-menu ✗ ——
@@ -123,9 +140,18 @@ if (location.protocol === 'file:') {
         <button class="btn ghost" id="btn-log">导出日志</button>
       </div>
     </div>
-    <!-- 设置：顶栏**最右**（2026-10-20 ✓ 用户："设置按钮改成上方栏的最右边，在文件按钮的右边"） -->
+    <!-- 设置：顶栏**最右**（2026-10-20 ✓ 用户："设置按钮改成上方栏的最右边，在文件按钮的右边"）
+         🔴 **2026-10-21：从「设置」两个字改成齿轮** ✗
+            （用户："电脑版的设置按钮也改成一个齿轮样式吧"）
+         ⚠ 只剩图标 → **必须留 `title` + `aria-label`** ✗
+           不然鼠标悬停不知道这是什么、读屏软件也念不出来 ✓
+         ⚠ 齿轮写成 `&#x2699;&#xFE0E;`：**后面那个 U+FE0E 是"文字呈现"选择符** ✓
+           不加的话 Windows / iOS 会把它当 emoji 渲染成**彩色大图标** ✓
+           跟顶栏那排无色图标（☰ ← ▾）格格不入 ✗ 加上才是单色字形 ✓
+         ⚠ 手机版不用它（顶栏整条 `display:none` ✓ 底部有自己的「设置」✓）-->
     <div class="tool-group actions" id="settings-row">
-      <button class="btn ghost" id="btn-settings">设置</button>
+      <button class="btn ghost gear-btn" id="btn-settings" type="button"
+              title="设置（再点一下收起）" aria-label="设置">&#x2699;&#xFE0E;</button>
     </div>
 
   </header>
@@ -484,9 +510,15 @@ if (location.protocol === 'file:') {
         <button class="set-tab on" type="button" data-group="color">颜色</button>
         <button class="set-tab" type="button" data-group="border">边界线</button>
         <button class="set-tab" type="button" data-group="label">名称</button>
-        <button class="set-tab" type="button" data-group="legend">图例</button>
+        <button class="set-tab" type="button" data-group="legend">其他</button>
         <span class="set-tabs-sp"></span>
-        <button class="theme-btn" id="btn-theme" type="button">☾ 夜间</button>
+        <!-- 🔴🔴 **2026-10-21：白天/黑夜按钮挪进「其他」页** ✗✗（用户点名）
+             原话："晨昏按钮放在设置的【其他】页面" ✓
+             ⚠ 它原来在这一行（标签行最右、× 左边）✓ 现在挪到 `.set-col[data-group=legend]`
+               里当一行正常设置 ✓（见下面那一栏 ✓）
+             ⚠ **只搬家、不换 id / 不换类** ✗ —— `app.js` 那段是 `$('btn-theme')`
+               然后挂 `btn.onclick` ✓ id 一改就断 ✓
+               手机版也按 `#btn-theme` 把它搬去顶栏（见 mobile_js.txt）✓ -->
         <button class="set-x" id="set-close" type="button">×</button>
       </div>
 
@@ -602,8 +634,25 @@ if (location.protocol === 'file:') {
                  accept=".ttf,.otf,.woff,.woff2,.fnt,.dds,font/ttf,font/otf,font/woff,font/woff2">
         </section>
 
-        <!-- ================= ④ 图例（只在导出时存在）================= -->
+        <!-- ================= ④ 其他（图例 + 界面主题）=================
+             🔴 **2026-10-21：这一栏改叫「其他」**（标签也跟着改 ✓ 用户口径 ✓）
+             里面现在有两块：
+               ① 导出图例（原来就有 ✓）
+               ② **白天 / 黑夜**（新搬进来的 ✓ 用户："晨昏按钮放在设置的【其他】页面"）
+             ⚠ 主题那条放在**最上面** ✗ 不放最底下 ——
+               它是"整个界面长什么样"的开关，比导出图例更高一层 ✓
+               而且它一按整页就变色，放顶端一眼看得到变化 ✓ -->
         <section class="set-col" data-group="legend">
+          <div class="set-sub">界面</div>
+          <!-- ⚠ **id 必须还是 btn-theme** ✗ `app.js` 按它取元素挂 onclick ✓
+               类也保持 `.theme-btn` ✓ 样式现成 ✓
+               `app.js` 那边只管 `textContent = LABEL()`（☀ 白天 / ☾ 夜间）✓
+               ── 所以这里只给个初始字，真值开机就会被它刷掉 ✓ -->
+          <label class="set-row theme-row"><span class="set-l">白天 / 黑夜</span>
+            <button class="theme-btn" id="btn-theme" type="button">☾ 夜间</button>
+          </label>
+
+          <div class="set-sub">导出图例</div>
           <label class="set-row"><span class="set-l">导出时显示</span><input type="checkbox" id="set-legend"></label>
           <label class="set-row"><span class="set-l">标题</span><input type="text" id="set-legend-title" maxlength="40" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"></label>
           <label class="set-row"><span class="set-l">位置</span>

@@ -141,7 +141,22 @@ function bindMobile() {
        *     别去猜"当前哪页" ✗（`opened` 是别的作用域里的 ✓）*/
       const _isDisplay = (key === 'display');
       /* 🔴 设置页那个 0.46 = 0.4 × 1.15 ✓（2026-10-17 用户要的 +15% ✓
-       *   改**这里**才是真改 ✗ —— CSS 里那两条被这句内联压过 ✓）*/
+       *   改**这里**才是真改 ✗ —— CSS 里那两条被这句内联压过 ✓
+       *
+       * 🔴🔴 **2026-10-21 收敛：高度现在只有一个来源** ✓✓
+       *
+       *   原来**三套在抢**同一个高度：
+       *     ① 这里：`_f` × 可用高度 → `sheet.style.maxHeight`
+       *     ② 下面那句：`height = maxHeight`（「更高」时把高度定死）
+       *     ③ `mobile_css.txt` 的 `#mob-sheet.mob-tall { height: 38vh !important }`
+       *   ③ 那条 `!important` **把 ①② 一起压掉了** ✗
+       *   → 「更高」无视屏幕、永远 38vh ✓ 小屏上太高、大屏上太矮 ✓
+       *   （跟当年 `.tall` 那个死类是同一个病：**两个地方写同一个数** ✓）
+       *
+       *   → 删掉 ③ 的 `!important`（CSS 那边只留兜底 ✓ 见 mobile_css.txt）
+       *     · 普通模式：**不写 height** → 面板按内容自己撑 ✓（矮、贴着按钮 ✓）
+       *     · 「更高」  ：`height = maxHeight` → 撑到算出来的上限 ✓ 多的进滑条 ✓
+       *   ⚠ 以后调高度**只改这一处** ✗ 别再往 CSS 里加大数字 ✓*/
       const _f = _tall ? 1.0 : (_isDisplay ? 0.46 : 1.0);
       const _cap = Math.round(Math.max(160, _avail) * _f) + 'px';
       if (below) {
@@ -156,8 +171,8 @@ function bindMobile() {
       sheet.style.setProperty('--tail-x', Math.round(cx - left) + 'px');
       /* 「更高」模式：把 height 顶到**刚算出来的上限** ✓
        *   ⚠ 这里就是 **1.0** ✗ 别再乘一次 0.7 ✓ ——
-       *     上面那个 `maxHeight` 已经缩过三成了 ✓ 再乘就是 0.49，矮得没法看 ✓
-       *   （我第一版就是两边都乘 ✗ 幸好发现得早 ✓）*/
+       *     上面那个 `maxHeight` 已经按系数缩过了 ✓ 再乘一遍就矮得没法看 ✓
+       *   （第一版就是两边都乘 ✗ 幸好发现得早 ✓）*/
       /* 「更高」模式：把 height 顶到**刚算出来的可用上限**（就是上面那个 max-height ✓
        *   贴着底部往上长 ✓ 不会顶出屏幕 ✓）；普通模式清掉 height ✓ 回到"按内容自己撑" ✓
        * 这里**不做动画** ✗（用户要求去掉 ✓ 而且显式 px 也会让面板不再跟内容长高 ✗）*/
@@ -330,11 +345,18 @@ function bindMobile() {
 
     const TABS = [
       { key: 'show', title: '显示' },
+      /* ⚠ 桌面的四个 `data-group` 是 color / border / label / legend ✓
+       *   手机这边的 key 必须**能对上它们** ✗ —— 认页那段是按 data-group 配的 ✓
+       *   （「显示」页是手机独有的，桌面没有对应分组：它装的是侧栏那块 ✓）
+       *
+       * 🔴 **2026-10-21：原来这里 key 叫 name，桌面叫 label** ✗✗
+       *   两边名字不一样，认页时按 data-group 就配不上 → 「名称」页会是空的 ✓
+       *   现在统一：**手机直接沿用桌面的 data-group 当 key** ✓
+       *   少一层翻译就少一处能对不上的地方 ✓
+       *   ⚠ 但「名字」这个**显示标题**保持原样 ✓（用户认这个词 ✓）*/
       { key: 'color', title: '颜色' },
       { key: 'border', title: '边界' },
-      /* **名字自己一页** ✓（用户要求：别塞进「显示」✗）
-       *   桌面那边它也已经是独立一栏了 ✓ 手机这儿跟着分开 ✓ */
-      { key: 'name', title: '名字' },
+      { key: 'label', title: '名字' },
       /* ⚠ key 仍叫 legend ✗（别改，页里还有几处按它找 DOM ✓）
        *   只把**标题**改成「其他」—— 跟桌面那栏对齐 ✓ */
       { key: 'legend', title: '其他' },
@@ -411,27 +433,24 @@ function bindMobile() {
          *     · 内容放不下 → 面板停在 cap ✓ 多出来的**进滑条** ✓（用户要的"收入隐藏"✓）
          *   ⚠ 用 `height` 不用 `min-height` ✗：`height` 是"定死"，`min-height` 是"至少"
          *     后者只会把面板越撑越大 ✓ 这就是前三轮怎么改都没用的原因 ✓
-         *   ⚠ `cap` 取的是 `#mob-sheet` 的 `max-height` ✓ 它已经在上面乘过 0.7 了 ✓
-         *     （"设置高度减去 30%"那条 ✓ 见 place() 里那段 ✓）*/
+         *   ⚠ `cap` 取的是 `#mob-sheet` 的 `max-height` ✓ 它已经在 place() 里按系数算过了 ✓
+         *     （普通 0.46×可用 / 「更高」1.0×可用 ✓ 2026-10-21 收敛后**只有那一处**在算 ✓）
+         *   ⚠⚠ **「更高」模式下不许锁 `.mob-panes` 的高度** ✗✗
+         *     那个按钮要的是"**面板**变高" ✓ 面板高度由 place() 的 `sheet.style.height` 顶着 ✓
+         *     这里再把内层写死成一个 height → 里面那层就撑不开了 ✓ 按钮看着毫无反应 ✓
+         *     （2026-10-13 用户报"上拉的小按钮没效果了"就是这个 ✓）
+         *     → **「更高」时直接把这条清掉** ✓ 让 flex 自己撑满 ✓
+         *     ⚠ 判断要读**实时**的 classList ✗ 不能在别处缓存 ✓（用户随时点那个按钮 ✓）*/
         const cap = parseFloat(sheet.style.maxHeight) || 1e9;
         if (wrap) {
-          /* ⚠⚠ **「更高」模式下不许锁** ✗✗（2026-10-13 用户报"上拉的小按钮没效果了"✓）
-           *   那个小按钮（`mob-tallbtn` ✓）走的是给 `#mob-sheet` 加 `mob-tall` 类 ✓
-           *   让它**撑到面板上限** ✓ 而面板本身的高度由 `sheet.style.height` 顶着 ✓
-           *   可 `.mob-panes` 要是被这里**写死成一个 height** ✗
-           *   → 里面那层就撑不开了 ✓「更高」按下去当然没反应 ✓
-           *   （这锅是我上一轮"把 minHeight 改成 height"顺手砸出来的 ✗
-           *     原来的 `min-height` 反而不会挡这个 ✓ 但它是"按最高页死撑"的元凶 ✓
-           *     所以现在按模式分开：**普通模式定死高度、更高模式放开** ✓）
-           *   ⚠ 判断要读**实时**的 classList ✗ 不能在别处缓存状态 ✓
-           *     （`mob-tall` 是用户点按钮现加的 ✓）*/
           wrap.style.minHeight = '';                       // 旧版死撑，任何时候都清掉 ✓
-          /* ⚠ 这里**不再分模式** ✗ —— 「更高」是通过**放大面板上限**实现的 ✓
-           *   （见上面 `_cap` 那里 ✓ 普通 0.5×可用、「更高」1.0×可用 ✓）
-           *   内容区只要老老实实跟着 cap 走就行 ✓ 高的页自然出滑条 ✓
-           *   ⚠ 我在这儿绕过两圈（先放开 flex、再写死 cap ✗）全是白费 ✓
-           *     按钮要的是**面板变高**，不是内容区在固定面板里撑开 ✓ */
-          wrap.style.height = Math.round(Math.min(gDisp._lockHMax, cap)) + 'px';
+          if (sheet.classList.contains('mob-tall')) {
+            /* 「更高」：不锁 ✗ 让 `.mob-panes` 用 flex 撑满剩余空间 ✓ */
+            wrap.style.height = '';
+          } else {
+            /* 普通：取"内容最高页"和"面板上限"里的小的那个 ✓ 多的进滑条 ✓ */
+            wrap.style.height = Math.round(Math.min(gDisp._lockHMax, cap)) + 'px';
+          }
         }
       } catch (e) { /* ✓ */ } finally {
         if (!wasMeasuring) { try { sheet.classList.remove('measuring'); } catch (e) { /* ✓ */ } }
@@ -509,41 +528,95 @@ function bindMobile() {
     const author = $('author-row');
     if (author) { author.classList.add('mob-author-row'); gDisp.appendChild(author); }
   });
-  // **设置里那四栏分别放进四个标签页** ✓ 点标签就换内容 ✓
+  // **设置里那几栏分别放进各自标签页** ✓ 点标签就换内容 ✓
   wait(() => {
     const modal = $('settings');
     const grid = modal ? modal.querySelector('.set-grid') : null;
     if (grid) {
-      /* 按每一栏自己的标题认页 ✓ 不靠顺序 ✗
-         踩过的坑：桌面那四栏的实际排列是 颜色、边界、导出图例、名字等
-         （导出图例那栏当初是插在名字等前面的 ✓）
-         按顺序硬对就会整体串一位，于是点「导出图例」看到的是字号 ✗
+      /* 🔴🔴 **按 `data-group` 认页** ✗✗（2026-10-21 重写）
+       *
+       *  原来这里按**中文标题正则**认页：
+       *    `const h = col.querySelector('h3'); const txt = h ? h.textContent : '';`
+       *    再拿 `[/颜色/, 'color']` 这类表去配 ✓
+       *
+       *  ⚠ 可桌面那边**早就把 `<h3>` 全删了** ✗（改成 `.set-tabs` + `data-group` 分页了 ✓
+       *     `grep -c "<h3" web/index.html` = **0** ✓）
+       *  → `querySelector('h3')` 永远返回 null → `txt` 恒为 '' →
+       *    **四个分组一条都匹配不上** ✓
+       *  → 那四块 `.set-col` 全留在 `#settings { display: none !important }` 里 ✓
+       *  → 手机上点「设置」，除了「显示」页之外**全是空的** ✓
+       *  （用户 2026-10-21 报的"设置什么的其实根本没跟上"就是这个 ✓
+       *    它不是"没做"，是**做了、然后被桌面一次重构悄悄废掉了** ✓）
+       *
+       *  现在：**直接读桌面自己那个权威标记** ✓
+       *    · 桌面分页用的就是 `data-group` ✓ 手机跟着读，天然对齐 ✓
+       *    · 桌面以后再加一组，只要写上 data-group，手机这边**自动就有** ✓
+       *      （不用再改这张表 ✓ 少一处会忘的地方 ✓）
+       *
+       *  ⚠ 名字对不上就装作没看见 ✓ —— 手机 pane 里没有这个 key 就跳过，
+       *    那组会留在隐藏弹窗里（不至于把别的组的节点搬错 ✓）
+       *  ⚠ **搬走的节点必须把 hidden 清掉** ✗✗：
+       *    桌面分页会把非当前页的 `.set-col` 设成 `hidden = true` ✓
+       *    搬到手机 pane 里如果不清，它就是隐形的那一块 ✓
+       *    （桌子那边注释里也写明了"搬走的时候会把 hidden 清掉"✓ 两条对得上 ✓）
        */
-      const byTitle = [
-        [/颜色/, 'color'],
-        [/边界/, 'border'],
-        /* **名字自己一页** ✓（原来并进「显示」✗ 用户报"国名地名塞到显示里"✓）*/
-        [/名字|字号/, 'name'],
-        /* ⚠ 桌面那栏**改名成「其他」了** ✗ 这里必须把它也认上 ✓
-         *   只写 /图例/ 的话匹配不上 → 整栏搬不进去 → 留在隐藏的桌面弹窗里
-         *   → 手机版上那一栏的设置（图例/取色后切到/恢复默认）**够不着** ✓ */
-        [/图例|其他/, 'legend'],
-      ];
-      for (const col of grid.querySelectorAll('.set-col')) {
-        const h = col.querySelector('h3');
-        const txt = h ? h.textContent : '';
-        for (const pair of byTitle) {
-          if (pair[0].test(txt)) {
-            const pane = gDisp.querySelector('.mob-pane[data-pane="' + pair[1] + '"]');
-            // 每一栏只会被遍历一次 ✓ 不会重复；「显示」页因此能收到两栏（显示开关 + 名字）✓
-            if (pane) pane.appendChild(col);
-            break;
+      const paneOf_ = (g) => gDisp.querySelector('.mob-pane[data-pane="' + g + '"]');
+      const cols = grid.querySelectorAll('.set-col');
+      let movedCols = 0, orphan = [];
+      for (let i = 0; i < cols.length; i++) {
+        const col = cols[i];
+        const g = col.getAttribute ? col.getAttribute('data-group') : '';
+        if (!g) continue;
+        const pane = paneOf_(g);
+        if (!pane) { orphan.push(g); continue; }
+        col.hidden = false;                 // ⚠ 桌面分页藏起来的，搬过来要显出来 ✓
+        col.style.display = '';              // 内联 display 也清一道（桌面不写，兜底 ✓）
+        pane.appendChild(col);
+        movedCols++;
+      }
+      /* 搬不进去的（桌面新加了分组、手机还没有对应 pane）别静默吞掉 ✗
+       *   → 「显示」页当成兜底收进去 ✓ 总比扔在隐藏弹窗里强 ✓ */
+      if (orphan.length) {
+        const home = paneOf_('show') || gDisp;
+        for (let i = 0; i < cols.length; i++) {
+          const col = cols[i];
+          if (orphan.indexOf(col.getAttribute('data-group')) >= 0 && col.parentNode !== home) {
+            col.hidden = false;
+            home.appendChild(col);
           }
         }
+        try {
+          if (window.console) console.warn('[手机版] 这些设置分组没有对应页，先塞进「显示」：', orphan.join(','));
+        } catch (e) { /* ✓ */ }
       }
+      /* **底栏（已改动 / 恢复默认）也搬进来** ✗✗（2026-10-21）
+       *  它住在 `.set-box` 里、不在 `.set-grid` 里 ✓ 所以上面那圈搬不到它 ✓
+       *  而它能改的是**全局设置** ✓ 手机上够不着就等于没有 ✓
+       *  → 放在「其他」页最后一个（那一页最像"杂项" ✓）*/
+      try {
+        const foot = modal.querySelector('.set-foot');
+        if (foot) {
+          foot.classList.add('mob-set-foot');
+          (paneOf_('legend') || gDisp).appendChild(foot);
+        }
+      } catch (e) { /* ✓ */ }
       const sb = $('btn-settings');
       if (sb) { try { sb.click(); } catch (e) { /* ✓ */ } }   // 让控件按当前状态填好值
-      if (modal) modal.hidden = true;
+      /* 🔴 **关掉桌面那个抽屉** ✗✗（2026-10-21 改）
+       *   原来直接写 `modal.hidden = true` ✓
+       *   现在设置抽屉有了 `.open` 类管开合 ✓ 直接写 hidden 会**留下 `.open`** ✓
+       *   → 下次（桌面）打开时类已经在了 → **没有滑入动画** ✓ 而且状态是脏的 ✓
+       *   → 走它自己的 `close()` ✓（app.js 挂在 `window.__pdxSettings` ✓）
+       *   ⚠ 取不到才退回老写法 ✗ 别写死 ✓ */
+      try {
+        if (window.__pdxSettings && window.__pdxSettings.close) window.__pdxSettings.close();
+        else if (modal) modal.hidden = true;
+      } catch (e) { if (modal) modal.hidden = true; }
+      /* ⚠ 兜底：万一还留着 `.open`，抹掉 ✓（幂等 ✓）*/
+      try { if (modal) modal.classList.remove('open'); } catch (e) { /* ✓ */ }
+      /* 搬完再刷一次：这一步会把桌面那次 click 留下的隐藏状态也抹平 ✓ */
+      try { if (gDisp._lockSoon) gDisp._lockSoon(); } catch (e) { /* ✓ */ }
+      try { if (window.console) console.log('[手机版] 设置分组搬了 ' + movedCols + ' 块'); } catch (e) { /* ✓ */ }
     }
   });
   wait(() => {
@@ -574,6 +647,80 @@ function bindMobile() {
       help.classList.add('mob-btn');
       top.insertBefore(help, ioBtn);
     }
+  });
+
+  /* ============================================================ 白天 / 黑夜
+   * 🔴 **2026-10-21：手机上原来根本没有这个开关** ✗✗
+   *
+   *   桌面那个 `#btn-theme` 原来住在 `#settings` 弹窗的 `.set-tabs` 里 ✓
+   *   而手机版 `.toolbar` 藏掉、`#settings` 也 `display: none !important` ✓
+   *   → 那个按钮跟着弹窗一起被藏 ✓ 手机版**永远停在夜间** ✓
+   *   （用户 2026-10-20 刚做的液态玻璃 + 日间模式，手机上一点摸不到 ✓）
+   *
+   * 🔴🔴 **2026-10-21 晚 · 用户纠正："晨昏按钮放在设置的【其他】页面"** ✗✗
+   *
+   *   我上一版把它挂到**手机顶栏**去了 ✓ —— 那是我自作主张 ✗
+   *   用户要的是：跟桌面一个口径，**放在「设置 → 其他」页里** ✓
+   *
+   *   好消息：桌面这一轮已经把 `#btn-theme` 挪进了
+   *   `.set-col[data-group="legend"]`（=「其他」页）里 ✓
+   *   → 手机版**什么都不用做** ✓
+   *     下面那段"把 `.set-col` 按 data-group 搬进面板"会**自动把它一起带过去** ✓
+   *     （见 `paneOf_` 那段 ✓ 那是这一轮刚修好的认页逻辑 ✓）
+   *
+   *   ⚠ **所以这里不要再搬它了** ✗✗
+   *     原来那段是"从面板里挖出来挂顶栏" ✓ 现在删掉 ✓
+   *     不删的话：它会在「其他」页里被挖走 → 那一页少一行、顶栏多一颗 ✓
+   *     跟用户要的正好相反 ✓
+   *
+   *   ⚠ 顺手确认一件事：`app.js` 给它的 `onclick` 是**挂在元素上**的 ✓
+   *     节点搬家不会丢监听 ✓ 所以"搬进面板"之后照样点得动 ✓
+   *     （这条 2026-10-21 已经用自检验过了 ✓ 见 check_mobile.js 的
+   *       「主题按钮的点击处理还在」那条 ✓ 现在改成「在设置面板里也能点」✓）
+   *
+   *   → 这段只做一件事：**把晨昏按钮摆到设置面板的顶部** ✓
+   *
+   *   🔴🔴 **2026-10-21 再改：放到「设置面板顶部」** ✗✗
+   *     用户原话："晨昏按钮还是放设置顶部吧（不是屏幕顶部）"
+   *     → 不是挂顶栏（那是屏幕顶部 ✗）✓
+   *      也不是埋在「其他」页里要翻两下才找得到 ✓
+   *     → 而是**面板自己的顶部**：标题行下面、标签行上面 ✓
+   *       一开「设置」就看见 ✓ 点一下整页变色 ✓
+   *
+   *   ⚠ 位置很讲究：**必须在 `.mob-tabs` 之前** ✗
+   *     `.mob-tabs` 是「显示/颜色/边界/名字/其他」那排标签 ✓
+   *     放在它前面 = 主题是"整个面板"的事 ✓ 不属于任何一页 ✓
+   *     放在它后面 = 跟着某一页滚走 ✓ 换页就看不见了 ✗
+   *
+   *   ⚠ 搬的是**同一颗元素**（不是复制 ✓）—— `app.js` 的 onclick 挂在它身上 ✓
+   *     而且它必须在 `.mob-panes` **外面** ✗ 那里面是会滚的 ✓
+   */
+  wait(() => {
+    const th = $('btn-theme');
+    if (!th || !gDisp) return;
+    /* 挪掉桌面那套壳，换成面板顶部这一行自己的样式 ✓ */
+    th.classList.remove('mob-btn', 'mob-theme');
+    if (!th.classList.contains('theme-btn')) th.classList.add('theme-btn');
+
+    /* 已经在面板顶部了就什么都不做 ✓（幂等 ✓）*/
+    let bar = gDisp.querySelector('.mob-theme-bar');
+    if (bar && bar.contains(th)) return;
+
+    /* 造那一行（没有就造 ✓） */
+    if (!bar) {
+      bar = document.createElement('div');
+      bar.className = 'mob-theme-bar';
+      const lab = document.createElement('span');
+      lab.className = 'mob-theme-lab';
+      lab.textContent = '界面';
+      bar.appendChild(lab);
+      /* ⚠ **插到 `.mob-tabs` 前面** ✗ 不能 appendChild（那会跑到最底下 ✓）
+       *   没有 tabs 就插到最前面 ✓ */
+      const tabsEl = gDisp.querySelector('.mob-tabs');
+      if (tabsEl) gDisp.insertBefore(bar, tabsEl);
+      else gDisp.insertBefore(bar, gDisp.firstChild);
+    }
+    bar.appendChild(th);
   });
 
   /* ============================================================ 手势 */

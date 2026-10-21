@@ -332,6 +332,44 @@ a.btn { text-decoration: none; cursor: pointer; display: inline-block; }
   overflow-y: auto;
   overflow-x: hidden;
 }
+
+/* ===========================================================================
+   🔴🔴 **左侧栏可收起**（2026-10-21 ✓ 用户："电脑版的显示左侧栏改成和
+      设置栏一样可打开可收起的模式"）
+
+   跟「设置」抽屉一个口径：**同一个按钮开、同一个按钮关** ✓
+   区别只是方向：侧栏往左滑出、设置从右滑入 ✓ 手感一致 ✓
+
+   ⚠ 为什么用**平移**而不是 `display: none` ✗：
+     `display:none` 会把侧栏里的**滚动位置、搜索框内容、展开状态**全重置 ✓
+     收一下再开，列表就回到顶上 ✓ 很烦 ✓
+     平移只是把它挪出屏幕 ✓ DOM、滚动、输入**全都留着** ✓
+
+   ⚠ **宽度必须一起归零** ✗✗
+     只写 `translateX(-100%)` 的话，那 322px 的位子还占着 ✓
+     → 地图右边永远缺一截，"地图吃满"这个目的就落空了 ✓
+   ⚠ 侧栏在宽屏（>761）是 `position: absolute`、浮在地图上 ✓
+     那时"占位"靠的是 `.body` 的 flex —— 宽度归零照样有效 ✓
+
+   ⚠ **过渡只加一次** ✗ 别给常驻属性挂 transition ✓
+     否则换地图 / 换主题时它也会慢慢动一下 ✓ 看着像卡了 ✓
+   =========================================================================== */
+body.sb-folded .sidebar {
+  width: 0;
+  border-right-color: transparent;
+  transform: translateX(-100%);
+  opacity: 0;
+  pointer-events: none;
+}
+.sidebar {
+  transition: transform .22s cubic-bezier(.16, 1, .3, 1),
+              width .22s cubic-bezier(.16, 1, .3, 1),
+              opacity .18s ease;
+}
+/* 顶栏那个按钮：收起来时暗一档 ✓ 一眼看出"侧栏现在是关着的" */
+#btn-sidebar[aria-expanded="false"] { color: var(--text-faint); }
+#btn-sidebar[aria-expanded="false"]:hover { color: var(--text); }
+
 .sidebar::-webkit-scrollbar { width: 9px; }
 .sidebar::-webkit-scrollbar-thumb { background: #2b3542; border-radius: 5px; }
 .sidebar::-webkit-scrollbar-track { background: transparent; }
@@ -477,6 +515,9 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin
   background: rgba(20, 26, 33, .88);
   border-color: var(--line);
   color: var(--text-dim);
+  /* ⚠ **前缀两行都要写** ✗ iOS Safari 只认 `-webkit-` 那个 ✓（2026-10-21 补）
+   *   这条是老代码，当年只写了无前缀的 → 苹果上一点模糊都没有 ✓ */
+  -webkit-backdrop-filter: blur(6px);
   backdrop-filter: blur(6px);
   width: 30px;
 }
@@ -491,6 +532,7 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin
   padding: 7px 9px;
   font-size: 12px;
   box-shadow: var(--shadow);
+  -webkit-backdrop-filter: blur(8px);   /* ⚠ iOS 只认前缀版 ✓（2026-10-21 补）*/
   backdrop-filter: blur(8px);
   max-width: 280px;
   z-index: 20;
@@ -1116,6 +1158,94 @@ html { color-scheme: dark; }          /* 复选框 / range 轨道 / 下拉弹层
   display: block;
 }
 #settings[hidden] { display: none !important; }
+
+/* ===========================================================================
+   🔴🔴 **设置抽屉：滑入 / 滑出**（2026-10-21 ✓ 用户："给设置按钮也做个类似的那种
+      显示动画，同时也是按一下弹出按一下隐藏，而不依靠那个小叉叉"）
+   ---------------------------------------------------------------------------
+   跟**左侧栏那个折叠**是一套手感（`.22s cubic-bezier(.16,1,.3,1)` ✓ 同一条曲线 ✓）
+   但方向相反：侧栏往**左**滑出、设置从**右**滑入 ✓ 一进一出，对称 ✓
+
+   ⚠⚠ **为什么不能只写 transition + `[hidden]`** ✗✗
+     `#settings[hidden] { display: none !important }` ✓
+     `display` 从 `none` 变 `block` 是**瞬间跳变** ✗ transition 不认 ✓
+     （`transition-behavior: allow-discrete` 能救 ✓ 但兼容性还不齐 ✗ 且这里
+        `!important` 在 display 上 ✓ 更难绕 ✓）
+   → 所以**用类来驱动**（`.open`）✓ 关的时候等动画跑完再 `hidden = true` ✓
+     见 `app.js` 里 `openSettings` / `closeSettings` 两个函数 ✓
+
+   ⚠ 关的过程中（动画还在跑）抽屉仍然 `display:block` ✗
+     它盖住右边 430px ✓ 会**吃掉那 260 毫秒的点击** ✓
+     → 没开的时候给 `pointer-events: none` ✓ 点得到底下的地图 ✓
+   =========================================================================== */
+#settings .modal-box.set-box {
+  /* 收起态：往右边整个推出去 + 淡掉 ✓ */
+  transform: translateX(100%);
+  opacity: 0;
+  transition:
+    transform .24s cubic-bezier(.16, 1, .3, 1),
+    opacity .18s ease;
+  /* 阴影也跟着淡 ✓ 不然"透明板子还投着影"很怪 */
+  will-change: transform;
+}
+#settings.open .modal-box.set-box {
+  transform: none;
+  opacity: 1;
+}
+/* 没打开的时候不吃点击 ✓（关的动画那 240ms 里也成立 ✓）*/
+#settings:not(.open) { pointer-events: none; }
+#settings.open { pointer-events: auto; }
+
+/* 「设置」按钮自己的开合状态：开着的时候按下去一点、底色亮一档 ✓
+ * ⚠ 跟「☰ 侧栏」那个 aria 变暗是一个思路 ✓ 一眼看出"面板现在开着的" ✓ */
+#btn-settings[aria-expanded="true"] {
+  color: var(--gold);
+  border-color: var(--gold-dim);
+  background: rgba(201, 169, 78, .12);
+}
+
+/* ===========================================================================
+   🔴 **「设置」= 齿轮图标**（2026-10-21 ✓ 用户："电脑版的设置按钮也改成一个齿轮样式吧"）
+   ---------------------------------------------------------------------------
+   ⚠ 只剩一个字形了，**尺寸要单独配** ✗
+     别人是「导出 ▾」「教程」这种两三个字 ✓ 靠字号 11.5px + `padding: 4px 10px` 撑开 ✓
+     一个齿轮照这套来会**又扁又偏** ✓ 左边留白比右边多 ✓（中文字和字形宽度不一样 ✓）
+
+   ⚠ 目标：跟旁边那排按钮**顶边底边齐平** ✗ 高度必须一样 ✓
+     它们高度 = 11.5px 字 + 上下 4px padding + 1px 边框 ≈ 21px ✓
+     这边就把齿轮做成 21px 的方块 ✓ 靠 `width/height` 写死 ✓
+     别用 em 算 ✗ 字体的行高各家不一样 ✓ 会差一两像素 ✓
+   ⚠ 齿轮本身**别再用 11.5px** ✗ 那么小看不清是齿轮 ✓ 给到 13px ✓
+     但**行高压成 1** ✓ 不然 13px 字会把按钮顶高 ✓
+   =========================================================================== */
+.gear-btn {
+  width: 23px;
+  height: 21px;
+  padding: 0;                     /* ⚠ 必须归零 ✗ 不然字被挤偏 ✓ */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  line-height: 1;
+  /* ⚠ 齿轮字形在不同字体里**宽度不一** ✓ 用一个固定行盒让它在正中间 ✓ */
+  text-align: center;
+}
+/* 鼠标悬停时齿轮转一点点 ✓ 一个很小的反馈，不喧哗 ✓
+ * ⚠ `prefers-reduced-motion` 下别转 ✗ 有些人晕动 ✓ */
+.gear-btn:hover:not(:disabled) { color: var(--text); border-color: #38424f; }
+.gear-btn:active { transform: rotate(-18deg); }
+@media (prefers-reduced-motion: reduce) {
+  .gear-btn:active { transform: none; }
+}
+
+/* 顶栏最左那个「☰」：窄一点，别跟标题抢地方 ✓ */
+#btn-sidebar {
+  flex: 0 0 auto;
+  padding: 0 9px;
+  min-width: 30px;
+  font-size: 13px;
+  line-height: 1;
+}
 #settings .modal-box.set-box {
   width: 100%;
   height: 100%;
@@ -1449,6 +1579,16 @@ html[data-theme="light"] body { background: var(--bg); }
 }
 .theme-btn:hover { color: var(--gold); border-color: var(--gold-dim); }
 
+/* 🔴 **2026-10-21：主题按钮搬进「其他」页之后的行**（用户："晨昏按钮放在设置的【其他】页面"）
+ *  ⚠ 它原来是**标签行最右**那个小胶囊 ✓ 现在是一条正常设置行 ✓
+ *    · 左边「白天 / 黑夜」当标签（跟别的行一个口径 ✓）
+ *    · 右边按钮**推到最右**（别贴着字 ✓ 跟 select 那几行对齐 ✓）
+ *  ⚠ 只加布局，不动颜色 ✗ —— `.theme-btn` 上面那条已经管了 ✓ */
+#settings .theme-row { justify-content: space-between; }
+#settings .theme-row .theme-btn { margin-left: auto; flex: 0 0 auto; }
+/* 那一行比普通设置行稍微高一点（按钮 24px + 上下留白 ✓ 不然会贴边）*/
+#settings .theme-row { min-height: 34px; }
+
 /* ================================================================ 呼吸感 v2
  *  🔴 2026-10-20 ✓ 用户："这个界面真的太挤了"
  *
@@ -1567,8 +1707,8 @@ html[data-theme="light"] .sidebar .panel-head .hint { text-shadow: 0 1px 2px rgb
   max-width: 244px;
   padding: 6px 8px;
   background: rgba(16, 21, 27, .82);
-  backdrop-filter: blur(14px) saturate(140%);
   -webkit-backdrop-filter: blur(14px) saturate(140%);
+  backdrop-filter: blur(14px) saturate(140%);
   border-color: var(--glass-brd);
 }
 .hover-card .hc-title,
@@ -1781,7 +1921,11 @@ html[data-theme="light"] .zoom-box .btn:hover { background: rgba(255, 255, 255, 
 html[data-theme="light"] .segmented button.on,
 html[data-theme="light"] .segmented button[aria-pressed="true"] {
   background: rgba(47, 95, 143, .16);
-  color: var(--gold);
+  /* ⚠ 原来这里写的是 `var(--gold)`（#2f5f8f）✗ —— 它压在**自己那层淡蓝底**上
+   *   （#d4dee8）只剩 4.29:1，差一点点够不到 AA 正文 ✓
+   *   → 压深一档到 #26598a（5.35:1）✓ 跟剧本下拉栏那边**同一个色** ✓
+   *   （两排本来就是一回事：一个"选中了这一层"，一个"选中了这个剧本" ✓） */
+  color: #26598a;
 }
 html[data-theme="light"] .set-tab.on { color: var(--gold); border-bottom-color: var(--gold); }
 
@@ -1982,3 +2126,339 @@ html[data-theme="light"] .hover-card {
 }
 html[data-theme="light"] .hover-card .hc-title { color: #101a24; text-shadow: none; }
 html[data-theme="light"] .hover-card .hc-sub { color: #38444f; text-shadow: none; }
+
+/* ================================================================ 日间模式：剧本下拉栏的「选中」是亮金色
+ *  🔴 2026-10-21 ✓ 用户截图报的：「剧本在白天模式时字体是亮金色会很难看见」
+ *
+ *  根子**不是**"白天没做"，而是**两套按钮各写了一套选中样式** ✓：
+ *    · 剧本 **< 4 个**（回退）→ 剧本层就是 `.segmented button` ✓
+ *       白天那条 `html[data-theme="light"] .segmented button.on` 把
+ *       **底色和字色都重写了** → 靛蓝字 + 淡蓝底，看得清 ✓
+ *    · 剧本 **≥ 4 个**（下拉栏）→ 剧本是 `.dd-btn` ✓
+ *       白天那条 `html[data-theme="light"] .dd-btn` 只重写了 **background** ✗
+ *       没写 color → `.dd-btn.on` 里写死的 `#f0d98a` 亮金**原样活了下来** ✓
+ *   浅底（#f6f8fa）配亮金 #f0d98a → 对比度 **1.12:1**，等于隐形 ✗
+ *   → 所以用户看着像"多剧本时没沿用单剧本的样式" ✓ 这个判断是对的 ✓
+ *
+ *  ⚠ 同族的还有两处，一起收（都是「白天 + 浅底 + 浅字」）：
+ *    · `.dd-item.on` —— 下拉面板里那一行选中，同一个亮金（1.12:1）✗
+ *    · `.dd-btn.grain` / `.dd-item.grain` —— "借用粒度"那一档，
+ *      `#9ec5e8` 淡蓝在浅底上 **1.45:1**，比亮金还看不见 ✗
+ *      （`.segmented button.grain` 在白天倒是被压成了深字 ✓ 左右不一致）
+ *
+ *  取色沿用白天已有的 `--gold`（靛蓝 #2f5f8f）✓ 跟"视图"那一排的选中**同一个色** ✓
+ *  —— 两边本来就是一回事，长得不一样才是 bug ✓
+ */
+
+/* ① 下拉按钮：选中 / 借用粒度（字色必须显式写 ✗ 不能指望 .dd-btn 那条兜） */
+html[data-theme="light"] .dd-btn.on {
+  /* 底色跟着 `.segmented button.on` 的口径走：淡蓝蒙一层，别再用深棕渐变 ✗ */
+  background: rgba(47, 95, 143, .16);
+  color: #26598a;                        /* 比 --gold 深一档：选中底压暗后仍 5.3:1 ✓ */
+  border-color: rgba(47, 95, 143, .45);
+}
+html[data-theme="light"] .dd-btn.grain {
+  background: rgba(47, 95, 143, .08);
+  color: #2b5f85;                        /* 5.6:1（浅底）✓ 比亮金/淡蓝都稳 */
+  border-color: rgba(47, 95, 143, .30);
+}
+
+/* ② 下拉面板里的条目：同一套 */
+html[data-theme="light"] .dd-item.on {
+  background: rgba(47, 95, 143, .16);
+  color: #26598a;
+}
+html[data-theme="light"] .dd-item.grain { color: #2b5f85; }
+
+/* ③ 「视图」那一排的借用粒度 —— 原来直接吃 `.segmented button` 的深字，
+ *    `#bcc9d8` 是给深色底配的 ✗ 浅底上虽然勉强（12.48:1 是它吃了深字，
+ *    可底色 #dde5ee 一压就看不出"这是借用"）→ 跟下拉栏统一成同一个蓝 ✓ */
+html[data-theme="light"] .segmented button.grain {
+  background: rgba(47, 95, 143, .08);
+  color: #2b5f85;
+  box-shadow: inset 0 0 0 1px rgba(47, 95, 143, .3);
+}
+
+/* ================================================================ 液态玻璃 · 第二波
+ *  🔴 2026-10-21 ✓ 用户："更多更多液态玻璃"
+ *
+ *  **第一波只盖了四个壳**（见上面「液态玻璃 + 主题」那一节）：
+ *    顶栏 · 侧栏里的 .panel · 设置抽屉 · 悬停卡片 ✓
+ *  剩下这些全是**写死的实心深色**，浮在地图上就是一块块黑板 ✓：
+ *    下拉菜单 · 剧本下拉面板 · 模态框 · toast · 缩放条 · 图例列表
+ *    搜索结果框 · 归属链行 · 调色板 · 地图卡 · 教程卡 · 教程提示条
+ *
+ *  → 这一节把它们全部换成同一套玻璃语言 ✓
+ *
+ *  ⚠⚠ **两条硬规矩**（不照做会出乱子）：
+ *   ① **只改底子 + 边框 + 投影，不碰文字色** ✗
+ *      `--text*` 那几个变量本来就随主题翻 ✓ 在这里再写一遍字色会和
+ *      「日间模式」那几百行覆盖打架 ✓ 以后调一处忘一处 ✓
+ *   ② **`backdrop-filter` 必须带 `-webkit-` 前缀** ✗
+ *      Safari / iOS 上只认前缀那个 ✓ 少一个就是"安卓是玻璃、苹果是黑板" ✓
+ *
+ *  ⚠ 模糊半径**分档**，不是一律 18px：
+ *     · 大面板（设置抽屉 / 模态框）→ 16~18px（底子大，要糊得透）
+ *     · 中小浮层（菜单 / 卡片 / toast）→ 10~14px（太小会糊成一团，反而看不清）
+ *     · 细条（缩放条 / 提示条）→ 8~10px
+ *   半径越大越吃 GPU ✗ 手机上尤其明显 ✓ 所以别一律拉满 ✓
+ */
+
+/* ---- ① 弹出层：下拉菜单 / 剧本面板 / 模态框 ---- */
+.dropdown,
+.dd-panel,
+.modal-box {
+  background:
+    linear-gradient(160deg, var(--glass-hi), transparent 42%),
+    var(--glass-strong);
+  -webkit-backdrop-filter: blur(16px) saturate(150%);
+  backdrop-filter: blur(16px) saturate(150%);
+  border-color: var(--glass-brd);
+  box-shadow: var(--glass-shadow);
+}
+/* 下拉菜单和剧本面板都不大，模糊小一档更清楚 ✓ */
+.dropdown,
+.dd-panel {
+  -webkit-backdrop-filter: blur(12px) saturate(150%);
+  backdrop-filter: blur(12px) saturate(150%);
+}
+/* 模态框是整块大面板，底子更实（字多，透过头读不下去 ✓）*/
+.modal-box {
+  background:
+    linear-gradient(160deg, var(--glass-hi), transparent 40%),
+    var(--glass);
+}
+
+/* ---- ② 小浮层：toast / 缩放条 / 教程提示条 ---- */
+/* 🔴🔴 **`.zoom-box` 不在此列** ✗✗（2026-10-21 用户截图报的"白色大条"）
+ *
+ *   `.zoom-box` 只是**三个按钮的容器** ✗ 它不是一块面板 ✓
+ *   而且它的定位是：
+ *     `position: absolute; left: 12px; right: 10px;`
+ *   → `left` + `right` 同时写 = **横向撑满整个地图** ✓（以前它是透明的 ✓
+ *     所以看不出来 ✓ 现在给它上玻璃底 → 整条**白色大条**横在屏幕上 ✗）
+ *
+ *   → 玻璃只给**它里面那三个按钮**（`.zoom-box .btn`）✓ 容器保持透明 ✓
+ *   这一条以前就写错过一次（给容器上了底）✓ 别再犯 ✓
+ */
+.toast,
+.tut-toast {
+  background: linear-gradient(160deg, var(--glass-hi), transparent 46%), var(--glass);
+  -webkit-backdrop-filter: blur(10px) saturate(150%);
+  backdrop-filter: blur(10px) saturate(150%);
+  border-color: var(--glass-brd);
+}
+/* 缩放条：**只给按钮**玻璃 ✓ 容器透明 ✓ */
+.zoom-box .btn {
+  background: linear-gradient(160deg, var(--glass-hi), transparent 50%), var(--glass);
+  -webkit-backdrop-filter: blur(10px) saturate(150%);
+  backdrop-filter: blur(10px) saturate(150%);
+  border-color: var(--glass-brd);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, .3);
+}
+/* toast 左边那道金条是它的身份（出错变红）✓ 保留 ✓ */
+.toast { border-left-color: var(--gold); }
+.toast.err { border-left-color: var(--danger); }
+/* ⚠ **不要给 `.zoom-box` 容器加阴影** ✗ 它是全宽的（left+right 撑满 ✓）
+ *   容器带阴影 = 屏幕上下各一道灰边 ✓ 什么也没包住 ✓ 纯属噪音 ✓ */
+.tut-toast { box-shadow: 0 10px 28px rgba(0, 0, 0, .4); }
+
+/* ---- ③ 卡片与列表：地图卡 / 教程卡 / 图例列表 / 搜索结果 / 归属链 ---- */
+.map-card,
+#tutCard,
+.legend-list,
+.results,
+.chain-row {
+  background:
+    linear-gradient(160deg, var(--glass-hi), transparent 46%),
+    var(--glass);
+  -webkit-backdrop-filter: blur(12px) saturate(145%);
+  backdrop-filter: blur(12px) saturate(145%);
+  border-color: var(--glass-brd);
+}
+/* 地图卡在启动页里是**整屏暗底上的一张张卡** ✗
+ *   那里没有地图可透 ✓ 所以底子给实一点，别让卡片透明到能看见底下的渐变 ✓ */
+.map-card {
+  background:
+    linear-gradient(160deg, var(--glass-hi), transparent 46%),
+    var(--glass-strong);
+}
+#tutCard {
+  -webkit-backdrop-filter: blur(16px) saturate(150%);
+  backdrop-filter: blur(16px) saturate(150%);
+  box-shadow: 0 14px 44px rgba(0, 0, 0, .5);
+}
+/* 搜索结果 / 归属链 / 图例列表是**面板里的长列表** ✓
+ *   真给每一行上模糊 = 每行一张 GPU 层 ✗ 手机上直接卡成幻灯片 ✓
+ *   → 只给一层**很淡的白色高光底**，模糊交给**外面那层面板** ✓
+ *     面板本身是玻璃（`--glass` 半透明 + 模糊 ✓）→ 里面再叠淡白 ✓
+ *     读起来就是"玻璃上有几张纸"✓ 而不是"纸自己会透"✓
+ * 🔴 **别在这儿写不透明色** ✗✗（2026-10-21 踩过）
+ *   写 `rgba(255,255,255,.035)` 本来是"淡白高光" ✓ 这没错 ✓
+ *   但我上一版把这几条**排在玻璃前面** ✗ → 被后面的 `var(--glass)` 盖掉 ✓
+ *   （结果列表比面板还实 ✓ 一片死黑 ✓ 完全没有透光）✓
+ *   现在把它们放在玻璃**之后** ✓ 顺序就是"玻璃打底、纸上提亮" ✓ */
+.results,
+.chain-row,
+.legend-list {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  background: rgba(255, 255, 255, .035);
+}
+.chain-row:hover { background: rgba(255, 255, 255, .08); }
+/* 调色板格子是整个玻璃面板里的小色块 ✓ 只要一点高光描边就有"玻璃片"感 ✓ */
+.palette .chip {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .28), 0 2px 6px rgba(0, 0, 0, .3);
+}
+.palette .chip:hover {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .38), 0 4px 12px rgba(0, 0, 0, .4);
+}
+
+/* ---- ④ 玻璃的「厚度」：顶边一道高光 ---- */
+/* 第一波只给三个壳加了 ✓ 这里把新入伙的也补上（浮层才有"一片玻璃"的样子 ✓）
+ * ⚠⚠ **`.zoom-box::before` 绝对不能加** ✗✗
+ *   它是 `left:12px; right:10px` 的**全宽容器** ✓ `inset: 0` 会横贯整屏 ✓
+ *   → 一道白线横在屏幕上 ✓（就是用户截图里那条"白色大条"的第二个来源 ✓
+ *     第一个来源是给它加了玻璃底 ✓ 两个都是把容器当面板了 ✓）
+ *   玻璃只给里面的按钮 ✓ 见上面 `.zoom-box .btn` 那条 ✓ */
+.dropdown::before,
+.dd-panel::before,
+.modal-box::before,
+#tutCard::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: inherit;
+  box-shadow: inset 0 1px 0 var(--glass-hi);
+}
+/* 🔴🔴 **绝对不要在这儿给它们加 `position: relative`** ✗✗
+ *   （2026-10-21 用户截图报的："电脑版怎么改出来一个白色大条"）
+ *
+ *   我上一版写了：
+ *     `.modal-box, #tutCard, .zoom-box { position: relative; }`
+ *   → `.zoom-box` 本来是 `absolute; left:12px; bottom:12px`（贴地图左下角 ✓）
+ *     被我改成 relative 之后**掉进文档流** ✓ → 在 `.stage` 顶上撑出**一条白带** ✓
+ *     就是截图里那条横贯整屏的白条 ✗
+ *
+ *   ⚠ 那三个元素本来就**各有各的定位**（这次是真去查了 ✓）：
+ *     · `.zoom-box`  → `absolute`，贴左下角 ✓
+ *     · `.modal-box` → 靠模态框的 flex 居中 ✓ 自己不需要 position ✓
+ *     · `#tutCard`   → `fixed` ✓（教程步骤卡贴目标旁边 ✓）
+ *   它们**本来就是定位元素**（abs / fixed 都算 ✓）→ `::before` 的 `inset: 0`
+ *   完全够用 ✓ **一句 position 都不用加** ✓
+ *
+ *   → 判据：`::before` 只要父元素是 abs / fixed / relative 任一种就成立 ✓
+ *     而 `.dropdown` / `.dd-panel` 也是 absolute ✓ 全都本来就合格 ✓
+ *   ⚠ 以后要加高光，**先看那个元素原本的 position 是什么** ✗
+ *     别顺手写 relative —— 那是在**取消**人家原本的定位 ✓ */
+
+/* ================================================================ 日间模式：同一套玻璃要重新配
+ *  ⚠ 深色玻璃是"半透明黑" ✓ 浅色下必须换成"半透明白" ✗
+ *    直接在 `html[data-theme="light"]` 上重写，**只动底子和边** ✓ 不碰字色 ✓
+ *    （字色那一批在「日间模式 第三轮」那节已经写好了 ✓ 别在这儿重复 ✓）
+ */
+html[data-theme="light"] .dropdown,
+html[data-theme="light"] .dd-panel,
+html[data-theme="light"] .modal-box,
+html[data-theme="light"] .map-card,
+html[data-theme="light"] #tutCard {
+  background:
+    linear-gradient(160deg, rgba(255, 255, 255, .9), transparent 46%),
+    rgba(252, 253, 255, .82);
+  border-color: var(--glass-brd);
+  box-shadow: 0 14px 36px rgba(24, 36, 50, .16);
+}
+html[data-theme="light"] .toast,
+html[data-theme="light"] .tut-toast {
+  background:
+    linear-gradient(160deg, rgba(255, 255, 255, .9), transparent 46%),
+    rgba(252, 253, 255, .8);
+  border-color: var(--glass-brd);
+  box-shadow: 0 10px 26px rgba(24, 36, 50, .16);
+}
+/* 缩放条在日间：**只改按钮** ✓ 容器别再上底了 ✗（见上面那条长注释）*/
+html[data-theme="light"] .zoom-box .btn {
+  background:
+    linear-gradient(160deg, rgba(255, 255, 255, .95), transparent 50%),
+    rgba(252, 253, 255, .8);
+  border-color: var(--glass-brd);
+  box-shadow: 0 4px 14px rgba(24, 36, 50, .18);
+}
+html[data-theme="light"] .results,
+html[data-theme="light"] .chain-row,
+html[data-theme="light"] .legend-list {
+  background: rgba(24, 36, 50, .045);
+}
+html[data-theme="light"] .chain-row:hover { background: rgba(24, 36, 50, .09); }
+html[data-theme="light"] .palette .chip {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .7), 0 2px 6px rgba(24, 36, 50, .18);
+}
+
+/* ---- 兜底：不支持 backdrop-filter 的浏览器 ---- */
+/* ⚠ 没有模糊时，半透明底会糊成一片 ✗ → 把底子换成实色 ✓ 至少读得清 ✓ */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .toolbar, .sidebar, .dropdown, .dd-panel, .modal-box, .toast,
+  .zoom-box, #hover-card, #tutCard, .map-card, .tut-toast,
+  .results, .chain-row, .legend-list {
+    background: var(--panel);
+  }
+}
+
+/* ===========================================================================
+   🔴🔴 **介绍弹窗（电脑版）**（2026-10-21 ✓ 用户："电脑版的教程按钮也改成和
+      手机版一样显示那些东西"）
+   ---------------------------------------------------------------------------
+   手机版的「教程」早就不做逐步引导了 ✓ 改成弹一篇**介绍长文** ✓（`.mi-*` ✓）
+   电脑版还停在老那套"一步步照着点" ✓ 现在统一成同一个介绍窗 ✓
+   ⚠ **老教程模块一个字没删** ✗（`web/js/tutorial.js` 原封不动 ✓
+     里面那些注释、步骤、引导卡片全留着 ✓ 只是按钮不再指向它 ✓）
+     想换回去：把 `intro.js` 里那段 clone 去掉、让 `initTutorial` 接管即可 ✓
+
+   ⚠ 样式跟手机版**同一套类名**（`.mi-box` / `.mi-body` / `.mi-lead` ✓）
+     这样两边的文案能共用一份写法 ✓ 但**排版各按各的屏幕来** ✗ 不硬抄手机 ✓
+   =========================================================================== */
+#app-intro .modal-box {
+  width: min(620px, 92vw);
+  max-height: 84vh;
+  padding: 0;                       /* 头部自己带内边距 ✓ 贴着圆角 */
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;                 /* 让内部滚动 ✓ 外框不跟着滚 ✓ */
+  border-radius: 12px;
+}
+#app-intro .modal-head {
+  flex: none;
+  padding: 14px 16px 12px;
+  margin: 0;
+  border-bottom: 1px solid var(--line-soft);
+}
+#app-intro .modal-head h2 { font-size: 15px; letter-spacing: .5px; }
+#app-intro .mi-box {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 14px 18px 20px;
+}
+/* 正文：比手机宽一点、行距松一点 ✓ 长文在电脑上一行别太长 ✓ */
+.mi-body { font-size: 13.5px; line-height: 1.9; color: var(--text-dim); }
+.mi-body p { margin: 0 0 10px; }
+.mi-body p:last-child { margin-bottom: 0; }
+.mi-body h4 {
+  margin: 18px 0 6px;
+  font-size: 13px;
+  color: var(--gold);
+  letter-spacing: .5px;
+  /* 左边竖一道细线 ✓ 跟手机版那个"│"一个意思 ✓ */
+  padding-left: 8px;
+  border-left: 2px solid var(--gold-dim);
+}
+.mi-body h4:first-child { margin-top: 0; }
+.mi-body strong { color: var(--text); font-weight: 700; }
+.mi-body .mi-lead { color: var(--text); }
+
+/* 日间：白底深字 ✓（跟手机版那套取值一致 ✓ 别另造一套）*/
+html[data-theme="light"] .mi-body { color: #3a4652; }
+html[data-theme="light"] .mi-body .mi-lead { color: #2b3743; }
+html[data-theme="light"] .mi-body h4 { color: #26598a; border-left-color: rgba(47, 95, 143, .45); }
+html[data-theme="light"] .mi-body strong { color: #16202b; }
