@@ -96,30 +96,45 @@ async function _register(id, bytes) {
    *   第一种不通就试第二种 ✓ 两条都不通才算真没辙 ✓
    *   ⚠ 两个用**同一个族名** ✓ 成功之后 canvas 那边照常按族名取 ✓ */
   const sources = [bytes];
+  /* ⚠ **blob URL 用完要撤销** ✗（2026-10-20）
+   *   以前每次走到这条路都建一个、从来不撤销 → 一直挂在内存里 ✓
+   *   `FontFace.load()` 之后它自己握着字体数据 ✓ 撤了不影响渲染 ✓ */
+  const _urls = [];
   try {
     if (typeof URL !== 'undefined' && URL.createObjectURL && typeof Blob !== 'undefined') {
-      sources.push(() => 'url(' + URL.createObjectURL(new Blob([bytes], { type: 'font/ttf' })) + ')');
+      sources.push(() => {
+        const u = URL.createObjectURL(new Blob([bytes], { type: 'font/ttf' }));
+        _urls.push(u);
+        return 'url(' + u + ')';
+      });
     }
   } catch (e) { /* 造不出 blob URL 就只试第一种 ✓ */ }
 
-  for (const src of sources) {
-    const s = typeof src === 'function' ? src() : src;
-    /* ⚠ **字重必须对上** ✗✗（2026-10-20 ✓ 用户："也没生效啊"）
-     *   标签画字用的是 `600 ${size}px "族名"` ✓
-     *   可 FontFace 不写 descriptors 时，这套字被登记成 **400** ✓
-     *   字重对不上，`document.fonts.check('600 …')` 直接 false，
-     *   canvas 那边也拿不到它 → 画面照旧是默认字体 ✓
-     *   → 按 600 登记一份；万一浏览器不认 descriptors，再退回不写 ✓ */
-    for (const desc of [{ weight: '600' }, undefined]) {
-      try {
-        const face = desc ? new FontFace(family, s, desc) : new FontFace(family, s);
-        await face.load();
-        document.fonts.add(face);
-        _faces.set(id, face);
-        return true;
-      } catch (e) {
-        /* 这一种不行，试下一种 ✓ */
+  try {
+    for (const src of sources) {
+      const s = typeof src === 'function' ? src() : src;
+      /* ⚠ **字重必须对上** ✗✗（2026-10-20 ✓ 用户："也没生效啊"）
+       *   标签画字用的是 `600 ${size}px "族名"` ✓
+       *   可 FontFace 不写 descriptors 时，这套字被登记成 **400** ✓
+       *   字重对不上，`document.fonts.check('600 …')` 直接 false，
+       *   canvas 那边也拿不到它 → 画面照旧是默认字体 ✓
+       *   → 按 600 登记一份；万一浏览器不认 descriptors，再退回不写 ✓ */
+      for (const desc of [{ weight: '600' }, undefined]) {
+        try {
+          const face = desc ? new FontFace(family, s, desc) : new FontFace(family, s);
+          await face.load();
+          document.fonts.add(face);
+          _faces.set(id, face);
+          return true;
+        } catch (e) {
+          /* 这一种不行，试下一种 ✓ */
+        }
       }
+    }
+  } finally {
+    /* 成功失败都要清 ✓ —— 一个都不留 ✓ */
+    for (const u of _urls) {
+      try { URL.revokeObjectURL(u); } catch (e) { /* ✓ */ }
     }
   }
   // 两种都不行：字体文件坏了 / 格式浏览器不认 —— 别把启动带崩 ✗
