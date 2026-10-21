@@ -1,6 +1,6 @@
-# 地图编辑器（CK3 / EU4 / HOI4 / Victoria 3 / EU5）
+# 悖论制图（CK3 / EU4 / HOI4 / Victoria 3 / EU5）
 
-> **当前版本：v1.10.0 测试版（2026-10-19）**
+> **当前版本：v1.9 正式版（2026-10-17）**
 
 > 作者：**永夜廿九**（B 站同名）· 代码以 MIT 协议发布 · [下载最新版本](https://github.com/Nianjiujiang/pdx-map-editor/releases)
 

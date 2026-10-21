@@ -14,6 +14,8 @@
  */
 const fs = require('fs');
 const path = require('path');
+/* 借桩里那份 IndexedDB 假实现 —— 字体库要用 ✓（2026-10-20） */
+const H = require('./lib/browser_stub.js');
 const zlib = require('zlib');
 
 /* ⚠ **仓库根目录，不是本文件所在目录** ✗✗（2026-10-19）
@@ -770,6 +772,12 @@ class El {
     return this.children.some((c) => c && c.contains && c.contains(n));
   }
   click() { for (const fn of (this._listeners.click || [])) fn({ type: 'click', target: this }); }
+  /** 派发任意事件（自测用 ✓）
+   *  ⚠ 别只写 click ✓ —— 字体导入走的是 `change`、滑条走的是 `input` ✗ */
+  dispatchEvent(ev) {
+    const type = (ev && ev.type) || 'click';
+    for (const fn of (this._listeners[type] || [])) fn(ev || { type, target: this });
+  }
   /** 递归把子元素的 innerHTML/textContent 拼出来，方便断言 */
   flat() {
     return (this._html || '') + this.children.map((c) => c.flat()).join(' | ') +
@@ -893,6 +901,7 @@ const sandbox = {
     __CK3_EMBEDDED__: undefined,
   },
   localStorage: localStorageStub,
+  indexedDB: H.makeIndexedDBFake(),   // 字体库要用 ✓
   performance: { now: () => Date.now() },
   requestAnimationFrame: (fn) => { rafs.push(fn); return rafs.length; },
   cancelAnimationFrame: () => {},
@@ -933,7 +942,7 @@ function stripModule(src) {
    少一个模块的表现是"某个功能悄悄没了"，不是报错隔壁那行，特别难查 ✗
    pack.js / packstore.js 是导入式地图那套（见 docs/导入式地图-策划.md）；
    它们要排在 data.js 前面：data.js 的第三数据源会调 packstore 的 getFile ✓ */
-const MODULES = ['pack.js', 'zip.js', 'packstore.js', 'data.js', 'bmp.js', 'gl.js', 'labels.js', 'tilemap.js', 'app.js'];
+const MODULES = ['pack.js', 'zip.js', 'packstore.js', 'fonts.js', 'bitmapfont.js', 'data.js', 'bmp.js', 'gl.js', 'labels.js', 'tilemap.js', 'app.js'];
 let js = MODULES.map((n) => `// ==== ${n} ====\n` + stripModule(fs.readFileSync(path.join(ROOT, 'web', 'js', n), 'utf8'))).join('\n\n');
 
 // 把结尾那次 boot() 摘掉，改由测试自己触发，并开几个探针出去
@@ -992,7 +1001,7 @@ const factory = new Function(
   'console', 'document', 'window', 'localStorage', 'performance',
   'requestAnimationFrame', 'cancelAnimationFrame', 'setTimeout', 'clearTimeout',
   'setInterval', 'clearInterval', 'fetch', 'URL', 'TextEncoder', 'TextDecoder',
-  'Blob', 'Response', js);
+  'Blob', 'Response', 'indexedDB', js);
 
 // ---------------------------------------------------------------- 跑
 
@@ -1000,7 +1009,7 @@ const factory = new Function(
   const ex = factory(sandbox.console, documentStub, sandbox.window, localStorageStub,
     sandbox.performance, sandbox.requestAnimationFrame, sandbox.cancelAnimationFrame,
     setTimeout, clearTimeout, setInterval, clearInterval, sandbox.fetch, sandbox.URL,
-    TextEncoder, TextDecoder, Blob, Response);
+    TextEncoder, TextDecoder, Blob, Response, sandbox.indexedDB);
 
   console.log(`\n=== 1. 启动（选单里点 ${CARD}）===`);
   // 界面上**只列游戏自带的图** ✓ —— 工坊那张高清图不对外发，所以清单里没有它。
@@ -1347,7 +1356,10 @@ const factory = new Function(
       // 放右边的话 `.set-row` 的 space-between 会把滑块挤到中间，
       // 跟上面「字号倍率」那根（标签 + 滑块两元素）就对不齐了 ✗
       /* ⚠ **2026-10-17：那两行标签都缩成「上限」了** ✗（块头说清了是谁的 ✓）*/
-      ok('「上限」那个数值在滑块左边（滑块才能跟上一行对齐 ✓）',
+      /* ⚠ 2026-10-20 UI 重做：「上限」不再是滑条了 ✓
+       *   数量 = 步进器（1~20）+ **独立的「不限」勾** ✓
+       *   —— 原来"无上限"是滑条最右那一格（第 21 格），拖到底才知道有陷阱 ✗ */
+      ok('「数量」有独立的「不限」勾（不再是滑条最右那格 ✓）',
          /上限<\/span><span class="hint" id="set-labelmax-v"><\/span><input type="range" id="set-labelmax"/.test(HTML)
          && /\.set-row \.hint \{[^}]*margin-right: auto/.test(css));
       /* **上限是"每个国家"的，不是"全世界"的** ✓（用户澄清过一次 ✓
@@ -1360,7 +1372,7 @@ const factory = new Function(
          && !/if \(_cap > 0 && out\.length > _cap\) out\.length = _cap;/.test(appSrc));
       /* **地名上限**（2026-10-16 用户定的 ✓）：跟「势力名称上限」**分开一根** ✓
        *   地名也改成"每个连通域一个标"之后，一个头衔底下可能一堆碎块 ✓ */
-      ok('「上限」那根滑条（地块 / 势力各一根 ✓ 1~21，同款档位 ✓）',
+      ok('「数量」是步进器（地块 / 势力各一个 ✓ 1~20，同款档位 ✓）',
          /上限<\/span><span class="hint" id="set-labelplacemax-v"><\/span><input type="range" id="set-labelplacemax"[^>]*min="1"[^>]*max="21"/
            .test(HTML)
          && />地名上限</.test(HTML) === false,      // 旧名一个都不许留 ✓
@@ -1408,11 +1420,11 @@ const factory = new Function(
          /* ⚠ 表名变过 ✗：以前还有一张「背景线宽」表（BG_STEPS ✓ 后来并掉 / 改名了 ✓）
             所以这里**不点名**某一张，只要求"凡是宽度表都从 0.5 起" ✓
             （哪天再加一张宽度表，这条也会自动盯着 ✓）*/);
-      ok("宽度滑条都从 0.5 起、按 0.5 一档（省份 / 地区 / 势力 / 水域 / 荒地 ✓）",
+      ok("宽度控件都从 0.5 起、按 0.5 一档（省份 / 地区 / 势力 / 水域 / 荒地 ✓）",
          (h.match(/min="0\.5" max="3" step="0\.5"/g) || []).length === 5,
          (h.match(/min="0\.5" max="3" step="0\.5"/g) || []).length + "/5");
       /* **浓度要有 0%** ✗（用户要的 ✓ 0% = 那条线完全不画 ✓）*/
-      ok("浓度档位含 0%（五档 ✓）",
+      ok("不透明度档位含 0%（五档 ✓）",
          /const CONC_STEPS = \[0, 25, 50, 75, 100\]/.test(a)
          && (h.match(/id="set-(pa|ra|ca|water-a)"[^>]*min="0" max="100" step="25"/g) || []).length === 4,
          "档位表 " + (/\[0, 25, 50, 75, 100\]/.test(a) ? "有0" : "没0")
@@ -1488,10 +1500,10 @@ const factory = new Function(
        *     ⚠ `set-w` 那条老 id **还在 HTML 里**（老存档回填用它 ✓ 见 _range('set-w') ✓）
        *       但**界面上不显示**（它是历史包袱 ✓ 别再为它数滑条 ✗）*/
       const _widths = ['set-w-prov', 'set-w-region', 'set-pw', 'set-water-w'];
-      ok('四条宽度滑条**同一个范围**（0.5~3，步长 0.5 ✓ 六档）',
+      ok('五条宽度控件**同一个范围**（0.5~3，步长 0.5 ✓ 六档）',
          _widths.every(_isRange) && _widths.every((id) => _range(id) === '0.5,3,0.5'),
          _widths.map((id) => id + '=' + (_range(id) || '无')).join(' '));
-      ok('浓度五条都是滑条（0~100，步长 25 ✓ 五档）',
+      ok('不透明度五条都是分段条（0/25/50/75/100 ✓ 五档）',
          ['set-pa', 'set-ra', 'set-ca', 'set-water-a'].every((id) => _isRange(id) && _range(id) === '0,100,25'),
          'set-ca=' + _range('set-ca') + ' 水域浓=' + _range('set-water-a'));
       /* 🔴 **导出按钮出错必须有人管** ✗（用户报：手机版导出 `Script error: 0` ✓）
@@ -1668,7 +1680,7 @@ const factory = new Function(
          *   所以这儿**不用再过滤** ✓ 数出来的就是滑条那八行 ✓ */
         const _labels = (_bseg.match(/<span>([^<]+)<\/span>/g) || [])
           .map((s) => s.replace(/<\/?span>/g, ''));
-        ok('边界栏：四类（省份 / 地区 / 势力 / 水域）+ 八行写「边界宽度 / 边界不透明度」✓',
+        ok('边界栏：5×2 矩阵（行=省份/地区/势力/水域/荒地，列=线宽/不透明度 ✓）',
            _subs.join(',') === '省份,地区,势力,水域'
            && _labels.join(',') === '边界宽度,边界不透明度,边界宽度,边界不透明度,边界宽度,边界不透明度,边界宽度,边界不透明度',
            `小标题=${_subs.join('/')} ｜ 行标签=${_labels.join('/')}`);
@@ -1776,7 +1788,7 @@ const factory = new Function(
         const p = String(r).split(',').map(Number);
         return (p[2] > 0) ? Math.round((p[1] - p[0]) / p[2]) + 1 : 0;
       };
-      ok('滑条档位数跟档位表一致（宽度 6 / 浓度 5 ✓）',
+      ok('控件档位数跟档位表一致（宽度 6 / 不透明度 5 ✓）',
          _count(_range('set-w-prov')) === 6 && _count(_range('set-water-w')) === 6
          && _count(_range('set-ca')) === 5 && _count(_range('set-water-a')) === 5,
          `线宽 ${_count(_range('set-w-prov'))} / 水域宽 ${_count(_range('set-water-w'))}`
@@ -1815,7 +1827,7 @@ const factory = new Function(
        *   → 改成量**新名字 + 旧名一律不许回来** ✓
        *   ⚠ 留着这条有用 ✗：「海域宽度 / 海域浓度」是**绝对禁用**的旧叫法 ✓
        *     用户 2026-10-16 的命名规范里点过名 ✓（`>海域宽度<` 那种写法不许出现 ✓）*/
-      ok('水域那两行用新名字（「海域宽度 / 海域浓度」这种旧叫法不许回来 ✗）',
+      ok('水域那两行用矩阵行名（「海域宽度 / 海域浓度」这种旧叫法不许回来 ✗）',
          HTML.includes('<span>边界宽度</span>') && HTML.includes('<span>边界不透明度</span>')
          && !HTML.includes('>海域宽度<') && !HTML.includes('>海域浓度<')
          && !HTML.includes('>水域边界宽度<') && !HTML.includes('>水域边界浓度<'));
@@ -1837,7 +1849,7 @@ const factory = new Function(
        *      水域(宽,浓) ✓ 排法直接量 **id 的出现次序** ✓（比数字符串稳 ✓）*/
       {
         const subs = (HTML.match(/class="set-sub"/g) || []).length;
-        ok('设置页栏内用 `.set-sub` 分了组（不再一栏平铺 ✗）',
+        ok('设置页用 `data-group` 分了四组 + `.set-sub` 组内再分（不再一栏平铺 ✗）',
            subs >= 8 && /\.set-sub\s*\{/.test(css),
            `${subs} 个小标题 · CSS 里有 .set-sub ✓`);
         /* 边界栏那八根的**顺序**：宽/浓 成对交替 ✓ */
@@ -1849,7 +1861,7 @@ const factory = new Function(
         const _want = ['set-w-prov', 'set-pa', 'set-w-region', 'set-ra',
                        'set-pw', 'set-ca', 'set-water-w', 'set-water-a',
                        'set-waste-sub', 'set-waste-w', 'set-waste-a'];
-        ok('边界栏按"一类两行"排（宽度与浓度成对挨着 ✓）',
+        ok('边界栏按矩阵排（每类一行，两个维度并排 ✓）',
            _ord.join(',') === _want.join(','),
            _ord.join(' → '));
       }
@@ -2709,6 +2721,19 @@ const factory = new Function(
     ok('卡片规则：那两行只有一处出处（hoverTileLines）+ 判定尺（nameIsMeaningful）',
        hasTable && hasRuler && bothUse,
        `规格表=${hasTable} 尺=${hasRuler} 用它的地方=${(src4.match(/hoverTileLines\(/g) || []).length}`);
+
+    /* 🔴 **陆地的第一行优先级**（2026-10-20 ✓ 用户原话：
+     *   "对待陆地时，第一行的内容优先为涂色，其次为所在剧本，
+     *    若没有剧本，第一行优先为涂色，其次为所属层级的地名"）
+     *   顺序钉死：涂色 → 剧本 → 层级 ✓ 三条颠倒任何一条都算回归 ✗ */
+    const landPri = /const a = _paintName \|\| _eraName \|\| curName \|\| fine/.test(src4);
+    ok('陆地第一行优先级：涂色 → 剧本 → 层级 ✓', landPri,
+       landPri ? '顺序对 ✓' : '优先级被改了 ✗');
+    ok('涂色名走 provLabel/labelNames（跟改名同一个口径 ✓）',
+       /_painted && state\.provLabel/.test(src4) && /state\.labelNames\[_lid\]/.test(src4));
+    ok('剧本名只在**剧本层开着**时用（state.tier < eraTierCount ✓ 细层不再冒国家名 ✗）',
+       /const _eraOn = _nEra > 0 && state\.tier >= 0 && state\.tier < _nEra/.test(src4)
+       && /if \(_eraOn && _ct >= 0/.test(src4));
   }
 
   // 「不可通行××」的显示名归一（山地/荒地/沙漠 → 不可通行区域；海域保留 ✓）
@@ -3434,14 +3459,22 @@ const factory = new Function(
     ok(`默认视图 = ${nm[st.meta.defaultTier]}（按 meta.defaultTier=${st.meta.defaultTier} ✓）`,
        st.tier === st.meta.defaultTier, `第 ${st.tier} 层 = ${nm[st.tier]}`);
     /* 🔴 **2026-10-19：按钮总数要拆成"剧本 + 地理"两段** ✗✗
-     *   剧本收进下拉栏了 → `containers.tier.children` 里**只有地理层** ✓
-     *   剧本块 = 年份层 + 紧跟其后的空白层 ✓（同 app.js 的 `eraBlockCount()` ✓）*/
+     *   ⚠ **2026-10-20 起要看模式**：剧本 **≥4 个**才用下拉栏 ✓
+     *     少于 4 个回退成按钮（那时剧本层就**摆在这一排里** ✓ 不是分开的 ✗）
+     *     见 app.js 的 `useEraDropdown()` ✓ */
     {
       const _bl = nm.indexOf('空白剧本');
       const _nEraBlock = _bl >= 0 ? _bl + 1 : 0;
-      ok(`工具栏 ${nm.length} 层 = 剧本 ${_nEraBlock} + 地理 ${nm.length - _nEraBlock}（分开摆 ✓）`,
-         containers.tier.children.length === nm.length - _nEraBlock && _nEraBlock > 0,
-         `地理按钮 ${containers.tier.children.length} 个 · 剧本 ${_nEraBlock} 个`);
+      const _useDD = _nEraBlock >= 4;
+      if (_useDD) {
+        ok(`工具栏 ${nm.length} 层 = 剧本 ${_nEraBlock} + 地理 ${nm.length - _nEraBlock}（分开摆 ✓）`,
+           containers.tier.children.length === nm.length - _nEraBlock && _nEraBlock > 0,
+           `地理按钮 ${containers.tier.children.length} 个 · 剧本 ${_nEraBlock} 个`);
+      } else {
+        ok(`剧本只有 ${_nEraBlock} 个 → 回退成按钮，全都摆一排（${nm.length} 个 ✓）`,
+           containers.tier.children.length === nm.length,
+           `这一排 ${containers.tier.children.length} 个（应 ${nm.length}）`);
+      }
     }
   } else {
     ok('层级徽章', JSON.stringify(ex.TIER_BADGE) === JSON.stringify(want.badges), JSON.stringify(ex.TIER_BADGE));
@@ -3454,9 +3487,16 @@ const factory = new Function(
       const _bl = want.names.indexOf('空白剧本');
       const _nEraBlock = _bl >= 0 ? _bl + 1 : 0;
       const _geoN = want.names.length - _nEraBlock;
-      ok(`工具栏 ${want.names.length} 层 = 剧本 ${_nEraBlock} + 地理 ${_geoN}（分开摆 ✓）`,
-         containers.tier.children.length === _geoN,
-         `这一排 ${containers.tier.children.length} 个（应 ${_geoN}）`);
+      /* ⚠ 2026-10-20：剧本 <4 个时回退成按钮 ✓ 那时这一排是**全部层** ✓ */
+      if (_nEraBlock >= 4) {
+        ok(`工具栏 ${want.names.length} 层 = 剧本 ${_nEraBlock} + 地理 ${_geoN}（分开摆 ✓）`,
+           containers.tier.children.length === _geoN,
+           `这一排 ${containers.tier.children.length} 个（应 ${_geoN}）`);
+      } else {
+        ok(`剧本只有 ${_nEraBlock} 个 → 回退成按钮（${want.names.length} 个全摆一排 ✓）`,
+           containers.tier.children.length === want.names.length,
+           `这一排 ${containers.tier.children.length} 个（应 ${want.names.length}）`);
+      }
     }
   }
   ok(`界面文案换成"${want.entity}"`, get('status-meta').textContent.includes(want.entity), get('status-meta').textContent);
@@ -3483,11 +3523,27 @@ const factory = new Function(
     ok('给的是 1..N，不是层号（不会跳着来 ✓）',
        ex.TIER_HOTKEY.every((k, i) => k === String(i + 1)), ex.TIER_HOTKEY.join(' '));
 
-    /* ② 剧本下拉栏：有剧本就显示，条目数 = 剧本块层数 ✓ */
+    /* ② 剧本下拉栏：**≥4 个才用** ✓ 少于 4 个回退成按钮 ✓
+     *   （2026-10-20 ✓ 用户："剧本3个及以上时UI才用多剧本类型，
+     *     不然就回退到一开始我们的版本"）*/
     const eraGroupEl = get('era-group');
     const panelEl = documentStub.querySelector('[data-role="era-panel"]');
-    if (_eraBlock > 0) {
-      ok('剧本下拉栏显示出来了（有剧本层 ✓）', eraGroupEl.hidden === false,
+    const _useDD = _eraBlock >= 4;
+    if (_eraBlock <= 0) {
+      ok('没有剧本层 → 下拉那块整个藏起来 ✓', eraGroupEl.hidden === true);
+    } else if (!_useDD) {
+      /* **回退模式**：不建下拉，剧本就是这一排里的普通按钮 ✓ */
+      ok(`剧本只有 ${_eraBlock} 个 → 不用下拉栏（回退成按钮 ✓）`,
+         eraGroupEl.hidden === true, `hidden=${eraGroupEl.hidden}`);
+      ok('回退模式下下拉面板是空的（没建条目 ✓）',
+         (panelEl.children || []).length === 0,
+         `${(panelEl.children || []).length} 项`);
+      /* 剧本层确实在这一排按钮里（找得到带 dataset.tier 的 ✓） */
+      const hasEra = containers.tier.children.some((b) => Number(b.dataset.tier) < _eraBlock);
+      ok('回退模式下剧本层就在视图那一排（点得到 ✓）', hasEra,
+         containers.tier.children.map((b) => b.dataset.tier).join(','));
+    } else {
+      ok('剧本下拉栏显示出来了（≥4 个才用 ✓）', eraGroupEl.hidden === false,
          `hidden=${eraGroupEl.hidden}`);
       ok('下拉栏条目数 = 剧本块层数（年份 + 空白 ✓）',
          (panelEl.children || []).length === _eraBlock,
@@ -3496,6 +3552,40 @@ const factory = new Function(
       ok('下拉条目带的是全局层号（不是它自己的序号 ✗）',
          (panelEl.children || []).every((b, i) => Number(b.dataset.tier) === i),
          (panelEl.children || []).map((b) => b.dataset.tier).join(','));
+      /* 🔴 **条目里不再夹一列日期** ✗（2026-10-20 ✓ 用户原话："纯属画蛇添足"）
+       *   日期挪进 `title` 了 —— 想核对年份，鼠标停一下还是看得到 ✓ */
+      ok('下拉条目只写剧本名，不夹日期（日期在 title 里 ✓）',
+         (panelEl.children || []).every((b) => !/dd-item-sub/.test(b.innerHTML || '')),
+         (panelEl.children || [])[0] ? (panelEl.children[0].innerHTML || '').slice(0, 60) : '(空)');
+      /* ⚠ 只有**数据里带 bookmarks 日期**的图才验 title ✓
+       *   CK3 / VIC3 / EU5 那几份 meta 还没重烘（没有 bookmarks 字段 ✓）
+       *   强行要求 title 会把它们全判红 ✗ 那不是回归，是数据旧 ✓ */
+      {
+        const hasDate = ((st.meta.bookmarks || [])[0] || {}).date;
+        if (hasDate) {
+          /* ⚠ 2026-10-20 ✓ 用户："只留 11（图例名字），其他都去掉"
+             → 剧本菜单项那个日期 tooltip 也删了 ✓ 这条断言跟着反过来盯 ✓ */
+          ok('悬停提示已清空（不再往菜单项挂 title ✓）',
+             (panelEl.children || []).every((b) => !b.title),
+             (panelEl.children || []).slice(0, 2).map((b) => b.title || '(无)').join(' / '));
+        } else {
+          console.log('  · 跳过 title 那条（这份 meta 没有 bookmarks 日期）');
+        }
+      }
+    }
+    /* 🔴 **没开剧本时按钮写「无」** ✗（2026-10-20 ✓ 用户原话："直接显示无就行了"）
+     *   原来我拼成「1444 ·未用」—— 那是自造的话，用户只会以为按钮坏了 ✗
+     *   ⚠ 这一条只能查源码：假 DOM 里那个按钮没有子节点（查不到 `.dd-label` 的文字 ✗）
+     *     但字面量本身很好钉 ✓ 改回"·未用"或别的说法当场红 ✓ */
+    {
+      const appSrc = fs.readFileSync(path.join(ROOT, 'web', 'js', 'app.js'), 'utf8');
+      /* ⚠ **先剥注释再判** ✗ —— 注释里会提到"·未用"这个词（说明历史 ✓）
+       *   不剥的话这条永远红 ✓（我第一版就是这样 ✓）*/
+      const code = appSrc
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+      ok('没开剧本时写「无」（代码里不再自造「·未用」✗）',
+         /let text = '无';/.test(code) && code.indexOf('·未用') < 0);
     }
 
     /* ③ 顶栏折叠（窄屏才显示，但逻辑一直在 ✓）
@@ -3527,6 +3617,62 @@ const factory = new Function(
          /\.era-drop\s*\{\s*position:\s*relative;\s*\}/.test(css));
     } else {
       ok('折叠按钮绑上了 onclick', false, 'boot 里没调 bindToolbarFold()？');
+    }
+  }
+
+  /* 🔴 **位图字体导入整条链**（2026-10-20 ✓ 用户报"位图还是导入不进去呀"）
+   *
+   *   这条必须从**真界面**走：`#font-file` 的 change → 入库 → 刷下拉 → 挂到标签层 ✓
+   *   光测 fonts.js / bitmapfont.js 是不够的 ✗ ——
+   *   真断的地方是"导入之后顺手画预览"那步抛异常，被导入的 catch 接住，
+   *   于是字明明进库了、界面却说"没能导入" ✓ 只有走整条链才照得出来 ✓
+   *
+   *   ⚠ 测完**退回默认字体** ✓ 后面还有一堆标签相关的断言，别让它们受这套字影响 ✗ */
+  {
+    const fntText = 'info face="TestFace" size=16 bold=0 italic=0\n'
+      + 'common lineHeight=16 base=12 scaleW=64 scaleH=64 pages=1\n'
+      + 'char id=65 x=0 y=0 width=8 height=12 xoffset=0 yoffset=2 xadvance=9 page=0';
+    const nblk = (64 / 4) * (64 / 4);
+    const dds = new ArrayBuffer(128 + nblk * 16);
+    const dv = new DataView(dds);
+    dv.setUint32(0, 0x20534444, true);
+    dv.setUint32(12, 64, true);
+    dv.setUint32(16, 64, true);
+    dv.setUint32(80, 0x4, true);
+    'DXT5'.split('').forEach((c, i) => dv.setUint8(84 + i, c.charCodeAt(0)));
+
+    const fileEl = get('font-file');
+    const selP = get('set-font-place');
+    const selW = get('set-font-power');
+    if (fileEl && selP && selW) {
+      fileEl.files = [
+        { name: 'testfont.fnt', size: fntText.length, text: async () => fntText },
+        { name: 'testfont.dds', size: dds.byteLength, arrayBuffer: async () => dds },
+      ];
+      /* ⚠ 开机那条异步链（读库 → 注册字体 → 刷下拉）跑完才有选项 ✓
+         60ms 不够，等 400ms ✓ */
+      await new Promise((r) => setTimeout(r, 400));
+      await fileEl.dispatchEvent({ type: 'change', target: fileEl });
+      await new Promise((r) => setTimeout(r, 400));
+
+      ok('位图字体导入后进了下拉（带「· 位图」标记 ✓）',
+         String(selP.innerHTML).includes('位图'),
+         String(selP.innerHTML).slice(0, 90));
+      ok('而且自动选中了（不用再手动挑一遍 ✓）', /^b/.test(String(selP.value)), selP.value);
+      ok('势力名那一槽也一起挂上了 ✓', /^b/.test(String(selW.value)), selW.value);
+      ok('设置里记的是 bm: 前缀（重开还能接上 ✓）',
+         /^bm:/.test(String(ex.state.set.fontFacePlace)), String(ex.state.set.fontFacePlace));
+
+      /* 退回默认 —— 后面的标签断言要干净的起点 ✓ */
+      selP.value = '';
+      selW.value = '';
+      await selP.dispatchEvent({ type: 'change', target: selP });
+      await selW.dispatchEvent({ type: 'change', target: selW });
+      await new Promise((r) => setTimeout(r, 30));
+      ok('退回默认之后设置也清了 ✓', !ex.state.set.fontFacePlace, String(ex.state.set.fontFacePlace));
+    } else {
+      ok('字体那几样控件都在（set-font-place / set-font-power / font-file ✓）',
+         false, `${!!selP} / ${!!selW} / ${!!fileEl}`);
     }
   }
 
@@ -4130,6 +4276,78 @@ const factory = new Function(
     ok('app 里挂了初始化（window.initTutorial）✓', appSrc.includes('window.initTutorial'));
     const htmlSrc = fs.readFileSync('web/index.html', 'utf8');
     ok('顶栏有「教程」按钮 ✓', htmlSrc.includes('id="btn-tutorial"'), 'btn-tutorial');
+    /* 🔴 **教程内容要跟上界面** ✗✗（2026-10-20 ✓ 用户："教程过时不知道多久了"）
+     *
+     *   教程最容易腐烂：文案里写的按钮名/位置，界面一改就变成**教错** ✗
+     *   而且它不影响任何功能，坏了没人报 ✓ 所以只能靠断言钉住 ✓
+     *   这里钉两件事：
+     *     ① 该讲的**新东西**讲了（剧本下拉 / 地理层级 / 撤销 / 搜索）
+     *     ② **过时的说法**不许留（「导出 ▾」这个名字 2026-10 改成了「文件 ▾」✗）*/
+    {
+      const need = [
+        ['剧本', /剧本/],
+        ['地理层级（大洲/区域/省份）', /大洲[\s\S]{0,80}省份|区域[\s\S]{0,40}省份/],
+        ['撤销', /撤销|Ctrl\+Z/],
+        ['搜索', /搜索/],
+        ['「文件 ▾」这个新名字', /文件 ▾/],
+      ];
+      const miss = need.filter(([, re]) => !re.test(tut)).map(([n]) => n);
+      ok('桌面教程覆盖了 v1.10 的新界面（剧本 / 层级 / 撤销 / 搜索 / 文件 ▾）',
+         miss.length === 0, miss.length ? `缺：${miss.join('、')}` : '都讲了 ✓');
+      /* ⚠ 剥掉注释再判 ✗ —— 注释里会提到「导出 ▾」这个旧名（说明改名历史 ✓）
+       *   不剥的话永远红 ✓（跟"没开剧本写无"那条一个坑 ✓）*/
+      const tutCode = tut
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+      ok('桌面教程不再喊「导出 ▾」这个旧名（现在叫「文件 ▾」✗）',
+         tutCode.indexOf('导出 ▾') < 0);
+      /* 步骤数：老版 8 步，重写后 11 步 ✓ 太少说明又被砍回去了
+       * ⚠ 缩进是 8 个空格 ✓ 写死 6 个会数出 0 步（我第一次就数成 0 ✓）*/
+      const nStep = (tutCode.match(/^\s{6,}title: '/gm) || []).length;
+      ok('桌面教程步骤数 ≥ 10（老版 8 步，v1.10 加了层级/剧本/撤销/搜索 ✓）',
+         nStep >= 10, `${nStep} 步`);
+      /* 剧本那一步的文案是**函数**（下拉 / 按钮两套说法 ✓）—— 写死一种就会教错 */
+      ok('「挑个剧本」的文案按界面分流（下拉 vs 按钮两套 ✓）',
+         /typeof st\.text === 'function'/.test(tut) && /hasEraDropdown\(\)/.test(tut));
+      /* 🔴 **统一叫「势力名」，不许写「国名」** ✗✗（2026-10-20 ✓ 用户原话：
+       *   "国名就是势力名，统一用势力名这个称呼"）
+       *   界面上早就是「势力名称」了（见 index.html 那段注释 ✓）——
+       *   只有教程里还混着"国名、势力名"并列着写 ✓ 看着像两种东西 ✓
+       *   ⚠ 剥注释再判 ✓ 注释里讲历史会提到「国名」✓ */
+      ok('桌面教程统一用「势力名」（不写「国名」✗）',
+         tutCode.indexOf('国名') < 0,
+         tutCode.indexOf('国名') < 0 ? '干净 ✓' : '仍有「国名」字样 ✗');
+      /* 🔴 **教程文案不许用破折号** ✗✗（2026-10-20 ✓ 用户："不要破折号"）
+       *   破折号在这类一句一卡的卡片里会把句子**拦腰截断** ✓ 读着费劲 ✓
+       *   改成逗号 / 句号，一句话说完再下一句 ✓
+       *   ⚠ 只查**用户看得到的字符串**（`text:` 那些）✗ 注释里随便 ✗ */
+      {
+        const texts = [...tutCode.matchAll(/text:\s*'([^']*)'/g)].map((m) => m[1]);
+        const bad = texts.filter((s) => s.indexOf('——') >= 0);
+        ok('教程卡片文案里没有破折号（读着更顺 ✓）', bad.length === 0,
+           bad.length ? bad[0].slice(0, 40) : `查了 ${texts.length} 句 ✓`);
+      }
+      /* 🔴 **语气要萌，但不许过分口语化** ✗✗（2026-10-20 ✓ 用户：
+       *   "保证有二次元的萌感，同时避免单字词和过分口语化"）
+       *
+       *   萌感靠的是**语气词**（哦 / 呢 / 啦 / 呀）和可爱的比喻（乖乖、悄悄、清清爽爽 ✓）
+       *   不是靠拖长音和网络口语 ✗ 下面这几个都是老版里被换掉的：
+       *     波浪号「~」（拖长音，看着像卖萌过度 ✓）
+       *     滚滚 / 溜进 / 折腾（太随意，跟界面气质不搭 ✓）
+       *   ⚠ 这条只看**卡片文案**，不看注释 ✓ */
+      {
+        const texts = [...tutCode.matchAll(/text:\s*'([^']*)'/g)].map((m) => m[1])
+          .concat([...tutCode.matchAll(/\+\s*'([^']*)'/g)].map((m) => m[1]));
+        const slang = ['~', '嘛', '滚滚', '溜进', '折腾'];
+        const hit = [];
+        for (const s of texts) for (const w of slang) if (s.indexOf(w) >= 0) hit.push(`${w} @ ${s.slice(0, 24)}`);
+        ok('教程文案没有过度口语化的词（波浪号 / 滚滚 / 溜进 / 折腾 ✗）',
+           hit.length === 0, hit.length ? hit[0] : `查了 ${texts.length} 段 ✓`);
+        /* 萌感得还在：语气词至少出现几次（不然就成了冷冰冰的说明书 ✗） */
+        const cuteN = texts.reduce((n, s) => n + (s.match(/哦|呢|啦|呀|吧/g) || []).length, 0);
+        ok('教程还留着萌感（语气词够数 ✓）', cuteN >= 6, `${cuteN} 个语气词`);
+      }
+    }
     /* **"是不是水"必须精确匹配颜色** ✓（用户报的 HOI4 三个省份 ✓）
      *   以前阈值 0.02 ✗ —— HOI4 的省份色是技术色，`p_3511` 那类跟 #lake 只差
      *   0.0147~0.0184，全被判成湖水、边界走了水域那一趟 ✗
@@ -4248,7 +4466,7 @@ const factory = new Function(
          const a = fs.readFileSync('web/js/app.js', 'utf8');
          const i = a.indexOf("$('set-reset').onclick");
          if (i < 0) return false;
-         const seg = a.slice(i, i + 700);
+         const seg = a.slice(i, i + 1600);   // confirm 文案占了地方 ✓ 窗口放大 ✓
          return /state\.set = Object\.assign\(\{\}, SET_DEFAULTS\);/.test(seg)
            && /saveMapPrefs\(\)/.test(seg);
        })(),
@@ -5758,8 +5976,12 @@ const factory = new Function(
     const ERA_N = N_ERA;                                     // 有主的年份层数（模块级 ✓）
     const BLANK_N = st.meta.tierNames.indexOf('空白剧本');
     const ERA_BLOCK = (BLANK_N === ERA_N) ? ERA_N + 1 : ERA_N;
+    /* ⚠ **2026-10-20：剧本 ≥4 个才收进下拉栏** ✓ 少于 4 个回退成按钮 ✓
+     *   HOI4 是 3 层（1936 / 1939 / 空白）→ 改阈值后落到**回退模式** ✓
+     *   那时剧本就是这一排里的普通按钮 ✓ 查找方式也得跟着换 ✗ */
+    const USE_DD = ERA_BLOCK >= 4;
     const panelEl = documentStub.querySelector('[data-role="era-panel"]');
-    const btnOf = (i) => (i < ERA_BLOCK
+    const btnOf = (i) => ((USE_DD && i < ERA_BLOCK)
       ? (panelEl.children || []).find((b) => Number(b.dataset.tier) === i)
       : containers.tier.children.find((b) => Number(b.dataset.tier) === i));
     const isOn = (i) => !!(btnOf(i) && btnOf(i).classList.contains('on'));
@@ -5768,13 +5990,14 @@ const factory = new Function(
     ex.setTier(T_ERA);                               // 切到第一个有主的年份
     const html = fs.readFileSync(path.join(ROOT, 'web', 'index.html'), 'utf8');
     ok('没有多出来的那一排按钮（视图那一排就够）',
-       containers.tier.children.length === st.meta.tierNames.length - ERA_BLOCK
+       containers.tier.children.length === (USE_DD
+         ? st.meta.tierNames.length - ERA_BLOCK : st.meta.tierNames.length)
        && !html.includes('grain-group'),
-       `地理层 ${containers.tier.children.length} 个（应 ${st.meta.tierNames.length - ERA_BLOCK}）`
-       + ` · 剧本 ${(panelEl.children || []).length} 个`);
-    ok('剧本全在下拉栏里（不占视图那一排 ✓）',
-       (panelEl.children || []).length === ERA_BLOCK,
-       `下拉栏 ${(panelEl.children || []).length} 项 / 剧本块应有 ${ERA_BLOCK} 层`);
+       `这一排 ${containers.tier.children.length} 个（${USE_DD ? '应 ' + (st.meta.tierNames.length - ERA_BLOCK) : '回退模式，应 ' + st.meta.tierNames.length}）`
+       + ` · 下拉栏 ${(panelEl.children || []).length} 个`);
+    ok(USE_DD ? '剧本全在下拉栏里（不占视图那一排 ✓）' : '剧本只有 3 个 → 就在这一排里（回退 ✓）',
+       (panelEl.children || []).length === (USE_DD ? ERA_BLOCK : 0),
+       `下拉栏 ${(panelEl.children || []).length} 项 / 剧本块 ${ERA_BLOCK} 层`);
     ok('默认按国家：编辑层 = 视图层', ex.editTier() === T_ERA, String(ex.editTier()));
     ok('只有一个亮着', isOn(T_ERA) && !isGrain(T_ERA) && !isOn(T_B) && !isGrain(T_B),
        `年份 on=${isOn(T_ERA)} grain=${isGrain(T_ERA)} / 下一级 on=${isOn(T_B)} grain=${isGrain(T_B)}`);

@@ -435,7 +435,7 @@
         : (nWarn ? 'WARN（仅 ' + nWarn + ' 条警告）' : 'OK（未记录到错误）'));
 
     line(hr);
-    line('  PDX 地图编辑器 · 诊断报告');
+    line('  悖论制图 · 诊断报告');
     line('  PDX MAP EDITOR · DIAGNOSTIC REPORT');
     line(hr);
     field('报告编号', reportId);

@@ -1,12 +1,15 @@
 /**
- * CK3 地图编辑器 —— 主逻辑
+ * 悖论制图（PDX Map Editor）—— 主逻辑
+ * （正式名称 2026-10-20 定的：地图编辑器 → 悖论制图 ✓ 用户要求 ✓）
  */
 
 // 开发版是真 ES module（index.html 只加载本文件）——别的模块都得显式 import。
 // 单文件版由 build_standalone.py 剥掉这些行、按序拍平，两边的加载方式都兼容。
 import { DATA, api, b64ToBytes, decompress, embeddedMapKeys, isEmbedded, setDataDir, setEmbeddedMap, setPackMap, isPackMap } from './data.js';
 import { MapRenderer } from './gl.js';
-import { LabelLayer, computeLabelZoom } from './labels.js';
+import { LabelLayer, computeLabelZoom, setLabelFont, labelFont, setLabelBitmap, labelBitmap } from './labels.js';
+import { fontLibLoadAll, fontLibList, fontLibAdd, fontLibAddBitmap, fontLibRecord, fontLibRemove, fontLibFamily, fontLibClear, fontLibReady } from './fonts.js';
+import { BitmapFont } from './bitmapfont.js';
 import { TileMap } from './tilemap.js';
 import { importPack, listPacks, getPack, removePack, exportPackBytes, packStoreMode } from './packstore.js';
 
@@ -102,7 +105,7 @@ const GAMES = {
     id: 'ck2',
     name: 'CK2',
     brand: 'CK', brandSmall: 'II',
-    title: 'CK2 地图编辑',
+    title: 'CK2 · 悖论制图',
     entity: '头衔',
     saveKey: 'ck2-map-editor/v1',
     filePrefix: 'ck2',
@@ -118,7 +121,7 @@ const GAMES = {
     id: 'ck3',
     name: 'CK3',
     brand: 'CK', brandSmall: 'III',
-    title: 'CK3 地图编辑',
+    title: 'CK3 · 悖论制图',
     entity: '头衔',
     saveKey: 'ck3-map-editor/v1',
     filePrefix: 'ck3',
@@ -134,7 +137,7 @@ const GAMES = {
     id: 'eu4',
     name: 'EU4',
     brand: 'EU', brandSmall: 'IV',
-    title: 'EU4 地图编辑',
+    title: 'EU4 · 悖论制图',
     entity: '省份',
     saveKey: 'eu4-map-editor/v1',
     filePrefix: 'eu4',
@@ -150,7 +153,7 @@ const GAMES = {
     id: 'hoi4',
     name: 'HOI4',
     brand: 'HOI', brandSmall: 'IV',
-    title: 'HOI4 地图编辑',
+    title: 'HOI4 · 悖论制图',
     entity: '省份',
     saveKey: 'hoi4-map-editor/v1',
     filePrefix: 'hoi4',
@@ -166,7 +169,7 @@ const GAMES = {
     id: 'eu5',
     name: 'EU5',
     brand: 'EU', brandSmall: 'V',
-    title: 'EU5 地图编辑器',
+    title: 'EU5 · 悖论制图',
     entity: '地点',
     saveKey: 'eu5-map-editor/v1',
     filePrefix: 'eu5',
@@ -190,7 +193,7 @@ const GAMES = {
      *   —— 所以这条改动**不碰任何数据 / 存档 / 路径** ✓ 只是换个叫法 ✓ */
     name: 'VIC3',
     brand: 'VIC', brandSmall: '3',
-    title: '维多利亚3 地图编辑',
+    title: '维多利亚3 · 悖论制图',
     entity: '省份',
     saveKey: 'vic3-map-editor/v1',
     filePrefix: 'vic3',
@@ -397,6 +400,16 @@ const state = {
 let renderer = null;
 let labels = null;
 let labelDirty = true;
+
+/* 🔴 **拖进来的文件按类型分派**（2026-10-20）
+ *
+ *   ⚠ **地图包不在这条路上** ✗（用户："地图包不要在进入里面的时候导入"）
+ *     `.pdxmap` 只在**选图页**导 ✓ 拖到地图上不给导，但会提示去哪儿导 ✓
+ *
+ *   原来舞台上的拖放**只认 .json** ✗ —— 字体拖进去也被那句「只认 JSON」挡回去 ✓
+ *   `fontDropHandler` 由 `bindFontPicker()` 赋值（它要闭包里的刷新逻辑 ✓）
+ */
+let fontDropHandler = null;
 let blocksDirty = true;     // 涂色后标脏，下一帧重算连通色'
 let NO_TITLE = 65535;
 let panning = null;
@@ -1445,6 +1458,10 @@ const SET_DEFAULTS = {
    *   ⚠ **老的 `font` 保留但不再读** ✗（老存档只有它 ✓
    *     迁移收在 `fontSizes()` 那一个口子里 ✓ —— 别在每处各写一遍 ✓）*/
   fontPlace: 1, fontPower: 1,
+  /* 🔴 **导入的字体**（2026-10-20 ✓）—— 存的是**族名**（PDX-Font-xxx ✓）
+   *   空串 = 用默认栈 ✓ 库里的字体被删掉时，这里留着的族名匹配不上，
+   *   开机时自动退回默认 ✓（见 bindFontPicker 里那段 ✓）*/
+  fontFacePlace: '', fontFacePower: '',
   /* **水域边界那一对**（2026-10-16 ✓ 用户定的 ✓）
    *   用户原话："新增一对滑条「水域边界宽度 / 浓度」（**不沿用省份/地区那一档**）"✓
    *   宽度 1（六档表里那一档 ✓ 跟别处同一个口径 ✓）
@@ -1657,6 +1674,12 @@ function applySettings() {
   if (labels) {
     labels.alphaCountry = setNum('labelAC', 50) / 100;
     labels.alphaPlace = setNum('labelAP', 50) / 100;
+    /* 🔴 **导入的字体也在这儿推给标签层**（2026-10-20 ✓）
+     *   `state.set.fontFacePlace` / `fontFacePower` 存的是**族名**（空 = 默认 ✓）
+     *   ⚠ 标签层那边换字体会让名宽 / 字形贴图的缓存失效 ✓
+     *     所以这里跟着置 labelDirty ✓ 下一帧重排一遍 ✓ */
+    setLabelFont('place', ((state.set && state.set.fontFacePlace) || ''));
+    setLabelFont('power', ((state.set && state.set.fontFacePower) || ''));
     labelDirty = true;
   }
   const s = state.set || (state.set = Object.assign({}, SET_DEFAULTS));
@@ -3737,21 +3760,61 @@ function hoverTileLines(pid) {
     }
   }
 
-  /* ---- ③ 陆地（含 VIC3 / HOI4 的"荒地"）：第一行 = 目前层级，第二行 = 最低层级 ---- */
-  const fine = realNameAtTier(pid, fineTid, TIER_COUNT - 1) || '';
-  const a = curName || fine || typeLabel(kindOfPid(pid));
-  let b = '';
-  if (curName) {
-    /* 第一行是**目前层级**的名字 → 第二行给**最低层级** ✓ 同词不重复 ✓
-     * ⚠ 最细层没名字（HOI4 的 `p_*` / CK3 的某些格子 ✓）→ **就空着** ✗
-     *   别往下退到粗层充数 ✓ —— 那会冒出 `韦斯特比格德/丹麦` 这种**反的**
-     *   （第一行成了最低单位、第二行成了国家 ✗ 实测踩到 ✓） */
-    b = (fine && fine !== a) ? fine : '';
-  } else {
-    /* 第一行本来就是"最低层级"那个名字（目前层级没名字 ✓）
-     * → 第二行只可能在"更细"的方向上补，没有更细的了 ✓ 空着 ✓ */
-    b = '';
+  /* ---- ③ 陆地（含 VIC3 / HOI4 的"荒地"）----
+   *
+   * 🔴 **第一行的优先级**（2026-10-20 ✓ 用户原话：
+   *   "对待陆地时，第一行的内容优先为涂色，其次为所在剧本，
+   *    若没有剧本，第一行优先为涂色，其次为所属层级的地名"）
+   *
+   *   ① **涂色名** —— 这块地玩家涂过，就报涂出来的那个名字 ✓
+   *      来源跟 `renameAt` 同一个口径：`state.provLabel[pid]` → `state.labelNames[]` ✓
+   *      （涂过的地自带标记号 ✓ 没涂的没有 ✓ 别去猜颜色 ✗）
+   *   ② **剧本名** —— 这张图有国家层的话，报它在剧本那一层的势力名 ✓
+   *      `countryTier()` 就是"最近的**有主**剧本层" ✓
+   *      CK3 标了 `noCountryLayer` → 返回 -1 → 自动落到 ③ ✓
+   *      （正好对上"若没有剧本"那句 ✓）
+   *   ③ **所属层级的地名** —— 原来那套（视图层 → 最低层 ✓）
+   */
+  const _pd = renderer && renderer.paintData;
+  const _painted = !!(_pd && _pd.length > pid * 4 + 3 && _pd[pid * 4 + 3] > 0);
+  let _paintName = '';
+  if (_painted && state.provLabel) {
+    const _lid = state.provLabel[pid] | 0;
+    if (_lid >= 0) _paintName = String(state.labelNames[_lid] || '');
   }
+  /* 🔴 **只有"剧本层开着"才用剧本名** ✗✗（2026-10-20 ✓ 用户：
+   *   "悬停小卡片有问题，应该区分是否开启剧本层"）
+   *
+   *   "开着" = **当前视图正停在剧本层**（`state.tier < eraTierCount()` ✓）
+   *   —— 玩家在看年份那几层时，心里想的是"这是哪个国家的地"✓ 报剧本名 ✓
+   *   切到地理层（地区 / 省份 / 地点）之后，他要的是**这一层的名字** ✓
+   *   这时候再冒出一个国家名就是错的 ✗（层级和归属是两件事 ✓）
+   *
+   *   ⚠ 别拿 `countryTier()` 单独判 ✗ —— 它在细层也会返回"最近的剧本层" ✓
+   *     那是给取色 / 荒地取身份用的口径 ✓ 跟"界面上现在开没开剧本"不是一回事 ✓
+   *   ⚠ 涂色名**永远优先** ✓ 跟开没开剧本无关 ✓（那是玩家自己画上去的 ✓）
+   */
+  let _eraName = '';
+  {
+    const _nEra = eraTierCount();
+    const _eraOn = _nEra > 0 && state.tier >= 0 && state.tier < _nEra;
+    const _ct = countryTier();
+    if (_eraOn && _ct >= 0 && _ct < TIER_COUNT && _ct !== t) {
+      _eraName = realNameAtTier(pid, state.hover.tids[_ct], _ct) || '';
+    }
+  }
+
+  const fine = realNameAtTier(pid, fineTid, TIER_COUNT - 1) || '';
+  const a = _paintName || _eraName || curName || fine || typeLabel(kindOfPid(pid));
+  /* 第二行：给"再细一级 / 次一级"的那个名字 ✓ 跟第一行重复就空着 ✗
+   * （用户只定了第一行 ✓ 第二行保持原来的意思：最低单位名优先 ✓
+   *   ⚠ 别往下退到粗层充数 ✗ —— 那会冒出 `韦斯特比格德/丹麦` 这种反的 ✓）*/
+  /* 🔴 **第二行不再"同词就藏"** ✗✗（2026-10-20 ✓ 用户：
+   *   "一二行如果是同一个名字的话之前是不会显示第二行的，这个可以改一改"）
+   *   原来第一行跟第二行撞名就把第二行抹掉 ✓ 卡片会突然矮一截、
+   *   同一块地看着像"少了一层信息" ✓ 现在**照常显示** ✓
+   *   （空字符串才不显示 —— 那是真的没名字 ✓）*/
+  let b = fine || (curName && curName !== a ? curName : '');
   return { a, b, kind: 'land' };
 }
 
@@ -4525,6 +4588,26 @@ function eraBlockCount() {
   return (n > 0 && b === n) ? n + 1 : n;
 }
 
+/** 剧本层该用**下拉栏**还是**按钮**（2026-10-20 ✓ 用户定的阈值）
+ *
+ *  用户原话："剧本3个及以上时UI才用多剧本类型，不然就回退到一开始我们的版本"
+ *  随后改成："那个回退改成剧本少于4个才回退" ✓ ← **以这条为准** ✓
+ *  → 也就是 **≥4 个才用下拉栏**，1~3 个一律回退成按钮 ✓
+ *
+ *  ⚠ 阈值算的是**剧本块**（年份 + 空白层 ✓ 见 `eraBlockCount`）：
+ *    · EU4 12 个 + 空白 = 13 → 下拉栏 ✓
+ *    · HOI4 2 个 + 空白 = 3  → **按钮**（2026-10-20 改阈值后落到这边 ✓）
+ *    · VIC3 1 个 + 空白 = 2  → **按钮** ✓
+ *    · CK3 1066 + 空白 = 2   → **按钮** ✓
+ *    · EU5 1337 + 空白 = 2   → **按钮** ✓
+ *
+ *  ⚠ 别拿 `eraTierCount()` 判 ✗ —— 那样 EU4（12 个年份）是 12 ✓ 但 HOI4 是 2，
+ *    连"空白层"都不算进去 ✓ 少一层就会判错 ✓
+ */
+function useEraDropdown() {
+  return eraBlockCount() >= 4;
+}
+
 /**
  * **离当前视图最近的那个"有主"剧本层** ✓
  *
@@ -4774,6 +4857,9 @@ function refreshEraPicker() {
   const btn = document.querySelector('[data-role="era-btn"]');
   const panel = document.querySelector('[data-role="era-panel"]');
   if (!btn || !panel) return;
+  /* ⚠ 回退模式（剧本 < 4 个）里没有下拉栏 ✓ 直接别管 ✓
+   *   （那时候剧本就是普通按钮，高亮由 `refreshTierButtons` 那半边管 ✓）*/
+  if (!useEraDropdown()) return;
   /* ⚠ 高亮要按**剧本块**算 ✓ —— 空白剧本也在下拉栏里，它选中了也得亮 ✓
    *   （`eraTierCount()` 不含空白层 ✗ 拿它算的话空白层那一项永远不亮 ✓）*/
   const nBlock = eraBlockCount();
@@ -4783,15 +4869,21 @@ function refreshEraPicker() {
   const inEra = state.tier >= 0 && state.tier < n;          // "有主的年份视图" ✓
   const inBlock = state.tier >= 0 && state.tier < nBlock;   // "剧本块里"（含空白层 ✓）
   const grain = inEra ? state.grain : null;
-  // 按钮标签取哪个剧本：在看 → 当前；不在看但有粒度 → 粒度那个；
-  //   都没有 → 最近看过的（`lastEraTier`），再没有就用第一个
-  let show = inBlock ? state.tier : (grain != null ? grain : (state.lastEraTier | 0));
-  if (!(show >= 0 && show < nBlock)) show = 0;
-  const label = names[show] || '—';
   const lab = btn.querySelector('.dd-label');
-  /* 空白剧本 / 不在这个块里 → 后面加"·未用"提示 ✓
-   *   （别让人以为现在看的就是那个年代 ✗ 见上面那段说明 ✓）*/
-  if (lab) lab.textContent = inEra ? label : `${label} ·未用`;
+  /* 🔴 **没在开剧本就写「无」** ✗✗（2026-10-20 ✓ 用户原话："没有开剧本直接显示无就行了"）
+   *
+   *   原来我给拼成「1444 ·未用」—— 本意是"你最近看过 1444，但现在没在用它" ✓
+   *   可这话纯属我自己脑补的 ✓ 用户看到只会觉得**按钮坏了 / 字被截了** ✗
+   *
+   *   现在的三种情况：
+   *     · 正在看某个剧本         → 写它的名字（1444 ✓）
+   *     · 在地理层、但配色沿用它 → 也写它的名字（`.grain` 蓝色已表明是"借用"✓）
+   *     · 压根没开剧本           → **「无」** ✓
+   *   ⚠ 不再有"·未用"那种自造后缀 ✗ */
+  let text = '无';
+  if (inEra) text = names[state.tier] || '无';
+  else if (grain != null && grain >= 0 && grain < nBlock) text = names[grain] || '无';
+  if (lab) lab.textContent = text;
   btn.classList.toggle('on', inEra);
   btn.classList.toggle('grain', !inEra && grain != null);
   for (const it of panel.querySelectorAll('[data-role="era-item"]')) {
@@ -4952,7 +5044,7 @@ function applyGameText() {
     const _hasWaste = !!(state.meta && state.meta.wasteland && state.meta.wasteland.length);
     const _wg = $('waste-group');
     if (_wg) _wg.style.display = _hasWaste ? '' : 'none';
-    for (const _wid of ['set-waste-sub', 'set-waste-w-row', 'set-waste-a-row']) {
+    for (const _wid of ['set-waste-row', 'set-waste-sub', 'set-waste-w-row', 'set-waste-a-row']) {
       const _wel = $(_wid);
       if (_wel) _wel.style.display = _hasWaste ? '' : 'none';
     }
@@ -4961,9 +5053,6 @@ function applyGameText() {
       _cw.style.display = _hasWaste ? '' : 'none';
       const _hasWastePids = !!(state.wastePidList && state.wastePidList.length);
       _cw.disabled = !_hasWastePids;
-      _cw.title = _hasWastePids
-        ? '清除荒地上的涂色，并关闭「荒地 · 自动上色」'
-        : (_hasWaste ? '这张图的荒地块还没建好索引' : '这张图没有荒地');
     }
   }  // 有年代层的模式（非 CK3）能查TAG，标题就别写死"省份"了 ✓
   $('hdr-search').textContent = ((state.meta.eraDates || []).length) ? '查找' : `查找${g.entity}`;
@@ -5024,8 +5113,16 @@ function buildToolbar() {
   const bms = (state.meta && state.meta.bookmarks) || [];
 
   // ---- 剧本下拉栏（没有剧本层的图就整个藏起来 ✓ CK3 有 1066 那层，也算）
+  /* 🔴🔴 **剧本少于 4 个就不搞下拉，回退成按钮** ✗✗（2026-10-20 ✓ 用户原话：
+   *   "剧本3个及以上时UI才用多剧本类型，不然就回退到一开始我们的版本"）
+   *
+   *   为什么：VIC3 只有 1836 + 空白 = 2 层、CK3 只有 1066 + 空白 = 2 层 ✓
+   *   为了两层专门塞个下拉按钮，反而**多一次点击**才看得到 ✓
+   *   而且下拉挤在顶栏里，两层的时候怎么看都不如直接摆按钮清爽 ✓
+   *   → `useEraDropdown()` 说了算（**≥4 才用下拉**✓ 用户后来把 3 改成 4 ✓）*/
+  const useDD = useEraDropdown();
   if (eraGroup && eraBtn && eraPanel) {
-    if (eraN > 0) {
+    if (useDD) {
       eraGroup.hidden = false;
       eraPanel.innerHTML = '';
       for (let i = 0; i < eraN; i++) {
@@ -5040,10 +5137,10 @@ function buildToolbar() {
         b.setAttribute('role', 'option');
         b.className = 'dd-item';
         const bm = bms[i];
-        // 剧本名 + 日期。日期没有（空白层 / 老包）就只写名字 ✓
-        const sub = bm && bm.date ? bm.date : '';
-        b.innerHTML = `<span class="dd-item-name">${names[i]}</span>`
-          + (sub ? `<span class="dd-item-sub">${sub}</span>` : '');
+        /* 🔴 **只写剧本名，不写日期** ✗✗（2026-10-20 ✓ 用户原话："纯属画蛇添足"）
+         *   日期挪进 `title`（鼠标悬停才看得到）—— 想核对年份时仍然查得到 ✓
+         *   面板也就能窄一点，看着清爽 ✓ */
+        b.innerHTML = `<span class="dd-item-name">${names[i]}</span>`;
         b.onclick = () => { closeEraPanel(); pressTier(i); };
         eraPanel.appendChild(b);
       }
@@ -5064,17 +5161,22 @@ function buildToolbar() {
         });
       }
     } else {
+      // 少于 4 个：整块藏起来，下面那排按钮会把剧本层一起摆出来 ✓
       eraGroup.hidden = true;
+      eraPanel.innerHTML = '';
+      closeEraPanel();
     }
   }
 
-  // ---- 地理层按钮（**快捷键只属于这一排** ✓ 用户点名要的）
+  // ---- 层按钮。用下拉时只摆地理层 ✓；回退时**剧本层也摆进来**（就是最开始那版 ✓）
   tierBox.innerHTML = '';
-  for (let i = eraN; i < names.length; i++) {
+  const firstBtn = useDD ? eraN : 0;
+  for (let i = firstBtn; i < names.length; i++) {
     const b = document.createElement('button');
     b.dataset.tier = i;
-    // 热键从 1 开始，**只数地理层** ✓ 剧本层不占号 ✓
-    const hk = TIER_HOTKEY[i - eraN] || '';
+    /* 热键**只给地理层** ✓（用户点名："快捷键不要对剧本层生效"✓）
+     * 回退模式下剧本层也在这一排，但它们不占号 ✓ */
+    const hk = (i >= eraN) ? (TIER_HOTKEY[i - eraN] || '') : '';
     b.innerHTML = `${names[i]}${hk ? `<span class="k">${hk}</span>` : ''}`;
     b.onclick = () => pressTier(i);
     tierBox.appendChild(b);
@@ -5353,7 +5455,12 @@ function exportViewPNG() {
     return toast('导出失败：画布太大，这台设备画不出来', true);
   }
   ctx.drawImage(glCanvas, 0, 0);
-  ctx.drawImage($('overlay'), 0, 0);
+  /* 🔴 **标签层要按地图画布的尺寸贴** ✗✗（2026-10-20 ✓ 用户：导出的图里徐州/镇江全跑到海里）
+   *   屏幕上两张画布都被 CSS 拉成 100% ✓ 所以就算**像素尺寸不完全一致**也看不出来 ✓
+   *   导出这里是各贴各的原始像素 ✗ 一旦两边 dpr 上限不同（标签层 min(dpr,2) ✓
+   *   地图层另一套）→ 文字整体被放大、往右下偏 ✓ 城名就落到海上了 ✓
+   *   → 显式给目标尺寸，等于把屏幕上那次拉伸照搬过来 ✓ */
+  ctx.drawImage($('overlay'), 0, 0, glCanvas.width, glCanvas.height);
   if (_restoreHover) _restoreHover();       // 像素已经拷进 out 了，这时候恢复正好 ✓
   // 导出图例：勾了「画进导出的图」就画上去 ✓
   const _lgN = maybeDrawLegend(ctx, out.width, out.height);
@@ -5865,6 +5972,408 @@ function clearWastePaint() {
 
 // ================================================================ 事件
 
+/* ---------------------------------------------------------------- 导入字体
+ *  🔴 2026-10-20 ✓ 用户要求："给地名或势力名允许导入并选择字体。
+ *     导入的字体存在本地，要用的时候随时切换"
+ *
+ *  两槽（地块名 / 势力名）各选各的，互不影响 ✓
+ *  字体字节在 IndexedDB 里（`fonts.js` ✓），选中的那套以**族名**记进设置 ✓
+ *  改了之后要**让标签重排** —— 只置 labelDirty 不够 ✗，字形贴图和量宽缓存
+ *  是按"字体"分键的，缓存里还没用过新字体时不会有旧数据 ✓
+ *  但**旧字体的贴图还留着**（占内存，不碍事 ✓ 迟早被预算挤掉 ✓）
+ */
+function bindFontPicker() {
+  const selPlace = $('set-font-place');
+  const selPower = $('set-font-power');
+  const btnImport = $('btn-font-import');
+  const btnDel = $('btn-font-del');
+  const fileEl = $('font-file');
+  if (!selPlace && !selPower) return;      // 没有这套 UI（老页面）→ 直接不接 ✓
+
+  /* 字体名是**用户给的**（文件名 ✓）—— 直接拼进 innerHTML 会被 `<` `&` 弄坏，
+   * 甚至能塞进标签 ✓ 所以转义一下 ✓（这文件里原来没有这个工具函数 ✓）*/
+  const esc = (s) => String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+
+  /** 下拉里有哪些选项：默认 + 本地字体库 ✓ */
+  let fonts = [];
+  /** 已经造好的位图字体（id → BitmapFont ✓ 别重复解 ✓）*/
+  const bmCache = new Map();
+
+  const familyOfId = (id) => fontLibFamily(id);
+
+  /* 设置里存的是**钥匙**：
+   *   TTF    → 族名 `PDX-Font-xxx` ✓
+   *   位图   → `bm:<id>` ✓（位图字体没有族名 ✓ 前缀区分开 ✓）*/
+  const isBmKey = (v) => typeof v === 'string' && v.startsWith('bm:');
+  const keyOfFont = (f) => (f.kind === 'bitmap' ? 'bm:' + f.id : familyOfId(f.id));
+  const idOfKey = (key) => {
+    if (!key) return '';
+    if (isBmKey(key)) {
+      const id = key.slice(3);
+      return fonts.some((f) => f.id === id) ? id : '';
+    }
+    const hit = fonts.find((f) => f.kind !== 'bitmap' && familyOfId(f.id) === key);
+    return hit ? hit.id : '';
+  };
+
+  /** 取（必要时现造）一套位图字体 ✓ */
+  const loadBitmapFont = async (id) => {
+    if (bmCache.has(id)) return bmCache.get(id);
+    const rec = await fontLibRecord(id);
+    let bf = null;
+    if (rec && rec.kind === 'bitmap' && rec.fnt) {
+      try {
+        bf = Array.isArray(rec.pages) && rec.pages.length
+          ? new BitmapFont(rec.pages)
+          : new BitmapFont(rec.fnt, rec.bytes);
+        if (!bf.ok) bf = null;
+      } catch (e) {
+        bf = null;
+        LOG.event('位图字体解析失败', ((e && e.message) || String(e)));
+      }
+    }
+    bmCache.set(id, bf);
+    return bf;
+  };
+
+  /** 把库里的字体刷进两个下拉 */
+  const refresh = async () => {
+    fonts = await fontLibList().catch(() => []);
+    for (const sel of [selPlace, selPower]) {
+      if (!sel) continue;
+      const keep = sel.value;
+      sel.innerHTML = '<option value="">默认</option>'
+        + fonts.map((f) => {
+          const tag = f.kind === 'bitmap' ? ' · 位图' : '';
+          return `<option value="${f.id}">${esc(f.name || f.id)}${tag}</option>`;
+        }).join('');
+      // 尽量保住当前选中的 ✓（删掉的那个自然回落到默认 ✓）
+      if (keep && fonts.some((f) => f.id === keep)) sel.value = keep;
+    }
+    // 没有导入过任何字体时，删除按钮没意义 ✓
+    if (btnDel) btnDel.disabled = fonts.length === 0;
+  };
+
+  /* **状态行**（2026-10-20 ✓）—— 一直留在设置里的那行字
+   *   toast 一闪就没了，玩家要复述"刚才到底发生了什么"根本说不清 ✗
+   *   这里把"当前到底用了什么字体、解出多少字形"钉在界面上 ✓ */
+  function setFontStatus(msg, bad) {
+    const el = $('font-status');
+    if (!el) return;
+    el.textContent = msg || '';
+    el.style.color = bad ? '#e08a8a' : '';
+  }
+  /** 浏览器到底认不认这套字体 —— **这是最实的一句话** ✓
+   *  `document.fonts.check()` 按 CSS 那套规则判：家族 + 字重都对上才算 true ✓
+   *  ⚠ 光看"设置里选中了"没用 ✗ —— 注册失败时选中状态照样是对的 ✓ */
+  function fontReadyTag(fam) {
+    try {
+      if (!document.fonts || !document.fonts.check || !fam) return '';
+      return document.fonts.check(`600 20px "${fam}"`) ? ' · 已生效' : ' · 浏览器没认 ✗';
+    } catch (e) { return ''; }
+  }
+
+  /** 把当前两槽的实际状态拼一句话 ✓ */
+  function refreshFontStatus(extra) {
+    const parts = [];
+    for (const [kind, label] of [['place', '地块'], ['power', '势力']]) {
+      const bf = labelBitmap(kind);
+      const fam = labelFont(kind);
+      if (bf) {
+        parts.push(`${label} = 位图「${bf.face || '?'}」${bf.meta.chars.size} 字`);
+      } else if (fam) {
+        parts.push(`${label} = ${fam}${fontReadyTag(fam)}`);
+      } else {
+        parts.push(`${label} = 默认`);
+      }
+    }
+    setFontStatus((extra ? extra + ' · ' : '') + parts.join(' / '));
+  }
+
+  /** 选中的字体 → 推给标签层 + 落盘
+   *  ⚠ 位图字体要**现读 + 现造**（可能几十 MB 的 dds ✓）→ 所以是 async ✓
+   *    造不出来就退回默认，不能让画面停在半截 ✓ */
+  const applyFace = async (kind, sel) => {
+    if (!sel) return;
+    const id = sel.value || '';
+    const keyName = kind === 'power' ? 'fontFacePower' : 'fontFacePlace';
+    const f = fonts.find((x) => x.id === id);
+    if (!f) {
+      state.set[keyName] = '';
+      setLabelFont(kind, '');
+      setLabelBitmap(kind, null);
+      labelDirty = true;
+      drawFontPreview();
+      refreshFontStatus();
+      scheduleSave();
+      return;
+    }
+    if (f.kind === 'bitmap') {
+      setFontStatus(`正在读位图字体「${f.name}」…`);
+      const bf = await loadBitmapFont(f.id);
+      setLabelFont(kind, '');
+      setLabelBitmap(kind, bf || null);
+      state.set[keyName] = bf ? ('bm:' + f.id) : '';
+      if (!bf) {
+        sel.value = '';
+        setFontStatus(`「${f.name}」读不出来`, true);
+        toast(`「${f.name}」这套位图字体没读出来`);
+      }
+    } else {
+      setLabelBitmap(kind, null);
+      const fam = familyOfId(f.id);
+      setLabelFont(kind, fam);
+      state.set[keyName] = fam;
+      /* 🔴 **注册失败要当场说出来** ✗✗（2026-10-20 ✓ 用户："也没生效啊"）
+       *   选中状态永远是对的 ✓ 光看下拉会以为成功了 ✗
+       *   这里问一句浏览器：这套到底能不能用 ✓ 不能用就直说 ✓ */
+      if (!fontLibReady(f.id)) {
+        setFontStatus(`「${f.name}」浏览器没认这套字体（格式不支持？）`, true);
+      }
+    }
+    labelDirty = true;              // 下一帧按新字体重排 ✓
+    drawFontPreview();              // 设置页那行样例也跟着换 ✓
+    refreshFontStatus();
+    scheduleSave();
+  };
+
+  /* **字体预览**（2026-10-20 ✓ 用户："字体选择根本没有生效"）
+   *   在地图上判断"变没变"太靠运气（那一刻可能压根没画名字 ✓）
+   *   这里固定画一行样例：地名那槽的字体 + 势力名那槽的字体各画半行 ✓
+   *   ⚠ 位图字体没法用 CSS，只能走它自己的逐字贴 ✓ 所以两条路分开画 ✓ */
+  function drawFontPreview() {
+    /* 🔴 **预览出错绝不许影响导入** ✗✗（2026-10-20 真踩了 ✓）
+     *   它只是个样例行，画不出来顶多样例是空的 ✓
+     *   可它当初直接抛到 `importFontFiles` 的 catch 里 →
+     *   字体明明已经进库、下拉里也有选项了，
+     *   玩家看到的却是「这个字体没能导入」✓ 白受一场惊 ✗ */
+    try {
+      const cv = $('font-preview');
+      if (!cv || !cv.getContext) return;
+      const ctx = cv.getContext('2d');
+      if (!ctx) return;
+      const W = cv.width || 260, H = cv.height || 40;
+      ctx.clearRect(0, 0, W, H);
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      const size = Math.round(Math.min(22, H * 0.62));
+
+      /* 位图字体优先：势力那槽有就演示它，其次地名那槽 ✓
+       * （两槽一般选同一套，先看哪槽有就画哪槽 ✓）*/
+      const bw = labelBitmap('power');
+      const bp = labelBitmap('place');
+      if (bw) { bw.draw(ctx, '势力 Abc', W / 2, H / 2, size, '#e8d9a8', { outline: 0 }); return; }
+      if (bp) { bp.draw(ctx, '地名 Abc', W / 2, H / 2, size, '#e8d9a8', { outline: 0 }); return; }
+
+      const fam = labelFont('power') || labelFont('place');
+      ctx.fillStyle = '#e8d9a8';
+      ctx.font = `600 ${size}px ${fam ? `"${fam}", ` : ''}"Microsoft YaHei", sans-serif`;
+      ctx.fillText('地名 势力', W / 2, H / 2);
+    } catch (e) {
+      try { console.warn('[字体预览] 画不出来（不影响使用）', e); } catch (e2) { /* ✓ */ }
+    }
+  }
+
+  if (selPlace) selPlace.addEventListener('change', () => { applyFace('place', selPlace); });
+  if (selPower) selPower.addEventListener('change', () => { applyFace('power', selPower); });
+
+  if (btnImport && fileEl) {
+    btnImport.addEventListener('click', () => {
+      fileEl.value = '';            // 让同一个文件也能再选一次 ✓
+      fileEl.click();
+    });
+    /* 🔴 **可以一次选好几个**（2026-10-20 ✓）
+     *   位图字体是**一对**文件：`.fnt`（索引）+ `.dds`（字图）✓
+     *   所以要支持"按住 Ctrl 一起选"或者"全选那个文件夹里的两个" ✓
+     *   按**主名**配对：`zh-hans-16.fnt` ↔ `zh-hans-16.dds` ✓
+     *   ⚠ 只给了其中一半 → 说清楚缺哪个，别默默失败 ✗
+     *
+     * ⚠ 提成 `importFontFiles(files)` 是为了**拖放**也能走同一条路 ✓
+     *   （2026-10-20 ✓ 用户："位图字体也是[导不进去]"——
+     *     原来舞台上的拖放只认 .json，字体拖进去被当涂色文件弹了回去 ✓）*/
+    const importFontFiles = async (list) => {
+      const files = Array.from(list || []);
+      if (!files.length) return;
+      /* ⚠ 大字体读进来要几秒（地图字体那个 .dds 快 40 MB ✓）——
+       *   不给个"在处理"的提示，玩家会当成"点了没反应" ✓ */
+      toast('正在读字体…');
+      try {
+        const byBase = new Map();
+        for (const f of files) {
+          const base = (f.name || '').replace(/\.[^.]+$/, '');
+          let g = byBase.get(base);
+          if (!g) { g = { base, fnt: null, dds: null, other: null }; byBase.set(base, g); }
+          const ext = ((f.name || '').match(/\.([^.]+)$/) || [, ''])[1].toLowerCase();
+          if (ext === 'fnt') g.fnt = f;
+          else if (ext === 'dds') g.dds = f;
+          else g.other = f;
+        }
+
+        let imported = 0;
+        /* ⚠ **入库成功就是导入成功** ✗ —— 后面"顺手换上"那步再怎么出错，
+         *   也不该回头说"没能导入" ✓（字体已经在库里、下拉里也有 ✓）*/
+        const applyQuietly = async (id) => {
+          try { await useNewFont(id); } catch (e) {
+            try { console.warn('[字体] 换上时出错（已入库，可在下拉里手动选）', e); } catch (e2) { /* ✓ */ }
+          }
+        };
+        /* 🔴 **同一个字体的几页要先合起来** ✗✗（2026-10-20 ✓ 用户：
+         *   "CN_mapfont_0 / CN_mapfont_1 这俩要合一起，不然一半一半的"）
+         *   判据是 fnt 里的 `info face` —— 同一个 face 就是同一个字体 ✓
+         *   只选了一页也行：那页有的字能用，另一页的字空着（跟以前一样 ✓）*/
+        const _faceOf = (txt) => {
+          const m = /info[^\n]*face="([^"]*)"/.exec(String(txt || ''));
+          return m ? m[1] : '';
+        };
+        const _shown = new Set();
+        for (const g of byBase.values()) {
+          if (g.fnt || g.dds) {
+            if (!g.fnt || !g.dds) {
+              toast(`「${g.base}」缺一半：位图字体要 .fnt 和 .dds 一起选`);
+              continue;
+            }
+            if (_shown.has(g.base)) continue;
+            const fntText = await g.fnt.text();
+            const face = _faceOf(fntText);
+            /* 同 face 的其它页一并收进来 ✓（按名字排，页序稳定 ✓）*/
+            const pages = [];
+            const sibs = [...byBase.values()]
+              .filter((o) => o.fnt && o.dds && !_shown.has(o.base))
+              .sort((a, b) => a.base.localeCompare(b.base));
+            for (const o of sibs) {
+              const t = o === g ? fntText : await o.fnt.text();
+              if (o !== g && _faceOf(t) !== face) continue;
+              pages.push({ fnt: t, dds: await o.dds.arrayBuffer() });
+              _shown.add(o.base);
+            }
+            const ddsBuf = pages[0].dds;
+            const rec = await fontLibAddBitmap(g.base, pages);
+            await refresh();
+            await applyQuietly(rec.id);
+            toast(`已导入位图字体「${rec.name}」`);
+            LOG.event('导入位图字体',
+              `${rec.name} · ${(ddsBuf.byteLength / 1024 / 1024).toFixed(1)} MB`);
+            imported++;
+            continue;
+          }
+          if (g.other) {
+            /* ⚠ **一定要取 ArrayBuffer，不能把 File 直接入库** ✗
+             *   File/Blob 在 Safari 隐私模式下会被 IndexedDB 拒收 ✓（见 fonts.js）*/
+            const bytes = await g.other.arrayBuffer();
+            const rec = await fontLibAdd(g.base, bytes);
+            await refresh();
+            await applyQuietly(rec.id);
+            toast(rec.ok ? `已导入字体「${rec.name}」` : `「${rec.name}」导进来了，但这个格式认不出`);
+            LOG.event('导入字体',
+              `${rec.name} · ${(bytes.byteLength / 1024).toFixed(0)} KB · ${rec.ok ? '可用' : '注册失败'}`);
+            imported++;
+          }
+        }
+        if (!imported) toast('没有认出字体文件（要 .ttf / .otf / .woff，或者 .fnt + .dds 一对）');
+      } catch (e) {
+        /* 存不下（浏览器的 IndexedDB 有配额 ✓ 地图字体那种一套几十 MB 很容易撞）*/
+        const quota = e && (e.name === 'QuotaExceededError'
+          || /quota|storage/i.test(String(e.message || '')));
+        const msg = quota
+          ? '浏览器存不下了：先把不用的字体删掉几个再试'
+          : ('这个字体没能导入：' + ((e && e.message) || e));
+        toast(msg, true);
+        setFontStatus(msg, true);
+        LOG.event('导入字体失败', (e && (e.name + ': ' + e.message)) || String(e));
+        // 控制台也留一份 —— 玩家能直接把这条发过来 ✓
+        try { console.error('[字体导入失败]', e); } catch (e2) { /* ✓ */ }
+      }
+    };
+    /* 舞台那头拖字体进来时用它 ✓（见 bindEvents 里的拖放分派）*/
+    fontDropHandler = importFontFiles;
+    fileEl.addEventListener('change', () => importFontFiles(fileEl.files));
+  } else {
+    fontDropHandler = null;
+  }
+
+  /* **清空字体库**（2026-10-20 ✓）—— 早先版本写进去的坏记录会一直占着下拉，
+   *   留着只会让人以为"新导入的也没用" ✗ 一键清干净再重导最省事 ✓ */
+  const btnClear = $('btn-font-clear');
+  if (btnClear) {
+    btnClear.addEventListener('click', async () => {
+      if (!confirm('清空整个本地字体库？\n（导入过的字体都会没掉，地图和涂色不受影响）')) return;
+      try { await fontLibClear(); } catch (e) { /* ✓ */ }
+      bmCache.clear();
+      await refresh();
+      setLabelFont('place', ''); setLabelBitmap('place', null);
+      setLabelFont('power', ''); setLabelBitmap('power', null);
+      state.set.fontFacePlace = '';
+      state.set.fontFacePower = '';
+      if (selPlace) selPlace.value = '';
+      if (selPower) selPower.value = '';
+      labelDirty = true;
+      drawFontPreview();
+      refreshFontStatus('已清空');
+      scheduleSave();
+      toast('字体库已清空');
+    });
+  }
+
+  /** 刚导入的那套 → 直接给用上 ✓
+   *  两槽都空就一起换 ✓ 已经选过别的就只补空着的那个 ✓ 别冲掉人家的选择 ✗ */
+  const useNewFont = async (id) => {
+    const targets = [];
+    if (selPlace) targets.push(['place', selPlace]);
+    if (selPower) targets.push(['power', selPower]);
+    const empty = targets.filter(([, el]) => !el.value);
+    const use = empty.length ? empty : [targets[0]];
+    for (const [, el] of targets) {
+      if (use.some(([, x]) => x === el)) el.value = id;
+    }
+    for (const [k, el] of use) await applyFace(k, el);
+  };
+
+  if (btnDel) {
+    btnDel.addEventListener('click', async () => {
+      // 删哪个？看两个下拉里当前选中的那个（都选了同一个就删它 ✓）
+      const ids = [selPlace && selPlace.value, selPower && selPower.value].filter(Boolean);
+      const id = ids[0];
+      if (!id) { toast('先在上面选一个导入的字体'); return; }
+      const f = fonts.find((x) => x.id === id);
+      if (!f) return;
+      if (!confirm(`删除字体「${f.name}」？\n（用了它的地名 / 势力名会回到默认字体）`)) return;
+      await fontLibRemove(id);
+      bmCache.delete(id);
+      // 选中它的两槽都退回默认 ✓
+      for (const [sel, kind] of [[selPlace, 'place'], [selPower, 'power']]) {
+        if (sel && sel.value === id) { sel.value = ''; await applyFace(kind, sel); }
+      }
+      await refresh();
+      toast('已删除');
+      LOG.event('删除字体', f.name);
+    });
+  }
+
+  /* 开机：把库里已有的字体注册进 document，然后刷下拉 ✓
+   * ⚠ 注册是**异步**的（要等字体解析完 ✓）—— 不 await 的话
+   *   下拉里先出现名字、但画面上还是默认字体 ✓ 看着像"导入的没生效" ✗ */
+  (async () => {
+    try { await fontLibLoadAll(); } catch (e) { /* 老浏览器没有 FontFace → 跳过 ✓ */ }
+    await refresh();
+    /* 把上次选的那套接上 ✓（TTF 存族名、位图存 bm:id；库被人清过就回默认 ✓）*/
+    for (const [kind, sel, saved] of [
+      ['place', selPlace, state.set && state.set.fontFacePlace],
+      ['power', selPower, state.set && state.set.fontFacePower],
+    ]) {
+      if (!sel) continue;
+      const id = idOfKey(saved);
+      sel.value = id;
+      if (id) await applyFace(kind, sel);      // 走同一条路，别在这儿另写一遍 ✓
+      else { setLabelFont(kind, ''); setLabelBitmap(kind, null); }
+    }
+    drawFontPreview();                         // 预览也按上次选的那套画 ✓
+    refreshFontStatus();                       // 状态行也照实写 ✓
+    labelDirty = true;
+  })();
+}
+
 function bindEvents() {
   const stage = $('stage');
 
@@ -6282,7 +6791,16 @@ function bindEvents() {
         if (NATURE_RGB[key]) return rgbToHex(NATURE_RGB[key]);
         return '#808080';
       };
-      const put = (id, v) => { const el = $(id); if (el && v != null) el.value = v; };
+      /* ⚠ **两种控件都要认** ✗（2026-10-20 ✓ 步进器 / 分段条没有 .value）
+       *   颜色 / 文本 / 下拉 / 勾选 → 直接写 value / checked ✓
+       *   步进器 / 分段条 → 走 setCtlValue（它会吸附到最近档位 ✓）*/
+      const put = (id, v) => {
+        const el = $(id);
+        if (!el || v == null) return;
+        if (el._steps) { setCtlValue(id, Number(v)); return; }
+        if (el.tagName === 'INPUT' && el.type === 'checkbox') { el.checked = !!v; return; }
+        el.value = v;
+      };
       put('set-bg', _now('bg'));
       put('set-unpainted', _now('unpainted'));
       // 七行里的另外五行 ✓（海 / 不可通行海域 / 湖 / 河 / 不可通行区域 ✓）
@@ -6335,20 +6853,84 @@ function bindEvents() {
       const _lpEl0 = $('set-legend-pos');
       if (_lpEl0) _lpEl0.value = s.legendPos || 'tl';
       rebuildLegendPanel();
-      buildSliderTips();          // 九条滑条的当前值 ✓（提示 span 也是这儿插的 ✓）
+      syncAllCtls();              // 所有数值控件的当前值 / HEX / 不限那两个勾 ✓
       _panel.hidden = false;
     };
     if ($('btn-settings')) $('btn-settings').onclick = _open;
+
+  /* ---- 顶栏高度写进 CSS 变量 ----
+   * 侧栏要浮在"顶栏下面"，可顶栏会换行、高度不固定 ✓
+   * → 量一次写进 --tb-h，`style.css` 那边 `top: var(--tb-h)` 直接用 ✓
+   * ⚠ 手机端不用（那套是 dock 布局 ✓ 这条只在桌面端生效，写错了也不影响）*/
+  {
+    const tb = document.querySelector ? document.querySelector('.toolbar') : null;
+    const root = typeof document !== 'undefined' ? document.documentElement : null;
+    const sync = () => {
+      if (!tb || !root || !root.style || typeof root.style.setProperty !== 'function') return;
+      const h = tb.offsetHeight || 46;
+      root.style.setProperty('--tb-h', h + 'px');
+    };
+    sync();
+    if (typeof window !== 'undefined' && window.addEventListener) {
+      window.addEventListener('resize', sync);
+      /* 工具栏折叠 / 展开也会变高 ✓ */
+      const fold = $('toolbar-fold');
+      if (fold) fold.addEventListener('click', () => setTimeout(sync, 0));
+    }
+  }
+  /* ============================================================ 白天 / 黑夜
+   * 🔴 2026-10-20 ✓ 用户："允许切换白天黑夜模式"
+   *
+   * ⚠ **开机那一下必须在 CSS 生效前就定** ✗ —— 所以真正设 data-theme 的是
+   *   `index.html` `<head>` 里那三行小脚本 ✓ 这边只管**切换**和**记住** ✓
+   *   （放在这儿会晚一拍，白底先闪一下再变黑 ✓ 很难看）
+   *
+   * 配色不用管 ✓ —— `style.css` 里 `html[data-theme="light"]` 覆盖了同一批变量，
+   * 所有用 var(--panel/--text/--line) 的地方一起变 ✓
+   */
+  {
+    const btn = $('btn-theme');
+    const root = typeof document !== 'undefined' ? document.documentElement : null;
+    const LABEL = () => (root && root.getAttribute('data-theme') === 'light')
+      ? '☀ 白天' : '☾ 夜间';
+    if (btn) {
+      btn.textContent = LABEL();
+      btn.onclick = () => {
+        if (!root) return;
+        const toLight = root.getAttribute('data-theme') !== 'light';
+        if (toLight) root.setAttribute('data-theme', 'light');
+        else root.removeAttribute('data-theme');
+        btn.textContent = LABEL();
+        try { localStorage.setItem('pdx-theme', toLight ? 'light' : 'dark'); } catch (e) { /* 无痕模式存不了，无所谓 ✓ */ }
+        /* 玻璃那层糊在画布上，换主题后让标签重画一遍，字才不会糊 ✓ */
+        if (typeof labelDirty !== 'undefined') { try { labelDirty = true; } catch (e) {} }
+        if (typeof invalidate === 'function') invalidate();
+      };
+    }
+  }
     // 署名那两个入口在文件开头就挂过了 ✓ 这里再挂一次只是兜底（幂等 ✓）
     bindAuthorLinks();
     if ($('set-close')) $('set-close').onclick = () => { if (_panel) _panel.hidden = true; };
     if (_panel) _panel.addEventListener('click', (e) => { if (e.target === _panel) _panel.hidden = true; });
     const bindColor = (id, key) => {
       const el = $(id);
-      if (el) el.addEventListener('input', () => {
+      if (!el) return;
+      const commit = () => {
         const rgb = hexToRgb(el.value);
-        if (rgb) { state.set[key] = rgb; applySettings(); }
-      });
+        if (!rgb) return;
+        state.set[key] = rgb;
+        applySettings();
+        /* 🔴 **颜色也要落盘** ✗✗（2026-10-20 ✓ 子代理翻出来的真 bug）
+         *   原来这里只有 set + applySettings，**没有 scheduleSave** ✓
+         *   → 滑条会存、颜色不会：改完七个色关掉标签页，回来还是旧色 ✓
+         *   （除非你之后恰好拖了别的滑条 —— 这种"有时候能记住"最难查 ✓）*/
+        scheduleSave();
+        /* 旁边那格 HEX 跟着走 ✓ 两个灰（#B4B4B4 / #969696）就靠它分得开 ✓ */
+        const v = $('v-' + id);
+        if (v) v.textContent = String(el.value || '').toUpperCase();
+      };
+      el.addEventListener('input', commit);
+      el.addEventListener('change', commit);   // 取色器多半只在 change 时给最终值 ✓
     };
     if ($('btn-clear-recent')) $('btn-clear-recent').onclick = clearRecent;   // 清空记忆颜色 ✓
     bindColor('set-bg', 'bg');
@@ -6359,14 +6941,206 @@ function bindEvents() {
     bindColor('set-isea', 'isea');
     bindColor('set-lake', 'lake');
     bindColor('set-river', 'river');
-    const bindRange = (id, key) => {
+    /* ============================================================ 控件层 v2
+     * 🔴 2026-10-20 设置面板重做（用户："全方面遵循子代理方案"）
+     *
+     * 为什么要这么一层：
+     *   原来所有数值控件都是 `<input type="range">` —— 可它们当中有很多**根本不是连续量**：
+     *     · 线宽 6 档、不透明度 5 档、字号 26 档、数量 20 档
+     *   滑条把它们画成连续体，118px 里 5.9px 一档，点一下就跳 ✓ 还看不出有几档 ✓
+     *   → 离散量改用**步进器**（[−] 值 [+]）和**分段条**（5 段全看得见）✓
+     *
+     * ⚠ **入口名字没变** ✗ —— 还是 `bindRange(id, key)` ✓
+     *   调用点有二十来个，改名等于把整段都翻一遍 ✓ 不值当 ✓
+     *   变的是它内部：先看这个元素是 `range` 还是步进器 / 分段条 ✓
+     */
+    const _ctlSteps = (el) => {
+      if (el._steps) return el._steps;
+      const st = el.getAttribute && el.getAttribute('data-steps');
+      let out = [];
+      if (st) out = st.split(',').map(Number).filter((v) => Number.isFinite(v));
+      else {
+        const rg = (el.getAttribute && el.getAttribute('data-range') || '').split(',').map(Number);
+        if (rg.length === 3 && rg[2] > 0) {
+          /* ⚠ 用整数步进算，别拿浮点累加 ✗ —— 0.1 累加 26 次会攒出 2.9999999 ✓ */
+          const n = Math.round((rg[1] - rg[0]) / rg[2]);
+          for (let i = 0; i <= n; i++) out.push(Math.round((rg[0] + i * rg[2]) * 10) / 10);
+        }
+      }
+      el._steps = out;
+      return out;
+    };
+
+    /** 数值怎么写成一句话（跟标签同一套口径 ✓）
+     *  ⚠ **v 可能还没定** ✗（2026-10-20 真机报：
+     *     `Cannot read properties of undefined (reading 'toFixed')`）
+     *     控件造出来那一刻 `_val` 还是空的，`paint()` 就调到这儿了 ✓
+     *     → 先兜住，随后由 `setCtlValue` / `bindRange` 填真值 ✓ */
+    const _ctlText = (fmt, v) => {
+      const n = Number(v);
+      if (!Number.isFinite(n)) return '—';
+      if (fmt === 'w') return n.toFixed(1) + ' 格';
+      if (fmt === 'pct') return n === 0 ? '不画' : Math.round(n) + '%';
+      if (fmt === 'mul') return n.toFixed(1) + '×';
+      if (fmt === 'count') return n + ' 个';
+      return String(n);
+    };
+
+    /** 把一个控件的外壳造出来并挂上点击 → onChange(新值) */
+    const _buildCtl = (el, fmt, onChange) => {
+      if (el._built) { el._onChange = onChange; return; }
+      const steps = _ctlSteps(el);
+      if (!steps.length) return;
+      /* ⚠ **先给个初值再画** ✗（空着会一路掉进 _ctlText → toFixed 崩 ✓）*/
+      if (!Number.isFinite(el._val)) el._val = steps[0];
+      const isStep = el.classList.contains('ctl-step');
+      el.innerHTML = '';
+      let paint;
+
+      if (isStep) {
+        const btn = (txt, dir) => {
+          const b = document.createElement('button');
+          b.type = 'button';
+          b.textContent = txt;
+          b.onclick = () => {
+            const i = steps.indexOf(el._val);
+            const j = Math.max(0, Math.min(steps.length - 1, i + dir));
+            if (j === i) return;
+            el._val = steps[j];
+            paint();
+            onChange(el._val);
+          };
+          return b;
+        };
+        const minus = btn('−', -1);
+        const val = document.createElement('span');
+        val.className = 'ctl-val';
+        const plus = btn('+', 1);
+        el.appendChild(minus); el.appendChild(val); el.appendChild(plus);
+        paint = () => {
+          val.textContent = _ctlText(fmt, el._val);
+          const i = steps.indexOf(el._val);
+          minus.disabled = i <= 0;
+          plus.disabled = i >= steps.length - 1;
+        };
+      } else {
+        const btns = steps.map((s) => {
+          const b = document.createElement('button');
+          b.type = 'button';
+          b.textContent = s === 0 ? '—' : String(s);
+          if (s === 0) b.classList.add('off0');
+          b.onclick = () => {
+            if (el._val === s) return;
+            el._val = s; paint(); onChange(s);
+          };
+          el.appendChild(b);
+          return { b, s };
+        });
+        paint = () => { for (const { b, s } of btns) b.classList.toggle('on', s === el._val); };
+      }
+      el._paint = paint;
+      el._built = true;
+      el._onChange = onChange;
+      paint();
+    };
+
+    /** 把某个控件设成一个值（**吸附到最近的档位** ✓ 老存档里是连续值）*/
+    const setCtlValue = (id, v) => {
       const el = $(id);
-      if (el) el.addEventListener('input', () => {
-        state.set[key] = Number(el.value);
-        buildSliderTips();          // 旁边那个当前值跟着走 ✓（跟「名字上限」那行一个长相 ✓）
+      if (!el) return;
+      if (!el._steps) return;                    // 还没造出来（开机顺序）→ 由 syncAll 再刷 ✓
+      const steps = el._steps;
+      let best = steps[0], d = Infinity;
+      for (const s of steps) {
+        const dd = Math.abs(s - Number(v));
+        if (dd < d) { d = dd; best = s; }
+      }
+      el._val = best;
+      if (el._paint) el._paint();
+    };
+
+    /** 读某个控件现在的值（给"恢复本组"和脏判断用）*/
+    const getCtlValue = (id) => {
+      const el = $(id);
+      if (!el) return null;
+      if (el._steps) return el._val;
+      const n = Number(el.value);
+      return Number.isFinite(n) ? n : null;
+    };
+
+    /** 表里所有控件按 `state.set` 重刷一遍 ✓
+     *  ⚠ 这个函数就是老的 `buildSliderTips()` —— 名字没改，因为调用点不少 ✓ */
+    const syncAllCtls = () => {
+      const s = state.set || {};
+      const map = {
+        'set-w-prov': s.wProv, 'set-w-region': s.wRegion, 'set-pw': s.pw,
+        'set-pa': s.pa, 'set-ra': s.ra, 'set-ca': s.ca,
+        'set-water-w': s.waterW, 'set-water-a': s.waterA,
+        'set-waste-w': s.wasteW, 'set-waste-a': s.wasteA,
+        'set-fontplace': (fontSizes(s) || {}).place,
+        'set-fontpower': (fontSizes(s) || {}).power,
+        'set-labelap': s.labelAP, 'set-labelac': s.labelAC,
+        'set-labelmax': s.labelMax, 'set-labelplacemax': s.labelPlaceMax,
+      };
+      for (const id in map) {
+        if (map[id] == null) continue;
+        setCtlValue(id, map[id]);
+      }
+      /* 颜色那七行旁边要写 HEX ✓ —— 两个灰（#B4B4B4 / #969696）并排看几乎一样，
+       * 文字上才分得开 ✓ */
+      for (const k of ['bg', 'unpainted', 'impass', 'river', 'lake', 'sea', 'isea']) {
+        const el = $('set-' + k);
+        const v = $('v-set-' + k);
+        if (el && v) v.textContent = String(el.value || '').toUpperCase();
+      }
+      /* 「不限」那两枚勾勾要跟着数量走 ✓（21 就是内部表示的"不限"）*/
+      const _lm = $('set-labelmax-unlimited');
+      if (_lm) _lm.checked = Number(s.labelMax) >= LABEL_MAX_UNLIMITED;
+      const _lp = $('set-labelplacemax-unlimited');
+      if (_lp) _lp.checked = Number(s.labelPlaceMax) >= 20;
+      _refreshDirty();
+    };
+
+    /** 底栏那行「已改动 N 项」✓ 跟 `SET_DEFAULTS` 比 */
+    const _refreshDirty = () => {
+      const el = $('set-dirty');
+      if (!el) return;
+      const s = state.set || {};
+      let n = 0;
+      for (const k in SET_DEFAULTS) {
+        if (k === 'set') continue;
+        const a = s[k], b = SET_DEFAULTS[k];
+        if (a == null && b == null) continue;
+        if (Array.isArray(a) && Array.isArray(b)) { if (a.join() !== b.join()) n++; continue; }
+        if (a !== b) n++;
+      }
+      el.textContent = n ? `已改动 ${n} 项` : '都是默认值';
+    };
+
+    /** 绑一个数值控件（range / 步进器 / 分段条**都走这里** ✓）
+     *  @param {string} id
+     *  @param {string} key  state.set 里的键
+     *  @param {Function} [after] 改完额外要做的事（比如名字上限要重算）*/
+    const bindRange = (id, key, after) => {
+      const el = $(id);
+      if (!el) return;
+      const fmt = (el.getAttribute && el.getAttribute('data-fmt')) || '';
+      const onChange = (v) => {
+        state.set[key] = v;
         applySettings();
-        scheduleSave();             // 这几个值会落盘 ✓（设置是持久化的 ✓）
-      });
+        scheduleSave();
+        _refreshDirty();
+        if (after) after(v);
+      };
+      if (el.classList && (el.classList.contains('ctl-step') || el.classList.contains('ctl-seg'))) {
+        _buildCtl(el, fmt, onChange);
+        /* 开机先按存档里的值摆好 ✓（没有就落回第一档，随后由 `_open` 校正 ✓）*/
+        const cur = state.set[key];
+        if (cur != null) setCtlValue(id, cur);
+        else if (el._steps && el._steps.length) { el._val = el._steps[0]; el._paint(); }
+      } else if (el.tagName === 'INPUT' && el.type === 'range') {
+        el.addEventListener('input', () => onChange(Number(el.value)));
+      }
     };
     /* **边界那一栏全是滑条** ✓（用户定的）——
      * 档位本来就是等距的（线宽 0.5 一档、浓度 25% 一档 ✓），
@@ -6387,40 +7161,56 @@ function bindEvents() {
     /* 两块字号各绑各的 ✓（走 bindRange：旁边数值 / 落盘 / applySettings 一条龙 ✓）*/
     bindRange('set-fontplace', 'fontPlace');
     bindRange('set-fontpower', 'fontPower');
+    /* 🔴 **导入的字体**（2026-10-20 ✓）—— 两个下拉 + 导入 / 删除 */
+    bindFontPicker();
     /* **两个不透明度**：直接走 bindRange ✓（别手写 ✗）
-     *   用户报的"滑块旁边的字不跟着变"—— 就是因为手写的这版**没调 buildSliderTips()** ✗
-     *   而 bindRange 里那句一直在（旁边那个数值就是它刷的 ✓）
-     *   → 走同一条路之后：① 数值跟着动 ✓ ② 落盘 / applySettings 也一并对齐 ✓
-     *   ⚠ applySettings 里已经会把这两档推给标签层并置 labelDirty ✓ 所以这儿不用再补 ✓ */
+     *   用户报的"滑块旁边的字不跟着变"，就是因为手写的这版**没调 buildSliderTips()** ✗
+     *   → 走同一条路之后：① 数值跟着动 ✓ ② 落盘 / applySettings 也一并对齐 ✓ */
     bindRange('set-labelac', 'labelAC');
     bindRange('set-labelap', 'labelAP');
-    // **名字上限**（1~20，拉满 = 无上限 ✓）：跟颜色/线宽无关，改完把名字重算一遍就行 ✓
+    /* **名字上限**：用的是步进器 ✓（1~20 档，第 21 档"不限"改成独立的勾 ✓）
+     *   ⚠ 两件事跟着它走 —— 势力那根要**重算连通域**（blocksDirty）✓
+     *     地名那根**只重截断**（`_placeCapped` 作废 ✓）—— 连通域那趟并查集**不重跑** ✓
+     *     ⚠ 千万别把两件搞混 ✗（地名动一下、势力名字全重排 = 卡 ✓）*/
+    bindRange('set-labelmax', 'labelMax', () => {
+      const v = $('set-labelmax-v');
+      if (v) v.textContent = labelMaxText();
+      blocksDirty = true;
+      labelDirty = true;
+      if (typeof invalidate === 'function') invalidate();
+    });
+    bindRange('set-labelplacemax', 'labelPlaceMax', () => {
+      const v = $('set-labelplacemax-v');
+      if (v) v.textContent = labelPlaceMaxText();
+      state._placeCapped = null;
+      state._placeKept = null;
+      labelDirty = true;
+      if (typeof invalidate === 'function') invalidate();
+    });
+    /* 「数量不限」两个勾 ✓（2026-10-20 ✓ 独立开关，不再是滑条最右那一格
+     *   内部仍写 21 → 兼容 `LABEL_MAX_UNLIMITED` 与 `labelMaxValue()` ✓）*/
     {
-      const el = $('set-labelmax');
-      if (el) el.addEventListener('input', () => {
-        state.set.labelMax = Number(el.value);
-        const v = $('set-labelmax-v');
-        if (v) v.textContent = labelMaxText();      // 拉满那一格会写"无上限" ✓
-        blocksDirty = true;     // 名字要按新上限重算 ✓
-        labelDirty = true;
-        scheduleSave();
-        if (typeof invalidate === 'function') invalidate();
+      const wire = (cbId, id, key, after) => {
+        const cb = $(cbId);
+        if (!cb) return;
+        cb.addEventListener('change', () => {
+          setCtlValue(id, cb.checked ? LABEL_MAX_UNLIMITED : SET_DEFAULTS[key]);
+          const el = $(id);
+          state.set[key] = cb.checked ? LABEL_MAX_UNLIMITED : (el && el._val) || SET_DEFAULTS[key];
+          blocksDirty = true;
+          labelDirty = true;
+          if (typeof invalidate === 'function') invalidate();
+          applySettings();
+          scheduleSave();
+          if (after) after();
+        });
+      };
+      wire('set-labelmax-unlimited', 'set-labelmax', 'labelMax', () => {
+        const v = $('set-labelmax-v'); if (v) v.textContent = labelMaxText();
       });
-    }
-    // **地名上限**（同款 1~21，拉满 = 无上限 ✓）：跟势力那根**分开** ✓
-    //   ⚠ 这里**只重截断**（`_placeCapped` 作废 ✓）—— 连通域那趟并查集**不重跑** ✓
-    //   ⚠ 千万别顺手置 `blocksDirty` ✗ 那是势力名的账，跟地名无关 ✓
-    {
-      const el = $('set-labelplacemax');
-      if (el) el.addEventListener('input', () => {
-        state.set.labelPlaceMax = Number(el.value);
-        const v = $('set-labelplacemax-v');
-        if (v) v.textContent = labelPlaceMaxText();   // 拉满那一格会写"无上限" ✓
-        state._placeCapped = null;   // 重截断（见 placePointsFor ✓）
-        state._placeKept = null;
-        labelDirty = true;
-        scheduleSave();
-        if (typeof invalidate === 'function') invalidate();
+      wire('set-labelplacemax-unlimited', 'set-labelplacemax', 'labelPlaceMax', () => {
+        const v = $('set-labelplacemax-v'); if (v) v.textContent = labelPlaceMaxText();
+        state._placeCapped = null; state._placeKept = null;
       });
     }
     // **取色后切到**（涂抹 / 填色）：只存个偏好，跟界面/渲染都没关系 ✓（不走 applySettings）
@@ -6445,11 +7235,53 @@ function bindEvents() {
        *   用 scheduleSave() 也不行：它是 800ms 防抖，点完立刻刷新就还没写下去
        *   → 所以直接 saveMapPrefs() 同步写一次
        *     写失败（无痕模式 / 配额满）再退回防抖那条路，至少不会静默丢掉 */
+      /* 🔴 **必须说清楚范围** ✗✗（2026-10-20 ✓ 子代理）：`SET_DEFAULTS` 里有
+       *   `fontFacePlace` / `fontFacePower` —— 点了它，字体选择会被清回默认 ✓
+       *   而用户站在底栏，离字体那两行隔着一整组 ✓ 不问一句就是坑 ✓
+       *   （库里的字体文件不会删 ✓ 只是"不再选中"）*/
+      /* ⚠ 不再弹确认（2026-10-20 ✓ 用户："不要弹这个提示"）—— 点了就点了吧 ✓ */
       state.set = Object.assign({}, SET_DEFAULTS);
+      labelDirty = true;
+      blocksDirty = true;
       try { saveMapPrefs(); } catch (e) { scheduleSave(); }
       applySettings();
+      /* ⚠ **下拉和状态行也要跟着回默认** ✗（原来漏了这一步 →
+       *   地图回到系统字体了，界面上还写着"MyFont · 已生效" ✓ 界面在撒谎 ✓）*/
+      const sp = $('set-font-place'), sw = $('set-font-power');
+      if (sp) sp.value = '';
+      if (sw) sw.value = '';
+      if (typeof syncFontPicker === 'function') syncFontPicker();
       _open();
+      if (typeof refreshFontStatus === 'function') { /* 由 syncFontPicker 内部刷 ✓ */ }
     };
+
+    /* ---- 四组分页（桌面）---- */
+    {
+      const tabs = $('set-tabs');
+      const grid = $('set-grid');
+      const applyTab = (g) => {
+        if (!grid) return;
+        grid.setAttribute('data-active', g);
+        const cols = grid.querySelectorAll ? grid.querySelectorAll('.set-col') : [];
+        for (const col of cols) {
+          col.hidden = !!(col.getAttribute('data-group') && col.getAttribute('data-group') !== g);
+        }
+        if (tabs && tabs.children) {
+          for (const b of tabs.children) b.classList.toggle('on', b.getAttribute('data-group') === g);
+        }
+        _refreshDirty();
+      };
+      if (tabs) {
+        tabs.addEventListener('click', (e) => {
+          const t = e && e.target;
+          const g = t && t.getAttribute && t.getAttribute('data-group');
+          if (g) applyTab(g);
+        });
+      }
+      /* 手机版会把 `.set-col` 搬进各自的面板 ✓ 那时标签页不该再藏东西 ✗
+       * 所以搬走的时候会把 hidden 清掉（见 mobile_js）✓ 两套互不打架 ✓ */
+      applyTab('color');
+    }
   }
 
   /**
@@ -6503,6 +7335,23 @@ function onExportFail(e) {
     };
     inp.click();
   });
+  /* ⚠ **地图包不在这里导入** ✗（2026-10-20 ✓ 用户："地图包不要在进入里面的时候导入，
+   *   我没这么说啊"）
+   *
+   *   `.pdxmap` 只有一个入口：**选图页**（主菜单 → 选地图 → 底部那个按钮 / 直接拖进去）✓
+   *   我上一版在文件菜单里加过一项「导入地图包」，是自作主张 ✓ 已经拆干净了 ✓
+   *   这条注释留着，免得以后又有人往这儿加第二遍 ✗ */
+  $('btn-import').onclick = _wrap(() => {
+    const inp = document.createElement('input');
+    inp.type = 'file';
+    inp.accept = '.json,application/json';
+    inp.onchange = () => {
+      const f = inp.files && inp.files[0];
+      if (!f) return;
+      importJSON(f);          // 直接把文件交给 importJSON，别再自己读一遍
+    };
+    inp.click();
+  });
   $('btn-log').onclick = _wrap(exportLog);      // 报错日志（web/js/log.js 收着 ✓）
   $('btn-zoom-in').onclick = () => zoomBy(1.35, stage.getBoundingClientRect().left + stage.clientWidth / 2,
                                                 stage.getBoundingClientRect().top + stage.clientHeight / 2);
@@ -6534,16 +7383,42 @@ function onExportFail(e) {
     }
   });
 
-  // 拖 JSON 进来导入
-  stage.addEventListener('dragover', (e) => e.preventDefault());
-  stage.addEventListener('drop', (e) => {
+  // 拖进来导入：**按扩展名分派** ✓（原来只认 JSON，地图包和字体全被挡回去 ✗）
+  const dropDispatch = (e) => {
     e.preventDefault();
-    const f = e.dataTransfer.files[0];
+    const list = Array.from((e.dataTransfer && e.dataTransfer.files) || []);
+    const f = list[0];
     if (!f) return;
+    const name = f.name || '';
     // Windows 常见的「方案.JSON」也别漏掉 —— 大小写敏感的 endsWith 会静默忽略它
-    if (f.type === 'application/json' || /\.json$/i.test(f.name)) importJSON(f);
-    else toast('只认 JSON 涂色文件（*.json）', true);
-  });
+    if (/\.json$/i.test(name) || f.type === 'application/json') {
+      importJSON(f);
+      return;
+    }
+    // 地图包：**这里不收** ✗ 只告诉他去哪儿收 ✓（用户：地图包不要在进入里面的时候导入）
+    if (/\.(pdxmap|zip)$/i.test(name)) {
+      toast('地图包请在**选图页**导入：主菜单 → 选地图 → 底部「＋ 导入地图包…」，或者直接拖到那一页', true);
+      return;
+    }
+    // 字体（位图字体要一对，所以整批递过去 ✓ 按主名配对在那边做 ✓）
+    if (/\.(ttf|otf|woff2?|fnt|dds)$/i.test(name)) {
+      if (fontDropHandler) fontDropHandler(list);
+      else toast('先把地图打开，再拖字体进来');
+      return;
+    }
+    toast('认不出这个文件（涂色是 .json，地图包是 .pdxmap，字体是 .ttf/.otf 或 .fnt+.dds）', true);
+  };
+  stage.addEventListener('dragover', (e) => e.preventDefault());
+  stage.addEventListener('drop', dropDispatch);
+  /* 设置面板上也认一遍 ✓ —— 面板一打开就盖住舞台了，
+   * 往那儿拖文件落点其实在面板上，只有舞台那个监听的话还是没反应 ✗ */
+  {
+    const setPanel = $('settings');
+    if (setPanel) {
+      setPanel.addEventListener('dragover', (e) => e.preventDefault());
+      setPanel.addEventListener('drop', dropDispatch);
+    }
+  }
 }
 
 // ================================================================ 渲染循环
@@ -8253,7 +9128,7 @@ function rebuildLegendPanel() {
     +   '<button type="button" class="legend-down" aria-label="下移"'
     +     (i === list.length - 1 ? ' disabled' : '') + '>▼</button>'
     + '</span>'
-    + '<span class="legend-drag" title="" aria-label="按住拖动排序">⠿</span>'
+    + '<span class="legend-drag" aria-label="按住拖动排序">⠿</span>'
     + '</div>'
   )).join('');
   let dragRow = null;      // 正在拖的那一行（拖动排序用 ✓ 一次只可能有一行 ✓）
@@ -8813,7 +9688,6 @@ function pickMap(maps) {
           const no = document.createElement('span');
           no.className = 'map-card-no';
           no.textContent = String(m.nth);
-          no.title = `这是《${m.label}》的第 ${m.nth} 份`;
           b.classList.add('has-no');        // 左边多让一点位置给这个序号 ✓
           b.appendChild(no);
         }

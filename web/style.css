@@ -135,7 +135,13 @@ html, body {
 
 .dd-btn {
   appearance: none;
-  display: flex; align-items: center; gap: 5px;
+  display: flex; align-items: center; justify-content: space-between; gap: 6px;
+  /* 🔴 **宽度固定，不跟着字走** ✗✗（2026-10-20 ✓ 用户原话："宽度应该固定而不是自适应"）
+   *   自适应的话「无」「1444」「空白剧本」三种字长会让按钮忽宽忽窄 ✓
+   *   而它右边紧挨着"视图"那一排 —— 按钮一抖**整排跟着挪** ✗ 点着点着就点歪了 ✓
+   *   ⚠ 92px 是按最长那个词定的：`空白剧本`（4 个汉字）+ 箭头 + 内边距 ✓ */
+  width: 92px;
+  flex: 0 0 auto;
   background: #0f141a;
   border: 1px solid var(--line);
   border-radius: 7px;
@@ -144,8 +150,17 @@ html, body {
   font: inherit; font-size: 11.5px;
   cursor: pointer;
   white-space: nowrap;
+  overflow: hidden;
   transition: background .12s, color .12s, border-color .12s;
 }
+.dd-btn .dd-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: left;
+}
+.dd-caret { flex: 0 0 auto; }
 .dd-btn:hover { background: #1d252f; color: var(--text); }
 /* 正在看这个剧本 —— 跟地理层那排的"选中"同一个金色 ✓ */
 .dd-btn.on {
@@ -166,7 +181,13 @@ html, body {
   top: calc(100% + 5px);
   left: 0;
   z-index: 60;
-  min-width: 190px;
+  /* 🔴 **跟按钮一样宽，不许撑出去** ✗✗（2026-10-20 ✓ 用户："太宽了，甚至超出了下拉按钮"）
+   *   原来写死 `min-width: 190px` ✓ 按钮只有 92px → 面板往外多出 100px ✗
+   *   → `width: 100%`：`.era-drop` 的宽度就是按钮宽度 ✓ 面板正好齐边 ✓
+   *   ⚠ 剧本名最长是「空白剧本」（4 个汉字）✓ 92px 放得下 ✓
+   *     真放不下会走 `.dd-item` 的省略号，不会把面板撑宽 ✓ */
+  width: 100%;
+  min-width: 0;
   max-height: min(62vh, 460px);
   overflow-y: auto;
   background: #12171d;
@@ -180,7 +201,7 @@ html, body {
 
 .dd-item {
   appearance: none;
-  display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
+  display: block;
   width: 100%;
   border: 0; background: transparent;
   color: var(--text-dim);
@@ -190,11 +211,14 @@ html, body {
   cursor: pointer;
   text-align: left;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .dd-item:hover { background: #1d252f; color: var(--text); }
 .dd-item.on { background: linear-gradient(180deg, #3a3016, #2b2410); color: #f0d98a; }
 .dd-item.grain { color: #9ec5e8; }
-.dd-item-sub { font: 10px/1 var(--mono); opacity: .6; }
+/* ⚠ `.dd-item-sub`（右边那列日期）2026-10-20 删了 ✓ 用户："纯属画蛇添足" ✓
+ *   日期现在只在 `title` 里，鼠标停一下才看 ✓ */
 
 /* ------------------------------------------------------------ 顶栏折叠（手机版用）
  *  🔴 2026-10-19 ✓ 用户要求："手机版的栏加一个收起折叠功能" ✓
@@ -866,6 +890,18 @@ body.tb-folded #tool-group { display: none; }
   box-sizing: border-box;
 }
 .set-row select { max-width: 132px; }
+
+/* **字体预览**（2026-10-20 ✓）—— 选完字体立刻能看出变没变 ✓
+   ⚠ 用 canvas 画，不用 CSS ✗：位图字体（.fnt + .dds）CSS 认不了 ✓ */
+#font-preview {
+  width: 100%;
+  max-width: 260px;
+  height: 40px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, .03);
+  box-sizing: border-box;
+}
 .set-row input[type=text] { max-width: 150px; }
 /* ⚠⚠ **颜色框别只写 `background: none` 就完事** ✗✗
  *   （2026-10-13 用户报"手机版设置颜色都是灰色"✓ 就是这一行）
@@ -1057,3 +1093,892 @@ body.tb-folded #tool-group { display: none; }
 
 /* 启动页角落的版本戳（就一行小灰字 ✓ 不占地方） */
 .boot-ver { margin-left: 0; font-size: 11px; color: #56616f; letter-spacing: .3px; }
+
+/* ================================================================ 设置面板 v2
+ *  🔴 2026-10-20 全面重做（用户："全方面遵循子代理方案"）
+ *  这一整段是**覆盖**，不改上面老规则的来历注释 —— 老规则留着当对照，
+ *  新规则全部用 #settings 前缀提权 ✓ 谁生效一眼看得出 ✓
+ *
+ *  三条主线：
+ *    ① 从"带遮罩的模态框"改成**右侧抽屉** —— 拖滑条时地图必须看得见
+ *    ② 字号阶梯**从外到内递减**（原来组标题 10.5px 比行文字 11.5px 还小，倒挂）
+ *    ③ 行改成 **定宽标签列 + 定宽数值列 + 控件右对齐** —— 纵向终于有列可循
+ */
+html { color-scheme: dark; }          /* 复选框 / range 轨道 / 下拉弹层一次到位 */
+
+/* ---- ① 抽屉 ---- */
+#settings.modal {
+  position: fixed;
+  inset: 0 0 0 auto;                  /* 贴右边，左边整块留白 = 地图露出来 ✓ */
+  width: min(430px, 94vw);
+  background: transparent;            /* 不带遮罩 ✓ 点地图不会被吞 ✓ */
+  padding: 0;
+  display: block;
+}
+#settings[hidden] { display: none !important; }
+#settings .modal-box.set-box {
+  width: 100%;
+  height: 100%;
+  max-height: none;
+  margin: 0;
+  border-radius: 0;
+  border-left: 1px solid var(--line);
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  box-shadow: -18px 0 42px rgba(0, 0, 0, .45);
+}
+#settings .modal-head {
+  flex: none;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+}
+#settings .modal-head h2 { font-size: 13px; letter-spacing: .5px; }
+
+/* ---- 四组分页 ---- */
+.set-tabs {
+  flex: none;
+  display: flex;
+  gap: 2px;
+  padding: 8px 12px 0;
+  border-bottom: 1px solid var(--line);
+}
+.set-tab {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 6px 4px;
+  font: 500 12px/1 inherit;
+  color: var(--text-dim);
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.set-tab:hover { color: var(--text); }
+.set-tab.on { color: var(--gold); border-bottom-color: var(--gold); }
+
+/* ---- 组与行 ---- */
+#settings .set-grid {
+  display: block;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 14px 16px;
+}
+#settings .set-col { min-width: 0; padding: 0; }
+#settings .set-col[hidden] { display: none !important; }
+
+/* 字号阶梯：L1 组标题 > L2 行标签；**再也不会倒挂** ✓ */
+#settings .set-col h3 {
+  font: 600 12.5px/1.4 inherit;
+  color: var(--text);
+  letter-spacing: .3px;
+  margin: 14px 0 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--line);
+}
+#settings .set-sub {
+  font: 500 11px/1.4 inherit;
+  color: var(--text-faint);
+  margin: 12px 0 4px;
+  padding: 0;
+  border: 0;
+}
+.set-note {
+  font: 400 11px/1.6 inherit;
+  color: var(--text-faint);
+  margin: 0 0 8px;
+  padding: 6px 8px;
+  background: rgba(255, 255, 255, .025);
+  border-radius: 5px;
+}
+
+/* 行：标签 92px 定宽 + 数值 44px 右对齐 + 控件靠右 ✓ */
+#settings .set-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  font-size: 12px;
+  margin: 0;
+}
+#settings .set-row .set-l {
+  flex: 0 0 92px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#settings .set-row .set-v {
+  flex: 0 0 52px;
+  text-align: right;
+  font: 500 11px/1 var(--mono, ui-monospace, Consolas, monospace);
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+#settings .set-row > :last-child { margin-left: auto; }
+#settings .set-row .hint {
+  flex: 1 1 auto;
+  margin: 0;
+  white-space: normal;
+  line-height: 1.5;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+#settings .sub-row { min-height: 24px; padding-left: 8px; }
+#settings .preview-row { align-items: flex-start; }
+
+/* ---- 矩阵 ---- */
+.mx { display: block; }
+.mx-head,
+.mx-row {
+  display: grid;
+  grid-template-columns: 52px 92px 1fr;
+  align-items: center;
+  gap: 8px;
+}
+.mx-name .mx-head, .mx.mx-name .mx-head,
+.mx.mx-name .mx-row { grid-template-columns: 52px 84px 74px 1fr; }
+.mx-head {
+  font: 500 10.5px/1 var(--mono, ui-monospace, Consolas, monospace);
+  color: var(--text-faint);
+  padding: 0 0 4px;
+}
+.mx-row { min-height: 30px; }
+.mx-name { color: var(--text-dim); font-size: 12px; white-space: nowrap; }
+
+/* ---- 步进器 ---- */
+.ctl-step {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  background: #10161d;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  overflow: hidden;
+  height: 24px;
+}
+.ctl-step > button {
+  flex: 0 0 22px;
+  height: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--text-dim);
+  font: 600 13px/1 inherit;
+  cursor: pointer;
+}
+.ctl-step > button:hover { background: #1b222b; color: var(--gold); }
+.ctl-step > button:disabled { opacity: .3; cursor: default; }
+.ctl-step > .ctl-val {
+  flex: 1 1 auto;
+  text-align: center;
+  font: 500 11px/1 var(--mono, ui-monospace, Consolas, monospace);
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* ---- 分段条（离散透明度）---- */
+.ctl-seg {
+  display: flex;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  overflow: hidden;
+  height: 24px;
+}
+.ctl-seg > button {
+  flex: 1 1 0;
+  min-width: 0;
+  border: 0;
+  border-right: 1px solid var(--line);
+  background: #10161d;
+  color: var(--text-faint);
+  font: 500 10.5px/1 var(--mono, ui-monospace, Consolas, monospace);
+  cursor: pointer;
+}
+.ctl-seg > button:last-child { border-right: 0; }
+.ctl-seg > button:hover { background: #1b222b; color: var(--text); }
+.ctl-seg > button.on { background: rgba(201, 162, 39, .18); color: var(--gold); }
+.ctl-seg > button.off0 { font-style: italic; }   /* "不画"那一档 */
+
+/* ---- 底栏 ---- */
+.set-foot {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--line);
+  background: rgba(0, 0, 0, .18);
+}
+.set-dirty { flex: 1 1 auto; font-size: 11px; color: var(--text-faint); }
+
+/* ---- 预览：保持比例，不许横向压扁 ---- */
+#font-preview {
+  width: 100%;
+  max-width: 260px;
+  height: auto;
+  aspect-ratio: 260 / 64;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, .03);
+}
+#settings #font-status { color: var(--text-faint); }
+
+/* ---- 图例：父开关关掉时整块变灰且点不动 ---- */
+#settings .legend-list { max-height: 240px; overflow: auto; margin-top: 6px; }
+#settings .legend-list.is-off { opacity: .45; pointer-events: none; }
+
+/* 危险按钮 */
+.btn.danger { border-color: #6b2f2a; color: #e08a8a; }
+.btn.danger:hover { border-color: #c4553f; color: #ffb3ab; }
+
+/* ---- 控件尺寸统一（2026-10-20 ✓ 用户："UI 尺寸和字体大小不一致"）
+   下拉 / 文本框 / 按钮 全部对齐到步进器那 24px ✓ 字号统一 12px ✓ */
+#settings .set-row select,
+#settings .set-row input[type=text] {
+  height: 24px;
+  min-height: 0;
+  font-size: 12px;
+  padding: 0 6px;
+  border-radius: 5px;
+  max-width: 180px;
+}
+#settings .set-row .btn {
+  height: 24px;
+  padding: 0 10px;
+  font-size: 12px;
+  border-radius: 5px;
+}
+#settings .set-row input[type=checkbox] { width: 14px; height: 14px; }
+/* 预览那块跟其它行拉开一点，但别把字号撑大 */
+#settings .preview-row { padding-top: 4px; }
+
+/* ================================================================ 液态玻璃 + 主题
+ *  🔴 2026-10-20 ✓ 用户："为 UI 加上液态玻璃，并允许切换白天黑夜模式"
+ *
+ *  做法：只加**一层壳**，不动原来的配色变量 ✓
+ *    · 玻璃 = 半透明底 + backdrop-filter 模糊 + 内高光 + 外投影
+ *    · 主题 = 在 <html data-theme="light"> 上覆盖同一批变量 ✓
+ *      这样所有用到 var(--panel/--text/--line) 的地方一起变，不用逐条改 ✓
+ *  ⚠ backdrop-filter 不支持的浏览器会退化成半透明底 ✓ 不至于糊成一片 ✓
+ */
+
+:root {
+  --glass: rgba(21, 26, 33, .64);
+  --glass-strong: rgba(21, 26, 33, .82);
+  --glass-brd: rgba(255, 255, 255, .10);
+  --glass-hi: rgba(255, 255, 255, .14);
+  --glass-shadow: 0 18px 44px rgba(0, 0, 0, .42);
+}
+
+html[data-theme="light"] {
+  --bg: #eef1f5;
+  --panel: #f7f9fb;
+  --panel-2: #eef2f6;
+  --line: #ccd5df;
+  --line-soft: #dde4ec;
+  --text: #1b2430;
+  --text-dim: #4a5766;
+  --text-faint: #6b7887;
+  --gold: #96751a;
+  --gold-dim: #b08c2a;
+  --accent: #2a72ad;
+  --danger: #a8412c;
+  --ok: #3d7d4a;
+  --shadow: 0 8px 24px rgba(20, 32, 48, .16);
+  --glass: rgba(252, 253, 255, .68);
+  --glass-strong: rgba(252, 253, 255, .86);
+  --glass-brd: rgba(20, 32, 48, .12);
+  --glass-hi: rgba(255, 255, 255, .85);
+  --glass-shadow: 0 18px 40px rgba(20, 32, 48, .18);
+}
+html[data-theme="light"] { color-scheme: light; }
+html[data-theme="light"] body { background: var(--bg); }
+
+/* ---- 玻璃壳：顶栏 / 侧栏面板 / 设置抽屉 / 悬停卡片 ---- */
+#settings .modal-box,
+.toolbar,
+#hover-card,
+.sidebar .panel {
+  position: relative;
+  background:
+    linear-gradient(160deg, var(--glass-hi), transparent 42%),
+    var(--glass);
+  -webkit-backdrop-filter: blur(18px) saturate(150%);
+  backdrop-filter: blur(18px) saturate(150%);
+  border-color: var(--glass-brd);
+  box-shadow: var(--glass-shadow);
+}
+/* 设置抽屉是整块大面板，用更实一点的底，否则字读不清 ✓ */
+#settings .modal-box {
+  background:
+    linear-gradient(160deg, var(--glass-hi), transparent 38%),
+    var(--glass-strong);
+}
+/* 顶栏那条比较窄，投影收一点，别糊住下面的地图 */
+.toolbar { box-shadow: 0 6px 18px rgba(0, 0, 0, .18); }
+/* 玻璃上再贴一层极细的高光边（顶边亮一点，像有厚度） */
+#settings .modal-box::before,
+.toolbar::before,
+#hover-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: inherit;
+  box-shadow: inset 0 1px 0 var(--glass-hi);
+}
+
+/* ---- 主题切换按钮 ---- */
+.theme-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding: 0 10px;
+  border: 1px solid var(--glass-brd);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, .06);
+  color: var(--text-dim);
+  font: 500 12px/1 inherit;
+  cursor: pointer;
+}
+.theme-btn:hover { color: var(--gold); border-color: var(--gold-dim); }
+
+/* ================================================================ 呼吸感 v2
+ *  🔴 2026-10-20 ✓ 用户："这个界面真的太挤了"
+ *
+ *  挤的三个来源：
+ *    ① 行高 28px 配 12px 字 → 字快顶到线了
+ *    ② 矩阵三列 gap 8px、下面紧接着又是「数量不限」小行
+ *    ③ 组与组之间只隔 14px，一眼看过去是**一整片**而不是四块
+ *  对应的三件事：加行高 / 加列距 / 加组距 ✓ 控件本身尺寸不动 ✓
+ */
+
+#settings.modal { width: min(472px, 94vw); }
+#settings .modal-box.set-box { padding: 0; }
+
+/* 组：上下都松一点，标题跟内容拉开 */
+#settings .set-grid { padding: 4px 20px 26px; }
+#settings .set-col h3 { margin: 22px 0 12px; }
+#settings .set-col:first-child h3 { margin-top: 14px; }
+#settings .set-sub { margin: 20px 0 8px; letter-spacing: .3px; }
+
+/* 行：32px 高 + 10px 列距 */
+#settings .set-row { min-height: 32px; gap: 10px; }
+#settings .set-row + .set-row { margin-top: 2px; }
+#settings .sub-row { min-height: 28px; padding-left: 12px; }
+
+/* 矩阵：行更高、列更宽 */
+.mx-head, .mx-row { gap: 10px; grid-template-columns: 56px 100px 1fr; }
+.mx.mx-name .mx-head, .mx.mx-name .mx-row { grid-template-columns: 56px 92px 84px 1fr; }
+.mx-row { min-height: 38px; }
+.mx-head { padding-bottom: 8px; }
+/* 两块（地块名 / 势力名）之间空一格，别糊成一坨 */
+.mx.mx-name .mx-row + .sub-row + .mx-row { margin-top: 10px; }
+
+/* 控件本身略高一点点，跟 32px 的行配得更好 */
+.ctl-step, .ctl-seg { height: 26px; }
+.ctl-step > button { flex-basis: 24px; }
+#settings .set-row select,
+#settings .set-row input[type=text],
+#settings .set-row .btn { height: 26px; }
+
+/* 字体那块：跟上面的矩阵拉开，别连成一片 */
+#settings .set-col .set-sub + .set-row { margin-top: 2px; }
+#settings .preview-row { margin-top: 8px; }
+#font-preview { background: rgba(255, 255, 255, .04); }
+
+/* 底栏松一点 */
+.set-foot { padding: 12px 20px; gap: 10px; }
+
+/* ================================================================ 透光 + 可读性 + 小卡片
+ *  🔴 2026-10-20 ✓ 用户三条：
+ *     · "左侧栏和上方栏不知道为什么没有透光效果"
+ *     · "调节一下灰色的字体，不然他们在半透明环境容易看不见"
+ *     · "悬停时鼠标旁边的小卡片有点太长了"
+ */
+
+/* ---- ① 为什么之前不透光 ----
+ *   顶栏和侧栏原来跟地图是**并排的兄弟节点** ✓ 背后什么都没有，
+ *   backdrop-filter 再糊也是糊在一张纯色底上 → 看着就是"不透明" ✓
+ *   → 桌面端改成**浮在地图上**：地图铺满整个窗口（`.stage` inset:0），
+ *     顶栏浮在最上、侧栏浮在左边 ✓ 这才有东西可透 ✓
+ *   ⚠ 只在桌面端这么排（手机是另一套 dock 布局 ✓ 别动它）*/
+@media (min-width: 761px) {
+  #app { position: relative; }
+  .toolbar {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 40;
+  }
+  .body { position: fixed; inset: 0; z-index: 1; }
+  .stage { position: absolute; inset: 0; }
+  .sidebar {
+    position: absolute; left: 0; top: var(--tb-h, 46px); bottom: 0; z-index: 20;
+    width: 322px;
+    background:
+      linear-gradient(160deg, var(--glass-hi), transparent 40%),
+      var(--glass);
+    -webkit-backdrop-filter: blur(20px) saturate(150%);
+    backdrop-filter: blur(20px) saturate(150%);
+    border-right: 1px solid var(--glass-brd);
+    box-shadow: 12px 0 32px rgba(0, 0, 0, .28);
+  }
+  /* 顶栏那条窄，底子给实一点，字才压得住地图 */
+  .toolbar {
+    background:
+      linear-gradient(180deg, var(--glass-hi), transparent 60%),
+      var(--glass-strong);
+    -webkit-backdrop-filter: blur(20px) saturate(150%);
+    backdrop-filter: blur(20px) saturate(150%);
+    border-bottom: 1px solid var(--glass-brd);
+  }
+  /* 侧栏里的分组面板 **别再自己套一层玻璃** ✗
+     不然是玻璃叠玻璃 → 每滚一层都更糊、字更难读 ✓ */
+  .sidebar .panel { background: transparent; backdrop-filter: none; -webkit-backdrop-filter: none; box-shadow: none; }
+  .sidebar::-webkit-scrollbar-track { background: transparent; }
+}
+
+/* ---- ② 灰字在半透明底上要提亮 ----
+ *   原来 --text-dim #8e9bab 压深色底 6.07:1 够用，
+ *   可玻璃后面是**地图的花花绿绿** ✓ 对比度是浮动的 ✓ → 统一提亮两档 ✓ */
+:root {
+  --text-dim: #a7b5c6;
+  --text-faint: #8695a7;
+}
+html[data-theme="light"] {
+  --text-dim: #43505f;
+  --text-faint: #5d6a79;
+}
+/* 玻璃上的次要文字再补一层底，不然遇着亮色地块就飘了 */
+#settings .set-note, #settings .set-sub, .sidebar .panel-head .hint { text-shadow: 0 1px 2px rgba(0, 0, 0, .35); }
+html[data-theme="light"] #settings .set-note,
+html[data-theme="light"] #settings .set-sub,
+html[data-theme="light"] .sidebar .panel-head .hint { text-shadow: 0 1px 2px rgba(255, 255, 255, .7); }
+
+/* ---- ③ 悬停小卡片太长了 ----
+ *   两行字都是 nowrap 撑出来的 ✓ 卡宽 280 上限是够的，问题是**行太长**：
+ *   超长的地名又不换行，整张卡被撑成一条 ✓
+ *   → 收到 244px，两行都给省略号 ✓ 同时把内边距收紧一点 ✓ */
+.hover-card {
+  max-width: 244px;
+  padding: 6px 8px;
+  background: rgba(16, 21, 27, .82);
+  backdrop-filter: blur(14px) saturate(140%);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
+  border-color: var(--glass-brd);
+}
+.hover-card .hc-title,
+.hover-card .hc-sub {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.hover-card .hc-sub { font-size: 10.5px; }
+html[data-theme="light"] .hover-card { background: rgba(252, 253, 255, .86); }
+html[data-theme="light"] .hover-card .hc-title { color: #16202b; }
+
+/* ================================================================ 日间模式补完
+ *  🔴 2026-10-20 ✓ 用户："日间模式太逆天了，有些组件居然还是黑色，
+ *     而且白色太亮了，不透明效果也不行"
+ *
+ *  三件事：
+ *    ① 原来有几十处**写死的深色**（#10161d / #1b222b / #fff …）— 浅色主题一开就露馅
+ *       → 新控件全改成 var()，老规则用 html[data-theme=light] 逐条盖 ✓
+ *    ② 白太亮：底 #eef1f5 → #e3e8ee，玻璃的白降一档并加一点冷调
+ *    ③ 玻璃太"实"：浅色下本来对比就低，糊得太厚反而像磨砂塑料
+ *       → 浅色玻璃透明度调到 .55，模糊略降，靠边框和投影撑结构
+ */
+
+/* ---- ① 控件底/高亮改成变量（两套主题一起生效）---- */
+.ctl-step, .ctl-seg { background: var(--panel-2); }
+.ctl-step > button:hover, .ctl-seg > button:hover { background: var(--panel); }
+.ctl-seg > button { background: transparent; }
+.ctl-seg > button.on { background: color-mix(in srgb, var(--gold) 22%, transparent); }
+
+/* ---- ② 浅色主题：写死深色的老规则逐条盖 ---- */
+html[data-theme="light"] {
+  --bg: #e3e8ee;
+  --panel: #f4f7fa;
+  --panel-2: #e9eef4;
+  --line: #c6d0da;
+  --line-soft: #d8e0e8;
+  --text: #1a232e;
+  --text-dim: #414e5d;
+  --text-faint: #5b6877;
+  --glass: rgba(245, 248, 251, .58);
+  --glass-strong: rgba(248, 250, 253, .78);
+  --glass-brd: rgba(24, 36, 50, .14);
+  --glass-hi: rgba(255, 255, 255, .75);
+  --glass-shadow: 0 16px 36px rgba(24, 36, 50, .14);
+}
+html[data-theme="light"] body { background: var(--bg); }
+html[data-theme="light"] .stage { background: #cfd7e0; }
+html[data-theme="light"] .toolbar {
+  background: linear-gradient(180deg, rgba(255, 255, 255, .78), rgba(255, 255, 255, .5)), var(--glass-strong);
+}
+html[data-theme="light"] .sidebar {
+  background: linear-gradient(160deg, rgba(255, 255, 255, .7), transparent 42%), var(--glass);
+}
+html[data-theme="light"] .sidebar::-webkit-scrollbar-thumb { background: #b7c3cf; }
+html[data-theme="light"] .set-foot { background: rgba(24, 36, 50, .04); }
+html[data-theme="light"] .set-note { background: rgba(24, 36, 50, .05); }
+html[data-theme="light"] .theme-btn { background: rgba(24, 36, 50, .05); }
+html[data-theme="light"] #font-preview { background: rgba(24, 36, 50, .04); }
+html[data-theme="light"] .toast { background: rgba(250, 252, 254, .95); color: var(--text); border-color: var(--line); }
+html[data-theme="light"] .legend-list { background: transparent; }
+html[data-theme="light"] .btn { background: rgba(255, 255, 255, .7); }
+html[data-theme="light"] .btn:hover { background: #fff; }
+html[data-theme="light"] .hover-card .hc-title { color: #16202b; }
+html[data-theme="light"] .hover-card .hc-sub { color: var(--text-dim); }
+/* 顶部菜单 / 下拉弹层 */
+html[data-theme="light"] .menu,
+html[data-theme="light"] .dropdown-menu { background: #f7fafc; border-color: var(--line); }
+html[data-theme="light"] select,
+html[data-theme="light"] input[type=text],
+html[data-theme="light"] input[type=number] { background: #fff; color: var(--text); border-color: var(--line); }
+
+/* ---- ③ 数量格子里塞「不限」---- */
+.mx-count { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.mx-count .ctl-step { flex: 0 1 96px; }
+.mx-unl {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-faint);
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+.mx-unl:hover { color: var(--text-dim); }
+.mx-unl input[type=checkbox] { width: 13px; height: 13px; margin: 0; }
+.mx.mx-name .mx-head, .mx.mx-name .mx-row { grid-template-columns: 56px 92px 84px 1fr; }
+
+/* ---- 浅色主题：把写死深色的老组件统一收一遍 ----
+ *  这些是**改造前就有**的规则（分段按钮 / 下拉 / 搜索框 / 地图卡 / 缩放按钮…），
+ *  它们写死成 #0f141a 这类深色 → 日间模式一点开就是一块黑 ✓
+ *  → 统一改走变量 ✓ 深色主题一个字都不变 ✓ */
+html[data-theme="light"] .segmented,
+html[data-theme="light"] .dd-btn,
+html[data-theme="light"] #toolbar-fold,
+html[data-theme="light"] .btn.ghost,
+html[data-theme="light"] .label-pick,
+html[data-theme="light"] .map-card,
+html[data-theme="light"] .dd-panel { background: var(--panel-2); }
+html[data-theme="light"] .dd-item:hover,
+html[data-theme="light"] #toolbar-fold:hover,
+html[data-theme="light"] .segmented button:hover,
+html[data-theme="light"] .chain-row:hover,
+html[data-theme="light"] .result-row:hover { background: var(--panel); }
+html[data-theme="light"] .segmented button.grain { background: #dde5ee; }
+html[data-theme="light"] .brush-fields input,
+html[data-theme="light"] #search,
+html[data-theme="light"] .label-pick select { background: #fff; }
+html[data-theme="light"] .zoom-box .btn { background: rgba(255, 255, 255, .92); color: var(--text); }
+html[data-theme="light"] .map-card:hover { background: var(--panel); }
+html[data-theme="light"] .chain-row.active { background: #dbe4ee; }
+
+/* 组标题去掉了（2026-10-20 ✓ 用户："这个部分冗余了"）
+ * 标签页已经把组名写在上面，再重复一遍是白占两行 ✓
+ * → 每组第一个元素直接顶上去，靠 .set-grid 上内边距撑一点呼吸 */
+#settings .set-grid { padding-top: 14px; }
+#settings .set-col:first-child h3 { margin-top: 0; }
+
+/* ================================================================ 设置面板字号放大
+ *  🔴 2026-10-20 ✓ 用户："设置界面的字体可以更大一点"
+ *  整体 +1.2~1.5px，行高跟着 +2px，别让字挤在一起 ✓
+ */
+#settings .set-row { font-size: 13.5px; min-height: 34px; }
+#settings .set-row .set-l { font-size: 13.5px; color: var(--text-dim); }
+#settings .set-row .set-v { font-size: 12.5px; }
+#settings .set-sub { font-size: 12px; letter-spacing: .2px; }
+#settings .set-row .hint,
+.set-note { font-size: 12px; line-height: 1.65; }
+.set-tab { font-size: 13px; padding: 8px 4px; }
+#settings .modal-head h2 { font-size: 14.5px; }
+
+.mx-name { font-size: 13.5px; }
+.mx-head { font-size: 11.5px; }
+.mx-row { min-height: 40px; }
+.ctl-step > .ctl-val { font-size: 12.5px; }
+.ctl-seg > button { font-size: 11.5px; }
+.ctl-step > button { font-size: 15px; }
+.mx-unl { font-size: 12px; }
+.set-dirty { font-size: 12px; }
+#settings .set-row select,
+#settings .set-row input[type=text],
+#settings .set-row .btn { font-size: 13px; }
+/* 字大了，几处定宽列跟着放宽，别把长标签截掉 */
+#settings .set-row .set-l { flex-basis: 100px; }
+#settings .set-row .set-v { flex-basis: 58px; }
+.mx-head, .mx-row { grid-template-columns: 60px 104px 1fr; }
+.mx.mx-name .mx-head, .mx.mx-name .mx-row { grid-template-columns: 60px 96px 88px 1fr; }
+#settings.modal { width: min(492px, 94vw); }
+
+/* ================================================================ 日间模式 第三轮
+ *  🔴 2026-10-20 ✓ 用户四条：
+ *     "亮金色字体改掉" / "视图的按钮还是暗色" / "还是太亮" / "也没有不透明效果了"
+ *
+ *  ① 金色 → 日间换成**沉稳的靛蓝**（金色在浅底上要么糊、要么像警告）
+ *  ② 有些按钮的底色是从 `.btn` / `.segmented button` 继承来的深色 → 再扫一遍
+ *  ③ 底再压暗一档（#e3e8ee → #d8dfe8），面板同步
+ *  ④ 玻璃回到真半透明：侧栏 .42、顶栏 .5，模糊加重、边框提亮
+ *     —— 上一版压到 .58 又把模糊降了，看着就成磨砂塑料了 ✗
+ */
+html[data-theme="light"] {
+  --bg: #d8dfe8;
+  --panel: #eaf0f6;
+  --panel-2: #dfe7ef;
+  --line: #bcc8d4;
+  --line-soft: #cdd7e1;
+  --gold: #2f5f8f;          /* 日间的主强调色：靛蓝，不再用金 */
+  --gold-dim: #4a7cae;
+  --accent: #2a6fa8;
+  --glass: rgba(240, 245, 250, .42);
+  --glass-strong: rgba(244, 248, 252, .58);
+  --glass-brd: rgba(24, 36, 50, .18);
+  --glass-hi: rgba(255, 255, 255, .9);
+  --glass-shadow: 0 18px 40px rgba(24, 36, 50, .18);
+}
+html[data-theme="light"] body { background: var(--bg); }
+html[data-theme="light"] .stage { background: #b9c4d1; }
+
+/* 顶栏 / 侧栏：重给一遍，模糊加重 */
+html[data-theme="light"] .toolbar {
+  background: linear-gradient(180deg, rgba(255, 255, 255, .55), rgba(255, 255, 255, .18)), var(--glass-strong);
+  -webkit-backdrop-filter: blur(26px) saturate(160%);
+  backdrop-filter: blur(26px) saturate(160%);
+}
+html[data-theme="light"] .sidebar {
+  background: linear-gradient(160deg, rgba(255, 255, 255, .45), transparent 42%), var(--glass);
+  -webkit-backdrop-filter: blur(26px) saturate(160%);
+  backdrop-filter: blur(26px) saturate(160%);
+}
+
+/* ② 按钮一律走浅底（视图那组原来还是暗的）*/
+html[data-theme="light"] .btn,
+html[data-theme="light"] .btn.ghost,
+html[data-theme="light"] .segmented,
+html[data-theme="light"] .segmented button,
+html[data-theme="light"] #view-panel .btn,
+html[data-theme="light"] .sidebar .btn,
+html[data-theme="light"] .sidebar .segmented button,
+html[data-theme="light"] #toolbar-fold,
+html[data-theme="light"] .zoom-box .btn {
+  background: rgba(255, 255, 255, .62);
+  color: var(--text);
+  border-color: var(--glass-brd);
+}
+html[data-theme="light"] .btn:hover,
+html[data-theme="light"] .segmented button:hover,
+html[data-theme="light"] .sidebar .btn:hover,
+html[data-theme="light"] .zoom-box .btn:hover { background: rgba(255, 255, 255, .92); }
+html[data-theme="light"] .segmented button.on,
+html[data-theme="light"] .segmented button[aria-pressed="true"] {
+  background: rgba(47, 95, 143, .16);
+  color: var(--gold);
+}
+html[data-theme="light"] .set-tab.on { color: var(--gold); border-bottom-color: var(--gold); }
+
+/* ================================================================ 日间模式：启动页
+ *  🔴 2026-10-20 ✓ 用户截图：日间模式下启动页还是"黑底 + 亮金卡片名"
+ *  启动页（.boot / .map-card / .boot-title …）用的是**写死的深色**和金色，
+ *  跟设置面板那套变量完全没关系 → 这里逐条给浅色版 ✓
+ */
+html[data-theme="light"] .boot {
+  background: radial-gradient(ellipse at center, #eef2f7, #d5dde7 72%);
+}
+html[data-theme="light"] .boot-title {
+  color: var(--gold);
+  text-shadow: 0 0 22px rgba(47, 95, 143, .18);
+}
+html[data-theme="light"] .boot-sub,
+html[data-theme="light"] .boot-ver,
+html[data-theme="light"] .boot-step { color: var(--text-dim); }
+
+/* 地图卡片：浅底 + 深字，标题用靛蓝而不是金 */
+html[data-theme="light"] .map-card {
+  background: rgba(255, 255, 255, .78);
+  border-color: var(--line);
+  box-shadow: 0 4px 14px rgba(24, 36, 50, .08);
+}
+html[data-theme="light"] .map-card:hover { background: #fff; border-color: var(--gold-dim); }
+html[data-theme="light"] .map-card .map-name,
+html[data-theme="light"] .map-card .card-title { color: var(--gold); }
+html[data-theme="light"] .map-card .map-meta,
+html[data-theme="light"] .map-card .map-ver,
+html[data-theme="light"] .map-card .hint { color: var(--text-dim); }
+html[data-theme="light"] .map-card .map-act,
+html[data-theme="light"] .map-card .btn {
+  background: rgba(255, 255, 255, .9);
+  color: var(--text);
+  border-color: var(--line);
+}
+html[data-theme="light"] .map-card .btn:hover { background: #fff; border-color: var(--gold-dim); }
+
+/* 「导入地图包」那个虚线框 */
+html[data-theme="light"] .boot .dashed,
+html[data-theme="light"] .boot .map-import,
+html[data-theme="light"] .boot .import-box { border-color: var(--line); color: var(--text-dim); }
+
+/* 启动页里的滚动条 */
+html[data-theme="light"] .boot ::-webkit-scrollbar-thumb { background: #b7c3cf; }
+
+/* ================================================================ 设置面板：两处对齐
+ *  🔴 2026-10-20 ✓ 用户两条：
+ *     "我希望设置界面能像左侧栏一样不要遮住上方栏"
+ *     "不透明度也是跟他们比较好一点"
+ *     （另外：数量挪到单独一行 → 见 .mx-row2）
+ */
+
+/* ① 别盖住顶栏：跟侧栏一样从 --tb-h 开始 */
+#settings.modal {
+  top: var(--tb-h, 46px);
+  bottom: 0;
+  left: auto;
+  right: 0;
+  z-index: 30;                 /* 顶栏是 40 ✓ 放在它下面 */
+}
+
+/* ② 玻璃底跟侧栏一个口径（原来用的是更实的 --glass-strong） */
+#settings .modal-box.set-box {
+  background:
+    linear-gradient(160deg, var(--glass-hi), transparent 40%),
+    var(--glass);
+  -webkit-backdrop-filter: blur(26px) saturate(160%);
+  backdrop-filter: blur(26px) saturate(160%);
+  border-left: 1px solid var(--glass-brd);
+  box-shadow: -12px 0 32px rgba(0, 0, 0, .28);
+}
+
+/* ③ 名称矩阵：第一行「字号 + 不透明度」，第二行「数量 + 不限」 */
+.mx.mx-name .mx-head,
+.mx.mx-name .mx-row { grid-template-columns: 60px 104px 1fr; }
+.mx-row2 { min-height: 32px; margin-top: -4px; }
+.mx-row2 .mx-count { grid-column: 2 / -1; }
+.mx-count-l {
+  flex: 0 0 auto;
+  font-size: 12.5px;
+  color: var(--text-faint);
+  margin-right: 2px;
+}
+.mx-count .ctl-step { flex: 0 1 108px; }
+
+/* ================================================================ 设置：去掉标题行 + 灰字加深
+ *  🔴 2026-10-20 ✓ 用户："这里太冗余了"（截图圈的是「设置」那行标题）
+ *              "日间模式下一些灰色字体应该改成更深不然看不清"
+ *
+ *  ① 标题行整个删掉：面板本身就是设置，写个「设置」是重复。
+ *     白天/关闭两个按钮挪到标签行最右边（× 用图标，不占字宽）✓
+ *  ② 日间模式的灰字再压深一档（--text-faint 在浅底上本来就飘）✓
+ */
+#settings .set-tabs {
+  align-items: center;
+  gap: 2px;
+  padding: 6px 10px 0;
+}
+.set-tabs-sp { flex: 1 1 auto; min-width: 8px; }
+#settings .theme-btn {
+  height: 22px;
+  padding: 0 9px;
+  font-size: 11.5px;
+  margin-bottom: 4px;
+}
+#settings .set-x {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  margin: 0 0 4px 4px;
+  padding: 0;
+  border: 1px solid var(--glass-brd);
+  border-radius: 5px;
+  background: rgba(255, 255, 255, .06);
+  color: var(--text-dim);
+  font: 500 14px/1 inherit;
+  cursor: pointer;
+}
+#settings .set-x:hover { color: var(--danger); border-color: var(--danger); }
+/* 标签页本身留出空间，别被右边两个按钮挤扁 */
+#settings .set-tab { flex: 0 1 auto; padding: 8px 8px; }
+
+/* ① 日间灰字加深 */
+html[data-theme="light"] {
+  --text-dim: #333f4c;
+  --text-faint: #4c5866;
+}
+html[data-theme="light"] #settings .set-note,
+html[data-theme="light"] #settings .set-sub,
+html[data-theme="light"] .mx-name,
+html[data-theme="light"] .mx-count-l { color: var(--text-dim); }
+html[data-theme="light"] .mx-head { color: var(--text-faint); }
+
+/* ---- 启动页卡片标题：日间别再是亮金色 ----
+ *  🔴 2026-10-20 ✓ 用户："这里怎么还是亮金色呀，我根本看不清"
+ *  原来是**写死的** `.map-card b { color: #f0d98a }` ✓
+ *  我上一轮盖的是 `.map-card .map-name`，可卡片标题实际用的是 `<b>` ✗ 没压上 ✓
+ *  → 直接对 b 动手，并且把权重抬高（.map-card b 是 0,1,1 ✓ 得写 0,2,1）✓ */
+html[data-theme="light"] .boot .map-card b,
+html[data-theme="light"] .map-card > b {
+  color: #1f4e79;                 /* 深靛蓝，压在浅底上够黑够清楚 */
+}
+html[data-theme="light"] .map-card b:hover { color: #14385a; }
+html[data-theme="light"] .map-card span { color: #47535f; }
+html[data-theme="light"] .boot-sub,
+html[data-theme="light"] .boot .hint,
+html[data-theme="light"] .boot-ver { color: #3f4b58; }
+
+/* ---- 图例那两个输入控件在日间还是深色 ----
+ *  🔴 2026-10-20 ✓ 用户："这里怎么还是深色"
+ *  `#set-legend-title` / `#set-legend-pos` 有自己的写死底色（#121a22 / #0f141a），
+ *  权重比通用那条 `input[type=text]` 高 → 单独点它们的名 ✓ */
+html[data-theme="light"] #set-legend-title,
+html[data-theme="light"] #set-legend-pos,
+html[data-theme="light"] #set-picktool,
+html[data-theme="light"] #set-font-place,
+html[data-theme="light"] #set-font-power {
+  background: #fff;
+  color: #1a232e;
+  border-color: var(--line);
+}
+html[data-theme="light"] #set-legend-title::placeholder { color: #7a8794; }
+html[data-theme="light"] #set-legend-pos option { background: #fff; color: #1a232e; }
+/* 标签页那一行在日间也要跟着透，不然是一块灰板 */
+html[data-theme="light"] .set-tabs { border-bottom-color: var(--glass-brd); }
+
+/* ---- 悬停卡片：更窄、更高、字更大更深 ----
+ *  🔴 2026-10-20 ✓ 用户："悬停框变窄变高，字体变大，字体变深" */
+.hover-card {
+  max-width: 196px;
+  min-width: 96px;
+  padding: 9px 11px;
+  border-radius: 9px;
+  background: rgba(12, 16, 21, .9);
+  border-color: rgba(255, 255, 255, .16);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, .5);
+}
+.hover-card .hc-title {
+  font-size: 14.5px;
+  font-weight: 700;
+  color: #f4f8ff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, .55);
+}
+.hover-card .hc-title .dot { width: 12px; height: 12px; }
+.hover-card .hc-sub {
+  margin-top: 4px;
+  padding-left: 18px;
+  font-size: 12.5px;
+  color: #c6d2e0;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, .5);
+}
+html[data-theme="light"] .hover-card {
+  background: rgba(255, 255, 255, .96);
+  border-color: rgba(24, 36, 50, .22);
+  box-shadow: 0 10px 24px rgba(24, 36, 50, .22);
+}
+html[data-theme="light"] .hover-card .hc-title { color: #101a24; text-shadow: none; }
+html[data-theme="light"] .hover-card .hc-sub { color: #38444f; text-shadow: none; }

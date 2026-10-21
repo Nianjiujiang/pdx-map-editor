@@ -22,7 +22,7 @@ const path = require('path');
 const ROOT = path.join(__dirname, '..', '..');
 
 //: 单文件版（build_standalone.py）的拼接顺序 —— **必须和那边一致** ✓
-const MODULES = ['log.js', 'pack.js', 'zip.js', 'packstore.js', 'data.js', 'bmp.js', 'gl.js', 'labels.js', 'tilemap.js', 'tutorial.js', 'app.js'];
+const MODULES = ['log.js', 'pack.js', 'zip.js', 'packstore.js', 'fonts.js', 'bitmapfont.js', 'data.js', 'bmp.js', 'gl.js', 'labels.js', 'tilemap.js', 'tutorial.js', 'app.js'];
 
 /** 开发时 index.html 只加载 app.js（真 ES module），这里按单文件版的顺序拍平 */
 function flattenModules(modules = MODULES, root = ROOT) {
@@ -468,6 +468,21 @@ function ctx2d() {
     strokeText: () => { stats.stroke++; },
     fillText: () => { stats.fill++; },
     drawImage: () => { stats.image++; },
+    /* 🔴 **图像数据这三件必须有** ✗✗（2026-10-20 ✓）
+     *   位图字体（`.fnt` + `.dds`）是靠 `createImageData` 把字形铸成小 canvas 的 ✓
+     *   桩里没有它 → 导入流程在"画预览"那步抛异常 →
+     *   被导入的 catch 接住 → 弹出「这个字体没能导入」✓
+     *   真浏览器有这三个，所以**这个坑只在桩里露头** —— 也正因为如此，
+     *   以前那套自检根本发现不了位图字体这条路是断的 ✓
+     *   补上之后，`check_fonts` / `test_modes` 能真跑到"逐字贴图"那一步 ✓ */
+    createImageData: (w, h) => ({
+      width: w, height: h, data: new Uint8ClampedArray(Math.max(1, w * h * 4)),
+    }),
+    putImageData: () => { stats.image++; },
+    getImageData: (x, y, w, h) => ({
+      width: w, height: h, data: new Uint8ClampedArray(Math.max(1, w * h * 4)),
+    }),
+    globalCompositeOperation: 'source-over',
   };
   Object.defineProperty(o, 'font', {
     get() { return this._font || ''; },

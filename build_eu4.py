@@ -784,9 +784,18 @@ def main() -> int:
         #     **整张欧洲地图全糊成几坨** ✗ 用户要的根本不是这个 ✓
         #     EU4 地图上附庸本来就该**分开着色** ✓ 只有西藏是用户点名要并的 ✓
         #   ⚠ `TIB` 一起收着（版本差异：有的版本西藏是 TIB 不是 UTS ✓）
+        # 🔴 **2026-10-20 加上 KAM（康）** ✗✗（用户："把EU4的UTS那条规则也补上对康（KAM）的"）
+        #   `history/diplomacy/Chinese_alliances.txt` 里本来就是两条并列的：
+        #     vassal = { first = QNG second = UTS  1724.1.1 ~ 1792.11.1 }
+        #     vassal = { first = QNG second = KAM  1724.1.1 ~ 1776.1.1  }  ← 结束得早
+        #   所以在期的年份要**两家都并** ✓
+        #   ⚠ 不能"找到一个就 break" ✗ —— 那样 KAM 永远轮不上 ✓（原来就是 break ✓）
+        #   ⚠ KAM 的结束日是 **1776.1.1**，而剧本 1776 是 **7 月 4 日** →
+        #     那天已经过期了 ✓ 所以 1776 / 1789 / 1792 只并 UTS、不并 KAM ✓
+        #     这不是 bug，游戏数据就这么写的 ✓
         subj_rels = EH.parse_subject_relations(root / "history")
         log(f"附庸关系：{len(subj_rels)} 条（history/diplomacy ✓）")
-        MERGE_SUBJECTS = ("UTS", "TIB")      # 只并这一家（用户点名 ✓）
+        MERGE_SUBJECTS = ("UTS", "TIB", "KAM")   # 只并这几家（用户点名的 ✓）
         for d, y in zip(ERA_DATES, ERA_LABELS):
             arr: dict[int, str] = {}
             for p in used_pr:
@@ -794,8 +803,8 @@ def main() -> int:
                 o = EH.owner_at(base, tl, d)
                 if o:
                     arr[p] = o
-            # 那天 UTS/TIB 是不是别人的附庸？是的话并进宗主 ✓
-            note = ""
+            # 那天这几家是不是别人的附庸？是的话并进宗主 ✓（**可能不止一家** ✓）
+            notes: list[str] = []
             if subj_rels:
                 subj_map = EH.subject_at(subj_rels, d)
                 for sub in MERGE_SUBJECTS:
@@ -811,10 +820,10 @@ def main() -> int:
                         continue
                     for p in moved:
                         arr[p] = lord
-                    note = f"　（{sub} 是 {lord} 的附庸 → {len(moved)} 省并入）"
-                    break
+                    notes.append(f"{sub}→{lord}（{len(moved)} 省）")
             owners.append(arr)
-            log(f"  {y}：有主 {len(arr)} 省 / {len(set(arr.values()))} 个国家{note}")
+            log(f"  {y}：有主 {len(arr)} 省 / {len(set(arr.values()))} 个国家"
+                + (f"　附庸并入：{'、'.join(notes)}" if notes else ""))
     else:
         log(f"用得上的节点：大洲 {len(used_ct)} / 大区 {len(used_sr)} / 区域 {len(used_rg)}"
             f" / 地区 {len(used_ar)} / 省份 {len(used_pr)}")

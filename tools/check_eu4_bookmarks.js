@@ -141,6 +141,39 @@ function tagsInYear(D, year) {
         utsProv > 0 || !tags.has(`${y}_QNG`),
         `藏 ${utsProv} 省 · QNG=${tags.has(`${y}_QNG`)}`);
     }
+
+    /* 🔴 **康（KAM）也走同一条规则** ✗✗（2026-10-20 ✓ 用户："UTS 那条规则也补上对康（KAM）的"）
+     *   diplomacy 里两条并列：QNG→UTS（1724.1.1~1792.11.1）和 QNG→KAM（1724.1.1~**1776.1.1**）
+     *   ⚠ KAM 结束得早 —— 剧本 1776 是 **7 月 4 日**，已经过期 ✓
+     *     所以只在 **1756** 那层能看到"UTS 和 KAM 同时并入" ✓
+     *     1776 及以后 KAM 在自己 history 里也没地了（原始数据就是 0 省 ✓）*/
+    /* ⚠ `M.tiers` 里存的是**字符串**（'1756' ✓）—— 拿数字 1756 去 indexOf
+     *   永远 -1 ✗ 于是 `if (indexOf(1756) >= 0)` 一直是 false，
+     *   这两条断言**悄悄跳过**了（我第一次跑就是这么"全绿"的 ✓）
+     *   → 一律 `String(y)` ✓ */
+    const countBy = (y, tag) => {
+      const i = M.tiers.indexOf(String(y));
+      if (i < 0) return -1;
+      let c = 0;
+      for (let p = 1; p < D.n; p++) {
+        const idx = D.a[i * D.n + p];
+        if (idx !== M.noTitle && D.T.keys[idx] === `${y}_${tag}`) c++;
+      }
+      return c;
+    };
+    if (M.tiers.indexOf('1756') >= 0) {
+      ok('1756：康（KAM）也并进清朝了（跟藏同一条规则 ✓）',
+        countBy(1756, 'KAM') === 0 && countBy(1756, 'QNG') > 0,
+        `KAM=${countBy(1756, 'KAM')} 省 · QNG=${countBy(1756, 'QNG')} 省`);
+      ok('1756：藏和康**两家都并**（不是找到一个就 break ✗）',
+        countBy(1756, 'UTS') === 0 && countBy(1756, 'KAM') === 0,
+        `UTS=${countBy(1756, 'UTS')} · KAM=${countBy(1756, 'KAM')}`);
+    }
+    /* 康在 1724 之前是独立的 ✓ */
+    if (M.tiers.indexOf('1618') >= 0) {
+      ok('1618：康还没归清朝 → 仍独立（7 省 ✓）',
+        countBy(1618, 'KAM') > 0, `KAM ${countBy(1618, 'KAM')} 省`);
+    }
   }
 
   console.log('\n=== D. 别的附庸一律不许并（我第一版在这栽了）===');

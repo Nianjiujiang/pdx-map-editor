@@ -858,3 +858,39 @@
 *::-webkit-scrollbar-thumb:hover { background: #3a4757; }
 *::-webkit-scrollbar-track { background: transparent; }
 *::-webkit-scrollbar-corner { background: transparent; }
+
+/* ------------------------------------------------------------ 剧本（手机版折叠）
+ *  🔴 2026-10-20 ✓ 用户："手机版的剧本…你可以做一个折叠式的，
+ *     打开视图栏的时候剧本在第二层折叠起来" ✓
+ *
+ *  桌面那套是**浮层下拉**（absolute 定位）—— 手机上不行 ✗
+ *  面板本身就带滚动，浮层会被裁掉一半 ✓
+ *  → 手机上改成**手风琴**：点开就**就地展开**，把下面的视图按钮往下推 ✓
+ *    位置也是静态的，不飘不裁 ✓
+ */
+.mob-era { display: block; margin: 0 0 10px; }
+.mob-era .group-label {
+  display: block; margin: 0 0 6px;
+  font-size: 12px; color: var(--text-faint); letter-spacing: .5px;
+}
+.mob-era .era-drop { position: static; display: block; }
+.mob-era .dd-btn {
+  width: 100%;                    /* 手机上占满一行，比 92px 好点 ✓ */
+  min-height: 38px; font-size: 14px;
+  background: #101820; border-color: #26313d; color: #cfd9e4;
+}
+.mob-era .dd-btn.on { border-color: #c9a94e; color: #f0d98a; background: rgba(36, 29, 16, .95); }
+.mob-era .dd-panel {
+  /* **就地展开**（不定位 ✓ 不浮 ✓）—— 这就是"第二层折叠" */
+  position: static;
+  width: 100%;
+  margin-top: 6px;
+  max-height: 46vh;
+  box-shadow: none;
+}
+.mob-era .dd-item {
+  min-height: 36px;
+  font-size: 14px;
+  padding: 0 10px;
+  display: flex; align-items: center;
+}

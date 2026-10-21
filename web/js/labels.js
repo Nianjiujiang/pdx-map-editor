@@ -113,6 +113,81 @@ export function computeLabelZoom(meta, titles) {
 //: 逐字渲染中文明显更慢，标签一多就卡。
 const FONT_STACK = '"Microsoft YaHei", "PingFang SC", "Segoe UI", sans-serif';
 
+/* 🔴 **导入字体：地名和势力名各用各的** ✗✗（2026-10-20 ✓ 用户要求）
+ *
+ *   两槽：`place`（地块名 / 海湖河荒地）和 `power`（势力名 = 剧本年份那几层 + 涂出来的色块）
+ *   空串 = 用默认栈 ✓ 有值 = 那个族名排在最前面，后面照样接默认栈 ✓
+ *     （导入的字体缺字时，浏览器会自己往后面的系统字体里找 ✓ 不会变成豆腐块 ✓）
+ *
+ *   ⚠ **缓存全要带字体** ✗ —— 换字体之后如果不区分，
+ *     量宽缓存和字形贴图还是旧字体那批 ✓ 画面就会新旧混着，像是没生效 ✓
+ *     所以 `fontFor` / `measureCached` / `SpriteCache` 的键里都放进了族名 ✓
+ */
+const FONT_FACE = { place: '', power: '' };
+
+/* 🔴 **位图字体**（2026-10-20 ✓ 用户："这个应该是可以攻克的"）
+ *   TTF 那套靠 `document.fonts` 注册，位图字体（EU4 汉化那种 .fnt + .dds）走不了那条路 ✗
+ *   只能自己逐字贴图 ✓ —— 这里存两槽 BitmapFont 实例（null = 没选 ✓）
+ *   有值就**盖过** `FONT_FACE` ✓（同一个下拉里选中的是位图字体 ✓）
+ *
+ *   ⚠ 位图字体**没有矢量轮廓** ✗ —— 描边只能把同一个字偏移着多画几遍 ✓
+ *     所以贴图缓存对位图字体更重要（每段字只铸一次 ✓）
+ */
+const BITMAP = { place: null, power: null };
+
+/** 挂一套位图字体（传 null 取消 ✓）
+ *  @param {'place'|'power'} kind
+ *  @param {object|null} bf BitmapFont 实例
+ */
+export function setLabelBitmap(kind, bf) {
+  if (kind !== 'place' && kind !== 'power') return;
+  BITMAP[kind] = bf || null;
+}
+
+/** 现在挂的是哪套位图字体（自测用 ✓） */
+export function labelBitmap(kind) {
+  return BITMAP[kind] || null;
+}
+
+/** 设置某一类的字体族名（传空串 = 回到默认 ✓）
+ *  @param {'place'|'power'} kind
+ *  @param {string} family
+ */
+export function setLabelFont(kind, family) {
+  if (kind !== 'place' && kind !== 'power') return;
+  FONT_FACE[kind] = String(family || '');
+}
+
+/** 现在用的是哪套（给设置页回显 / 自测用 ✓） */
+export function labelFont(kind) {
+  return FONT_FACE[kind] || '';
+}
+
+/** 某一类拼出来的字体栈 */
+function stackOf(kind) {
+  const f = FONT_FACE[kind];
+  return f ? `"${f}", ${FONT_STACK}` : FONT_STACK;
+}
+
+/**
+ * 🔴 **字体的身份标签** —— 所有缓存键都要带上它 ✗✗
+ *
+ *  2026-10-20 用户报"字体选择根本没有生效" ✓ 根因就在这儿：
+ *  量宽 / 字形贴图 / fontFor 三处当初只把 `kind`（place|power）编进键里，
+ *  可 `kind` 是**固定的**（一类就一个值 ✓）—— 换字体键根本不变 ✓
+ *  于是：旧字体量出来的宽度、旧字体栅格化的贴图，全都原封不动命中 ✓
+ *  画面上自然一点变化都没有 ✓ 看着就像"选了没反应" ✗
+ *
+ *  现在键里带两样：
+ *    · `FONT_FACE[kind]` —— 导入的 TTF 族名（空 = 默认栈 ✓）
+ *    · `BITMAP[kind].uid` —— 位图字体实例号（两套位图字体也可能同名 ✓）
+ */
+function fontTag(kind) {
+  const k = kind || 'place';
+  const bf = BITMAP[k];
+  return (bf ? 'b' + bf.uid : '') + '|' + (FONT_FACE[k] || '');
+}
+
 //: 文字：白字 + 黑描边
 const LABEL_FG = '#ffffff';
 const LABEL_FG_HOVER = '#ffe9a8';
@@ -186,11 +261,16 @@ function quantizeFont(size) {
   return v;
 }
 
-function fontFor(size) {
-  let f = FONT_CACHE.get(size);
+/** 拼 `ctx.font` 用的字符串
+ *  ⚠ 缓存键要带 **kind** ✗ —— 两套字体各缓存各的 ✓
+ *     只按字号缓存的话，换字体之后拿到的是旧那套字符串 ✓
+ */
+function fontFor(size, kind) {
+  const k = size.toFixed(1) + '|' + (kind || 'place') + '|' + fontTag(kind);
+  let f = FONT_CACHE.get(k);
   if (f === undefined) {
-    f = `600 ${size.toFixed(1)}px ${FONT_STACK}`;
-    FONT_CACHE.set(size, f);
+    f = `600 ${size.toFixed(1)}px ${stackOf(kind || 'place')}`;
+    FONT_CACHE.set(k, f);
   }
   return f;
 }
@@ -202,11 +282,16 @@ function fontFor(size) {
 const WIDTH_CACHE = new Map();
 const WIDTH_CACHE_MAX = 20000;
 
-function measureCached(ctx, text, size) {
-  const key = size.toFixed(1) + '\u0000' + text;
+function measureCached(ctx, text, size, kind) {
+  /* 位图字体：宽度 = 各字 xadvance 之和 ✓ 不用 measureText（也没有东西可量 ✗）*/
+  const bf = BITMAP[kind];
+  if (bf) return bf.measure(text, size);
+  /* ⚠ 键里要带**字体** ✗ —— 换了字体还命中旧宽度，
+   *   名字会按错的宽度居中 / 判断放不放得下 ✓ 看着就像"字体没生效" ✓ */
+  const key = size.toFixed(1) + '\u0000' + fontTag(kind) + '\u0000' + text;
   let w = WIDTH_CACHE.get(key);
   if (w === undefined) {
-    ctx.font = fontFor(size);
+    ctx.font = fontFor(size, kind);
     w = ctx.measureText(text).width;
     if (WIDTH_CACHE.size >= WIDTH_CACHE_MAX) WIDTH_CACHE.clear();
     WIDTH_CACHE.set(key, w);
@@ -232,8 +317,12 @@ class SpriteCache {
    * @param {number} tw 已经量好的文字宽度（CSS px）
    * @returns {{c:object,w:number,h:number,px:number}|null} null = 别贴了，现场画
    */
-  get(text, size, color, dpr, tw) {
-    const key = size.toFixed(1) + '|' + color + '|' + text;
+  get(text, size, color, dpr, tw, kind, bf) {
+    /* ⚠ 键里要带**字体** ✗ —— 贴图是栅格化好的像素，
+     *   不区分的话换字体之后屏幕上还是旧字形 ✓ 而且看起来"怎么换都没反应" ✓
+     *   位图字体再额外带上实例 uid ✓（两套位图字体也可能同名 ✓）*/
+    const fk = fontTag(kind);
+    const key = size.toFixed(1) + '|' + color + '|' + fk + '|' + text;
     const hit = this.map.get(key);
     if (hit !== undefined) return hit;
     if (size > SPRITE_MAX_FONT) return null;
@@ -259,12 +348,18 @@ class SpriteCache {
     g.textBaseline = 'middle';
     g.lineJoin = 'round';
     g.miterLimit = 2;
-    g.font = fontFor(size);
-    g.lineWidth = Math.max(1.3, size * 0.14);
-    g.strokeStyle = LABEL_STROKE;
-    g.strokeText(text, w / 2, h / 2);
-    g.fillStyle = color;
-    g.fillText(text, w / 2, h / 2);
+    if (bf) {
+      /* 位图字体：逐字贴 ✓ 描边靠"偏移着多画几遍"（它没有矢量轮廓 ✗）*/
+      bf.draw(g, text, w / 2, h / 2, size, color,
+        { outline: Math.max(1, size * 0.09), stroke: LABEL_STROKE });
+    } else {
+      g.font = fontFor(size, kind);
+      g.lineWidth = Math.max(1.3, size * 0.14);
+      g.strokeStyle = LABEL_STROKE;
+      g.strokeText(text, w / 2, h / 2);
+      g.fillStyle = color;
+      g.fillText(text, w / 2, h / 2);
+    }
 
     const sprite = { c, w, h, px };
     this.map.set(key, sprite);
@@ -468,9 +563,17 @@ export class LabelLayer {
     for (const key of keys) {
       const size = KEY - (key % KEY);      // 从桶键里把字号取回来
       const list = buckets.get(key);
-      ctx.font = fontFor(size);
-      ctx.lineWidth = Math.max(1.3, size * 0.14);
-      ctx.strokeStyle = LABEL_STROKE;
+      /* 桶键里编着**层**（0 地名 / 1 国名 / 2 玩家名 ✓ 见上面那段注释）——
+       * 正好拿来决定用哪套字体：国名和玩家名算「势力名」✓ 其余算「地块名」✓
+       * ⚠ 跟 `_fontSize` 里 `_isPower = tier < nEra || layer === 2` 同一个口径 ✓ */
+      const kind = (Math.floor(key / KEY) >= 1) ? 'power' : 'place';
+      /* 这一档有没有挂位图字体 ✓ 有就用它逐字贴，没有走原来的 fillText */
+      const bf = BITMAP[kind];
+      if (!bf) {
+        ctx.font = fontFor(size, kind);
+        ctx.lineWidth = Math.max(1.3, size * 0.14);
+        ctx.strokeStyle = LABEL_STROKE;
+      }
       const half = size * 1.15 / 2;
       // 位置粗筛的余量：地名再长也不会超过 size * 8 的半宽（十几个汉字都够）
       const pad = size * 8;
@@ -485,7 +588,7 @@ export class LabelLayer {
         if (sx < -pad || sx > cssW + pad || sy < -pad || sy > cssH + pad) continue;
 
         const text = T[k];
-        const tw = measureCached(ctx, text, size);
+        const tw = measureCached(ctx, text, size, kind);
         const hw = tw / 2;
         if (sx + hw < 0 || sx - hw > cssW) continue;
         if (sy + half < 0 || sy - half > cssH) continue;
@@ -494,9 +597,13 @@ export class LabelLayer {
         // 悬浮时仍旧用米黄，免得看不出鼠标在哪 ✓
         const color = HOT[k] ? LABEL_FG_HOVER
           : (C[k] || LABEL_FG);
-        const sp = sprites.get(text, size, color, dpr, tw);
+        const sp = sprites.get(text, size, color, dpr, tw, kind, bf);
         if (sp !== null) {
           ctx.drawImage(sp.c, sx - sp.w / 2, sy - sp.h / 2, sp.w, sp.h);
+        } else if (bf) {
+          /* 太大做不了贴图 → 现场逐字贴 ✓（描边照旧靠偏移 ✓）*/
+          bf.draw(ctx, text, sx, sy, size, color,
+            { outline: Math.max(1, size * 0.09), stroke: LABEL_STROKE });
         } else {
           ctx.strokeText(text, sx, sy);
           ctx.fillStyle = color;

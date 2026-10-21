@@ -2,12 +2,14 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
+  <!-- 主题先定，免得白底闪一下（2026-10-20 ✓） -->
+  <script>try{if(localStorage.getItem('pdx-theme')==='light')document.documentElement.setAttribute('data-theme','light');}catch(e){}</script>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <!-- 构建戳：单文件版由 build_standalone.py 改写成打包时间；
      开发版固定 dev（启动页显示「开发版」）✓
      ⚠ **别用 document.lastModified 当版本戳** ✗ —— 单文件 / 某些浏览器里它会是当前时间 ✓ -->
 <meta name="pdx-build" content="dev">
-<title>地图编辑器</title>
+<title>悖论制图</title>
 <script>
 // 双击 index.html 打开时浏览器是 file:// 协议，ES module 会被 CORS 拦掉，
 // 与其让控制台刷一堆看不懂的报错，不如直接说清楚该怎么办。
@@ -18,7 +20,7 @@ if (location.protocol === 'file:') {
       + 'font:15px/1.9 \'Segoe UI\',\'Microsoft YaHei\',sans-serif;color:#dfe6ef;'
       + 'background:#151a21;border:1px solid #28313d;border-radius:12px">'
       + '<div style="font:700 24px/1 Georgia,serif;color:#c9a227;letter-spacing:2px;'
-      + 'margin-bottom:22px">地图编辑器</div>'
+      + 'margin-bottom:22px">悖论制图</div>'
       + '<p style="margin:0 0 18px">这个页面<b>不能直接双击打开</b>。'
       + '浏览器的安全策略不允许 <code style="color:#f0d98a">file://</code> '
       + '加载 ES 模块和地图数据，所以必须走本地服务。</p>'
@@ -41,7 +43,7 @@ if (location.protocol === 'file:') {
   <header class="toolbar">
     <div class="brand">
       <span class="brand-mark" id="brand-mark">PDX</span>
-      <span class="brand-text">地图编辑器</span>
+      <span class="brand-text">悖论制图</span>
     </div>
 
     <!-- 🔴 **剧本 / 地理分成两块** ✗✗（2026-10-19 ✓ 用户要求）
@@ -88,9 +90,6 @@ if (location.protocol === 'file:') {
 
     <div class="spacer"></div>
 
-    <div class="tool-group actions" id="settings-row">
-      <button class="btn ghost" id="btn-settings">设置</button>
-    </div>
 
     <div class="tool-group actions" id="history-row">
       <button class="btn ghost" id="btn-undo" disabled>↶</button>
@@ -110,7 +109,10 @@ if (location.protocol === 'file:') {
     <div class="tool-group actions" id="export-row">
       <button class="btn ghost" id="btn-export">文件 ▾</button>
       <div class="dropdown" id="export-menu" hidden>
-        <button class="btn ghost" id="btn-import">导入</button>
+        <!-- ⚠ **地图包不在这儿导** ✗（2026-10-20 ✓ 用户："地图包不要在进入里面的时候导入"）
+             `.pdxmap` 只在**选图页**导（主菜单 → 选地图 → 底部那个按钮，或者直接拖进去）✓
+             这一项是**涂色存档**（.json）✓ 名字写清楚，别让人误会 ✓ -->
+        <button class="btn ghost" id="btn-import">导入涂色</button>
         <button class="btn ghost" id="btn-png">导出窗口</button>
         <button class="btn ghost" id="btn-png-full">导出整图</button>
         <!-- **高清导出**：输出宽高都 ×2，边界按新尺度重画 ✓（不是放大糊 ✗）
@@ -121,6 +123,11 @@ if (location.protocol === 'file:') {
         <button class="btn ghost" id="btn-log">导出日志</button>
       </div>
     </div>
+    <!-- 设置：顶栏**最右**（2026-10-20 ✓ 用户："设置按钮改成上方栏的最右边，在文件按钮的右边"） -->
+    <div class="tool-group actions" id="settings-row">
+      <button class="btn ghost" id="btn-settings">设置</button>
+    </div>
+
   </header>
 
   <div class="body">
@@ -262,9 +269,9 @@ if (location.protocol === 'file:') {
     <div class="tool-group" id="clear-group">
       <span class="group-label">清除</span>
       <button class="btn ghost" id="btn-reset" type="button"
-              title="清除这张图上的全部涂色（会清空撤销栈）">清除全部</button>
+             >清除全部</button>
       <button class="btn ghost" id="btn-clear-waste" type="button"
-              title="清除荒地上的涂色，并关闭「荒地 · 自动上色」">清除荒地</button>
+             >清除荒地</button>
     </div>
 
         </div>
@@ -303,6 +310,16 @@ if (location.protocol === 'file:') {
           <span id="label-pick-hint">这个颜色在数据里归好几个头衔，挑一个当标记：</span>
           <select id="label-select"></select>
         </div>
+        <!-- 🔴 **「取色后切到」搬到侧栏了**（2026-10-20 ✓ 子代理方案）
+             它管的是**当前颜色 / 取色**这件事的一部分，跟设置里那四组
+             （底色·地形 / 边界线 / 名称 / 图例）都不搭 ✓
+             原来它待在「其他」里 —— 那个组名该消失，这就是理由 ✓ -->
+        <label class="set-row" id="picktool-row"><span>取色后切到</span>
+          <select id="set-picktool">
+            <option value="paint">涂抹</option>
+            <option value="fill">填色</option>
+          </select>
+        </label>
       </section>
 
       <section class="panel">
@@ -337,7 +354,7 @@ if (location.protocol === 'file:') {
         <div class="panel-head">
           <h2>最近使用</h2>
           <!-- 清空"最近用过" ✓（这份是**跟着设置持久化**的，所以清完也要落盘 ✓ 见 clearRecent）-->
-          <button type="button" class="btn ghost" id="btn-clear-recent" title="清空这些记忆的颜色">清空</button>
+          <button type="button" class="btn ghost" id="btn-clear-recent">清空</button>
         </div>
         <div class="palette" id="palette"></div>
       </section>
@@ -357,7 +374,7 @@ if (location.protocol === 'file:') {
 
       <div class="boot" id="boot">
         <div class="boot-inner" id="boot-inner">
-          <div class="boot-title" id="boot-title">地图编辑器</div>
+          <div class="boot-title" id="boot-title">悖论制图</div>
 
           <div class="map-pick" id="map-pick" hidden>
             <div class="map-pick-hint">选一张地图</div>
@@ -402,7 +419,7 @@ if (location.protocol === 'file:') {
                      app.js 里的入口根本挂不上，而那时正是最需要日志的场合 ✓ -->
               <span class="boot-ver" id="boot-ver"></span>
               <button class="boot-author-link boot-log-btn" id="btn-boot-log" type="button"
-                      title="导出诊断报告（含启动阶段 / 浏览器 / 显卡信息）">导出诊断报告</button>
+                     >导出诊断报告</button>
             </div>
           </div>
         </div>
@@ -437,161 +454,159 @@ if (location.protocol === 'file:') {
 <script type="module" src="js/app.js"></script>
 
   <!-- 二级设置页（右上角「设置」开） -->
-  <div class="modal" id="settings" hidden>
-    <div class="modal-box">
-      <div class="modal-head">
-        <h2>设置</h2>
-        <button class="btn ghost" id="set-close">关闭</button>
+  <!-- ============================================================ 设置
+       🔴 **2026-10-20 全面重做**（用户："全方面遵循子代理方案"）
+
+       重做的出发点只有一句话：**用户站在地图前面，不是站在配置面板前面** ✓
+         · 改成**不带遮罩的右侧抽屉** —— 拖滑条时地图一直看得见、还能平移 ✓
+           （原来是一块 1120×660 的模态框 + 62% 黑遮罩 → 改一下、关掉、看一眼、再打开 = 盲调 ✗）
+         · 四组按**画布的绘制顺序**排：底色·地形 → 边界线 → 名称 → 图例 ✓
+           原来的「颜色 / 边界 / 名字 / 其他」是按补丁批次长的 ✗
+           "其他"这个组名必须消失 —— 一个组的名字如果叫"其他"，说明它不该是一个组 ✓
+         · 边界 10 根滑条 → 一张 **5×2 矩阵**（行=对象，列=线宽/不透明度）✓
+           表头只出现一次 → 滚动时不会再出现"不知道属于谁的边界不透明度" ✓
+         · 名称同样矩阵化：行=地块名/势力名，列=字号/不透明度/数量 ✓
+           **字体作为第四列**（原来单开一个"字体"块，把刚建立的"按对象分块"又拆散了 ✗）
+         · 离散量用**离散控件**：线宽 6 档 → 步进器；不透明度 5 档 → 分段条 ✓
+           20 档的"数量"也走步进器（原来滑条 5.9px 一档，点一下就跳 ✓）
+         · **"不限"是独立开关**，不再是滑条最右那一格 ✓
+           （内部仍写 `labelMax = 21`，兼容老存档与 `labelMaxValue()` ✓）
+
+       ⚠ **所有既有 id 一个都没删** ✓ —— `app.js` 的绑定、`test_modes` 的清单全按 id 走 ✓
+         变的是控件**类型**（range → 步进器 / 分段条），不是 id ✓ -->
+
+  <div class="modal drawer" id="settings" hidden>
+    <div class="modal-box set-box">
+
+      <!-- 四组分页（桌面）：窄屏铺不开四栏，改成标签切页 ✓
+           ⚠ `data-group` 是给 `mobile_js` 认页用的 ✗ 别再用中文标题正则 ✓ -->
+      <div class="set-tabs" id="set-tabs">
+        <button class="set-tab on" type="button" data-group="color">颜色</button>
+        <button class="set-tab" type="button" data-group="border">边界线</button>
+        <button class="set-tab" type="button" data-group="label">名称</button>
+        <button class="set-tab" type="button" data-group="legend">图例</button>
+        <span class="set-tabs-sp"></span>
+        <button class="theme-btn" id="btn-theme" type="button">☾ 夜间</button>
+        <button class="set-x" id="set-close" type="button">×</button>
       </div>
 
-      <div class="set-grid">
-        <div class="set-col">
-          <h3>颜色</h3>
-          <!-- 🔴 **2026-10-16 两轮收拾**
-               第一轮（"全都进行全面优化"）：七项平铺 → 按类别分组 + `.set-sub` 小标题 ✓
-               第二轮（"就这样，简单点"）：用户把**两组的内容和名字都定了** ✗：
-                 · **陆地**：空白区域 / 无归属区域 / **不可通行区域**（它归陆地 ✓ 不是水 ✓）
-                 · **水域**：**河流 / 湖泊 / 海洋 / 不可通行海域**（次序也是他定的 ✓
-                   由小到大：河最细、海最大、不可通行海域是屏障 ✓
-                   原来我排的是"海 / 不可通行海域 / 湖 / 河"，正好倒过来 ✓）
-               ⚠ **只有两组了** ✗ —— 第一轮我分过"底子 / 水域 / 陆地"三组 ✓
-                 用户这一轮把"底子"并进**陆地**、把"不可通行区域"从陆地那组挪对位置 ✓
-                 → 别再加回第三个组 ✗ -->
-          <div class="set-sub">陆地</div>
-          <label class="set-row"><span>空白区域</span><input type="color" id="set-bg"></label>
-          <label class="set-row"><span>无归属区域</span><input type="color" id="set-unpainted"></label>
-          <label class="set-row"><span>不可通行区域</span><input type="color" id="set-impass"></label>
-          <div class="set-sub">水域</div>
-          <label class="set-row"><span>河流</span><input type="color" id="set-river"></label>
-          <label class="set-row"><span>湖泊</span><input type="color" id="set-lake"></label>
-          <label class="set-row"><span>海洋</span><input type="color" id="set-sea"></label>
-          <label class="set-row"><span>不可通行海域</span><input type="color" id="set-isea"></label>
-        </div>
+      <div class="set-grid" id="set-grid" data-active="color">
 
-        <!-- ============ 边界（**一栏装完** ✓）============
-             命名规范（用户 2026-10-16 **第二轮**定的 ✓）：**小标题给类别、滑条只写「边界宽度 / 边界不透明度」**
-           —— 用户原话："**最大关键点：滑块左边就写边界宽度而不是省份边界宽度**"✓
-           ⚠ 所以这一栏里**再也没有「省份边界宽度」这种长标签** ✗ ——
-             类别由它上面那个 `.set-sub` 说（省份 / 地区 / 势力 / 水域 ✓）、
-             两行只说"这条线有多粗 / 有多实" ✓（这才叫"简单点"✓）
-           ⚠ 那两行的标签 2026-10-16 又改了一次 ✗：「浓度」→「**边界不透明度**」✓
-             用户先写"把边界浓度改名边界不透明度"、接着纠正"是【边界不透明度】不是【不透明度】"✓
-             ——**四个字的全名** ✓ 别缩成「不透明度」✗（那是「名字」栏那组小标题的名字 ✓）
-           ⚠ 小标题旁边那些提示（本层那条线 / 父级链 / 国家·剧本那一圈 /
-             只管水与水之间 / 字号与上限）**全清了** ✗（用户："红框框圈起来的东西去掉"✓
-             结构上不再有 `.set-sub` + hint 那种写法 ✓ 要说明就写在这段注释里 ✓）
-           ⚠ 但**内部字段名一个都没改** ✗：`wProv` / `wRegion` / `pw` / `waterW`、
-             `pa` / `ra` / `ca` / `waterA` ✓（老存档、设置项、测试全按这些键走 ✓
-              改的是**界面上那几个字**，不是键 ✓）
-           四类各自管哪条线（**只写在这儿** ✗ 界面上既不逐行重复、也不挂提示 ✓）：
-             省份 = 管**本层**那条线（子级线 ✓ 海岸线 / 海内细缝都归它 ✓）
-             地区 = 管**父级链**（多级链上层那些线 ✓）
-             势力 = 国家 / 剧本那一圈 ✓     水域 = 只管水与水之间 ✓
-           档位（`min/max/step` 一锁就天然只有那几档 ✓）：宽度 0.5~3 步长 0.5 ·
-             不透明度 0~100 步长 25（**0% = 那条线完全不画** ✓）
-           线宽一律是**格数**（不是倍率 ✗）
-           每个滑条前面那个当前值提示由 `buildSliderTips()` 动态插进来 ✓
-           （`min/max/step` 要跟 app.js 里那几张档位表一致 —— 测试盯着两边 ✓）-->
-        <div class="set-col">
-          <h3>边界</h3>
-          <!-- 🔴🔴 **2026-10-16 两轮收拾** ✗✗
-               第一轮（"全都进行全面优化"）：从"四根宽度挨着、四根浓度挨着"改成
-                 **一类两行连排**（省份宽+浓 · 地区宽+浓 · … ✓）✓
-               第二轮（"就这样，简单点"）：**滑条标签砍掉重复的类别名** ✗ ——
-                 「省份边界宽度」→「边界宽度」（类别靠小标题说 ✓）
-               ⚠ 小标题上那两句提示（"本层那条线" / "父级链"）留着 ✓
-                 用户 2026-10-13 报过"这两根到底差在哪"✓ 那是**真的分不清** ✓
-                 而"省份"两个字重复两遍是**纯废话** ✓ 两回事 ✓
-               ⚠ 别再把类别名加回滑条标签 ✗ —— `test_modes` 有一条断言盯着它 ✓ -->
-          <div class="set-sub">省份</div>
-          <label class="set-row"><span>边界宽度</span><input type="range" id="set-w-prov" min="0.5" max="3" step="0.5"></label>
-          <label class="set-row"><span>边界不透明度</span><input type="range" id="set-pa" min="0" max="100" step="25"></label>
-          <div class="set-sub">地区</div>
-          <label class="set-row"><span>边界宽度</span><input type="range" id="set-w-region" min="0.5" max="3" step="0.5"></label>
-          <label class="set-row"><span>边界不透明度</span><input type="range" id="set-ra" min="0" max="100" step="25"></label>
-          <div class="set-sub">势力</div>
-          <label class="set-row"><span>边界宽度</span><input type="range" id="set-pw" min="0.5" max="3" step="0.5"></label>
-          <label class="set-row"><span>边界不透明度</span><input type="range" id="set-ca" min="0" max="100" step="25"></label>
-          <!-- 🔴 **水域边界那一对**（2026-10-16 ✓ 用户点名要的 ✓）
-               ⚠ 用户原话："新增一对滑条「水域边界宽度 / 浓度」（**不沿用省份/地区那一档**）"✓
-                 → 所以它俩是**独立一档** ✓
-               ⚠ 「水域边界宽度」**不是**「海域宽度」✗ ——
-                 用户 2026-10-16 的命名规范里明写了不许再叫「海域宽度 / 海域浓度」✓
-                 （test_modes 里有两条断言盯着这两个词不许出现 ✓
-                   ⚠ 第二轮把标签砍成「边界宽度」之后，"海域宽度"更不会出现了 ✓
-                     但那条断言**留着** ✓ 它守的是"别又冒出个旧名字" ✓）-->
-          <div class="set-sub">水域</div>
-          <label class="set-row"><span>边界宽度</span><input type="range" id="set-water-w" min="0.5" max="3" step="0.5"></label>
-          <label class="set-row"><span>边界不透明度</span><input type="range" id="set-water-a" min="0" max="100" step="25"></label>
-          <!-- 🔴 **荒地边界那一对**（2026-10-17 ✓ 用户点名要的 ✓）
-               原话："给荒地加上边界开关，这个负责的是**荒地与荒地之间**的边界，
-                      你之前做了水域-水域的边界，这个应该轻车熟路了吧"✓
-               ⚠ 跟水域那对**完全同构** ✗ —— 独立一档、不沿用省份/地区那档 ✓
-                 档位也一样（宽度 0.5~3 步长 0.5 · 不透明度 0~100 步长 25 ✓）
-                 出厂值也一样（1 / 25% ✓ 默认都是"很淡的辅助线"✓）
-               ⚠ 不透明度 **0% = 那条线完全不画** ✓（跟别处同一个口径 ✓
-                 不是"线还在但看不见"✗）
-               ⚠ 两条通道**各认自己的勾** ✗（关掉水域那个，荒地这条照样在 ✓ 反之亦然 ✓）-->
-          <div class="set-sub" id="set-waste-sub">荒地</div>
-          <label class="set-row" id="set-waste-w-row"><span>边界宽度</span><input type="range" id="set-waste-w" min="0.5" max="3" step="0.5"></label>
-          <label class="set-row" id="set-waste-a-row"><span>边界不透明度</span><input type="range" id="set-waste-a" min="0" max="100" step="25"></label>
-        </div>
+        <!-- ================= ① 底色 · 地形 =================
+             用户在图上最先看到的是"颜色" ✓ 所以它是第一组 ✓
+             ⚠ 原来的「空白区域」改叫**底图背景** ✓ —— 它其实是整张画布的底（renderer.backdrop）✓
+               跟"无主地"（有地无主）完全是两件事，两个词原来都像"没画的地方" ✗
+             ⚠ 色块旁边补 HEX ✓ —— #B4B4B4 和 #969696 并排看几乎一样，
+               文字上才分得开 ✓ -->
+        <section class="set-col" data-group="color">
+          <div class="set-sub">底色</div>
+          <label class="set-row"><span class="set-l">底图背景</span><span class="set-v" id="v-set-bg"></span><input type="color" id="set-bg"></label>
+          <label class="set-row"><span class="set-l">无主地</span><span class="set-v" id="v-set-unpainted"></span><input type="color" id="set-unpainted"></label>
+          <div class="set-sub">地形</div>
+          <label class="set-row"><span class="set-l">不可通行区域</span><span class="set-v" id="v-set-impass"></span><input type="color" id="set-impass"></label>
+          <!-- 水域四项的次序是用户定的：由小到大 —— 河最细、海最大、不可通行海域是屏障 ✓ -->
+          <label class="set-row"><span class="set-l">河流</span><span class="set-v" id="v-set-river"></span><input type="color" id="set-river"></label>
+          <label class="set-row"><span class="set-l">湖泊</span><span class="set-v" id="v-set-lake"></span><input type="color" id="set-lake"></label>
+          <label class="set-row"><span class="set-l">海洋</span><span class="set-v" id="v-set-sea"></span><input type="color" id="set-sea"></label>
+          <label class="set-row"><span class="set-l">不可通行海域</span><span class="set-v" id="v-set-isea"></span><input type="color" id="set-isea"></label>
+        </section>
 
-        <div class="set-col">
-          <h3>名字</h3>
-          <!-- 🔴🔴 **2026-10-17 整栏重排：两块 —— 地块 / 势力** ✗✗（用户定的 ✓）
-               原话："首先是把字号分开两个，一个给地块，一个给势力
-                     然后分块就分两块，一个地块一个势力，下面就是各自的字号、不透明度、上限。
-                     所以这样也可以去掉那个势力or地块前缀了，更方便。"
+        <!-- ================= ② 边界线 =================
+             5 行 × 2 列。行 = 对象，列 = 线宽 / 不透明度 ✓
+             各类管哪条线（**常驻在界面上** ✗ 不再只写在注释里）：
+               省份 = 本层那条线（海岸线 / 海内细缝都归它）
+               地区 = 父级链   势力 = 国家·剧本那一圈
+               水域 = 只管水与水之间   荒地 = 只管荒地与荒地之间
+             ⚠ 「水域 / 荒地」的粗细默认**不生效** —— 得先在侧栏「显示」里打开
+               那两条边界 ✓ 面板底下会挂一句提示 + 跳转 ✓
+               原来拖了没反应，是这两个开关默认关着 ✓ -->
+        <section class="set-col" data-group="border">
+          <div class="mx">
+            <div class="mx-head"><span></span><span>线宽</span><span>不透明度</span></div>
+            <div class="mx-row"><span class="mx-name">省份</span>
+              <div class="ctl-step" id="set-w-prov" data-range="0.5,3,0.5" data-fmt="w"></div>
+              <div class="ctl-seg" id="set-pa" data-steps="0,25,50,75,100" data-fmt="pct"></div>
+            </div>
+            <div class="mx-row"><span class="mx-name">地区</span>
+              <div class="ctl-step" id="set-w-region" data-range="0.5,3,0.5" data-fmt="w"></div>
+              <div class="ctl-seg" id="set-ra" data-steps="0,25,50,75,100" data-fmt="pct"></div>
+            </div>
+            <div class="mx-row"><span class="mx-name">势力</span>
+              <div class="ctl-step" id="set-pw" data-range="0.5,3,0.5" data-fmt="w"></div>
+              <div class="ctl-seg" id="set-ca" data-steps="0,25,50,75,100" data-fmt="pct"></div>
+            </div>
+            <div class="mx-row"><span class="mx-name">水域</span>
+              <div class="ctl-step" id="set-water-w" data-range="0.5,3,0.5" data-fmt="w"></div>
+              <div class="ctl-seg" id="set-water-a" data-steps="0,25,50,75,100" data-fmt="pct"></div>
+            </div>
+            <div class="mx-row" id="set-waste-row"><span class="mx-name" id="set-waste-sub">荒地</span>
+              <div class="ctl-step" id="set-waste-w" data-range="0.5,3,0.5" data-fmt="w"></div>
+              <div class="ctl-seg" id="set-waste-a" data-steps="0,25,50,75,100" data-fmt="pct"></div>
+            </div>
+          </div>
+          <!-- ⚠ 这两行是**给 JS 用的占位**（`app.js` 按 id 直接 style.display）——
+               老的"一行宽度 + 一行不透明度"结构被矩阵合并了，
+               但显示/隐藏那两处判断还按 id 找 ✓ 所以留一对隐藏的空壳 ✓ -->
+          <div id="set-waste-w-row" hidden></div>
+          <div id="set-waste-a-row" hidden></div>
+          <div class="set-note" id="border-off-note" hidden></div>
+        </section>
 
-               改之前是"**按维度分三组**"（字号与数量 / 不透明度 ✓）——
-                 字号还**只有一根、两块共用** ✗ → 调大地名，国名跟着一起大 ✓ 两件事绑死 ✓
-               改之后是"**按对象分两块**"：
-                 【地块】字号倍率 · 不透明度 · 上限      ← 三行都管**地块名**
-                 【势力】字号倍率 · 不透明度 · 上限      ← 三行都管**势力名**
-               ⚠ 标签因此**去掉了前缀** ✓：「地块名称不透明度」→「不透明度」✓
-                 （块头已经说了是谁的 ✓ 用户原话："可以去掉那个势力or地块前缀了"✓）
-                 ⚠ 但**注释里要写清哪根是哪根** ✗ —— 界面上省字，代码里不能省 ✓
-                   `set-labelap` = 地块那根 ✓ `set-labelac` = 势力那根 ✓
-                   `set-labelplacemax` = 地块上限 ✓ `set-labelmax` = 势力上限 ✓
-                   `set-fontplace` / `set-fontpower` = 两块字号（2026-10-17 新加的 ✓）
-               ⚠ 顺序按用户说的：**字号 → 不透明度 → 上限** ✓（原话那个次序 ✓
-                 跟旧的"字号/上限 一组、不透明度 一组"不一样 ✗ 别按旧的排回去 ✓）-->
+        <!-- ================= ③ 名称 =================
+             行 = 地块名 / 势力名，列 = 字号 / 不透明度 / 数量 / 字体 ✓
+             顺序按用户定的：**字号 → 不透明度 → 数量** ✓
+             ⚠ 数量下面挂了常驻说明：这是"**每个头衔**最多画几个"✓
+               以前只写"上限"，用户理解成"全图最多 12 个名字"✗ -->
+        <section class="set-col" data-group="label">
+          <div class="mx mx-name">
+            <div class="mx-head"><span></span><span>字号</span><span>不透明度</span></div>
+            <div class="mx-row"><span class="mx-name">地块名</span>
+              <div class="ctl-step" id="set-fontplace" data-range="0.5,3,0.1" data-fmt="mul"></div>
+              <div class="ctl-seg" id="set-labelap" data-steps="25,50,75,100" data-fmt="pct"></div>
+            </div>
+            <div class="mx-row mx-row2"><span class="mx-name"></span><div class="mx-count"><span class="mx-count-l">数量</span><div class="ctl-step" id="set-labelplacemax" data-range="1,20,1" data-fmt="count"></div><label class="mx-unl"><input type="checkbox" id="set-labelplacemax-unlimited">不限</label></div>
+            </div>
+            <div class="mx-row"><span class="mx-name">势力名</span>
+              <div class="ctl-step" id="set-fontpower" data-range="0.5,3,0.1" data-fmt="mul"></div>
+              <div class="ctl-seg" id="set-labelac" data-steps="25,50,75,100" data-fmt="pct"></div>
+            </div>
+            <div class="mx-row mx-row2"><span class="mx-name"></span><div class="mx-count"><span class="mx-count-l">数量</span><div class="ctl-step" id="set-labelmax" data-range="1,20,1" data-fmt="count"></div><label class="mx-unl"><input type="checkbox" id="set-labelmax-unlimited">不限</label></div>
+            </div>
+          </div>
+          <!-- 两个旧的值提示位：现在的数值由步进器自己显示 ✓
+               但 `_open()` / `buildSliderTips()` 还按 id 找它们 → 留空壳 ✓ -->
+          <span class="hint" id="set-labelmax-v" hidden></span>
+          <span class="hint" id="set-labelplacemax-v" hidden></span>
 
-          <div class="set-sub">地块</div>
-          <!-- **字号倍率**（🔴 2026-10-17 用户改的：**0.5~3 · 步长 0.1** ✓
-               原来是 0.5~2 · 步长 0.05 ✓ —— 上限太低、档太密 ✓）：
-               管**地块名**（含海 / 湖 / 河 / 荒地名 ✓）
-               ⚠ 2026-10-17 之前它跟势力名**共用** `s.font` 一个数 ✗
-                 现在拆成 `fontPlace` / `fontPower` ✓ 老存档那个数两块都继承 ✓ -->
-          <label class="set-row"><span>字号倍率</span><input type="range" id="set-fontplace" min="0.5" max="3" step="0.1"></label>
-          <label class="set-row"><span>不透明度</span><input type="range" id="set-labelap" min="25" max="100" step="25"></label>
-          <!-- **地块名上限**（2026-10-16 用户定的 ✓）
-               地名改成"**每个连通域一个标**"之后，一个头衔底下可能一堆碎块
-               （CK3 的飞地 / EU4 的岛群 ✓）→ 按**每个头衔**各留 N 个 ✓
-               档位跟势力那根同款（1~21，拉满 = 无上限 ✓ 默认 12 ✓）
-               数值提示放**滑块左边** ✓（放右边会把滑块挤到中间、跟别的行对不齐 ✓）-->
-          <label class="set-row"><span>上限</span><span class="hint" id="set-labelplacemax-v"></span><input type="range" id="set-labelplacemax" min="1" max="21" step="1"></label>
+          <div class="set-sub">字体</div>
+          <label class="set-row"><span class="set-l">地块名</span>
+            <select id="set-font-place"><option value="">默认</option></select>
+          </label>
+          <label class="set-row"><span class="set-l">势力名</span>
+            <select id="set-font-power"><option value="">默认</option></select>
+          </label>
+          <div class="set-row"><span class="set-l">字体库</span>
+            <button class="btn ghost" id="btn-font-import" type="button">导入…</button>
+            <button class="btn ghost" id="btn-font-del" type="button">删除</button>
+            <button class="btn ghost" id="btn-font-clear" type="button">清空</button>
+          </div>
+          <!-- 预览：两行，各用各的字体 ✓（原来只画一个，改"地块名"时预览纹丝不动 ✗）
+               ⚠ 画布**不许同时写死 width/height 和 CSS height** ✗
+                 原来 260×40 的位图被 CSS 压到 207 宽 → 字被横向压扁 0.8 ✓ -->
+          <div class="set-row preview-row"><span class="set-l">预览</span>
+            <canvas id="font-preview" width="260" height="64"></canvas>
+          </div>
+          <!-- 状态行默认收起来（2026-10-20 ✓ 用户："这个功能冗余了"）—— 元素留着，JS 照常写，只是不占版面 ✓ -->
+          <div class="set-row" hidden><span class="set-l"></span><span class="hint" id="font-status">还没导入任何字体</span></div>
+          <input type="file" id="font-file" hidden multiple
+                 accept=".ttf,.otf,.woff,.woff2,.fnt,.dds,font/ttf,font/otf,font/woff,font/woff2">
+        </section>
 
-          <div class="set-sub">势力</div>
-          <!-- **势力名 = 剧本 / 年份那几层 + 玩家涂出来的色块名** ✓（见 drawLabels 那头 ✓）
-               上限的"一组"是**一个国家**（本土 + N 块殖民地那种 ✓ 用户的原意 ✓）
-               ⚠ 默认别压太狠 ✗（用户报过"国名很多没显示"✓）：
-                 真正决定画面上能看见几个的是**字号门槛**，这一档是**再砍一刀** ✓ -->
-          <label class="set-row"><span>字号倍率</span><input type="range" id="set-fontpower" min="0.5" max="3" step="0.1"></label>
-          <label class="set-row"><span>不透明度</span><input type="range" id="set-labelac" min="25" max="100" step="25"></label>
-          <label class="set-row"><span>上限</span><span class="hint" id="set-labelmax-v"></span><input type="range" id="set-labelmax" min="1" max="21" step="1"></label>
-        </div>
-
-        <div class="set-col">
-          <h3>其他</h3>
-          <!-- ⚠ 组名从「导出图例」缩成「**图例**」✓（2026-10-16 用户："就这样，简单点"✓
-               它底下就三行（导出时显示 / 标题 / 位置 ✓）—— 四个字的组名比内容还长 ✓
-               ⚠ 「位置」原来写的是裸的「位置」✓ 保留 ✓（上下文已经是图例了 ✓）-->
-          <div class="set-sub">图例</div>
-          <label class="set-row"><span>导出时显示</span><input type="checkbox" id="set-legend"></label>
-          <label class="set-row"><span>图例标题</span><input type="text" id="set-legend-title" maxlength="40" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"></label>
-          <label class="set-row"><span>位置</span>
+        <!-- ================= ④ 图例（只在导出时存在）================= -->
+        <section class="set-col" data-group="legend">
+          <label class="set-row"><span class="set-l">导出时显示</span><input type="checkbox" id="set-legend"></label>
+          <label class="set-row"><span class="set-l">标题</span><input type="text" id="set-legend-title" maxlength="40" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"></label>
+          <label class="set-row"><span class="set-l">位置</span>
             <select id="set-legend-pos">
               <option value="tl">左上</option>
               <option value="tr">右上</option>
@@ -600,18 +615,18 @@ if (location.protocol === 'file:') {
             </select>
           </label>
           <div class="legend-list" id="legend-list"></div>
-          <div class="set-sub">取色</div>
-          <!-- 取完色（搜索里点色块 / 右键 / 吸管 / 调色板）自动切到哪个画图工具 ✓
-               已经在涂抹或填色上时**不动** —— 别打断正在画的活儿 ✓ -->
-          <label class="set-row"><span>取色后切到</span>
-            <select id="set-picktool">
-              <option value="paint">涂抹</option>
-              <option value="fill">填色</option>
-            </select>
-          </label>
-          <div class="set-row"><span></span><button class="btn ghost" id="set-reset">恢复默认</button></div>
-        </div>
+          <div class="set-note" id="legend-count"></div>
+        </section>
 
+      </div>
+
+      <!-- 底栏：全局的东西都收在这儿 ✓ 「恢复默认」不再混在"其他"栏里 ✓
+           ⚠ 它会清掉字体选择（`SET_DEFAULTS` 里有 fontFace*）→ 必须 confirm 并说明 ✓
+             原来无提示、无确认，还越界清了别的 ✓ -->
+      <div class="set-foot">
+        <span class="set-dirty" id="set-dirty">已改动 0 项</span>
+        <button class="btn ghost" id="set-reset-group" type="button" hidden>恢复本组</button>
+        <button class="btn" id="set-reset" type="button">全部恢复默认</button>
       </div>
     </div>
   </div>

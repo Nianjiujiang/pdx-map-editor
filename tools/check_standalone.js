@@ -140,6 +140,8 @@ function findTestPack() {
      embedded ? Object.keys(embedded.maps || {}).join('/') : '没有 ✗');
   ok('拍平脚本抠出来了（不是空壳）', js.length > 100000, `${js.length} 字符`);
   ok('file:// 那段"不能双击打开"的提示已经摘掉', !/不能直接双击打开/.test(html));
+  ok('主题脚本留下来了（开机先定白天/黑夜 ✓）', /pdx-theme/.test(html) && /data-theme/.test(html));
+  ok('玻璃壳有降级（backdrop-filter 不支持也不糊 ✓）', /-webkit-backdrop-filter/.test(html));
   ok('外链 CSS 已经内联（没有 <link rel=stylesheet>）',
      !/<link rel="stylesheet" href="style\.css">/.test(html));
   if (!embedded) process.exit(1);

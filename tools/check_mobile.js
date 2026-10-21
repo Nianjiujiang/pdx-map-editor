@@ -68,6 +68,52 @@ function readScript(htmlPath) {
      /bindEvents\(\);\s*\n\s*bindMobile\(\)/.test(js));
   ok('HTML 那段注释也打了（手机版界面说明）', html.includes('手机版的界面'));
 
+  /* 🔴 **手机版教程内容要跟上界面** ✗✗（2026-10-20 ✓ 用户："手机版和电脑版教程重新做一下"）
+   *
+   *   老文案写的是「底下四个按钮」✗ —— 实际是**五个**（颜色/工具/视图/设置/文件），
+   *   而且把「文件」整个漏了 → 用户照着找导出，找不着 ✓
+   *   还说「视图：换年份剧本，或者切到地区、省份」✗ ——
+   *   v1.10 之后视图页分两级：上面剧本折叠栏、下面才是地理层级 ✓
+   */
+  {
+    const need = [
+      ['底下五个按钮', /底下五个按钮/],
+      ['剧本折叠栏（两级说明）', /剧本[\s\S]{0,40}折叠|折叠栏/],
+      ['地理层级那几个词', /大洲[\s\S]{0,80}省份/],
+      ['长按取色', /长按/],
+      ['双指缩放', /双指|两根手指/],
+    ];
+    const miss = need.filter(([, re]) => !re.test(js)).map(([n]) => n);
+    ok('手机版教程覆盖了现在的界面（五个按钮 / 剧本折叠 / 地理层级 / 长按 / 双指）',
+       miss.length === 0, miss.length ? `缺：${miss.join('、')}` : '都讲了 ✓');
+    /* ⚠ 剥掉注释再判 ✗ —— 注释里会提到旧的「四个」说法（记历史 ✓）
+     *   不剥的话永远红 ✓（跟桌面教程那条一个坑 ✓）*/
+    const jsCode = js
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+    ok('手机版教程不再说「底下四个按钮」（现在是五个 ✗）',
+       jsCode.indexOf('底下四个按钮') < 0);
+    /* 🔴 **统一叫「势力名」** ✗✗（2026-10-20 ✓ 用户："国名就是势力名"）
+     *   ⚠ 剥注释再判 ✓ 注释里讲历史会提到「国名」✓ */
+    ok('手机版教程统一用「势力名」（不写「国名」✗）',
+       jsCode.indexOf('国名') < 0,
+       jsCode.indexOf('国名') < 0 ? '干净 ✓' : '仍有「国名」字样 ✗');
+    /* 🔴 **介绍窗里也不许用破折号** ✗✗（2026-10-20 ✓ 用户："不要破折号"）
+     *   那几句是一段一段读的 ✓ 破折号把句子拦腰截断，手机上更难读 ✓ */
+    {
+      /* ⚠ 别用 `/const introHTML =([\s\S]*?);/` 那种 ✗
+       *   正文里有分号和引号拼接，非贪婪会在第一个分号就停 ✓（我第一版就只截到半句 ✓）
+       *   → 直接按**两个锚点**切：`const introHTML` 到 `const showIntro` ✓ */
+      const a = jsCode.indexOf('const introHTML');
+      const b = jsCode.indexOf('const showIntro');
+      const block = (a >= 0 && b > a) ? jsCode.slice(a, b) : '';
+      ok('手机版教程里没有破折号 ✓',
+         block.length > 100 && block.indexOf('——') < 0,
+         block ? (block.indexOf('——') < 0 ? `${block.length} 字符 · 干净 ✓` : '仍有破折号 ✗')
+               : '没找到 introHTML ✗');
+    }
+  }
+
   // ② 补丁**没有**漏进源码本该干净的地方：单文件里 app.js 只该有一份
   const nBind = (js.match(/function bindMobile\s*\(/g) || []).length;
   ok('bindMobile 只有一份（没重复打补丁）', nBind === 1, String(nBind));

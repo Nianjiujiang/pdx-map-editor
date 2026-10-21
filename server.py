@@ -167,7 +167,7 @@ class Handler(SimpleHTTPRequestHandler):
             )
             for tier, items in sorted(by_tier.items()):
                 lines = [
-                    f"# {TIER_LABEL[tier]}颜色（由 CK3 地图编辑器导出）",
+                    f"# {TIER_LABEL[tier]}颜色（由 悖论制图 导出）",
                     "# 只写了颜色，其它字段保持游戏原样。",
                     "",
                 ]
@@ -198,7 +198,7 @@ class Handler(SimpleHTTPRequestHandler):
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="CK3 地图编辑器服务")
+    ap = argparse.ArgumentParser(description="悖论制图 · 本地服务")
     ap.add_argument("--port", type=int, default=8777)
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--no-open", action="store_true", help="不自动打开浏览器")
@@ -211,7 +211,7 @@ def main() -> int:
     url = f"http://{args.host}:{args.port}/"
     httpd = ThreadingHTTPServer((args.host, args.port), Handler)
     print("=" * 56)
-    print("  CK3 地图编辑器已启动")
+    print("  悖论制图已启动")
     print(f"  {url}")
     print("  Ctrl+C 停止")
     print("=" * 56)

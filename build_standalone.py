@@ -66,8 +66,8 @@ MAPS = (
 #: 这两个必须在 data.js **前面**：data.js 的第三数据源要调 packstore 的 getFile ✓
 #: ⚠ 拍平只认行首那种静态 import ✗ —— 里面别写 `await import('./zip.js')`，
 #:   那种写法会被原样留在产物里，file:// 下必炸 ✓
-MODULES = ("log.js", "pack.js", "zip.js", "packstore.js", "data.js", "bmp.js", "gl.js",
-           "labels.js", "tilemap.js", "tutorial.js", "app.js")
+MODULES = ("log.js", "pack.js", "zip.js", "packstore.js", "fonts.js", "bitmapfont.js", "data.js", "bmp.js",
+           "gl.js", "labels.js", "tilemap.js", "tutorial.js", "app.js")
 
 
 def strip_module(src: str) -> str:
@@ -209,10 +209,14 @@ def main() -> int:
     html = html.replace('<link rel="stylesheet" href="style.css">', f"<style>\n{css}\n</style>")
 
     # 2) 删掉那段 file:// 拦截（单文件版本来就该用 file:// 打开）
-    start = html.find("<script>")
-    end = html.find("</script>", start)
-    if start != -1 and "location.protocol" in html[start:end]:
-        html = html[:start] + html[end + len("</script>"):]
+    #    ⚠ **不能只看第一个 `<script>`** ✗（2026-10-20 踩到 ✓）
+    #      用户在 `<head>` 里加了个"先定主题"的小脚本 → 它成了第一个，
+    #      于是这儿检查到的是主题脚本、拦截图原样留在产物里 ✗
+    #    → 按内容找：哪个 script 里有 `location.protocol` 就删哪个 ✓
+    m = re.search(r'[ \t]*<script>(?:(?!</script>).)*?location\.protocol(?:(?!</script>).)*?</script>[ \t]*\r?\n?',
+                  html, re.S)
+    if m:
+        html = html[:m.start()] + html[m.end():]
 
     # 3) 模块入口换成内联的普通脚本
     html = html.replace(
