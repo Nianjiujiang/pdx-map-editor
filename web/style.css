@@ -2591,3 +2591,98 @@ html[data-theme="light"] .ctl-step > button:hover,
 html[data-theme="light"] .ctl-seg > button:hover {
   background: #e9eff6;
 }
+
+/* ===========================================================================
+   🔴🔴 **电脑版：写死深色的最后一轮清扫**（2026-10-22）
+   （用户截图："成功删除地图：EU5 原版" 那个框 —— 深底 + 深字，读不出来）
+   ---------------------------------------------------------------------------
+   那个框不是浮条（`.toast`）✓ 是选图页的 **`#map-msg`** ✓
+   `background: #161c24` 写死 ✓ 日间一条都没有 ✓
+   而字用的是 `var(--text-dim)` ✓ 那个**会随主题翻** ✓
+   → 白天：深底 + 深字 ✓ 正好是最坏那种组合 ✓
+
+   顺手把整个 web/style.css 扫了一遍（`_local/deskaudit.js`），**20 处**同类。
+   这次一次清完，不再一个个等截图：
+
+     .map-msg / .bad / .done / .map-msg-bar   选图页消息框 + 它的进度条
+     .map-card.flash / .map-card-no           选图卡片：刚处理过的高亮 / 序号角标
+     .statusbar                               底部状态条
+     .set-row input / select                  设置里的输入框和下拉
+     .rename-input                            改名弹窗的输入框
+     .legend-row .legend-up / -down           图例行上下移按钮
+     .ctl-step / .ctl-seg > button            步进器 / 分段条
+     #tutCard button                          老教程卡的按钮（现在不用了，顺手补）
+     .btn.danger                              危险按钮的边框
+     .swatch                                  取色块（它显示的就是颜色本身，只补占位底）
+
+   ⚠⚠ **每一条都必须带 `html[data-theme="light"]` 前缀** ✗✗
+     我第一版写成了裸选择器 ✓ 那等于**连深色模式一起改** ✓
+     深色主题会被这批白底盖掉 ✓（扫子也立刻没认出来 —— 它要的是带前缀的 ✓
+     这次就是被自己的扫子逮住的 ✓）
+
+   ⚠ **故意不动**：`.modal` 那层遮罩 `rgba(6,9,12,.62)`
+     那是"把背后的地图压暗"的作用 ✓ 浅色主题下也照样该是暗的 ✓
+     （改成浅色就压不住了，弹窗会糊在地图上 ✓ 跟"深色控件的可读性"不是一回事 ✓）
+
+   ⚠ 取值一律用**日间那套变量**（`--panel` / `--panel-2` / `--line` / `--text-*`）✓
+     别再造一堆写死的白色 ✓ 那样下次换主题又得再来一轮 ✓
+   =========================================================================== */
+
+/* ---- 选图页：消息框（用户截图那个）---- */
+html[data-theme="light"] #map-msg,
+html[data-theme="light"] .map-msg {
+  background: var(--panel-2);
+  border-color: var(--line);
+}
+html[data-theme="light"] .map-msg.bad { border-color: #d99a8c; color: #8f2f1d; }
+html[data-theme="light"] .map-msg.done { border-color: #9ec9a8; color: #2f6b3c; }
+html[data-theme="light"] .map-msg-bar { background: #ccd5df; }
+
+/* ---- 选图卡片：高亮 / 序号 ---- */
+html[data-theme="light"] .map-card.flash { background: #eaf2fb; border-color: var(--gold-dim); }
+html[data-theme="light"] .map-card .map-card-no { background: var(--panel-2); color: var(--text-dim); }
+
+/* ---- 底部状态条 ---- */
+html[data-theme="light"] .statusbar { background: var(--panel); border-top-color: var(--line); }
+
+/* ---- 设置 / 改名里的输入框 ---- */
+html[data-theme="light"] .set-row input[type=text],
+html[data-theme="light"] .set-row input[type=number],
+html[data-theme="light"] .set-row select,
+html[data-theme="light"] .rename-input {
+  background: #fff;
+  border-color: var(--line);
+  color: var(--text);
+}
+html[data-theme="light"] .set-row input[type=text]:focus,
+html[data-theme="light"] .set-row input[type=number]:focus,
+html[data-theme="light"] .set-row select:focus,
+html[data-theme="light"] .rename-input:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+/* ---- 图例行的上下移 ---- */
+html[data-theme="light"] .legend-row .legend-up,
+html[data-theme="light"] .legend-row .legend-down {
+  background: var(--panel-2);
+  border-color: var(--line);
+  color: var(--text-dim);
+}
+
+/* ---- 步进器 / 分段条 ---- */
+html[data-theme="light"] .ctl-step,
+html[data-theme="light"] .ctl-seg > button {
+  background: var(--panel-2);
+  border-color: var(--line);
+  color: var(--text);
+}
+html[data-theme="light"] .ctl-step > button { color: var(--text-dim); }
+
+/* ---- 老教程卡（现在不用了，补上免得哪天翻出来又白字白底）---- */
+html[data-theme="light"] #tutCard button { background: var(--panel-2); border-color: var(--line); color: var(--text); }
+html[data-theme="light"] #tutCard button.tut-next { background: #fdf5e0; border-color: var(--gold-dim); color: var(--gold); }
+
+/* ---- 危险按钮的边框 / 取色块占位底 ---- */
+html[data-theme="light"] .btn.danger { border-color: #c1867c; color: #8f2f1d; }
+html[data-theme="light"] .swatch { background: #d5dce4; }

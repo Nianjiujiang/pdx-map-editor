@@ -856,3 +856,81 @@ if (fails.length) {
   for (const f of fails) console.log('  · ' + f);
   process.exitCode = 1;
 }
+
+/* ---------------------------------------------------------------- ⑧ 电脑版的深色清扫 */
+
+console.log('\n===== ⑧ 电脑版：写死深色的都有日间版吗 =====');
+{
+  /* 🔴 2026-10-22 ✓ 用户截图："成功删除地图：EU5 原版" 那个框是**深底 + 深字**
+   *
+   *   那个框不是浮条 ✓ 是选图页的 `#map-msg` ✓
+   *   `background: #161c24` 写死 ✗ 而字用 `var(--text-dim)`（会随主题翻）✓
+   *   → 白天：深底 + 深字 ✓ 最坏那种组合 ✓
+   *
+   *   判据跟手机版那把扫子一样：
+   *     某条规则定了深色（底 / 边 / 字），而**没有任何** `html[data-theme="light"]`
+   *     规则覆盖同一个选择器的同一个属性 → 就是"白天切了它也不变" ✓
+   *
+   *   ⚠ 白名单只放**故意**不改的：
+   *     `.modal` 那层遮罩 —— 它的职责是"把背后的地图压暗" ✓
+   *     浅色主题下也该是暗的 ✓ 改成浅色反而压不住、弹窗会糊在地图上 ✓
+   */
+  const ALLOW = ['.modal'];
+  const cssD = fs.readFileSync(path.join(ROOT, 'web', 'style.css'), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '');
+  const parseD = (s) => {
+    const out = []; const stack = []; let buf = '';
+    for (let i = 0; i < s.length; i++) {
+      const ch = s[i];
+      if (ch === '{') {
+        const head = buf.trim(); buf = '';
+        stack.push(/^@(media|supports|keyframes)/i.test(head) ? { cond: head } : { sel: head });
+      } else if (ch === '}') {
+        const top = stack.pop();
+        if (top && top.sel) {
+          const decls = {};
+          for (const p of buf.split(';')) { const k = p.indexOf(':'); if (k > 0) decls[p.slice(0, k).trim()] = p.slice(k + 1).trim(); }
+          out.push({ sel: top.sel, decls });
+        }
+        buf = '';
+      } else buf += ch;
+    }
+    return out;
+  };
+  const RD = parseD(cssD);
+  const darkIn = (v) => {
+    let found = false;
+    const scan = (r, g, b) => { if (r * .299 + g * .587 + b * .114 < 90) found = true; };
+    let m;
+    const hexRe = /#([0-9a-f]{3}|[0-9a-f]{6})\b/gi;
+    while ((m = hexRe.exec(v || ''))) {
+      let h = m[1];
+      if (h.length === 3) h = h.split('').map((c) => c + c).join('');
+      scan(parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16));
+    }
+    const rgbRe = /rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/g;
+    while ((m = rgbRe.exec(v || ''))) scan(+m[1], +m[2], +m[3]);
+    return found;
+  };
+  const bareD = (sel) => sel.split(',').map((s) => s.trim()
+    .replace(/html\[data-theme=["']?light["']?\]\s*/g, '').trim()).filter(Boolean);
+  const lightD = new Set();
+  for (const r of RD) if (/html\[data-theme=["']?light/.test(r.sel)) for (const b of bareD(r.sel)) lightD.add(b);
+
+  const PROPS_D = ['background', 'background-color', 'color', 'border-color', 'border'];
+  const bad = [];
+  const seenS = new Set();
+  for (const r of RD) {
+    if (/html\[data-theme=["']?light/.test(r.sel)) continue;
+    const props = PROPS_D.filter((p) => r.decls[p] !== undefined && darkIn(r.decls[p]));
+    if (!props.length) continue;
+    for (const s of r.sel.split(',').map((x) => x.trim()).filter(Boolean)) {
+      if (lightD.has(s) || ALLOW.includes(s) || seenS.has(s)) continue;
+      seenS.add(s);
+      bad.push(s);
+    }
+  }
+  ok('电脑版没有"写死深色、日间不跟随"的控件',
+     bad.length === 0,
+     bad.length ? `${bad.length} 处：${bad.slice(0, 6).join('、')}` : '全部有日间版 ✓');
+}
