@@ -728,21 +728,32 @@ console.log('\n===== ⑥ 日间模式：写死深色的都有白色版本吗 ===
     ok('介绍窗的卡片底没被刷成透明（`.mi-box` 与 `.modal-box` 是同一元素 ✓）',
        !bad, bad ? '被设成 transparent 了 ✗ 整窗会透出地图、深字压深底' : '底还在 ✓');
 
-    /* 日间那条必须有，而且不能太透（长文压着地图读不了 ✓）
-     * ⚠ 同一个选择器在文件里出现**不止一次** ✗（一条只改边框、一条改底 ✓）
-     *   所以要把所有命中都过一遍、挑**带 background 的那条** ✓
-     *   （我第一版只取第一条 → 拿到的是"只改边框"那条 → α 恒为 '?' ✓）*/
+    /* 日间那条必须有，而且是**玻璃**（2026-10-22 用户："加上液态玻璃效果"）
+     * ⚠ 判据三件：
+     *   ① **底子半透明但不至于读不了**：α 落在 0.75 ~ 0.95 ✓
+     *      · 太低（< .75）→ 长文压在花纹上读不下去 ✓
+     *      · 太高（> .95）→ 就是块实心白板、没有玻璃感 ✓
+     *   ② **必须真上模糊** ✗ 半透明 + 不模糊 = 地图花纹清清楚楚透上来 ✓
+     *      那才是最难读的组合 ✓ 玻璃和"半透明塑料"的差别就在这一条 ✓
+     *   ③ `-webkit-` 前缀也得有 ✓ iOS 只认它 ✓
+     *
+     * ⚠ 取颜色要**点名字**取 ✗ 不能用 `2\d\d` 那种模糊匹配：
+     *   这条规则里还有一道 `rgba(255,255,255,.92)` 的高光 ✓
+     *   模糊匹配会先抓到它、算出 α=.92 ✓ 结论对但理由错 ✓
+     *   卡片的底色是 `250, 252, 254` ✓ 认准这三个数 ✓ */
     const re = /html\[data-theme="light"\]\s*#mob-intro\s+\.modal-box\s*\{([^}]*)\}/g;
     let hit = null, mm;
     while ((mm = re.exec(mob))) {
       if (/background\s*:/.test(mm[1])) { hit = mm[1]; break; }
     }
     const body = hit || '';
-    const alphaMatch = /rgba\(\s*2\d\d\s*,\s*2\d\d\s*,\s*2\d\d\s*,\s*(0?\.\d+)\s*\)/.exec(body);
+    const alphaMatch = /rgba\(\s*250\s*,\s*252\s*,\s*254\s*,\s*(0?\.\d+)\s*\)/.exec(body);
     const alpha = alphaMatch ? Number(alphaMatch[1]) : null;
-    ok('介绍窗日间有够实的白底（长文不能浮在地图上 ✓）',
-       !!hit && alpha !== null && alpha >= 0.9,
-       hit ? `α=${alpha === null ? '?' : alpha}` : '没有日间底 ✗');
+    const hasBlur = /-webkit-backdrop-filter\s*:\s*blur\((\d+)px\)/.test(body)
+      && /(?:^|[^-])backdrop-filter\s*:\s*blur\(/.test(body);
+    ok('介绍窗日间是玻璃（半透明 + 真模糊，长文还读得下去 ✓）',
+       !!hit && alpha !== null && alpha >= 0.75 && alpha <= 0.95 && hasBlur,
+       hit ? `α=${alpha === null ? '?' : alpha} · 模糊=${hasBlur ? '有' : '没有 ✗'}` : '没有日间底 ✗');
   }
 }
 

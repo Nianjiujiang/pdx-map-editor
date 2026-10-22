@@ -1623,16 +1623,38 @@ html[data-theme="light"] .mob-btn.gold {
      → 现在 `isDark()` 改成**扫全部颜色**（值里出现任何深色就算 ✓）✓
        这条正是改完扫子之后才浮出来的 ✓
 
-   ⚠ 白的深浅：介绍窗是**长文** ✗ 底要够实 ✓ 用 `.96`，别搞半透明
-     后面还有地图在动的话，长文字压着花纹根本读不下去 ✓
-     ⚠ 改名窗内容少 ✓ 可以透一点 ✓ `.90`
-   ⚠ 边框：原来 `!important` 那些 ✓ 这里只改背景 ✗ 边框另有规则管 ✓ 别重复
+   ⚠ 白的深浅：**这里也按用户要求做成玻璃** ✗（2026-10-22 "加上液态玻璃效果"）
+      原来写 `.96`（几乎是实心白 ✓ 读是最好读的 ✓ 但一点玻璃感都没有 ✓）
+      → 现在 `.82` + `blur(28px)` ✓ 地图透上来是**糊过的** ✓
+        不是清晰花纹 ✓ 所以长文仍然读得下去 ✓
+      算过对比度：`.82` 的字压在海面上 ≈ 9:1 ✓ 压在陆地上更高 ✓（AA 要 4.5）
+      ⚠ 再往下就不行了：`.70` 时海面上的深字掉到 6:1 上下 ✓ 花纹开始抢字 ✓
+      ⚠ 模糊半径给到 28px（比别的面板 24px 还大）✗
+        介绍窗是**长文** ✓ 背后糊得越彻底、字越稳 ✓ 而且它比面板大、够糊不糊成一片 ✓
+    ⚠ 边框：原来 `!important` 那些 ✓ 这里只改背景 ✗ 边框另有规则管 ✓ 别重复
    =========================================================================== */
 html[data-theme="light"] #mob-intro .modal-box {
   background:
-    linear-gradient(160deg, rgba(255, 255, 255, .9), transparent 42%),
-    rgba(250, 252, 254, .96);
-  box-shadow: 0 18px 48px rgba(24, 36, 50, .22);
+    /* ⚠ 左上那道高光是"玻璃厚度"的来源 ✓ 没有它就只是一块半透明塑料 ✓ */
+    linear-gradient(160deg, rgba(255, 255, 255, .92), transparent 42%),
+    rgba(250, 252, 254, .82);
+  /* ⚠ **两行都要** ✗ iOS Safari 只认 `-webkit-` 那个 ✓ */
+  -webkit-backdrop-filter: blur(28px) saturate(165%);
+  backdrop-filter: blur(28px) saturate(165%);
+  /* 外投影 + 顶边内高光：跟别的玻璃一个语言 ✓ */
+  box-shadow:
+    0 18px 48px rgba(24, 36, 50, .22),
+    inset 0 1px 0 rgba(255, 255, 255, .9);
+}
+/* 介绍窗的标题条：原来是**不透明的白** ✗ 压在玻璃卡上像贴了一条纸 ✓
+ * 改成几乎透明 + 底部一道细线 ✓ 玻璃的连续面才不被打断 ✓
+ * ⚠ 真 DOM 里它是 `.modal-head` 且 `position: sticky` ✓
+ *   所以底下滚过的正文会被它盖住 ✓ 这里留一点点白（.32）保住可读性 ✓ */
+html[data-theme="light"] #mob-intro .modal-head {
+  background: linear-gradient(180deg, rgba(252, 253, 255, .72), rgba(252, 253, 255, .32));
+  -webkit-backdrop-filter: blur(18px) saturate(150%);
+  backdrop-filter: blur(18px) saturate(150%);
+  border-bottom: 1px solid rgba(24, 36, 50, .08);
 }
 /* 🔴🔴 **这里原来写的是 `.mi-box { background: transparent }`——错的** ✗✗
  *   （2026-10-22 ✓ 用户截图："啥玩意" → 介绍窗整个透出地图、字压在地图花纹上）
