@@ -2536,3 +2536,58 @@ html[data-theme="light"] *::-webkit-scrollbar-thumb { background: #b7c3cf; }
 html[data-theme="light"] *::-webkit-scrollbar-thumb:hover { background: #9fb0c0; }
 /* Firefox / 新版 Edge 认这条 ✓（webkit 那套它们不认）*/
 html[data-theme="light"] * { scrollbar-color: #b7c3cf transparent; }
+
+/* ===========================================================================
+   🔴🔴 **状态色（`:hover` / `:focus`）的日间补完**（2026-10-22）
+   （用户截图："白昼模式下这个按钮会变黑" —— 鼠标停在「删除」上）
+   ---------------------------------------------------------------------------
+   ⚠⚠ **为什么之前那批"日间补完"漏了这些** ✗
+     那批是按**组件**补的 ✓ 补的是每个组件的**常态** ✓
+     可这些组件把"悬停"**另写了一条** ✓ 那一条没人管 ✓
+     白底上鼠标一停 → 啪一下变黑 ✓（比常态还显眼 ✓）
+
+   ⚠ 还有一层**特异性陷阱**，不补这一条就永远盖不住：
+       `.map-card .map-act.danger:hover`      →（0,4,0）
+       `html[data-theme="light"] .map-card .map-act` →（0,3,1）
+     前者赢 ✗ 所以日间**必须也给状态写一条** ✓ 光盖常态没用 ✓
+
+   ⚠ 补齐口径：**不改变"这个是危险操作"这层意思** ✗
+     删除/危险那档在深色下是暗红 ✓ 在浅色下用**浅红底 + 深红字** ✓
+     别因为"要白"就把它变成普通灰 ✓ 那会丢掉警示 ✓
+   =========================================================================== */
+
+/* ---- 剧本下拉按钮 ---- */
+html[data-theme="light"] .dd-btn:hover { background: #eef3f8; }
+
+/* ---- 顶栏那些 ghost 按钮 / 齿轮 / 侧栏 ☰ ---- */
+html[data-theme="light"] .btn.ghost:hover:not(:disabled),
+html[data-theme="light"] .gear-btn:hover:not(:disabled) {
+  border-color: #b6c2cf;
+  background: #fff;
+}
+
+/* ---- 选图卡片上的「导出 / 删除」---- */
+html[data-theme="light"] .map-card .map-act:hover {
+  background: #e8eff7;
+  border-color: var(--gold-dim);
+  color: var(--gold);
+}
+/* ⚠ 危险那档：**保留红** ✗ 只是换成浅底深字 ✓ */
+html[data-theme="light"] .map-card .map-act.danger:hover {
+  background: #fdecec;
+  border-color: #e3a3a3;
+  color: #b02626;
+}
+
+/* ---- 图例行的上下移按钮 ---- */
+html[data-theme="light"] .legend-row .legend-up:hover,
+html[data-theme="light"] .legend-row .legend-down:hover {
+  border-color: #b6c2cf;
+  background: #fff;
+}
+
+/* ---- 设置里的步进器 / 分段条 ---- */
+html[data-theme="light"] .ctl-step > button:hover,
+html[data-theme="light"] .ctl-seg > button:hover {
+  background: #e9eff6;
+}
