@@ -1646,14 +1646,32 @@ html[data-theme="light"] #mob-intro .modal-box {
     0 18px 48px rgba(24, 36, 50, .22),
     inset 0 1px 0 rgba(255, 255, 255, .9);
 }
-/* 介绍窗的标题条：原来是**不透明的白** ✗ 压在玻璃卡上像贴了一条纸 ✓
- * 改成几乎透明 + 底部一道细线 ✓ 玻璃的连续面才不被打断 ✓
- * ⚠ 真 DOM 里它是 `.modal-head` 且 `position: sticky` ✓
- *   所以底下滚过的正文会被它盖住 ✓ 这里留一点点白（.32）保住可读性 ✓ */
+/* 🔴🔴 **介绍窗的标题条：不许有自己的底** ✗✗
+ *   （2026-10-22 ✓ 用户截图："红框这里居然是纯白色的，和周围格格不入"）
+ *
+ *   ⚠ 我上一版写的是 `.72` 的半透明白 ✓ 以为"半透明就淡了" ✗ 想错了：
+ *     标题条是**卡片的子元素** ✓ 画在卡片上面 ✓
+ *     卡片自己已经是 `.82` 的白 ✓ 再叠一层 `.72` 的白 →
+ *     合起来 ≈ `1 - (1-.82)(1-.72)` = **.95** ✓ 几乎纯白 ✓
+ *     （而卡片另一部分只叠了一层 ✓ 看着是灰玻璃 ✓ 于是两块差一大截 ✓）
+ *
+ *   ⚠ 而且它**根本不需要底** ✗✗
+ *     `#mob-intro .modal-head` 已经被改成 `position: static !important` ✓（第 738 行）
+ *     **不吸顶** ✓ 底下不会滚过正文 ✓ 没有"必须挡住内容"的理由 ✓
+ *   → 直接透明 ✓ 让它跟卡片是同一片玻璃 ✓ 只留一道极细的分隔线 ✓
+ *
+ *   ⚠ 深色那条（`background: #0f151c`）同理 ✓ 一起改成透明 ✓ 别只修一半 ✗
+ */
+#mob-intro .modal-head {
+  background: transparent;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  border-bottom: 1px solid rgba(255, 255, 255, .1);
+}
 html[data-theme="light"] #mob-intro .modal-head {
-  background: linear-gradient(180deg, rgba(252, 253, 255, .72), rgba(252, 253, 255, .32));
-  -webkit-backdrop-filter: blur(18px) saturate(150%);
-  backdrop-filter: blur(18px) saturate(150%);
+  background: transparent;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
   border-bottom: 1px solid rgba(24, 36, 50, .08);
 }
 /* 🔴🔴 **这里原来写的是 `.mi-box { background: transparent }`——错的** ✗✗

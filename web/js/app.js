@@ -11055,7 +11055,24 @@ if (typeof window.initTutorial === 'function') window.initTutorial();
     + '<h4>两个小提示</h4>'
     + '<p>涂错了就点「文件 → 撤销」（<strong>Ctrl + Z</strong>），或者直接用「清除」重新开始，'
     + '随便尝试也不会弄乱真正的文件。<br>'
-    + '想留住作品就选「文件 → 导出」，存下来的涂色下次导入依然可以接着修改。</p>';
+    + '想留住作品就选「文件 → 导出」，存下来的涂色下次导入依然可以接着修改。</p>'
+
+    /* 🔴 **2026-10-22：最后补一节快捷键**（用户："在教程最后加入快捷键的介绍"）
+     *  ⚠ 下面每一个都**照着代码核过** ✗ 不是凭印象写的：
+     *     `TOOLS` 里的 key / `keydown` 里那几个分支 / `\` 和 Esc 各自的监听 ✓
+     *  ⚠ **不写「F = 适应窗口」** ✗
+     *     `keydown` 末尾那句 `if (k === 'f') fitView()` 是**死代码** ✓
+     *     因为上面 `TOOLS` 已经先命中 F（填色）并 `return` 了 ✓
+     *     写进教程会让人按了发现没反应 ✓（这个我倒是可以顺手提一句给廿九 ✓）
+     *  ⚠ 手机版那块**不加这一节** ✗ 触屏上没有键盘 ✓
+     *     两边文案本来各写一份 ✓ 别为了"一致"硬塞 ✓ */
+    + '<h4>快捷键</h4>'
+    + '<p><strong>Q</strong> 查看 · <strong>W</strong> 吸管 · <strong>F</strong> 填色 · '
+    + '<strong>E</strong> 涂抹 · <strong>R</strong> 橡皮 · <strong>N</strong> 改名<br>'
+    + '<strong>Ctrl + Z</strong> 撤销 · <strong>Ctrl + Shift + Z</strong> 或 <strong>Ctrl + Y</strong> 重做<br>'
+    + '<strong>1</strong> ~ <strong>5</strong> 切地理层级（大洲 → 省份，越往右越细）<br>'
+    + '<strong>方向键</strong> 推视角，按住 <strong>Shift</strong> 步子大一些<br>'
+    + '<strong>\\</strong> 收起 / 展开左侧栏 · <strong>Esc</strong> 回主菜单</p>';
 
   /** 造/取介绍窗（懒建 ✓ 只在第一次点「教程」时建 ✓ 不拖慢启动 ✓）
    *  ⚠⚠ **用自己的变量缓存节点，别每次 `getElementById` 去探** ✗✗

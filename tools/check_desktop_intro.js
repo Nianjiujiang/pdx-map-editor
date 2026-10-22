@@ -134,7 +134,12 @@ const ok = (n, c, i) => {
     ok('**没有**残留原来那两个字（「设置」不再是按钮文字 ✗）',
        !/>\s*设置\s*</.test(el));
     ok('有无障碍名（`aria-label="设置"` ✓）', /aria-label="设置"/.test(tag));
-    ok('有悬停提示（`title` ✓）', /title="[^"]+"/.test(tag));
+    /* 🔴 **不写 `title`** ✗（2026-10-22 ✓ 用户："移除鼠标悬停时的那种提示"）
+     *   原生 tooltip 那方块跟这套界面不是一路 ✓ 有 `aria-label` 就够读屏了 ✓
+     *   ⚠ 这条从"必须有 title"改成了"必须**没有** title" ✓ 别把它改回去 ✗ */
+    ok('**没有**原生悬停提示（`title` 已按用户要求去掉 ✓）',
+       !/title="[^"]+"/.test(tag),
+       /title="/.test(tag) ? '还留着 title ✗' : '干净 ✓');
     /* 开合状态那条配色得还在 ✓ 齿轮开着时变金（日间是靛蓝 ✓ 靠 --gold 变量翻）*/
     ok('齿轮的"开着"状态配色还在（`aria-expanded="true"` ✓）',
        /#btn-settings\[aria-expanded="true"\]/.test(html));

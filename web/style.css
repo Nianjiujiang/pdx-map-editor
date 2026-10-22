@@ -707,6 +707,12 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin
   background: linear-gradient(90deg, var(--gold-dim), var(--gold));
   transition: width .25s;
 }
+/* 🔴 **加载进度条的底要跟着晨昏变** ✗（2026-10-22 ✓ 用户："白昼模式下选地图界面的
+ *   加载进度条…应该跟随变化"）
+ *   `#1c242e` 是**写死的深色** ✓ 底色是白的时候它就是一道黑槽 ✓ 很突兀 ✓
+ *   ⚠ 只改**槽**（`.boot-bar` 本身）✓ 进度那段（`i`）用的是 `--gold` ✓
+ *     那个变量本来就随主题翻 ✓ 不用动 ✓（改它反而会破坏两套主题的观感 ✓）*/
+html[data-theme="light"] .boot-bar { background: #ccd5df; }
 /* 署名那行：小、暗、不抢戏，但点得到 ✓
    🔴 2026-10-17 用户："加载界面那些字挤在一起很难看" → **拆成两行**
       第一行 作者 + 主页；第二行 导出诊断报告 + 版本戳 */
@@ -1579,11 +1585,53 @@ html[data-theme="light"] body { background: var(--bg); }
 }
 .theme-btn:hover { color: var(--gold); border-color: var(--gold-dim); }
 
-/* 🔴 **2026-10-21：主题按钮搬进「其他」页之后的行**（用户："晨昏按钮放在设置的【其他】页面"）
- *  ⚠ 它原来是**标签行最右**那个小胶囊 ✓ 现在是一条正常设置行 ✓
- *    · 左边「白天 / 黑夜」当标签（跟别的行一个口径 ✓）
- *    · 右边按钮**推到最右**（别贴着字 ✓ 跟 select 那几行对齐 ✓）
- *  ⚠ 只加布局，不动颜色 ✗ —— `.theme-btn` 上面那条已经管了 ✓ */
+/* 🔴 **2026-10-22：主题按钮挪到设置面板「顶部」** ✗✗
+ *   （用户："电脑的晨昏按钮应该放在设置的上面（参考手机版）"）
+ *   ⚠ 之前那条 `#settings .theme-row` 是它在「其他」页里当设置行时的样式 ✓
+ *     这一轮它搬走了 ✓ 那几条**留着没删**（无害、而且万一以后放回去还用得上 ✓）
+ *     但真正生效的是下面 `.set-theme-row` 这一套 ✓
+ */
+
+/* ===========================================================================
+   🔴🔴 **设置面板顶部那一行：界面 / 白天·黑夜**
+   ---------------------------------------------------------------------------
+   位置：`.set-box` 的**第一个孩子**，在 `.set-tabs` 之前 ✓
+   跟手机版 `.mob-theme-bar` 一个意思：
+     · 在**标签行上面、内容外面** ✓ 换页不会跟着滚走 ✓
+     · 它是"整个界面长什么样"的开关，不属于任何一页 ✓
+
+   ⚠ **视觉上要比标签行轻一档** ✗（它是一行设置，不是一级导航 ✓）
+     标签是实心块 + 选中态 ✓ 这里就用一行小字 + 一个小胶囊 ✓
+   ⚠ 底边一道极细的线跟标签行分开 ✓ 别用粗边框 ✓
+   ⚠ 手机版那一行（`.mob-theme-bar`）在 `mobile_css.txt` 里**另有一份** ✗
+     两边观感要一致 ✓ 以后改一边记得看另一边 ✓
+   =========================================================================== */
+.set-theme-row {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px 8px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.set-theme-lab {
+  flex: 1 1 auto;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: .5px;
+  color: var(--text-faint);
+}
+/* 按钮贴右、比默认胶囊略大一点（这一行只有它一个控件，可以大些 ✓）*/
+.set-theme-row .theme-btn {
+  flex: 0 0 auto;
+  height: 26px;
+  padding: 0 12px;
+  font-size: 12px;
+}
+/* 日间：细线和标签也跟着浅 ✓ 白底上不要深灰线 ✓ */
+html[data-theme="light"] .set-theme-row { border-bottom-color: rgba(24, 36, 50, .08); }
+html[data-theme="light"] .set-theme-lab { color: #5b6877; }
+
 #settings .theme-row { justify-content: space-between; }
 #settings .theme-row .theme-btn { margin-left: auto; flex: 0 0 auto; }
 /* 那一行比普通设置行稍微高一点（按钮 24px + 上下留白 ✓ 不然会贴边）*/
@@ -2462,3 +2510,29 @@ html[data-theme="light"] .mi-body { color: #3a4652; }
 html[data-theme="light"] .mi-body .mi-lead { color: #2b3743; }
 html[data-theme="light"] .mi-body h4 { color: #26598a; border-left-color: rgba(47, 95, 143, .45); }
 html[data-theme="light"] .mi-body strong { color: #16202b; }
+
+/* ===========================================================================
+   🔴 **滚动条也要跟着晨昏**（2026-10-22 ✓ 用户："栏目右侧滑条应该跟随变化"）
+   ---------------------------------------------------------------------------
+   各处的滑条原来都是**写死的深色** `#2b3542` ✗
+   白底上就是一道黑条 ✓ 尤其「选地图」那一栏右侧那条最显眼 ✓
+
+   ⚠ 原来只有 `.sidebar` 和 `.boot` 两处补过日间版 ✗ 剩下的都没管 ✓
+     `.map-pick-list`（选图列表）、`.results`（搜索结果）、设置抽屉里的
+     那一大块滚动区 —— 全是黑的 ✓
+   → 这次**统一兜一遍**：
+     · 一条 `*::-webkit-scrollbar-thumb` 打底 ✓ 覆盖所有还没单独写过的
+     · 再点名各容器 ✓（它们原来的选择器特异性更高、会盖住通用那条 ✓
+       所以必须逐个点名，光写通用那条不够 ✗）
+   ⚠ 只改**滑条** ✗ 宽度 / 轨道别动 ✓ 那跟主题无关 ✓
+   =========================================================================== */
+html[data-theme="light"] .map-pick-list::-webkit-scrollbar-thumb { background: #b7c3cf; }
+html[data-theme="light"] .results::-webkit-scrollbar-thumb { background: #b7c3cf; }
+html[data-theme="light"] .modal-box::-webkit-scrollbar-thumb { background: #b7c3cf; }
+html[data-theme="light"] .set-box::-webkit-scrollbar-thumb { background: #b7c3cf; }
+html[data-theme="light"] .set-grid::-webkit-scrollbar-thumb { background: #b7c3cf; }
+/* 通用兜底：上面没点到的容器也不会是黑条 ✓ */
+html[data-theme="light"] *::-webkit-scrollbar-thumb { background: #b7c3cf; }
+html[data-theme="light"] *::-webkit-scrollbar-thumb:hover { background: #9fb0c0; }
+/* Firefox / 新版 Edge 认这条 ✓（webkit 那套它们不认）*/
+html[data-theme="light"] * { scrollbar-color: #b7c3cf transparent; }

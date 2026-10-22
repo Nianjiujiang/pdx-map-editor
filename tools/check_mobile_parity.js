@@ -155,24 +155,41 @@ ok('手机版能切白天/黑夜（有 data-theme 的写入口）',
    /data-theme/.test(MOB_JS) || /btn-theme/.test(MOB_JS),
    /data-theme/.test(MOB_JS) ? '有 ✓' : '没有 ✗ 手机版等于永远夜间');
 
-/* 🔴 **「晨昏按钮放在设置的【其他】页面」**（2026-10-21 ✓ 用户点名）
- *   桌面 `#btn-theme` 必须在 `.set-col[data-group="legend"]` 里 ✓
- *   不在标签行（`.set-tabs`）里 ✗ 也不在别的分组 ✓
+/* 🔴 **晨昏按钮在设置面板「顶部」**（2026-10-22 ✓ 用户："电脑的晨昏按钮应该放在
+ *   设置的上面（参考手机版）"）
+ *
+ *   ⚠ 位置变过两次，别再写死旧口径 ✗：
+ *     · 最早在 `.set-tabs` 标签行最右 ✓
+ *     · 2026-10-21 挪进「其他」页（`data-group="legend"`）✓
+ *     · **现在**在面板最上面那一行 `.set-theme-row` ✓ 在 `.set-tabs` **之前** ✓
+ *   跟手机版 `.mob-theme-bar` 是同一个意思：面板顶部、不属于任何一页 ✓
+ *
  *   ⚠ 全文只能有**一个** `id="btn-theme"` ✗ —— `app.js` 用 `$()` 取，
  *     取到哪个就只给哪个挂 onclick ✓ 两颗的话另一颗点了没反应 ✓ */
 {
   const tabsStart = HTML.indexOf('<div class="set-tabs"');
+  const themeRow = HTML.indexOf('<div class="set-theme-row">');
+  ok('主题按钮在面板顶部那一行（`.set-theme-row` ✓）', themeRow >= 0,
+     themeRow >= 0 ? '有那一行 ✓' : '没有 ✗');
+  ok('那一行排在标签行**前面**（一开面板就看得到 ✓）',
+     themeRow >= 0 && tabsStart >= 0 && themeRow < tabsStart,
+     themeRow >= 0 ? `行@${themeRow} / 标签@${tabsStart}` : '找不到');
+
+  /* 它得真的在那一行**里面** ✓ 不是只在附近 */
+  const rowSeg = themeRow >= 0 ? HTML.slice(themeRow, HTML.indexOf('</div>', themeRow)) : '';
+  ok('主题按钮就在那一行里', /id="btn-theme"/.test(rowSeg),
+     /id="btn-theme"/.test(rowSeg) ? '在里面 ✓' : '不在 ✗');
+
   const tabsEnd = HTML.indexOf('</div>', tabsStart);
   const tabsSeg = HTML.slice(tabsStart, tabsEnd);
-  const hasInTabs = /id="btn-theme"/.test(tabsSeg);
-  ok('主题按钮不在标签行里了（挪进「其他」页 ✓）', !hasInTabs,
-     hasInTabs ? '还在 .set-tabs 里 ✗' : '已挪走 ✓');
+  ok('主题按钮不在标签行里（那是更早的位置 ✗）', !/id="btn-theme"/.test(tabsSeg));
 
+  /* ⚠ 也不能还留在「其他」页里 ✗ 搬走就得搬干净 ✓ */
   const lgStart = HTML.indexOf('<section class="set-col" data-group="legend"');
   const lgEnd = HTML.indexOf('</section>', lgStart);
   const lgSeg = lgStart >= 0 ? HTML.slice(lgStart, lgEnd) : '';
-  ok('主题按钮在「其他」页（data-group="legend"）里', /id="btn-theme"/.test(lgSeg),
-     /id="btn-theme"/.test(lgSeg) ? '在里面 ✓' : '不在 ✗');
+  ok('主题按钮不在「其他」页里（搬走了就别留副本 ✓）',
+     !/id="btn-theme"/.test(lgSeg));
 
   const nTh = (HTML.match(/id="btn-theme"/g) || []).length;
   ok('全页只有一个主题按钮（两颗的话有一颗点了没反应 ✗）', nTh === 1, `${nTh} 个`);

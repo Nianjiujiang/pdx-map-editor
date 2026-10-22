@@ -47,8 +47,11 @@ if (location.protocol === 'file:') {
          → 现在**顶栏第一个**，连标题都在它右边 ✓
          ⚠ 它管的是"左边那条栏" ✓ 所以放在左边，方向上也对 ✓
          ⚠ 手机版这个按钮是 `display: none` ✓（见 mobile_css.txt ✓）-->
+    <!-- ⚠ **不写 `title`** ✗（2026-10-22 ✓ 用户："移除鼠标悬停时的那种提示"）
+         浏览器原生 tooltip（那个方框）样式跟这套界面完全不是一路 ✓ 而且会盖住界面 ✓
+         功能照样有：`aria-label` 给读屏 ✓ 按钮本身的样子就够说明问题 ✓ -->
     <button class="btn ghost" id="btn-sidebar" type="button"
-            aria-controls="sidebar" aria-expanded="true" title="收起 / 展开左侧栏（\\）">☰</button>
+            aria-controls="sidebar" aria-expanded="true" aria-label="收起 / 展开左侧栏">☰</button>
 
     <div class="brand">
       <span class="brand-mark" id="brand-mark">PDX</span>
@@ -151,7 +154,7 @@ if (location.protocol === 'file:') {
          ⚠ 手机版不用它（顶栏整条 `display:none` ✓ 底部有自己的「设置」✓）-->
     <div class="tool-group actions" id="settings-row">
       <button class="btn ghost gear-btn" id="btn-settings" type="button"
-              title="设置（再点一下收起）" aria-label="设置">&#x2699;&#xFE0E;</button>
+              aria-label="设置">&#x2699;&#xFE0E;</button>
     </div>
 
   </header>
@@ -506,6 +509,22 @@ if (location.protocol === 'file:') {
 
       <!-- 四组分页（桌面）：窄屏铺不开四栏，改成标签切页 ✓
            ⚠ `data-group` 是给 `mobile_js` 认页用的 ✗ 别再用中文标题正则 ✓ -->
+      <!-- 🔴🔴 **2026-10-22：白天/黑夜挪到设置面板的「顶部」** ✗✗
+           （用户："电脑的晨昏按钮应该放在设置的上面（参考手机版）"）
+           → 手机版那套是：面板最上面一行「界面 … ☀ 白天」✓
+             在标签行**上面**、在内容**外面** ✓ 换页不会跟着滚走 ✓
+           → 桌面照抄这个结构 ✓ 位置也一样：**在 `.set-tabs` 之前** ✓
+
+           ⚠ **只搬家，不改 id、不改类** ✗
+             `app.js` 是按 `$('btn-theme')` 取元素挂 onclick 的 ✓
+             手机的 `mobile_js.txt` 也按 `#btn-theme` 把它搬进自己的 `.mob-theme-bar` ✓
+             id 一改，两边一起断 ✓
+           ⚠ 它原来在「其他」页（`data-group="legend"`）里当一行设置 ✓ 已经挪走 ✓ -->
+      <div class="set-theme-row">
+        <span class="set-theme-lab">界面</span>
+        <button class="theme-btn" id="btn-theme" type="button">☾ 夜间</button>
+      </div>
+
       <div class="set-tabs" id="set-tabs">
         <button class="set-tab on" type="button" data-group="color">颜色</button>
         <button class="set-tab" type="button" data-group="border">边界线</button>
@@ -643,14 +662,9 @@ if (location.protocol === 'file:') {
                它是"整个界面长什么样"的开关，比导出图例更高一层 ✓
                而且它一按整页就变色，放顶端一眼看得到变化 ✓ -->
         <section class="set-col" data-group="legend">
-          <div class="set-sub">界面</div>
-          <!-- ⚠ **id 必须还是 btn-theme** ✗ `app.js` 按它取元素挂 onclick ✓
-               类也保持 `.theme-btn` ✓ 样式现成 ✓
-               `app.js` 那边只管 `textContent = LABEL()`（☀ 白天 / ☾ 夜间）✓
-               ── 所以这里只给个初始字，真值开机就会被它刷掉 ✓ -->
-          <label class="set-row theme-row"><span class="set-l">白天 / 黑夜</span>
-            <button class="theme-btn" id="btn-theme" type="button">☾ 夜间</button>
-          </label>
+          <!-- ⚠ **「白天 / 黑夜」不在这儿了** ✗（2026-10-22 挪到面板顶部，见 `.set-theme-row`）
+               这里曾经有一行 `label.theme-row` + `#btn-theme` ✓ 已搬走 ✓
+               那一页现在只剩导出图例 ✓（分组标题也去掉了，空了就别硬留）-->
 
           <div class="set-sub">导出图例</div>
           <label class="set-row"><span class="set-l">导出时显示</span><input type="checkbox" id="set-legend"></label>
