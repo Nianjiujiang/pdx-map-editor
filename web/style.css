@@ -1704,6 +1704,14 @@ html[data-theme="light"] .set-theme-lab { color: #5b6877; }
   }
   .body { position: fixed; inset: 0; z-index: 1; }
   .stage { position: absolute; inset: 0; }
+  /* 🔴 **缩放按钮要让开侧栏** ✗✗（2026-10-22）
+   *   桌面版把地图铺满整个窗口、侧栏**浮在上面**（322px 宽 ✓ z-index 20 ✓）
+   *   而 `.zoom-box` 还是 `left: 12px` ✗ → 正好钻进侧栏底下：
+   *     · 深色主题：面板够实，按钮看不见（还以为没这组按钮 ✗）
+   *     · 白天主题：面板半透明，按钮**从底下透出来** → 看着像"压在最近使用上" ✗
+   *   → 让到侧栏右边：322 + 原来那 12 ✓
+   *   ⚠ 改侧栏宽度时这里**一起改** ✗（跟上面的 `width: 322px` 是同一个数 ✓）*/
+  .zoom-box { left: 334px; }
   .sidebar {
     position: absolute; left: 0; top: var(--tb-h, 46px); bottom: 0; z-index: 20;
     width: 322px;
@@ -2439,6 +2447,20 @@ html[data-theme="light"] .legend-list {
   background: rgba(24, 36, 50, .045);
 }
 html[data-theme="light"] .chain-row:hover { background: rgba(24, 36, 50, .09); }
+/* 🔴 **搜索结果空着的时候别给"底"** ✗✗（2026-10-22）
+ *   `#results` 是 `flex: 1`（撑满侧栏剩下的高度 ✓），没结果时就是一个空盒子 ✓
+ *   深色主题下它那层极淡的底几乎看不见 ✓ 换成白天就是**一大块灰** ✗
+ *   （用户截图里"左栏下半截被灰蒙住"就是它 ✓ 文字也跟着发灰 ✓）
+ *   → 空的时候整层撤掉 ✓ 有结果了再铺回来 ✓
+ *   ⚠ 白天那条规则的特异性比 `.results:empty` 高 ✗ → 两个都写 ✓ */
+/* ⚠ **不是 `:empty`** ✗ —— 搜索框空着时里面有一条 `.empty` 占位提示 ✓
+   所以认"只有占位提示"这个状态 ✓（`:has()` 现在各家都支持 ✓）*/
+.results:has(> .empty),
+html[data-theme="light"] .results:has(> .empty) {
+  background: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
 html[data-theme="light"] .palette .chip {
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, .7), 0 2px 6px rgba(24, 36, 50, .18);
 }

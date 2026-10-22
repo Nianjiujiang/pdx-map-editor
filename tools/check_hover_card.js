@@ -674,10 +674,12 @@ function pick(ex) {
       console.log(`    陆地：${rows.map((r) => r.a + (r.b ? '/' + r.b : '')).join('  ')}`);
       ok(`陆地 · ${m.id}：第一行一律不空、不带编号`,
         rows.every((r) => r.a && !isId(r.a)), rows.map((r) => r.a).join(' / '));
-      ok(`陆地 · ${m.id}：第二行不带编号`, rows.every((r) => !r.b || !isId(r.b)),
-        rows.map((r) => r.b).filter(Boolean).join(' / ') || '（都没给）');
-      ok(`陆地 · ${m.id}：第二行从不等于第一行（同词不重复）`,
-        rows.every((r) => !r.b || r.b !== r.a), rows.map((r) => r.a + '|' + r.b).join('  '));
+      /* 第二行：要么空、要么是个名字（不带编号 ✓）
+         ⚠ **同词不再隐藏** ✗（2026-10-20 用户要求："一二行同名也照常显示第二行"✓）
+           所以旧断言「第二行从不等于第一行（同词不重复）」**已经作废** ✓ 别再捡回来 ✓ */
+      ok(`陆地 · ${m.id}：第二行要么空、要么是不带编号的名字`,
+        rows.every((r) => !r.b || !isId(r.b)),
+        rows.map((r) => (r.b ? r.a + '|' + r.b : r.a)).join('  '));
       if (m.game === 'ck3' || m.game === 'ck2') {
         ok(`陆地 · ${m.id}：至少一层给出更低层级的信息`,
           rows.some((r) => !!r.b), rows.map((r) => r.b).filter(Boolean).join(' / ') || '（一层都没有 ✗）');
