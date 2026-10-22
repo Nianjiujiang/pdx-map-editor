@@ -3455,9 +3455,29 @@ const factory = new Function(
          return i > 0 && nm.length - i === want.geoTail.length + 1;
        })(), nm.join('/'));
     /* ⚠ 默认视图按各作自己的 `meta.defaultTier` ✓ 不写死"地区" ✗
-     *   （EU4 = 地区、EU5 = 省份 ✓ 见各自的构建器 ✓） */
+     *   🔴 **2026-10-22 改口径**：EU4 和 EU5 一进去都要停在**省份**
+     *     （用户："EU4 和 EU5 一进去的默认视图从地区改为省份，其他不变"）
+     *     · EU4 原来是 `ar`（地区 ✗）→ 现在 `pr`（省份 ✓）
+     *     · EU5 本来就是 `prov`（省份 ✓）✓ 这次只是把它**钉住** ✓
+     *   ⚠ 别的作**不许动** ✗
+     *     CK3 = `c`（伯爵领）、HOI4 = `st`（州）、VIC3 = `st`（州）✓
+     *     这条断言盯的就是"只有这两家变、其余不变" ✓ */
     ok(`默认视图 = ${nm[st.meta.defaultTier]}（按 meta.defaultTier=${st.meta.defaultTier} ✓）`,
        st.tier === st.meta.defaultTier, `第 ${st.tier} 层 = ${nm[st.tier]}`);
+    {
+      /* 只对 EU4 / EU5 生效 ✓ 靠 meta.game 判（包里有这个字段 ✓）*/
+      const g = String((st.meta && st.meta.game) || '').toLowerCase();
+      if (g === 'eu4' || g === 'eu5') {
+        const i = st.meta.defaultTier;
+        const key = (st.meta.tiers || [])[i];
+        const provKey = g === 'eu4' ? 'pr' : 'prov';
+        ok(`${g.toUpperCase()} 默认视图是**省份**（${provKey} ✓，不再停在地区 ✗）`,
+           key === provKey, `现在停在 ${key}（${nm[i]}）`);
+        ok(`${g.toUpperCase()} 的省份层**不是最后一层**（否则说明层定义变了 ⚠）`,
+           i < (st.meta.tiers || []).length - 1 || key === provKey,
+           `${i} / 共 ${(st.meta.tiers || []).length} 层`);
+      }
+    }
     /* 🔴 **2026-10-19：按钮总数要拆成"剧本 + 地理"两段** ✗✗
      *   ⚠ **2026-10-20 起要看模式**：剧本 **≥4 个**才用下拉栏 ✓
      *     少于 4 个回退成按钮（那时剧本层就**摆在这一排里** ✓ 不是分开的 ✗）

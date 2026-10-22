@@ -1388,11 +1388,15 @@ def main() -> int:
         "tierKeys": [TIER_KEY[t] for t in TIER_ORDER],
         "entity": "省份",
         # 年份模式 6 层，省份 = ERA_TIERS+2；非年份模式只有 5 层，取最后一层
-        # 🔴 **默认停在"地区"层** ✓（2026-10-19 改成按层名取，不再算偏移）
-        #   原来是 `ERA_TIERS + 2` ✗ —— 那是按"剧本数 + rg/ar 两个前缀层"推的，
-        #   一旦地理层变成 4 个（大洲/大区/区域/地区），它就指到别处去了 ✓
-        #   用户打开一张图最先想看的是"地区"（EU4 习惯的地图粒度 ✓）
-        "defaultTier": (TIER_ORDER.index("ar") if "ar" in TIER_ORDER else len(TIER_ORDER) - 1),
+        # 🔴 **默认停在"省份"层** ✓（2026-10-22 ✓ 用户："EU4 和 EU5 一进去的默认视图
+        #   从地区改为省份，其他不变"）
+        #   ⚠ 原来是 `TIER_ORDER.index("ar")`（地区 ✗）→ 现在 `"pr"`（省份 ✓）
+        #   ⚠ 别写 `len(TIER_ORDER) - 1` ✗ —— 那是"最后一层"，
+        #     地理层将来加/减（大洲/大区/区域/地区/省份）它就指到别处 ✓
+        #     按**层名**取才稳（这条 2026-10-19 已经踩过一次 ✓）
+        #   ⚠ 只在 `"pr"` 真存在时才用 ✓ 万一以后砍掉省份层，
+        #     退回"最后一层"至少不会给出越界下标 ✓
+        "defaultTier": (TIER_ORDER.index("pr") if "pr" in TIER_ORDER else len(TIER_ORDER) - 1),
         # 年份那三层节点少（几百个国家）、彼此还挤在一起，门槛比大洲那套高一点
         # **全部 tag** 的名字 + 颜色（含当前年代没地盘的）—— 搜索/取色要用 ✓
         # 名字先放 tag —— 中文名由 patch_wasteland 从 titles.json 里统一补 ✓
