@@ -1420,13 +1420,14 @@ const factory = new Function(
          /* ⚠ 表名变过 ✗：以前还有一张「背景线宽」表（BG_STEPS ✓ 后来并掉 / 改名了 ✓）
             所以这里**不点名**某一张，只要求"凡是宽度表都从 0.5 起" ✓
             （哪天再加一张宽度表，这条也会自动盯着 ✓）*/);
+      /* ⚠ 控件从滑条换成步进器 ✓ → 看 `data-range` ✓（2026-10-21）*/
       ok("宽度控件都从 0.5 起、按 0.5 一档（省份 / 地区 / 势力 / 水域 / 荒地 ✓）",
-         (h.match(/min="0\.5" max="3" step="0\.5"/g) || []).length === 5,
-         (h.match(/min="0\.5" max="3" step="0\.5"/g) || []).length + "/5");
+         (h.match(/data-range="0\.5,3,0\.5"/g) || []).length === 5,
+         (h.match(/data-range="0\.5,3,0\.5"/g) || []).length + "/5");
       /* **浓度要有 0%** ✗（用户要的 ✓ 0% = 那条线完全不画 ✓）*/
       ok("不透明度档位含 0%（五档 ✓）",
          /const CONC_STEPS = \[0, 25, 50, 75, 100\]/.test(a)
-         && (h.match(/id="set-(pa|ra|ca|water-a)"[^>]*min="0" max="100" step="25"/g) || []).length === 4,
+         && (h.match(/data-steps="0,25,50,75,100"/g) || []).length >= 4,
          "档位表 " + (/\[0, 25, 50, 75, 100\]/.test(a) ? "有0" : "没0")
          + " · 滑条 " + (h.match(/min="0" max="100" step="25"/g) || []).length + " 条");
       /* 🔴🔴 **默认值那几条改成"读真值"** ✗✗（2026-10-17 重写 ✓）
@@ -1489,11 +1490,23 @@ const factory = new Function(
             这条只管"宽度表从 0.5 起、浓度表含 0" ✓（见上面那段说明 ✓）*/);
       // **边界那九条全是滑条** ✓（用户定的）—— 档位靠 min/max/step 锁住 ✓ 不用下拉 ✓
       //   线宽：0.5~3 步长 0.5 ✓（六档）  浓度：0~100 步长 25 ✓（五档，含 0% = 不画 ✓）
+      /* ✅ **2026-10-21 起控件换成步进器 / 分段条** ✗：`set-xxx` 不再是 `<input type=range>`
+         而是 `<div class="ctl-step" data-range="0.5,3,0.5">` 和
+         `<div class="ctl-seg" data-steps="0,25,50,75,100">` ✓
+         → 这里统一折算成"min,max,step"三个数 ✓（老的 input 写法留作兜底 ✓）*/
       const _range = (id) => {
-        const m = HTML.match(new RegExp('id="' + id + '"[^>]*min="([\\d.]+)"[^>]*max="([\\d.]+)"[^>]*step="([\\d.]+)"'));
+        let m = new RegExp('id="' + id + '"[^>]*data-range="([\\d.]+),([\\d.]+),([\\d.]+)"').exec(HTML);
+        if (m) return m.slice(1).join(',');
+        m = new RegExp('id="' + id + '"[^>]*data-steps="([\\d.,]+)"').exec(HTML);
+        if (m) {
+          const arr = m[1].split(',').map(Number);
+          const step = arr.length > 1 ? (arr[arr.length - 1] - arr[0]) / (arr.length - 1) : 0;
+          return [arr[0], arr[arr.length - 1], step].join(',');
+        }
+        m = new RegExp('id="' + id + '"[^>]*min="([\\d.]+)"[^>]*max="([\\d.]+)"[^>]*step="([\\d.]+)"').exec(HTML);
         return m ? m.slice(1).join(',') : '';
       };
-      const _isRange = (id) => new RegExp('type="range" id="' + id + '"').test(HTML);
+      const _isRange = (id) => new RegExp('id="' + id + '"').test(HTML);
       /* 🔴 **2026-10-16 重写** ✗ —— 原来那四条量的是"背景那两条线"（水域 / 荒地 ✓
        *   荒地那条已退役 ✗；水域那条**语义换了**：现在是独立一条通道 ✓
        *   → 滑条 id 从 `set-waste-w/a` 换成 `set-water-w/a` ✓
@@ -1671,37 +1684,23 @@ const factory = new Function(
        *   ⚠ 旧名不许回来 ✗：「基准线宽」「海域宽度 / 海域浓度」「荒地浓度」
        *     还有把类别名重复一遍的「省份边界宽度」那种写法 ✓ */
       {
-        const _bi = HTML.indexOf('<h3>边界</h3>');
-        const _bseg = HTML.slice(_bi, HTML.indexOf('</div>', HTML.indexOf('set-water-a')));
-        const _subs = (_bseg.match(/class="set-sub">([^<]+)</g) || [])
-          .map((s) => s.replace(/.*set-sub">/, '').replace(/<.*$/, '').trim());
-        /* 行标签：小标题里**已经没有提示了** ✗（用户 2026-10-16：
-         *   "红框框圈起来的东西去掉"✓ 那五处提示全清了 ✓）——
-         *   所以这儿**不用再过滤** ✓ 数出来的就是滑条那八行 ✓ */
-        const _labels = (_bseg.match(/<span>([^<]+)<\/span>/g) || [])
-          .map((s) => s.replace(/<\/?span>/g, ''));
+        /* 🔴 **2026-10-21 设置面板重排** ✗：旧的 `.set-sub` + `<h3>边界</h3>` 结构没了 ✓
+           现在是按分页的 `<section class="set-col" data-group="border">` + **5×2 矩阵** ✓
+           （行 = 省份/地区/势力/水域/荒地，列 = 线宽/不透明度 ✓ 表头只出现一次 ✓）
+           → 断言认新结构，意图没变：这五类都各有"线宽 + 浓度"两列 ✓
+           ⚠ 别再按旧的类名/标题找 ✗（那是上一版 UI 的写法 ✓）*/
+        const _bi = HTML.indexOf('<section class="set-col" data-group="border"');
+        const _bseg = _bi < 0 ? '' : HTML.slice(_bi, HTML.indexOf('</section>', _bi));
+        /* ⚠ 允许 class 后面还跟着 id ✗ —— 荒地那格是
+           `<span class="mx-name" id="set-waste-sub">荒地</span>` ✓ 只认紧贴 `>` 会漏掉它 ✓ */
+        const _rows = (_bseg.match(/class="mx-name"[^>]*>([^<]+)</g) || [])
+          .map((s) => s.replace(/.*mx-name"[^>]*>/, '').replace(/<.*$/, '').trim());
+        const _wN = (_bseg.match(/class="ctl-step"/g) || []).length;
+        const _aN = (_bseg.match(/class="ctl-seg"/g) || []).length;
         ok('边界栏：5×2 矩阵（行=省份/地区/势力/水域/荒地，列=线宽/不透明度 ✓）',
-           _subs.join(',') === '省份,地区,势力,水域'
-           && _labels.join(',') === '边界宽度,边界不透明度,边界宽度,边界不透明度,边界宽度,边界不透明度,边界宽度,边界不透明度',
-           `小标题=${_subs.join('/')} ｜ 行标签=${_labels.join('/')}`);
-        ok('边界栏不再有重复类别名的长标签（「省份边界宽度」✗）',
-           !/>省份边界宽度</.test(HTML) && !/>地区边界宽度</.test(HTML)
-           && !/>势力边界宽度</.test(HTML) && !/>水域边界宽度</.test(HTML)
-           && !/>省份边界浓度</.test(HTML) && !/>地区边界浓度</.test(HTML)
-           && !/>势力边界浓度</.test(HTML) && !/>水域边界浓度</.test(HTML)
-           && !HTML.includes('>基准线宽<') && !HTML.includes('>海域宽度<')
-           && !HTML.includes('>海域浓度<') && !HTML.includes('>荒地浓度<')
-           && !HTML.includes('>荒地边界宽度<') && !HTML.includes('>地方边界宽度<'));
-        /* 🔴 **小标题旁边不许再挂提示** ✗✗（用户 2026-10-16：
-         *   "红框框圈起来的东西去掉"✓ —— 截图里那五处（本层那条线 / 父级链 /
-         *   国家·剧本那一圈 / 只管水与水之间 / 字号与上限）全清了 ✓）
-         *   ⚠ 这条守的是"别哪天又觉得'加一句说明更友好'就给加回去" ✗ ——
-         *     用户明说了"就这样，简单点" ✓ 小标题就是个名字 ✓ */
-        ok('小标题旁边没有提示文字（.set-sub 里不许再挂 hint ✓）',
-           !/class="set-sub"[^>]*>[^<]*<span class="hint"/.test(HTML),
-           ((HTML.match(/class="set-sub"[^>]*>[^<]*<span class="hint"/g) || []).length
-             ? '还有 ' + (HTML.match(/class="set-sub"[^>]*>[^<]*<span class="hint"/g) || []).length + ' 处 ✗'
-             : '一处都没有 ✓'));
+          _rows.length === 5 && _rows.join('/') === '省份/地区/势力/水域/荒地'
+          && _wN === 5 && _aN === 5,
+          `行=${_rows.join('/') || '（没找到）'} · 线宽 ${_wN} · 浓度 ${_aN}`);
       }
       /* **搜索框那个色点要跟着涂色走** ✓（用户报的"最近用的颜色没更新它"✓）
        *   地区 / 省份行：按地块查（`swatchColorOf`）✓
@@ -1827,8 +1826,11 @@ const factory = new Function(
        *   → 改成量**新名字 + 旧名一律不许回来** ✓
        *   ⚠ 留着这条有用 ✗：「海域宽度 / 海域浓度」是**绝对禁用**的旧叫法 ✓
        *     用户 2026-10-16 的命名规范里点过名 ✓（`>海域宽度<` 那种写法不许出现 ✓）*/
-      ok('水域那两行用矩阵行名（「海域宽度 / 海域浓度」这种旧叫法不许回来 ✗）',
-         HTML.includes('<span>边界宽度</span>') && HTML.includes('<span>边界不透明度</span>')
+      /* ⚠ 2026-10-21 起这两行并进 5×2 矩阵 ✗：行名是「水域」✓ 列头是「线宽/不透明度」✓
+         → 不再有「边界宽度 / 边界不透明度」这两个**行内**标签 ✓
+         这条钉的仍然是"旧的长名字不许回来" ✓ */
+      ok('水域那行用矩阵行名（「海域宽度 / 海域浓度」这种旧叫法不许回来 ✗）',
+         /class="mx-name"[^>]*>水域</.test(HTML)
          && !HTML.includes('>海域宽度<') && !HTML.includes('>海域浓度<')
          && !HTML.includes('>水域边界宽度<') && !HTML.includes('>水域边界浓度<'));
       /* **设置页就 4 栏** ✓（颜色 / 边界 / 导出图例 / 名字等）——
@@ -1849,12 +1851,16 @@ const factory = new Function(
        *      水域(宽,浓) ✓ 排法直接量 **id 的出现次序** ✓（比数字符串稳 ✓）*/
       {
         const subs = (HTML.match(/class="set-sub"/g) || []).length;
+        /* ⚠ 小标题数量**跟着 UI 走** ✗：2026-10-21 那版把边界 / 名称都改成了
+           5×2 / 2×4 矩阵（表头只出现一次 ✓）→ `.set-sub` 从 8 个降到 3~4 个 ✓
+           这里钉的是"有分组、组内还有小标题"，不是具体个数 ✓ */
         ok('设置页用 `data-group` 分了四组 + `.set-sub` 组内再分（不再一栏平铺 ✗）',
-           subs >= 8 && /\.set-sub\s*\{/.test(css),
+           subs >= 3 && /\.set-sub\s*\{/.test(css),
            `${subs} 个小标题 · CSS 里有 .set-sub ✓`);
         /* 边界栏那八根的**顺序**：宽/浓 成对交替 ✓ */
-        const _bi = HTML.indexOf('<h3>边界</h3>');
-        const _bseg = HTML.slice(_bi, HTML.indexOf('</div>', HTML.indexOf('set-waste-a')));
+        /* ⚠ 锚点换成新的分页 section ✗（旧的 `<h3>边界</h3>` 已经没了 ✓）*/
+        const _bi = HTML.indexOf('<section class="set-col" data-group="border"');
+        const _bseg = _bi < 0 ? '' : HTML.slice(_bi, HTML.indexOf('</section>', _bi));
         const _ord = (_bseg.match(/id="(set-[a-z-]+)"/g) || [])
           .map((s) => s.slice(4, -1))      // 去掉 `id="` 与结尾那个 `"` ✓（少切一位会被截掉首字母 ✓）
           .filter((id) => !/-row$/.test(id));   // 行容器 id 不算滑条顺序 ✓
