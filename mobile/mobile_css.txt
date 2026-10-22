@@ -1325,8 +1325,13 @@ html[data-theme="light"] .mob-tab.on {
 }
 
 /* ---- ⑥ 弹窗：介绍窗 / 改名 / 设置底部那几条 ---- */
+/* ⚠ **这里不再写 `#mob-intro .mi-box`** ✗（2026-10-22 去掉）
+ *   手机版那个窗是 `<div class="modal-box mi-box">` ✓ 两个类是**同一个元素** ✓
+ *   再列一遍 `.mi-box` 纯属重复 ✓ 而且会让"白天有没有覆盖"这类静态扫描看花眼 ✓
+ *     （扫子按选择器名一一比对 ✓ 看到 `.mi-box` 有深底、又找不到它的日间版 → 报红 ✓
+ *       其实是 `.modal-box` 那条日间版在管着它 ✓ 误报 ✓）
+ *   → 一个元素只用一个选择器表达 ✓ 别为了"看起来更明确"多列一遍 ✓ */
 #mob-intro .modal-box,
-#mob-intro .mi-box,
 #rename .modal-box {
   background:
     linear-gradient(160deg, rgba(255, 255, 255, .08), transparent 42%),
@@ -1629,9 +1634,23 @@ html[data-theme="light"] #mob-intro .modal-box {
     rgba(250, 252, 254, .96);
   box-shadow: 0 18px 48px rgba(24, 36, 50, .22);
 }
-html[data-theme="light"] #mob-intro .mi-box {
-  background: transparent;      /* 内层别再叠一层底 ✓ 交给外面那张卡 ✓ */
-}
+/* 🔴🔴 **这里原来写的是 `.mi-box { background: transparent }`——错的** ✗✗
+ *   （2026-10-22 ✓ 用户截图："啥玩意" → 介绍窗整个透出地图、字压在地图花纹上）
+ *
+ *   ⚠⚠ **`.mi-box` 和 `.modal-box` 是同一个元素** ✗✗
+ *     手机版建窗时写的是 `<div class="modal-box mi-box">` ✓（`mobile_js.txt`）
+ *     我照着电脑版的结构想象成"外层卡片 + 内层盒子" ✓ 以为是两层 ✓
+ *   → 于是写了"内层透明、底交给外层" ✓
+ *   → 可它们就是一个元素 ✓ 这条把**卡片自己的底刷成透明** ✓
+ *     结果：整个窗透明 ✓ 底下地图全透上来 ✓ 深字压在深色海面上 ✓ 几乎读不出 ✓
+ *
+ *   ⚠ 而且这条的**特异性跟上面那条 `.modal-box` 一样** ✓
+ *     谁后写谁赢 ✓ 它排在后面 ✓ 所以让它赢了 ✓
+ *   ⚠ **桌面版（`#app-intro`）才是真的两层**（`.modal-box > .mi-box` ✓）
+ *     那边"内层透明"是对的 ✓ 别混着改 ✗
+ *
+ *   → 手机版这里**什么都不写** ✓ 底由上面那条 `.modal-box` 管 ✓
+ */
 html[data-theme="light"] #rename .modal-box {
   background:
     linear-gradient(160deg, rgba(255, 255, 255, .85), transparent 42%),

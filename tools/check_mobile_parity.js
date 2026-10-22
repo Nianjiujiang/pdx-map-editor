@@ -705,6 +705,45 @@ console.log('\n===== ⑥ 日间模式：写死深色的都有白色版本吗 ===
      bg.length
        ? `${bg.length} 条：` + bg.slice(0, 6).map(([s, v]) => `${s}（${v[0]}）`).join('；')
        : '全部有日间版本 ✓');
+
+  /* 🔴🔴 **介绍窗的卡片底，日间不许被刷成透明** ✗✗
+   *   （2026-10-22 ✓ 用户："我开了白昼模式，但是面板却是黑夜模式，而字是白昼模式"）
+   *
+   *   根因：手机版建窗写的是 `<div class="modal-box mi-box">` ✓
+   *   **那两个类是同一个元素** ✗ 我照电脑版的结构当成"外层卡片 + 内层盒子"两层 ✓
+   *   → 写了 `#mob-intro .mi-box { background: transparent }`（"内层别叠底"）
+   *   → 它把**卡片自己的底**刷成透明 ✓
+   *   → 底下露出遮罩 + 地图（看着像黑板）✓ 而字已经换成日间的深色 ✓
+   *   → 深字压深底，读不出来 ✓
+   *   ⚠ 特异性还跟日间那条一样、又排在后面 → 它赢 ✓
+   *
+   *   ⚠ 桌面版（`#app-intro`）**才是真的两层** ✓ 那边"内层透明"是对的 ✓
+   *     所以这条只盯 `#mob-intro` ✓
+   */
+  {
+    const mob = fs.readFileSync(path.join(ROOT, 'mobile', 'mobile_css.txt'), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '');
+    const bad = /#mob-intro\s+\.mi-box\s*\{[^}]*background\s*:\s*transparent/.test(mob)
+      || /#mob-intro\s+\.modal-box\s*\{[^}]*background\s*:\s*(none|transparent)/.test(mob);
+    ok('介绍窗的卡片底没被刷成透明（`.mi-box` 与 `.modal-box` 是同一元素 ✓）',
+       !bad, bad ? '被设成 transparent 了 ✗ 整窗会透出地图、深字压深底' : '底还在 ✓');
+
+    /* 日间那条必须有，而且不能太透（长文压着地图读不了 ✓）
+     * ⚠ 同一个选择器在文件里出现**不止一次** ✗（一条只改边框、一条改底 ✓）
+     *   所以要把所有命中都过一遍、挑**带 background 的那条** ✓
+     *   （我第一版只取第一条 → 拿到的是"只改边框"那条 → α 恒为 '?' ✓）*/
+    const re = /html\[data-theme="light"\]\s*#mob-intro\s+\.modal-box\s*\{([^}]*)\}/g;
+    let hit = null, mm;
+    while ((mm = re.exec(mob))) {
+      if (/background\s*:/.test(mm[1])) { hit = mm[1]; break; }
+    }
+    const body = hit || '';
+    const alphaMatch = /rgba\(\s*2\d\d\s*,\s*2\d\d\s*,\s*2\d\d\s*,\s*(0?\.\d+)\s*\)/.exec(body);
+    const alpha = alphaMatch ? Number(alphaMatch[1]) : null;
+    ok('介绍窗日间有够实的白底（长文不能浮在地图上 ✓）',
+       !!hit && alpha !== null && alpha >= 0.9,
+       hit ? `α=${alpha === null ? '?' : alpha}` : '没有日间底 ✗');
+  }
 }
 
 /* ---------------------------------------------------------------- 汇总 */
