@@ -3153,7 +3153,7 @@ function renderHoverCard(pid) {
       row.innerHTML =
         `<span class="dot" style="background:${rgbToHex(col)}"></span>
          <span class="tier">${TIER_BADGE[tier]}</span>
-         <span class="name"${_shown ? '' : ' style="color:var(--text-faint)"'}>${_shown || '—'}${changed}</span>
+         <span class="name"${_shown ? '' : ' style="color:var(--text-faint)"'}>${_escHtml(_shown || '—')}${changed}</span>
          <span class="pick">取色</span>`;
       row.onclick = () => {
         gotoLevel(tier);
@@ -5140,7 +5140,7 @@ function buildToolbar() {
         /* 🔴 **只写剧本名，不写日期** ✗✗（2026-10-20 ✓ 用户原话："纯属画蛇添足"）
          *   日期挪进 `title`（鼠标悬停才看得到）—— 想核对年份时仍然查得到 ✓
          *   面板也就能窄一点，看着清爽 ✓ */
-        b.innerHTML = `<span class="dd-item-name">${names[i]}</span>`;
+        b.innerHTML = `<span class="dd-item-name">${_escHtml(names[i])}</span>`;
         b.onclick = () => { closeEraPanel(); pressTier(i); };
         eraPanel.appendChild(b);
       }
@@ -5177,7 +5177,9 @@ function buildToolbar() {
     /* 热键**只给地理层** ✓（用户点名："快捷键不要对剧本层生效"✓）
      * 回退模式下剧本层也在这一排，但它们不占号 ✓ */
     const hk = (i >= eraN) ? (TIER_HOTKEY[i - eraN] || '') : '';
-    b.innerHTML = `${names[i]}${hk ? `<span class="k">${hk}</span>` : ''}`;
+    /* ⚠ names 来自 meta.tierNames —— 导入的地图包**外人给的文件** ✗
+     *    拼进 innerHTML 前过一道转义（跟选图卡片那条路同一个规矩 ✓）*/
+    b.innerHTML = `${_escHtml(names[i])}${hk ? `<span class="k">${hk}</span>` : ''}`;
     b.onclick = () => pressTier(i);
     tierBox.appendChild(b);
   }
@@ -9288,7 +9290,7 @@ function rebuildLegendPanel() {
   const esc = (s) => String(s == null ? '' : s)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   box.innerHTML = list.map((e, i) => (
-    '<div class="legend-row" data-key="' + e.key + '">'
+    '<div class="legend-row" data-key="' + esc(e.key) + '">'
     + '<input type="checkbox" class="legend-on"' + (e.on ? ' checked' : '') + '>'
     + '<span class="legend-sw" style="background:' + _hexOf(e.rgb) + '"></span>'
     // **名字只读** ✓ —— 列表里不再能改名（想改走「改名」工具 ✓）
