@@ -13,6 +13,8 @@
 
   → 所以这个脚本**绝不会动到电脑版** ✓ 也不会弄丢你没提交的源码改动 ✓
     （以前这两件都翻过车 ✗ 一个字节的快照把这些坑全堵死了 ✓）
+    步骤 4 / 5 放在 finally 里 ✗ —— 烤单文件那步失败、或者中途 Ctrl+C，
+    源码和电脑版也照样按字节还原 ✓ web/ 不会停在"打了手机补丁"的状态 ✗
 
 电脑版和手机版共用同一套源码 ✓ 区别只有"打不打这个补丁" ✓
 出电脑版就是：python build_standalone.py
@@ -50,27 +52,34 @@ def main():
     desk_before = DESKTOP.read_bytes() if DESKTOP.exists() else None
     src_before = {f: f.read_bytes() for f in (CSS, APP, HTML)}
 
-    print("  1) 打手机端补丁…")
-    run("mobile/patch.py", "apply")
+    # 🔴 步骤 3 / 4 的还原必须放 **finally** ✗ —— 以前烤单文件那步一失败
+    #    （或者中途 Ctrl+C）就直接退出了 ✓ web/ 三个文件停留在"打了手机补丁"
+    #    的状态 ✗ 一不留神就把补丁版源码提交上去了 ✓
+    try:
+        print("  1) 打手机端补丁…")
+        run("mobile/patch.py", "apply")
 
-    print("  2) 烤单文件…")
-    run("build_standalone.py")
-    if not DESKTOP.exists():
-        raise SystemExit("  ✗ build_standalone.py 没产出 pdx-map-editor.html")
-    if MOBILE.exists():
-        MOBILE.unlink()
-    DESKTOP.rename(MOBILE)
-    print(f"     ✓ {MOBILE.name}  {human(MOBILE.stat().st_size)}")
+        print("  2) 烤单文件…")
+        run("build_standalone.py")
+        if not DESKTOP.exists():
+            raise SystemExit("  ✗ build_standalone.py 没产出 pdx-map-editor.html")
+        if MOBILE.exists():
+            MOBILE.unlink()
+        DESKTOP.rename(MOBILE)
+        print(f"     ✓ {MOBILE.name}  {human(MOBILE.stat().st_size)}")
+    finally:
+        print("  3) 源码按字节写回（连没提交的改动一起保住 ✓）")
+        for f, raw in src_before.items():
+            f.write_bytes(raw)
+        print("     ✓ style.css / app.js / index.html 已还原")
 
-    print("  3) 源码按字节写回（连没提交的改动一起保住 ✓）")
-    for f, raw in src_before.items():
-        f.write_bytes(raw)
-    print("     ✓ style.css / app.js / index.html 已还原")
-
-    print("  4) 电脑版按字节写回（一个字节都不动 ✓）")
-    if desk_before is not None:
-        DESKTOP.write_bytes(desk_before)
-    print(f"     ✓ {DESKTOP.name}  {human(DESKTOP.stat().st_size)}")
+        print("  4) 电脑版按字节写回（一个字节都不动 ✓）")
+        if desk_before is not None:
+            DESKTOP.write_bytes(desk_before)
+        elif DESKTOP.exists():
+            DESKTOP.unlink()   # 开工前本来就没有它 —— 烤失败的半成品别留下 ✗
+        if DESKTOP.exists():
+            print(f"     ✓ {DESKTOP.name}  {human(DESKTOP.stat().st_size)}")
 
     print(f"\n  好了 ✓ 两个文件都在项目根目录，用了 {time.time() - t0:.0f} 秒")
     print("     pdx-map-editor.html        电脑版（原样，一个字节没动 ✓）")
