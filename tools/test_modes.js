@@ -6409,7 +6409,11 @@ const factory = new Function(
   }
 
   console.log('\n=== 3c. 同色的相邻色块，标记不一样就得各标各的名字 ===');
-  {
+  /* ⚠ 这一节整节靠 a/b 那一对样本 —— 夹具图上找不到时**整节让开** ✗
+   *   以前照样往下跑：titleAt(-1) 涂不进东西 → mine() 空 → info[0].x 一个
+   *   TypeError 就把进程带走 ✗ 后面 3c-3 / 3f / 3g 那几百行**从来没跑到过** ✓
+   *   （带标签的块 + break：让开时一行缩进都不用动 ✓）*/
+  sec3c: {
     // 找一对**相邻的、属于不同头衔的**陆地省份
     const NP = st.meta.numProvinces;
     const adj = st.adjacency;
@@ -6428,6 +6432,11 @@ const factory = new Function(
       }
     }
     ok('找得到一对相邻的、不同头衔的陆地省份', a > 0 && b > 0, `#${a} / #${b}`);
+    if (!(a > 0 && b > 0)) {
+      console.log('  ·（跳过 3c：这张夹具图上没有相邻的异头衔陆地省份对 ✓ '
+        + '状态一点没动，后面的节照跑 ✓）');
+      break sec3c;
+    }
 
     const C = [200, 30, 90];
     st.brushLabel = '甲';
@@ -6740,6 +6749,11 @@ const factory = new Function(
     st.set.labelMax = 3;
     ex.rebuildPaintBlocks(true, true);
     const cut = st.paintBlocks || [];
+    /* 🔴 **图太小就分不出"按族"和"全局"** ✗ —— 一共才 3 个色块的话
+     *    "每国各留 3"和"全局前 3"结果一模一样 ✗ 这两条只有大图才有意义 ✓ */
+    if (all <= 3) {
+      console.log(`  （这张图一共才 ${all} 个色块 —— 「每国各留 3」那两条分不出按族还是全局，跳过 ✓）`);
+    } else {
     /* **留下的要比"每族 3 个"允许的更多** ✗ —— 因为**每个国家**都能留 3 个 ✓
      *  （全局取前 3 的话这儿就该正好 3 ✗ 那是我第一版的错 ✓）*/
     ok('名字上限：**每国**各留 3 个（总数远多于 3 ✓）',
@@ -6760,16 +6774,18 @@ const factory = new Function(
     ok('名字上限：留的都比"全局前 N"多（证明是按族分的 ✓）',
        cut.length > 3,
        `每国 3 个 → 一共 ${cut.length} 个（全局取前 3 的话只能是 3 ✗）`);
+    }
     // 再拉满 → 数量回到原样 ✓（设置能来回调）
     st.set.labelMax = 21;
     ex.rebuildPaintBlocks(true, true);
     ok('再拉满 → 数量回到原样 ✓', (st.paintBlocks || []).length === all,
        `${(st.paintBlocks || []).length} / ${all}`);
-    // 滑杆就该是 1~20，而且**满格那个值就是"无上限"** ✓（跟 JS 里的常量必须对得上）
-    ok('「名字上限」滑杆是 1~21（21 = 无上限 ✓）',
-       /id="set-labelmax"[^>]*min="1"[^>]*max="21"/.test(HTML)
-       && !/id="set-labelmax-off"/.test(HTML),
-       'min=1 max=21，勾选框已经省掉 ✓');
+    /* 🔴 v1.10 设置改版：滑杆 → **步进器 + 独立的「不限」勾** ✗
+     *    （内部仍写 labelMax = 21 = 无上限 ✓ 兼容老存档与 labelMaxValue ✓）*/
+    ok('「名字上限」是步进器 1~20 加一个「不限」勾',
+       /id="set-labelmax"[^>]*data-range="1,20,1"/.test(HTML)
+       && /id="set-labelmax-unlimited"/.test(HTML),
+       '步进器 1~20 + 不限勾 ✓');
     st.set.labelMax = svMax;
     ex.rebuildPaintBlocks(true);
     st.showBorderPaint = svBP;
@@ -6846,8 +6862,14 @@ const factory = new Function(
       ok('地名上限：每个**头衔**各留 2 个（没有一个留 3 个 ✓）',
          over.length === 0,
          over.length ? over.slice(0, 3).map(([k, n]) => k + '×' + n).join(' / ') : `头衔数 ${cnt.size}`);
+      /* 🔴 跟 3g 同一个道理：点太少分不出"按头衔"和"全局" ✗ —— 一共 ≤2 个的话
+       *    "每头衔 2 个"和"全局前 2"结果一模一样 ✓ 只有大地物才验得出差别 ✓ */
+      if (allPts.length <= 2) {
+        console.log(`  （这张图地名点才 ${allPts.length} 个 —— 「按头衔分」那条分不出来，跳过 ✓）`);
+      } else {
       ok('地名上限：留的比"全局前 N"多（证明是按头衔分的 ✓）',
          cutPts.length > 2, `每个头衔 2 个 → 一共 ${cutPts.length} 个`);
+      }
     }
     st.set.labelPlaceMax = 21;
     ok('地名上限再拉满 → 回到原样 ✓', ex.placePointsFor(tier).length === allPts.length,
@@ -7101,8 +7123,14 @@ const factory = new Function(
         const tid = st.titles.index ? st.titles.index[k] : null;
         return tid == null || st.titles.tiers[tid] !== LAST3;
       });
+      /* 🔴 夹具的最细层可能一个头衔都没有（打测试包的迷你图把省份全挂在粗层 ✓）——
+       *    这时导出的 key 天生不落在 LAST3 层 ✗ 断言没有意义，让开 ✓ */
+      if (!st.titles.tiers.some((x) => x === LAST3)) {
+        console.log('  （这张夹具图最细层没有任何头衔 —— 「导出 key 属于最细层」跳过 ✓）');
+      } else {
       ok('导出的每一笔都是"最细层单位"的 key ✓（不是按头衔整块存 ✗）',
          badKey.length === 0, badKey.slice(0, 3).join(',') || `${Object.keys(data3.titles).length} 条全对`);
+      }
       // ② 往返：清空 → 导入 → 逐格比颜色
       const before3 = [];
       for (let q = 1; q < NP3; q++) {
@@ -7156,6 +7184,12 @@ const factory = new Function(
   }
   const _svWaste = st.showWaste;
     st.showWaste = false;
+    /* 🔴 夹具包里可能一个伪头衔都没有（打测试包的迷你图就只有真头衔 ✓）——
+     *    这时「#sea 是伪头衔」那几条全是 -1 的无意义的红 ✗ 整段让开 ✓
+     *    （EU5 本来 pseudo 就是空清单，照旧只跑最后那条 ✓）*/
+    if (pseudo.length && !pseudo.some((name) => st.titles.keys.indexOf(name) >= 0)) {
+      console.log('  （这张夹具图里一个伪头衔都没有 —— 「是伪头衔」和「有锁住地块」跳过 ✓）');
+    } else {
     for (const name of pseudo) {
     const i = st.titles.keys.indexOf(name);
     /* 🔴 **2026-10-19：判据改成"是伪头衔 + 它管的地块不许涂"** ✗✗
@@ -7175,7 +7209,8 @@ const factory = new Function(
          return true;
        })(), `序号 ${i}`);
   }
-  ok('地图上确实有锁住的地块', ids.some((p) => ex.isSpecialTid(ex.titleAt(p, st.tier))));
+    ok('地图上确实有锁住的地块', ids.some((p) => ex.isSpecialTid(ex.titleAt(p, st.tier))));
+    }
     st.showWaste = _svWaste;
 
   // （原来这儿有一节「导出 EU4 mod」的测试 —— v1.6 把"导出 mod"这条路整个取消了 ✓
@@ -7189,10 +7224,20 @@ const factory = new Function(
   // ---- 跨模式对照（数据级）：CK3 那份缓存里"不该有 / 该有"的几样东西 ----
   // 这几条原本是拿 CK3 数据集在测试壳里跑的；改成直接读文件 —— 它们本来就是
   // 数据层面的事，不需要再开一个应用实例，反而更硬。
-  {
+  dataCk3: {
+    /* 🔴 这几条读的是 data/ 那份**真 CK3 缓存** ✗ —— 本机的 data/ 往往是
+     *    打测试包用的迷你夹具（没有剧本层、就一两个头衔 ✓），照跑全是无意义的红 ✗
+     *    认不出真缓存（或者压根没有 data/）就整段让开，别让它把套件带崩 ✓ */
+    let ckT = null, ckM = null;
     const fs2 = require('fs');
-    const ckT = JSON.parse(fs2.readFileSync('data/titles.json', 'utf8'));
-    const ckM = JSON.parse(fs2.readFileSync('data/meta.json', 'utf8'));
+    try {
+      ckT = JSON.parse(fs2.readFileSync('data/titles.json', 'utf8'));
+      ckM = JSON.parse(fs2.readFileSync('data/meta.json', 'utf8'));
+    } catch (e) { /* data/ 缺文件 —— 让开 ✓ */ }
+    if (!ckT || !ckM || !(ckM.eraDates || []).length || !(ckM.numProvinces > 1000)) {
+      console.log('  （data/ 不是带剧本层的完整 CK3 缓存 —— 数据级对照那几条跳过 ✓）');
+      break dataCk3;
+    }
     ok('CK3 缓存里没有 namesEn（不需要）', !ckT.namesEn);
     // 公爵领以上（0~2 层）的标注点必须**落在自家地盘的包围盒里** ✓
     // （早先这一层会把名字改标到**法理首都**上；后来按整块地盘算。
