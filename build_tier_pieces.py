@@ -381,3 +381,4 @@ def apply_rows(titlemap, rows: dict[str, np.ndarray], tier_order, geo_tiers) -> 
         titlemap[order.index(t)][sel] = arr[sel].astype(np.uint16)
         filled += int(sel.sum())
     return filled
+
