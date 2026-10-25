@@ -1991,6 +1991,7 @@ void main() {
     const gl = this.gl;
     if (!this.provArrTex || !this.tileInfo) return false;
     if (!data) return false;
+    const _t0 = performance.now();
     const n = this.tileInfo.tileW * this.tileInfo.tileH;
     gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.provArrTex);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
@@ -1999,6 +2000,9 @@ void main() {
       gl.RG, gl.UNSIGNED_BYTE, MapRenderer._bytesOf16(data, n));
     this.uploadedTiles.add(layer);      // 传成功了才记 ✓（早退 false 的那条路不算 ✓）
     this.dirty = true;
+    /* 📊 性能指标（app.js 的 PERF）：这里只**累加**，frameBody 每帧读走并清零 ✓
+     *   合成切块 / tiles.json / 悬停拉块三条路都汇到这一个出口，量一处就够 ✓ */
+    this._perfTileMs = (this._perfTileMs || 0) + (performance.now() - _t0);
     return true;
   }
 

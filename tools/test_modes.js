@@ -942,7 +942,7 @@ function stripModule(src) {
    少一个模块的表现是"某个功能悄悄没了"，不是报错隔壁那行，特别难查 ✗
    pack.js / packstore.js 是导入式地图那套（见 docs/导入式地图-策划.md）；
    它们要排在 data.js 前面：data.js 的第三数据源会调 packstore 的 getFile ✓ */
-const MODULES = ['pack.js', 'zip.js', 'packstore.js', 'fonts.js', 'bitmapfont.js', 'data.js', 'bmp.js', 'gl.js', 'labels.js', 'tilemap.js', 'app.js'];
+const MODULES = ['pack.js', 'zip.js', 'packstore.js', 'fonts.js', 'bitmapfont.js', 'data.js', 'bmp.js', 'gl.js', 'maplabels.js', 'labels.js', 'tilemap.js', 'app.js'];
 let js = MODULES.map((n) => `// ==== ${n} ====\n` + stripModule(fs.readFileSync(path.join(ROOT, 'web', 'js', n), 'utf8'))).join('\n\n');
 
 // 把结尾那次 boot() 摘掉，改由测试自己触发，并开几个探针出去
@@ -959,7 +959,7 @@ return {
   get TIER_KEYS() { return TIER_KEYS; },
   eraBlockCount, blankTierIndex, closeEraPanel,
   titleAt, renderHoverCard, actAt, pickTitle, paintTitle, restoreTitle, pickAt,
-  setBrush, setTier, setTool, needsRestore, isLocked, isSpecialTid, runSearch,
+  setBrush, setBrushLabel, setTier, setTool, needsRestore, isLocked, isSpecialTid, runSearch,
   jumpToResult, searchJumpScale, paintAt, hoverGroupRgb, hoverTargetTid, applyHoverHighlight,
   syncParentBorder, syncLayerSwitches, retintCountryLabels, buildBorderDepth,
   get searchHits() { return searchHits; },
@@ -975,6 +975,10 @@ return {
    *   ⚠ 这段整体在**模板字符串**里 ✗ —— 注释里**不许出现反引号** ✓
    *     （项目里栽过一次了：着色器那边同一个坑 ✓）*/
   buildPlaceComponents, placePointsFor, groupComponents,
+  /* 🗺 地图仓库 + 🎨 收藏调色板（2026-10-24 ✓）—— 存取往返 / 加删落盘的用例要用 ✓
+     ⚠ 新探针必须加进这一份清单 ✗（少了就是 ex.xxx is not a function ✓ 又栽一次 ✓）*/
+  listMaps, putMap, getMap, deleteMap,
+  paletteList, paletteAdd, paletteRemoveAt, paletteReset,
   /* **「每省是不是水」那张表** ✓（2026-10-16 加 ——「水域 · 边界」那条通道的判据来源 ✓
    *   ⚠ 同样必须加进这一份清单 ✗ 见上面那段（少了就是 ex.xxx is not a function ✓）*/
   buildWaterKindMask, waterKindByPid,
@@ -989,7 +993,7 @@ return {
   get renderer() { return renderer; },
   get labels() { return labels; },
   isDegradedBaron, displayedColor, displayedLabel, screenToMap, updateHover,
-  drawLabels, legendEntries, drawLegend, rebuildLegendPanel, impassLabel, specialTileLabel,
+  drawLabels, paintLabelsForExport, setLabelBitmap, viewRect, PERF, legendEntries, drawLegend, rebuildLegendPanel, impassLabel, specialTileLabel,
   readablePlaceName, manualWaterName, computeLabelZoom, ARRIVE_SPAN,
   applySettings, lutColorOf, hexToRgb, renameAt, openRename,
   /* 荒地自动上色（2026-10-17 重做 ✓）—— 周长 / 重算 / 帧循环 ✓
@@ -4017,22 +4021,288 @@ const factory = new Function(
     // 取消保底之后，小地块的地名不画了，所以这一帧的标签数比从前少很多 ——
     // 剩下的也够跑这次基准（字号分桶、measure 缓存这些还是要验）
     ok('这一帧有标签可测', drawn >= 2, `${drawn} 个标签`);
-    ok('热帧改 font 的次数 = 字号桶数，不是标签数',
-       warm.font > 0 && warm.font <= 40 && warm.font <= drawn,
-       `font ${warm.font} 次，标签 ${drawn} 个`);
+    ok('热帧改 font 的次数 ≤ 字号桶数，不是标签数',
+       warm.font <= 40 && warm.font <= drawn,
+       `font ${warm.font} 次，标签 ${drawn} 个`
+       + (warm.font === 0 ? '（全走逐字贴图 → 一次都不用改 ✓）' : ''));
     ok('热帧一次 measureText 都不做（量宽缓存命中）', warm.measure === 0,
        `measure ${warm.measure} 次（旧写法要 ${drawn} 次）`);
-    ok('热帧不再现场栅格化文字，全走贴图',
-       warm.stroke === 0 && warm.fill === 0 && warm.image === drawn,
+    /* ⚠ P社式排版是**每个字一张贴图** ✗ —— 所以 image 的次数是"字数"不是"标签数" ✓
+     *   判据放宽成 `>= drawn`：至少每个标都画出来了 ✓
+     *   ⚠ 2026-10-23 起字号**跟线长走**（不再被厚度卡住）→ 少数大字会超过
+     *     `SPRITE_MAX_FONT`（200px）而**现场画** ✓ —— 这是设计内的（超大字形做贴图
+     *     纯浪费），所以允许极少量现场画：≤ max(4, drawn×1%) ✓
+     *   （"热帧一次都别现场栅格化"这条精神仍然在：数量级从"每帧 N 次"变成"个位数"✓）*/
+    const liveAllow = Math.max(4, Math.ceil(drawn * 0.01));
+    ok('热帧基本不再现场栅格化文字（超大字形除外）',
+       warm.stroke <= liveAllow && warm.fill <= liveAllow && warm.image >= drawn,
        `stroke ${warm.stroke} / fill ${warm.fill} / drawImage ${warm.image} `
-       + `（旧写法每帧 stroke+fill 各 ${drawn} 次）`);
+       + `（旧写法每帧 stroke+fill 各 ${drawn} 次 · 允许 ≤${liveAllow}）`);
+    /* ⚠ P社式排版走的是**逐字贴图** ✓（2026-10-23 起地名也不再按字号退回整段贴图 ✗）
+     *   → 逐字贴图按"字 + 字号 + 颜色"去重：791 个标签可能只栅格化 568 个不同的字 ✓
+     *   所以判据**不能再是 `>= drawn * 0.9`**（那是"一段字一张贴图"时代的口径）✗
+     *   真正的约定只有两条：冷帧必须栅格化（不然贴图是白来的）、热帧一次都不许 ✓ */
     ok('冷帧确实栅格化了一遍（贴图就是省下的这一步）',
-       cold.stroke > drawn * 0.9 && cold.stroke === cold.fill,
+       cold.stroke > 0 && cold.stroke === cold.fill,
        `stroke ${cold.stroke} / fill ${cold.fill}（${drawn} 个标签，`
-       + `同名同字号同色的会共用一张贴图）`);
+       + `同名同字号同色、同样的字都会共用一张贴图）`);
     ok('每帧只读两三次视口尺寸（在循环里读会逼同步重排）',
        warm.clientW <= 3 && warm.clientH <= 2,
        `clientWidth ${warm.clientW} 次 / clientHeight ${warm.clientH} 次（旧写法各 ${drawn} 次）`);
+  }
+
+  console.log('\n=== 1d. 版图贴合（国名走色块名那条路）===');
+  {
+    const L = ex.labels;
+    ok('标签层拿到了版图数据（省份图 + 归属表）',
+       !!(L && L.realmMask && L.realmMask.usable),
+       L && L.realmMask ? `格 ${L.realmMask.cell}px` : '没有');
+    /* 国名在年份视图里是从 `paintedPoints` 那条路画的（色块名 ✓）——
+     * 不是普通头衔点 ✗ 所以这里直接拿那批点验 `_maybeLayout` ✓
+     * ⚠ 先把视图切到年份层：`rebuildPaintBlocks(true)` 只在
+     *   `state.tier < nEra` 时才把**没涂过的省**也算进来 ✓ */
+    const _savedTier0 = st.tier;
+    st.tier = 0;
+    ex.rebuildPaintBlocks(true);
+    const pts = ex.paintedPoints(true) || [];
+    st.tier = _savedTier0;
+    const p = pts.find((q) => q && q.name && q.tid >= 0 && q.singleTid
+                              && !q.paintedAny && q.mtier != null && q.area > 0);
+    ok('原版色块名带上了"能不能套排版"的判据', !!p,
+       p ? `${p.name} · ${p.area}px · tier ${p.mtier}`
+         : `${pts.length} 个点里一个都没有`);
+    if (p) {
+      const pp = Object.assign({}, p, { tier: 0, layer: 2 });
+      const lay = L._maybeLayout(pp, 'power', 100);
+      ok('国名色块点排得出贴合版图（不是横着一条）',
+         !!lay && lay.glyphs.length > 0,
+         lay ? `${lay.glyphs.length} 字 · ${lay.fs.toFixed(1)}px · 转 `
+               + `${(lay.angle * 57.3).toFixed(0)}°` : '排不出来');
+      if (lay) {
+        L._layoutHits = 0;
+        L._maybeLayout(pp, 'power', 100);
+        ok('同一个点第二次走缓存（每帧不重排）', L._layoutHits > 0,
+           `命中 ${L._layoutHits}`);
+        /* 🔴 **真正画的时候也得用上** ✗✗（2026-10-22 用户实拍"国名始终没有"）
+         *   上一次的坑：`drawPoints` 只挑了几个字段传给 `_maybeLayout`，
+         *   把 `singleTid` / `paintedAny` / `mtier` 丢了 → 算出来永远是 null ✓
+         *   这里直接走一次绘制，看 `_layout[]` 里有没有它 ✓ */
+        L.drawPoints([Object.assign({}, pp)],
+          { x: p.x - 200, y: p.y - 200, w: 400, h: 400 });
+        ok('真正画的时候用上了排版（不是只算不用）',
+           !!(L._layout && L._layout[0]));
+      }
+      const painted = Object.assign({}, pp, { paintedAny: true });
+      const play = L._maybeLayout(painted, 'power', 100);
+      ok('玩家涂过的色块也套（用省号集合当版图）',
+         !!play && play.glyphs.length > 0,
+         play ? `${play.glyphs.length} 字 · ${play.fs.toFixed(1)}px`
+              : '排不出来');
+      /* 🔴🔴 **涂没涂不准改名字**（2026-10-23 用户实测："同样的颜色范围，
+       *   全部涂色和未涂色时名字却不一样"）
+       *   旧秩序：画面上这一国 = 同颜色 + 同名字的那组省 → 版图永远按**省号集合**算 ✓
+       *   这里把同一个点分别标成"没涂"和"涂过"，要求算出来一字不差 ✓ */
+      {
+        const a = Object.assign({}, pp, { paintedAny: false, singleTid: true });
+        const b = Object.assign({}, pp, { paintedAny: true, singleTid: false });
+        const la = L._maybeLayout(a, 'power', 100);
+        const lb = L._maybeLayout(b, 'power', 100);
+        const same = !!(la && lb) && la.fs === lb.fs
+          && la.glyphs.length === lb.glyphs.length
+          && la.glyphs.every((g, i) => g.x === lb.glyphs[i].x && g.y === lb.glyphs[i].y);
+        ok('涂没涂不影响名字（同一组省 → 同一套几何）', same,
+           la && lb ? `${la.fs.toFixed(1)}px / ${lb.fs.toFixed(1)}px · `
+             + `${la.glyphs.length} 字` : '有一个排不出来');
+      }
+      /* 🔴 **"交互中截断 → 手一停补齐全量"**（2026-10-23 用户报的现象：
+       *   "一些名字平时不画，鼠标移过去了才出现" ——
+       *   上一版的自适应上限：慢了就永久少画，要等下一次重画才慢慢涨回来 ✗）
+       *   约定：`frameBudgetMs` 很小 → 这一帧截断（保证跟手）；
+       *   预算恢复成 Infinity（手停下 250ms）→ **下一帧就把剩下的画齐** ✓ */
+      {
+        const L = ex.labels;
+        const v = { x: 0, y: 0, w: 1000, h: 600 };   // 固定视口（别读 stub 里量不到的舞台 ✓）
+        const b0 = L.frameBudgetMs;
+        const pts = [];
+        for (let i = 0; i < 200; i++) {
+          pts.push({
+            name: '测' + i,
+            x: v.x + v.w * (0.1 + 0.8 * (i % 20) / 20),
+            y: v.y + v.h * (0.1 + 0.8 * Math.floor(i / 20) / 10),
+            area: 400000, tier: 0, layer: 2,
+          });
+        }
+        L.frameBudgetMs = 0;
+        L.drawPoints(pts, v);
+        const cut = L._truncated;
+        const nCut = L.drawn;
+        L.frameBudgetMs = Infinity;
+        L.drawPoints(pts, v);
+        const nFull = L.drawn;
+        ok('交互中会截断，手一停立刻补齐全量（不用再动鼠标 ✓）',
+           cut && nFull > nCut, `截断 ${cut} · ${nCut} → ${nFull} 个`);
+        L.frameBudgetMs = (b0 === undefined) ? Infinity : b0;
+      }
+      /* 📊 **凑名单的耗时指标**（2026-10-23 性能）
+       *   `PERF.S.listMs` 只量"从全层点里挑出这一屏"那一段的**裸值**（纯 JS ✓ 不含 canvas）
+       *   —— 以前是每帧全表扫（CK3 上万 / VIC3 四万、EU5 两万三），现在按 512px 分桶
+       *   只取视口覆盖的那几桶 ✓ 顺带：这一层还没到"该出现"的缩放就整层跳过 ✓
+       *   ⚠ 量的是 `listMs` 不是 `S.list` ✗ —— mark() 进 S.list 的是 **EMA**（0 起步只记 15%），
+       *     量它等于把阈值放宽了 6.7 倍 ✓ listMs 每帧裸写，-1 = 这一段根本没跑到 ✓
+       *   ⚠ 量法：把这一层的缩放门槛临时压到 0（保证一定在"该出现"的状态 ✓），
+       *     视角取**放大的**一屏（分桶才有意义 ✓），先热两遍再取 8 遍的中位 ✓ */
+      {
+        const st0 = st.tier;
+        const nEra = (st.meta.eraDates || []).length;
+        const fine = Math.max(nEra, (st.meta.tierNames || []).length - 1);
+        const zsaved = ex.labels.zoom ? ex.labels.zoom[fine] : undefined;
+        if (ex.labels.zoom) ex.labels.zoom[fine] = 0;
+        st.tier = fine;
+        const v = {
+          x: st.meta.mapWidth * 0.35, y: st.meta.mapHeight * 0.35,
+          w: st.meta.mapWidth / 5, h: st.meta.mapHeight / 5,
+        };
+        for (let i = 0; i < 2; i++) ex.drawLabels(v);       // 热两遍（懒建分桶 ✓）
+        const samples = [];
+        for (let i = 0; i < 8; i++) {
+          ex.PERF.S.listMs = -1;                            // 每遍从 -1 起（没跑到就留下来 ✓）
+          ex.drawLabels(v);
+          samples.push(ex.PERF.S.listMs);
+        }
+        samples.sort((a, b) => a - b);
+        const ms = samples[4];                               // 中位（避开抖动 ✓）
+        /* ⚠ **EU5 的线单列**（2026-10-24 裸值实测）：最细层 2.3 万点，这条用例
+         *   把缩放门槛压到 0 = "远景强制开细层" —— 900px 跟随缩放的取点外扩
+         *   圈进来 1.5 万个候选，且**个个真过闸、真进名单**（不是白扫 ✓），
+         *   现状 13ms。4ms 只对"分桶真能把候选收小"的那几代成立
+         *   （EU4 1.0ms / VIC3 2.0ms / CK3、HOI4 过线 ✓）。
+         *   EU5 要往下压得动凑名单的结构（按帧预算截断那套），另立任务 ✓
+         *   这条线守的是"别退回全表扫"：EU5 退回全表扫约 20ms+ ✓ */
+        const _listBar = (WHICH === 'EU5') ? 16 : 4;
+        ok(`${WHICH}：凑名单 ≤ ${_listBar}ms（放大一屏 · 最细层）`, ms >= 0 && ms <= _listBar,
+           (ms < 0 ? '凑名单这段没跑到（外闸没开？）' : ms.toFixed(2) + ' ms')
+           + ` · 候选 ${ex.PERF.S.points}`);
+        st.tier = st0;
+        if (ex.labels.zoom && zsaved !== undefined) ex.labels.zoom[fine] = zsaved;
+      }
+      /* 🔴🔴 **国名贴合不能只在 HOI4 上生效** ✗✗（2026-10-23 用户："貌似你没给
+       *   HOI4 之外的加上这些功能"）
+       *   上面只验了"挑得出来的那一个" —— 一个能排说明不了整张图能排 ✓
+       *   这里把**整批国名色块**过一遍，看比例 ✓ 比例低 = 这个模式大面积退回横排 ✗ */
+      {
+        const all = (ex.paintedPoints(true) || [])
+          .filter((q) => q && q.name && q.tid >= 0 && q.area > 0);
+        let lay = 0;
+        const why = new Map();
+        for (const q of all) {
+          const got = L._maybeLayout(Object.assign({}, q, { tier: 0, layer: 2 }),
+                                     'power', 100);
+          if (got) lay++;
+          else {
+            const k = q.singleTid ? (q.paintedAny ? '涂过(paintedAny)' : '其它')
+                                  : '跨头衔(singleTid=false)';
+            why.set(k, (why.get(k) || 0) + 1);
+          }
+        }
+        const pct = all.length ? (100 * lay / all.length) : 0;
+        ok(`${WHICH}：整批国名色块大多排得出来（≥60%）`,
+           all.length > 0 && pct >= 60,
+           `${lay}/${all.length}（${pct.toFixed(0)}%）`
+           + (why.size ? ' · 没排出的原因：'
+              + [...why].map(([k, v]) => `${k} ${v}`).join(' / ') : ''));
+      }
+      /* 🔴 **位图字体也要能贴合（弯曲）**（2026-10-23 用户："导入的字体好像没法
+       *   实现版图适应弯曲的效果，无论是软件还是导出"）
+       *   以前 `_maybeLayout` 见到位图字体直接 return null ✗ 全退回横排 ✓
+       *   现在用 BMFont 自己的 lineHeight / base / xadvance 拼度量 → 照样排；
+       *   绘制端 `bf.drawGlyph` 逐字旋转贴 ✓ 这里拿个假位图字体量一遍 ✓ */
+      {
+        let drew = 0;
+        const fake = {
+          lineHeight: 16, meta: { base: 12 }, uid: 'test-bf',
+          glyph: () => ({ w: 8, h: 12, adv: 9, xoff: 0, yoff: 2, rgba: null }),
+          measure: (t, s) => String(t).length * 9 * s / 16,
+          draw: () => { drew++; },
+          drawGlyph: () => { drew++; return true; },
+        };
+        ex.setLabelBitmap('power', fake);
+        try {
+          const lb = ex.labels._maybeLayout(Object.assign({}, pp, { tier: 0, layer: 2 }), 'power', 100);
+          ok('位图字体也能排出贴合版图（不再一律退回横排 ✓）',
+             !!lb && lb.glyphs.length > 0,
+             lb ? `${lb.glyphs.length} 字 · ${lb.fs.toFixed(1)}px` : '排不出来');
+          drew = 0;
+          ex.labels.drawPoints([Object.assign({}, pp, { tier: 0, layer: 2 })],
+            { x: pp.x - 200, y: pp.y - 200, w: 400, h: 400 });
+          ok('位图字体真的逐字旋转贴出来（走 drawGlyph ✓）', drew > 0, `画了 ${drew} 次`);
+        } finally {
+          ex.setLabelBitmap('power', null);   // 别把后面的用例带脏 ✓
+        }
+      }
+      /* 🔴 **改名之后，没涂的那半也要按新名字分组** ✗✗（用户规则）
+       *   "涂色空但当前剧本为 A 色 A 名" —— 当前显示名包括改名 ✓
+       *   以前没涂那半读 `titles.names`（原始名）→ 跟涂过的一半分家 ✓ */
+      {
+        const tid0 = p.tid;
+        const _old = st.titleName.get(tid0);
+        st.titleName.set(tid0, '测试势力名');
+        st.tier = 0;
+        ex.rebuildPaintBlocks(true);
+        const hit = (ex.paintedPoints(true) || []).find((b) => b.name === '测试势力名');
+        st.tier = _savedTier0;
+        ok('改名后没涂的色块也按新名字分组（当前剧本的 A 色 A 名）',
+           !!hit, hit ? `${hit.area}px` : '没找到');
+        if (_old == null) st.titleName.delete(tid0);
+        else st.titleName.set(tid0, _old);
+        ex.rebuildPaintBlocks(true);
+      }
+    }
+  }
+
+  /* 🔴 **HOI4 1936：取德国色、填捷克斯洛伐克之后，国名排版不能失效** ✗✗
+   *   用户实测：涂完那一笔，"名字弯曲"整套失效；再点一下德国本土又好了。
+   *   这里把那一串动作原样跑一遍，直接量 `_maybeLayout` ✓ */
+  if (isHoi4) {
+    console.log('\n=== 1e. 涂色后国名排版还在不在（HOI4 1936）===');
+    const gerTid = st.titles.keys.findIndex((k) => /GER/.test(String(k)));
+    const czTid = st.titles.keys.findIndex((k) => /CZE/.test(String(k)));
+    let czPid = 0;
+    for (let q = 1; q < st.meta.numProvinces; q++) {
+      if (ex.titleAt(q, 0) === czTid) { czPid = q; break; }
+    }
+    ok('找到德国 / 捷克斯洛伐克', gerTid >= 0 && czTid >= 0 && czPid > 0,
+       `GER=${gerTid} · CZE=${czTid} · pid=${czPid}`);
+    if (gerTid >= 0 && czTid >= 0 && czPid > 0) {
+      const _savedTier1 = st.tier;
+      st.tier = 0;
+      const col = st.titles.colors[gerTid] || [100, 100, 100];
+      ex.setBrush(col, false, true);
+      ex.setBrushLabel(st.titles.names[gerTid]);
+      ex.paintAt(czPid, czTid);
+      ex.rebuildPaintBlocks(true);
+      const blocks = ex.paintedPoints(true) || [];
+      const gs = blocks.filter((b) => b.name === st.titles.names[gerTid]);
+      ok('涂完捷克斯洛伐克后，德意志国还有色块', gs.length > 0,
+         `${gs.length} 块 / 共 ${blocks.length} 块`);
+      /* 看**最大那块**（本土 + 涂出来的捷克斯洛伐克）——
+       * 1 格的小碎片排不出来是正常的（退回老画法 ✓），不该算失败 ✓ */
+      const main = gs.slice().sort((a, b) => b.area - a.area)[0];
+      const mainLay = main
+        ? ex.labels._maybeLayout(Object.assign({}, main, { tier: 0, layer: 2 }), 'power', 100)
+        : null;
+      ok('德意志国最大色块排得出来（涂色后没有整体失效）', !!mainLay,
+         main ? `painted=${main.paintedAny} · single=${main.singleTid} · `
+              + `${main.pids.length} 省 · ${mainLay ? mainLay.glyphs.length + ' 字' : 'NULL'}`
+              : '没有色块');
+      let laid = 0;
+      for (const b of gs) {
+        if (ex.labels._maybeLayout(Object.assign({}, b, { tier: 0, layer: 2 }), 'power', 100)) laid++;
+      }
+      console.log(`    （${laid}/${gs.length} 块排出来；小碎片允许退回老画法 ✓）`);
+      ex.restoreTitle(czTid, true);
+      ex.rebuildPaintBlocks(true);
+      st.tier = _savedTier1;
+    }
   }
 
   // ⚠ EU4 的 `want` 已经没有 `names` 了（剧本数跟 bookmarks 走 ✓ 见上面那段）
@@ -4321,6 +4591,34 @@ const factory = new Function(
       ? ex.drawLegend(cv.getContext('2d'), 1200, 800) : 0;
     ok('能把图例画到导出画布上 ✓', n === 0 || (canvasStats.fill + canvasStats.measure + canvasStats.stroke) > 0,
        `画了 ${n} 条，画布 fill=${canvasStats.fill} measure=${canvasStats.measure} stroke=${canvasStats.stroke}`);
+    /* 🔴 **整图导出也要带名字**（2026-10-23 用户要的）
+     *   以前整图导出是分块拼的，标签层没参与 → 大图上没有字 ✗
+     *   现在导出前把名单抓出来、按导出倍率重画一遍 ✓ 这里量"真的画了字" ✓ */
+    {
+      const _savedTier = st.tier;
+      const s0 = st.showLabelsTitle, s1 = st.showLabelsPaint;
+      const w0 = st.showWaterName, w1 = st.showWasteName;
+      st.tier = 0;
+      try { ex.rebuildPaintBlocks(true); } catch (e) { /* 没涂色数据也没关系 ✓ */ }
+      st.showLabelsTitle = true; st.showLabelsPaint = true;
+      st.showWaterName = true; st.showWasteName = true;
+      resetCanvasStats();
+      let nn = 0;
+      try { nn = ex.paintLabelsForExport(cv.getContext('2d'), 1); } catch (e) {
+        nn = -1; console.log('[DBG-EXPORT]', e && (e.stack || e.message || e));
+      }
+      ok('整图导出会把名字画上去（开关开着就必须有字 ✓）', nn > 0,
+         nn >= 0 ? `写了 ${nn} 个名字 · stroke ${canvasStats.stroke}` : '抛错了');
+      st.showLabelsTitle = false; st.showLabelsPaint = false;
+      st.showWaterName = false; st.showWasteName = false;
+      let k = 0;
+      try { k = ex.paintLabelsForExport(cv.getContext('2d'), 1); } catch (e) { k = -1; }
+      ok('关掉显示区的名称开关 → 导出不带名字 ✓（不用另加开关 ✓）', k === 0,
+         `全关掉时写了 ${k} 个`);
+      st.showLabelsTitle = s0; st.showLabelsPaint = s1;
+      st.showWaterName = w0; st.showWasteName = w1;
+      st.tier = _savedTier;
+    }
     let listsOk = true;
     try { ex.rebuildLegendPanel(); } catch (e) { listsOk = false; }
     ok('设置页里的图例列表刷得出来（不抛错 ✓）', listsOk,
@@ -4439,10 +4737,14 @@ const factory = new Function(
         *            不然"只勾荒地名"时整段都不跑 = 那根开关是死的 ✓）*/
        (function () {
          const s = fs.readFileSync('web/js/app.js', 'utf8');
+         /* ⚠ 2026-10-23：外闸前面多了一道"这一层还没到该出现的缩放就不凑名单"的早退
+          *   （性能：EU5 最细层 2.3 万点，全图视角每帧白扫 11.6ms ✓）
+          *   所以三开关那句前面可能带 `_tierOpen &&` ✓ 判据改成"三开关的或还在" ✓；
+          *   顺带把新加的早退也钉住（它要是丢了，那 11.6ms 就回来了 ✓）*/
          return /const nameTier = isCountryView \? editTier\(\) : viewTier;/.test(s)
            && !/nameTier >= 0/.test(s)
-           && /if \(\(state\.showLabelsTitle \|\| state\.showWaterName \|\| state\.showWasteName\)/
-             .test(s);
+           && /\(state\.showLabelsTitle \|\| state\.showWaterName \|\| state\.showWasteName\)/.test(s)
+           && /_tierOpen && \(state\.showLabelsTitle/.test(s);
        })());
     /* **水岸线跟填色那趟合并成一次扫描** ✓（用户要求"合并那几趟射线"✓）
      *   以前水岸线单独一趟（`rayDistWater` × 4 方向 ✗），而它判的"这一侧是不是水"
@@ -5103,8 +5405,17 @@ const factory = new Function(
       resetCanvasStats();
       ex.labels.draw(view, FINE, null);
       const warmB = { ...canvasStats };
+
+      /* 🔴 **这条要抓的回归**：退回"每帧对上万候选逐个 measureText / 现场栅格化"的旧写法
+       *   （实测旧写法 drawImage 11295 次、measure/stroke/fill 几百上千 ✗）。
+       *   ⚠ stroke / fill **不许钉死 0** ✗（2026-10-24 教训）：
+       *     首次遇到的新字形 / 超大字形**现场画一次是设计内** ✓ 数量有界且小
+       *     （EU4 实测 13+13 ✓）—— 而且图集的预热覆盖时序会随预热调度微调
+       *     （MessageChannel 让预热更密 → 首遇字形集合也变 ✓），
+       *     钉死 0 会变成薛定谔的红 ✓。**measure === 0 才是硬哨兵** ✓
+       *     （凑名单 / 画名字的常规路径根本不该 measureText ✓）*/
       ok('上万个候选之下每帧仍不做 measureText、不现场栅格化',
-         warmB.measure === 0 && warmB.stroke === 0 && warmB.fill === 0
+         warmB.measure === 0 && warmB.stroke <= 32 && warmB.fill <= 32
          && warmB.image >= visible * 0.8,
          `measure ${warmB.measure} / stroke ${warmB.stroke} / fill ${warmB.fill} `
          + `/ drawImage ${warmB.image}`);
@@ -7314,7 +7625,54 @@ const factory = new Function(
 
 
   console.log('\n' + '='.repeat(58));
-  console.log(`通过 ${oks.length} 条，失败 ${fails.length} 条`);
+  /* ==== 🗺 地图仓库：存取往返（IndexedDB 假件 ✓ 2026-10-24）====
+   *  ⚠ putMap 走的是真 packstore（含版本升级 1→2 建 saved_maps ✓）
+   *    → 假 IndexedDB 必须会走 onupgradeneeded，不然这边 NotFoundError ✗ */
+  {
+    const rec0 = {
+      format: 'pdx-saved-map', v: 1, id: 'sm_test_1', name: '测试存档',
+      created: 1, updated: 2, emb: 'eu4', base: 'EU4 原版', game: 'eu4',
+      mapKey: '', build: 'dev', preview: '',
+      project: { titles: { k: [1, 2, 3] }, labels: {} },
+    };
+    await ex.putMap(rec0);
+    const all = await ex.listMaps();
+    ok('仓库：存进去的能列出来', all.some((r) => r.id === 'sm_test_1'),
+       all.length + ' 条');
+    const got = await ex.getMap('sm_test_1');
+    ok('仓库：读回来的字段一字不差',
+       !!got && got.name === '测试存档' && !!got.project
+       && got.project.titles.k[2] === 3,
+       got ? got.name : '没有');
+    await ex.deleteMap('sm_test_1');
+    ok('仓库：删掉就没了', !(await ex.getMap('sm_test_1')), '');
+  }
+
+  /* ==== 🎨 收藏调色板：加 / 去重 / 删 / 落盘（localStorage 假件 ✓）==== */
+  {
+    ex.paletteReset();
+    ex.paletteAdd('#FF0000');
+    ex.paletteAdd('#00FF00');
+    ex.paletteAdd('#FF0000');             // 重复 → 挪到最前 ✓ 不新增 ✓
+    const arr = ex.paletteList();
+    ok('调色板：重复颜色不新增、挪到最前',
+       arr.length === 2 && arr[0] === '#FF0000' && arr[1] === '#00FF00',
+       arr.join(' '));
+    let persisted = false;
+    try { persisted = (localStorageStub.getItem('pdx-map-editor/palette-fav/v1') || '').includes('00FF00'); } catch (e) {}
+
+    ok('调色板：跟着 localStorage 落盘 ✓', persisted, '');
+    ex.paletteRemoveAt(0);
+    ok('调色板：删掉一个就少一个',
+       ex.paletteList().length === 1 && ex.paletteList()[0] === '#00FF00',
+       ex.paletteList().join(' '));
+    ok('调色板：乱七八糟的字符串进不来',
+       !ex.paletteAdd('not-a-color') && !ex.paletteAdd('#12345'),
+       '');
+    ex.paletteReset();
+  }
+
+    console.log(`通过 ${oks.length} 条，失败 ${fails.length} 条`);
   if (fails.length) { console.log('失败项：'); fails.forEach((f) => console.log('  ✘ ' + f)); process.exitCode = 1; }
 })().catch((e) => { console.error('测试本身炸了：', e); process.exitCode = 2; });
 

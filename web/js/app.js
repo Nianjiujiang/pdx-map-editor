@@ -11,7 +11,10 @@ import { LabelLayer, computeLabelZoom, setLabelFont, labelFont, setLabelBitmap, 
 import { fontLibLoadAll, fontLibList, fontLibAdd, fontLibAddBitmap, fontLibRecord, fontLibRemove, fontLibFamily, fontLibClear, fontLibReady } from './fonts.js';
 import { BitmapFont } from './bitmapfont.js';
 import { TileMap } from './tilemap.js';
-import { importPack, listPacks, getPack, removePack, exportPackBytes, packStoreMode } from './packstore.js';
+/* 🗺 地图仓库（2026-10-24 ✓）：listMaps / putMap / deleteMap 也要导 ✓
+ *   ⚠ 漏 import 的话独立版（拍平 ✓）照常跑、开发版直接 listMaps is not defined ✗
+ *     还被 catch 静默吞成"空仓库" ✗✗ —— 2026-10-24 用户实测踩的 ✓ */
+import { importPack, listPacks, getPack, removePack, exportPackBytes, packStoreMode, listMaps, putMap, deleteMap } from './packstore.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -376,7 +379,7 @@ const state = {
   _wastePerimSeq: 0,
   _wasteCfgSeq: 0,
   painted: new Set(),          // **涂过的最细层节点**集合（`recomputePainted` 从每格反推的缓存 ✓）
-  brushLabel: '请输入文本',      // 当前画笔的标记：默认就写这五个字 ✓（用户要求 ✓）
+  brushLabel: '',                 // 当前画笔的标记：默认空 ✓（2026-10-25 用户：去掉"请输入文本"✓）
   titleName: new Map(),        // 头衔 → 改过的名字（改名工具写的）
   colorIndex: new Map(),
   labelTint: null,            // 势力名 → 它当前显示的颜色（「势力名取色」按钮给的 ✓）
@@ -983,8 +986,21 @@ function renderPalette() {
     chip.style.background = rgbToHex(e.rgb);
     /* ⚠ 只设颜色 ✗ 不动标记 —— 跟上面 pushRecent 存的东西对齐 ✓ */
     chip.onclick = () => { setBrush(e.rgb, false, true); };
+    /* 🎨 右键 = 从「最近使用」里删掉这一个 ✓（2026-10-24 简化 ✓ 跟收藏行同一口径 ✓）*/
+    chip.oncontextmenu = (ev) => {
+      ev.preventDefault();
+      removeRecent(e.rgb);
+    };
     box.appendChild(chip);
   }
+}
+
+/** 删「最近使用」里的某一个 ✓（右键圆圈 ✓）—— 落盘 ✓ 跟 clearRecent 同一条路 ✓ */
+function removeRecent(rgb) {
+  const key = rgb.join(',');
+  state.recent = state.recent.filter((c) => c.rgb.join(',') !== key);
+  renderPalette();
+  saveMapPrefs();
 }
 
 /**
@@ -1516,6 +1532,13 @@ const SET_DEFAULTS = {
    *  半透明的好处：底下的填色和边界还看得见 ✓（用户定的档位：25 / 50 / 75 / 100 ✓）*/
   labelAC: 50,
   labelAP: 50,
+  /* 🔴 **P社式排版**（2026-10-22 ✓）
+   *   国名 / 大地名贴着版图排（在版图里找基线 → 逐字弯曲 ✓ 见 maplabels.js）
+   *   `both` = 国名 + 地名 / `power` = 只排国名 / `off` = 老样子（横着写 ✓）
+   *   ⚠ 老存档没有这个键 → 取 `both`（新功能默认开 ✓ 用户说的是"改成像那样"✓）*/
+  mapNameFit: 'both',
+  // 排版调试：把基线 / 字框 / 包围盒 / 质心画出来（默认关 ✓）
+  mapNameDebug: false,
   // **取完色切到哪个画图工具**（涂抹 / 填色 ✓ 用户要求可在设置里选）
   pickTool: 'paint',
 };
@@ -1680,7 +1703,9 @@ function applySettings() {
      *     所以这里跟着置 labelDirty ✓ 下一帧重排一遍 ✓ */
     setLabelFont('place', ((state.set && state.set.fontFacePlace) || ''));
     setLabelFont('power', ((state.set && state.set.fontFacePower) || ''));
-    labelDirty = true;
+    /* **版图贴合**（P社式排版）—— 换档位会让排好的缓存作废 ✓（见 labels.js）*/
+    labels.setMapNameMode((state.set && state.set.mapNameFit) || 'both');
+    labels.debug = !!(state.set && state.set.mapNameDebug) || !!labels.debugHash;
   }
   const s = state.set || (state.set = Object.assign({}, SET_DEFAULTS));
   if (renderer) {
@@ -1755,6 +1780,7 @@ function applySettings() {
 function renameAt(pid, name) {
   const nm = String(name == null ? '' : name).trim();
   if (!pid || pid <= 0 || !nm) return false;
+  state._nameVer = (state._nameVer | 0) + 1;   // 名字改了 → 标签点上的 name 缓存要重写 ✓
   const pd = renderer && renderer.paintData;
   const n2 = state.meta.numProvinces;
   const tier = editTier();
@@ -2053,6 +2079,10 @@ function syncLayerSwitches() {
   // 剧本层的国名（原版那批）现在也由这份分组负责 ✓ —— 以前那个「势力 · 名称」
   // 开关算出来的是同一批点，所以删了，只剩这一个开关说了算 ✓
   {
+    /* 🔴 2026-10-25 改回仓库原样（廿九："没开剧本就别看当前剧本"）
+     *   中间有一版去掉了末尾的 `&& state.tier < n`，让**省份/地区层也全图重分组**
+     *   → 细层冒出一整片原版国名（用户报的"一进去就看到 2025 的国名"就是它 ✓）
+     *   原样：只有**剧本层**才全图分组；细层只认玩家涂过的块 ✓ */
     const _all = !!state.showLabelsPaint && n > 0 && state.tier < n;
     if (state._blocksAll !== _all || state._blocksTier !== state.tier) {
       state._blocksAll = _all;
@@ -2800,10 +2830,31 @@ function invalidate() {
 }
 
 /** 按视口比例平移视角（方向键用）。invalidate 里会做边界夹取，跑不出地图 */
+/**
+ * **视角在动**：给名字层一个"这一帧最多画几毫秒"的预算（2026-10-23）
+ *
+ * 用户报的现象："一些名字平时不画，鼠标移过去了才出现" ——
+ * 根因是上一版的自适应上限：慢了就永久少画，只有再次重画才慢慢涨回来 ✗
+ * 现在改成：动的时候按预算截断（保证跟手），**停下 250ms 立刻全量补画一帧** ✓
+ * 于是"停下来名字就齐了"，不用再动鼠标 ✓
+ */
+let _labelIdleTimer = 0;
+function noteViewMotion() {
+  if (labels && labels.frameBudgetMs !== undefined) labels.frameBudgetMs = 12;
+  if (_labelIdleTimer) clearTimeout(_labelIdleTimer);
+  _labelIdleTimer = setTimeout(() => {
+    _labelIdleTimer = 0;
+    if (labels && labels.frameBudgetMs !== undefined) labels.frameBudgetMs = Infinity;
+    labelDirty = true;          // 补一帧"全量"的名字 ✓
+    invalidate();
+  }, 250);
+}
+
 function panBy(dx, dy, ratio) {
   const v = viewRect();
   state.cam.cx += dx * v.w * ratio;
   state.cam.cy += dy * v.h * ratio;
+  noteViewMotion();
   invalidate();
 }
 
@@ -2838,6 +2889,7 @@ function zoomBy(factor, anchorX, anchorY) {
   const after = screenToMap(anchorX, anchorY);
   state.cam.cx += before[0] - after[0];
   state.cam.cy += before[1] - after[1];
+  noteViewMotion();
   invalidate();
 }
 
@@ -5431,6 +5483,123 @@ function stamp() {
   return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
 }
 
+/**
+ * **整图导出时把名字画上去**（2026-10-23 用户要的）
+ *
+ * 整图导出是分块渲染拼起来的，标签层压根没参与 → 导出来的大图没有字 ✗
+ * 这里把"当前该显示的那份名单"（跟屏幕上同一套：显示区那几个开关 ✓）
+ * 按导出倍率重画一遍 ✓
+ * ⚠ 不用另给开关 ✗ —— 玩家不想要名字，把显示区那几个「…· 名称」关掉就行 ✓
+ */
+function paintLabelsForExport(ctx, scale) {
+  if (!labels || !state.meta || !(scale > 0) || !Number.isFinite(scale)) return 0;
+  if (!(state.showLabelsTitle || state.showLabelsPaint
+        || state.showWaterName || state.showWasteName)) return 0;
+  const W = state.meta.mapWidth, H = state.meta.mapHeight;
+  let list = [];
+  try {
+    list = drawLabels({ x: 0, y: 0, w: W, h: H }, true) || [];
+  } catch (e) {
+    LOG.event('导出名字失败', String(e && (e.message || e)));
+    return 0;
+  }
+  /* 层的显示门槛按"整图视角"算（≈ 现在这个窗口装下整张图时的缩放 ✓）
+   * —— 不然 1× 全图导出相当于 100% 缩放，会把最细那一层的几万个名字全画上 ✗ */
+  const gate = (labels.cssW || 1600) / Math.max(1, W);
+  return labels.paintExport(ctx, list, scale, gate);
+}
+
+
+/* ==========================================================================
+   🔴 **导出的两条护栏**（2026-10-23 用户："一部分人导出图片闪退"）
+   --------------------------------------------------------------------------
+   导出闪退**抓不到异常** —— 那不是 JS 报错，是浏览器把标签页 OOM 杀掉了 ✗
+   所以只能"事前拦 + 事中看门狗"：
+
+   ① `exportBudgetTight(px)`：按"像素 × 4 字节 × 3 份"（画布 + PNG 编码 + 我们那份）
+      估个内存量，超过预算就不让导 —— 宁可提示"改用 1×"，也别把人标签页搞崩 ✓
+      机器内存小的（`navigator.deviceMemory ≤ 4`）预算再砍一半 ✓
+   ② `toBlob` 包一层 90 秒看门狗：真卡死（不再回调）也能把画布释放掉、
+      给一句"导出超时，试试 1×"，而不是永远停在"正在导出" ✓
+   ========================================================================== */
+function exportBudgetTight(px) {
+  const n = Number(px);
+  if (!(n > 0) || !Number.isFinite(n)) return true;
+  /* 🔴 **iOS / iPadOS 的画布上限是硬限制**（2026-10-23）
+   *   Safari（尤其旧版）单个画布约 1600 万像素，超过不是报错、是**整页崩掉** ✗
+   *   手机上"点导出就闪退"十有八九是这个 ✓ 直接按像素挡，别等崩 ✓ */
+  if (isAppleTouch()) return n > 16777216;
+  const needMB = n * 4 * 3 / (1024 * 1024);
+  let capMB = 720;                       // 默认预算（约 1.5 亿像素的 1/2 ✓）
+  const dm = (navigator && navigator.deviceMemory) | 0;
+  if (dm && dm <= 4) capMB = 360;        // 4 GB 及以下：砍一半 ✓
+  else if (dm && dm >= 8) capMB = 900;
+  return needMB > capMB;
+}
+
+/** 是不是 iOS / iPadOS（iPadOS 13 起 UA 伪装成 Mac，要看触点数 ✓） */
+function isAppleTouch() {
+  try {
+    const ua = navigator.userAgent || '';
+    if (/iPad|iPhone|iPod/.test(ua)) return true;
+    return /Macintosh/.test(ua) && (navigator.maxTouchPoints | 0) > 1;
+  } catch (e) { return false; }
+}
+
+/** 把"导出画布"还给 GC（浏览器的画布内存不还给 JS，只能把尺寸清零 ✓）*/
+function releaseCanvas(cv) {
+  try {
+    if (!cv) return;
+    cv.width = 0;
+    cv.height = 0;
+  } catch (e) { /* ✓ */ }
+}
+
+/**
+ * `toBlob` + 看门狗
+ * @param {HTMLCanvasElement} cv 输出画布
+ * @param {function} onOk 成功回调（blob ✓）
+ * @param {function} onFail 失败回调（原因字符串 ✓）
+ */
+function exportBlob(cv, onOk, onFail) {
+  let done = false;
+  const finish = (ok, arg) => {
+    if (done) return false;
+    done = true;
+    clearTimeout(timer);
+    try {
+      if (ok) onOk(arg);
+      else onFail(arg);
+    } finally {
+      releaseCanvas(cv);              // 不管成败都交还画布 ✓
+    }
+    return true;
+  };
+  const timer = setTimeout(() => {
+    finish(false, '导出超时（90 秒没有结果）');
+  }, 90000);
+  try {
+    if (typeof cv.toBlob !== 'function') throw new Error('no toBlob');
+    cv.toBlob((b) => {
+      if (!b) finish(false, '浏览器没能编码出这张图（多半是内存不够）');
+      else finish(true, b);
+    }, 'image/png');
+  } catch (e) {
+    /* 🔴 老 Safari 没有 `toBlob`（2026-10-23）→ 退回 `toDataURL` 再转 blob ✓
+     *   dataURL 会多占一份内存，所以只有"没有 toBlob"才走这条路 ✓ */
+    try {
+      const url = cv.toDataURL('image/png');
+      const comma = url.indexOf(',');
+      const bin = atob(url.slice(comma + 1));
+      const buf = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+      finish(true, new Blob([buf], { type: 'image/png' }));
+    } catch (e2) {
+      finish(false, '导出时出错：' + ((e2 && e2.message) || e2));
+    }
+  }
+}
+
 /** 导出当前画面：WebGL 那层和地名层叠起来存 PNG */
 function exportViewPNG() {
   // 先补一帧，保证 WebGL 缓冲区里是刚画好的内容
@@ -5467,13 +5636,16 @@ function exportViewPNG() {
   // 导出图例：勾了「画进导出的图」就画上去 ✓
   const _lgN = maybeDrawLegend(ctx, out.width, out.height);
 
-  out.toBlob((b) => {
-    if (!b) return toast('导出失败', true);
+  const _w = out.width, _h = out.height;
+  exportBlob(out, (b) => {
     download(b, `${GAME.filePrefix}_视图_${stamp()}.png`);
-    LOG.event('导出窗口 PNG', `${out.width}×${out.height}${_lgN ? ' · 图例 ' + _lgN + ' 条' : ''}`);
+    LOG.event('导出窗口 PNG', `${_w}×${_h}${_lgN ? ' · 图例 ' + _lgN + ' 条' : ''}`);
     if (_lgN < 0) return toast('已导出，但图例是空的：这个视图里还没有可列的颜色 ✓ 先涂几块、或者在剧本层导出试试');
-    toast(`已导出当前画面 ${out.width}×${out.height}` + (_lgN ? `（含 ${_lgN} 条图例）` : ''));
-  }, 'image/png');
+    toast(`已导出当前画面 ${_w}×${_h}` + (_lgN ? `（含 ${_lgN} 条图例）` : ''));
+  }, (why) => {
+    toast(`${why} —— 试着先把画面缩放到整图再导一次`, true);
+    LOG.event('导出窗口 PNG 失败', why);
+  });
 }
 
 /**
@@ -5507,10 +5679,21 @@ async function exportFullPNG(scale = 1) {
     return toast(`这张图 ${scale}× 要 ${OW}×${OH}，超过浏览器能画的画布上限——`
       + (scale > 1 ? '请改用普通的「导出整图」（1×）。' : '这张图太大了，导不出来。'), true);
   }
+  /* 🔴 **内存预算**（2026-10-23：「一部分人导出图片闪退」）
+   *   闪退是浏览器把标签页 OOM 杀了，JS 层抓不到 ✗ → 只能事前挡：
+   *   估算"画布 + PNG 编码 + 我们那份"要多少，超预算就别开始 ✓ */
+  if (exportBudgetTight(OW * OH)) {
+    const needMB = Math.round(OW * OH * 4 * 3 / (1024 * 1024));
+    LOG.event('导出整图被拦', `${OW}×${OH} 预计占用 ${needMB} MB，超过本机预算`);
+    return toast(`这张图 ${OW}×${OH} 预计要 ${needMB} MB 内存，很可能把标签页撑崩（闪退）——`
+      + (scale > 1 ? '请改用 1×，或者先把画面缩到整图用「导出当前画面」。'
+                   : '请用「导出当前画面」分片导，或者换台内存大点的机器。'), true);
+  }
   const glCanvas = $('map');
   // 输出块 = TILE × scale ≤ 2048 ✓（1× 时 2048、2× 时 1024 地图像素）
   const TILE = Math.max(512, Math.floor(2048 / scale));
   let _lgN2 = 0;                 // 图例画了几条（-1 = 勾了但没东西可画 ✓）
+  let _labN2 = 0;                // 名字画了几个（0 = 显示区那几个名称开关都关着 ✓）
 
   const savedW = glCanvas.width;
   const savedH = glCanvas.height;
@@ -5573,20 +5756,28 @@ async function exportFullPNG(scale = 1) {
     renderer.setView(savedView.x, savedView.y, savedView.w, savedView.h);
     // 整图也把图例画上 ✓（放在 finally 里，前面就算哪块渲染失败也照样出一张带图例的图 ✓）
     // 尺寸也按放大后的给 ✓ → 图例的字和色块跟着一起放大 ✓
+    /* **先画名字、再画图例** ✓（图例压在最上面 ✓ 名字开关听显示区那几个 ✓）*/
+    try { _labN2 = paintLabelsForExport(ctx, scale); } catch (e) {
+      LOG.event('导出名字失败', String(e && (e.message || e)));
+    }
     _lgN2 = maybeDrawLegend(ctx, W * scale, H * scale);
     invalidate();
   }
 
   const _tag = scale > 1 ? `_整图${scale}x` : '_整图';
-  out.toBlob((b) => {
-    if (!b) return toast('导出失败，可能图太大', true);
+  exportBlob(out, (b) => {
     download(b, `${GAME.filePrefix}${_tag}_${stamp()}.png`);
     LOG.event('导出整图 PNG', `${OW}×${OH}` + (scale > 1 ? `（${scale}× 高清）` : '')
+      + (_labN2 ? ` · 名字 ${_labN2} 个` : ' · 不带名字')
       + (_lgN2 ? ' · 图例 ' + _lgN2 + ' 条' : ''));
     if (_lgN2 < 0) return toast('已导出，但图例是空的：这个视图里还没有可列的颜色 ✓ 先涂几块试试');
     toast(`已导出整张地图 ${OW}×${OH}` + (scale > 1 ? `（${scale}× 高清）` : '')
+      + (_labN2 ? `（含 ${_labN2} 个名字）` : '（不带名字：显示区的名称开关关着）')
       + (_lgN2 ? `（含 ${_lgN2} 条图例）` : ''));
-  }, 'image/png');
+  }, (why) => {
+    LOG.event('导出整图 PNG 失败', why);
+    toast(`${why} —— 换 1× 再试，或者缩小导出范围`, true);
+  });
 }
 
 
@@ -5756,6 +5947,10 @@ function loadProject() {
   // 回到**同一张图**就把上次"回主菜单"存下的那份接上 ✓
   // **接完立刻删掉** ✓ —— 这样紧跟着按 F5 就是干干净净从零开始 ✓
   // （不删的话 F5 会又接回来 ✗ 那跟主菜单就分不开了 ✓）
+  /* 🔴 **仓库载入挂着时不接 stash** ✗✗（2026-10-25 踩的 ✓）
+   *   boot 前面刚把仓库存档的涂色套上 ✗ 这里又拿"上次退出时的暂存"
+   *   盖一遍 → 玩家点涂色方案→选地图，载入的全是旧状态 ✗ */
+  if (state._pendingProject) return 0;
   try {
     const k = mapKeyOf(state.meta);
     if (!k) return 0;
@@ -5857,15 +6052,376 @@ function applyProject(data) {
   return n;
 }
 
-function exportProject() {
-  const data = projectData();
-  const count = Object.keys(data.titles).length;
-  if (!count) return toast('还没涂过任何东西', true);
+/* ================================================================ 🗺 地图仓库
+ * 「存入地图仓库」代替原来的「导出涂色」✓（2026-10-24 用户定的）：
+ *   起个名存进浏览器（IndexedDB，见 packstore.js 的 `saved_maps` ✓），
+ *   选图页的「地图仓库」统一管理：载入继续画 / 改名 / 复制 / 删除 /
+ *   导出 .json / 分享给朋友 ✓
+ *   一条记录里 project 就是 `projectData()` 那份工程 JSON ✓ 导出的 .json
+ *   拖回窗口照样能用（importJSON 那条路不变 ✓）✓
+ * ---------------------------------------------------------------- */
+
+/** 编辑器构建戳（`<meta name="pdx-build">`，仓库元数据里记一份 ✓） */
+function appBuild() {
+  try {
+    const mm = document.querySelector('meta[name="pdx-build"]');
+    return mm ? String(mm.content || 'dev') : 'dev';
+  } catch (e) { return 'dev'; }
+}
+
+/** 缩略图：各省按质心铺一小块颜色，压成 320 宽的 JPEG dataURL ✓
+ *  （不整图 putImageData —— 42M 像素的临时 ImageData 会顶爆低端机 ✗） */
+function saveMapThumb() {
+  try {
+    const m = state.meta, pd = renderer && renderer.paintData, pos = state.provPos;
+    if (!m || !pd || !pos) return '';
+    const W = 320, H = Math.max(80, Math.round(W * m.mapHeight / m.mapWidth));
+    const cv = document.createElement('canvas');
+    cv.width = W; cv.height = H;
+    const ctx = cv.getContext('2d');
+    if (!ctx) return '';
+    ctx.fillStyle = '#0d1116';
+    ctx.fillRect(0, 0, W, H);
+    const s = W / m.mapWidth;
+    const n = m.numProvinces | 0;
+    for (let q = 1; q < n; q++) {
+      if (pd[q * 4 + 3] === 0) continue;
+      const x = pos[q * 3], y = pos[q * 3 + 1], px = pos[q * 3 + 2] || 1;
+      ctx.fillStyle = 'rgb(' + (pd[q * 4] | 0) + ',' + (pd[q * 4 + 1] | 0) + ',' + (pd[q * 4 + 2] | 0) + ')';
+      const r = Math.max(1.2, Math.sqrt(px) * s * 0.5);
+      ctx.fillRect(x * s - r, y * s - r, r * 2, r * 2);
+    }
+    return cv.toDataURL('image/jpeg', 0.75);
+  } catch (e) { return ''; }
+}
+
+/** 仓库记录（project = projectData() 那份 ✓） */
+function mapStoreRec(name) {
+  const m = state.meta;
+  return {
+    format: 'pdx-saved-map',
+    v: 1,
+    id: 'sm_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
+    name: String(name || '').trim() || ('未命名 ' + new Date().toLocaleDateString()),
+    created: Date.now(), updated: Date.now(),
+    emb: String(state.mapEmb || ''),
+    base: String((m && m.label) || ''),
+    game: String((m && m.game) || ''),
+    mapKey: mapKeyOf(m),
+    build: appBuild(),
+    preview: saveMapThumb(),
+    project: projectData(),
+  };
+}
+
+/** 存进仓库 ✓（有备份了 → 关页面时不再提醒 ✓ 见 beforeunload 的 _exported ✓） */
+async function saveMapToStore(name) {
+  const rec = mapStoreRec(name);
+  const count = Object.keys((rec.project && rec.project.titles) || {}).length;
+  if (!count) { toast('还没涂过任何东西，没东西可存。', true); return null; }
+  await putMap(rec);
+  state._exported = true;
+  LOG.event('存入地图仓库', rec.name + ' · ' + count + ' 处');
+  toast('已存入地图仓库：「' + rec.name + '」（选图页的「地图仓库」里能找到）。');
+  return rec;
+}
+
+/** 存档弹窗（起名 ✓） */
+function openSaveMapDialog() {
+  const box = $('save-map');
+  if (!box) return;
+  const inp = $('save-map-name');
+  if (inp) inp.value = '';
+  box.hidden = false;
+  if (inp) { inp.focus(); inp.select(); }
+}
+
+/** 存档弹窗的保存按钮 ✓（之前只写了绑定忘了定义 ✓ 2026-10-25 用户 ✓） */
+async function saveMapFromDialog() {
+  const inp = $('save-map-name');
+  const nm = inp ? String(inp.value || '').trim() : '';
+  if (!nm) { toast('先起个名字。', true); return; }
+  const box = $('save-map');
+  if (box) box.hidden = true;
+  await saveMapToStore(nm);
+}
+
+/** 工程 JSON 下载（仓库「导出」用 ✓ 名字里带上存档名 ✓） */
+function downloadProjectJSON(name, project) {
+  const data = project || projectData();
+  const count = Object.keys((data && data.titles) || {}).length;
+  if (!count) { toast('这份存档里没有涂色，导出来也没用。', true); return; }
   download(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }),
-    `${GAME.filePrefix}_工程_${stamp()}.json`);
-  state._exported = true;      // 手上有备份了 → 关页面时不再提醒（见 beforeunload）
-  LOG.event('导出涂色', `${count} 处`);
-  toast(`已导出${count} ${GAME.entity}的涂色，下次拖回窗口就能恢复。`);
+    (GAME && GAME.filePrefix ? GAME.filePrefix + '_' : '') + String(name || '涂色方案') + '.json');
+  LOG.event('导出涂色方案', String(name || '') + ' · ' + count + ' 处');
+}
+
+/** 分享给好友：系统分享面板能带文件就直传，不行就退回下载 ✓ */
+async function shareProjectFile(name, project) {
+  const data = project || projectData();
+  if (!Object.keys((data && data.titles) || {}).length) {
+    toast('这份存档里没有涂色，分享出去也没用。', true);
+    return;
+  }
+  const fname = (GAME && GAME.filePrefix ? GAME.filePrefix + '_' : '')
+    + String(name || '涂色方案') + '.json';
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  try {
+    const file = new File([blob], fname, { type: 'application/json' });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      await navigator.share({ files: [file], title: String(name || '涂色方案') });
+      LOG.event('分享地图', String(name || ''));
+      return;                                  // 用户看见系统分享面板 ✓
+    }
+  } catch (e) {
+    if (e && e.name === 'AbortError') return;  // 用户取消分享 ✓ 不算失败 ✓
+    /* 其它错误退回下载 ✓ */
+  }
+  download(blob, fname);
+  toast('这台浏览器不支持直传，已经改成下载文件 —— 发给朋友就行。');
+}
+
+/** 选图页的仓库列表（打开面板 / 动过之后重画 ✓） */
+async function renderStoreList() {
+  /* 🗺 渲染进 #map-pick-list（跟地图卡**同一个容器** ✓ 2026-10-25 用户定的 ✓
+   *   曾经渲染进 #map-store-list ✗ —— 那个容器已经删了 ✗ 旧引用让仓库永远空白 ✗）*/
+  const listEl = $('map-pick-list');
+  if (!listEl) return;
+  listEl.innerHTML = '';
+  let all = [], storeErr = null;
+  try { all = await listMaps(); } catch (e) { storeErr = String(e && e.message || e); }
+  /* ⚠ **读取失败不许静默吞成"空仓库"** ✗✗（2026-10-24 踩的 ✓：import 漏了，
+   *    开发版 listMaps 直接 undefined，catch 一吞界面就是"空仓库" ✗ 真相被埋了 ✓）
+   *   有错就大声说 ✓ */
+  if (storeErr) { toast('仓库读取失败：' + storeErr, true); return; }
+  for (const rec of all) {
+    /* 🗺 **卡片样式全部向地图区对齐**（2026-10-24 用户："全部向地图区对齐"✓）：
+     *   直接用 `.map-card` 那套（同样的悬停浮起 / 金色名字 / 右下角动作 ✓），
+     *   点卡片 = 载入 ✓（跟点地图卡 = 进图，同一个语义 ✓）
+     *   ⚠ 名字 / 元数据用 textContent ✓ 导入的 .json 是陌生人给的文件 ✗ */
+    /* 🗺 **卡片结构跟地图卡一模一样** ✓（2026-10-24 用户："照搬地图包模式"✓）：
+     *   同一个 `.map-card` 类 ✓ 同一个 flex 排法 ✓ 同一个 hover ✓
+     *   b = 存档名（金色 ✓）/ span = 元数据（mono 淡色 ✓）
+     *   .map-card-tag = 左下角游戏签名 ✓  .map-card-acts = 右下角动作 ✓
+     *   ⚠ 名字 / 元数据用 textContent ✓ 导入的 .json 是陌生人给的文件 ✗
+     *   （缩略图去掉了 ✓ —— 地图卡也没有缩略图 ✓ 看着才整齐 ✓）*/
+    const card = document.createElement('button');
+    card.type = 'button';
+    card.className = 'map-card';
+    const nm = document.createElement('b');
+    nm.textContent = rec.name || '未命名';
+    /* 元数据空着（flex 布局要它占位 ✓ 内容全去掉了 ✓ 2026-10-25 用户 ✓）*/
+    const meta = document.createElement('span');
+    meta.textContent = '';
+    const acts = document.createElement('span');
+    acts.className = 'map-card-acts';
+    const mkAct = (text, danger, fn) => {
+      const x = document.createElement('span');
+      x.className = 'map-act' + (danger ? ' danger' : '');
+      x.textContent = text;
+      x.onclick = (ev) => {
+        if (ev && ev.stopPropagation) ev.stopPropagation();
+        if (ev && ev.preventDefault) ev.preventDefault();
+        return fn();
+      };
+      return x;
+    };
+    acts.append(
+      mkAct('导出', false, () => downloadProjectJSON(rec.name, rec.project)),
+      mkAct('改名', false, () => storeRename(rec)),
+      mkAct('删除', true, () => storeDelete(rec)),
+    );
+    /* 右下角签名：地图类型（跟地图卡的版本号同位 ✓ 2026-10-25 用户 ✓）*/
+    if (rec.game) {
+      const tag = document.createElement('span');
+      tag.className = 'map-card-tag';
+      tag.textContent = rec.game.toUpperCase();
+      card.appendChild(tag);
+    }
+    card.append(nm, meta, acts);
+    /* 点卡片 → 回「开始创作」页挑底图（不限定死哪张 ✓ 2026-10-25 用户定的 ✓）
+     * 涂色挂到存档上，选完图就绪后自动套 ✓ */
+    card.onclick = () => storePickMapFor(rec);
+    listEl.appendChild(card);
+  }
+}
+
+function fmtStoreDate(t) {
+  try {
+    const d = new Date(t || Date.now());
+    return (d.getMonth() + 1) + '月' + d.getDate() + '日 '
+      + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+  } catch (e) { return ''; }
+}
+
+/** 载入：把工程挂到匹配的选单条目上 → 走正常的选图流程，就绪后自动套 ✓ */
+function storeLoad(rec) {
+  const m = MAP_CHOICES.find((x) => x.emb === rec.emb || x.key === rec.emb);
+  if (!m) {
+    toast('底图「' + (rec.base || rec.emb || '?') + '」不在选单里（先把对应的地图包导进来）。', true);
+    return;
+  }
+  m.__project = { project: rec.project, mapKey: rec.mapKey || '', name: rec.name || '' };
+  const r = state._pickResolve;
+  if (!r) { toast('选图流程没在等输入，载不进去（刷新一下再试）。', true); return; }
+  state._pickResolve = null;
+  r(m);
+}
+
+/** 点仓库卡片：回「开始创作」页挑底图 ✓（2026-10-25 用户定的：
+ *  不限定死必须选哪张 —— 存档的涂色跟着走，选完图就绪后自动套 ✓）
+ * ⚠ 底图跟存档对不上时（mapKey 不一致）boot 那边会拦住不套 ✓（原有逻辑 ✓）*/
+function storePickMapFor(rec) {
+  state._pendingProject = { project: rec.project, mapKey: rec.mapKey || '', name: rec.name || '' };
+  const tab = $('pick-tab-maps');
+  if (tab) tab.click();
+  toast('已选中「' + (rec.name || '') + '」的涂色 —— 挑一张底图载入。');
+}
+
+async function storeDuplicate(rec) {
+  const copy = Object.assign({}, rec, {
+    id: 'sm_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
+    name: (rec.name || '未命名') + ' 副本',
+    created: Date.now(), updated: Date.now(),
+  });
+  await putMap(copy);
+  renderStoreList();
+  toast('已复制为「' + copy.name + '」。');
+}
+
+async function storeRename(rec) {
+  const nm = prompt('新的名字：', rec.name || '');
+  if (nm == null) return;
+  const clean = String(nm).trim();
+  if (!clean) { toast('名字不能是空的。', true); return; }
+  rec.name = clean;
+  rec.updated = Date.now();
+  await putMap(rec);
+  renderStoreList();
+}
+
+async function storeDelete(rec) {
+  /* 提示跟地图包那边同一句 ✓（2026-10-25 用户：统一 ✓）*/
+  if (!confirm('是否删除该地图？')) return;
+  await deleteMap(rec.id);
+  renderStoreList();
+}
+
+/** 导入 .json 到仓库：认两种 —— 仓库导出的整条存档 / 裸的工程 JSON ✓ */
+async function storeImportFile(file) {
+  try {
+    const text = await file.text();
+    const data = JSON.parse(text);
+    if (data && data.format === 'pdx-saved-map' && data.project) {
+      const rec = Object.assign({}, data, {
+        id: 'sm_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
+        name: String(data.name || file.name.replace(/\.json$/i, '')),
+        updated: Date.now(),
+        created: data.created || Date.now(),
+      });
+      await putMap(rec);
+    } else if (data && (data.titles || data.colors)) {
+      const def = String(file.name || '').replace(/\.json$/i, '');
+      const nm = prompt('这份是涂色方案。给它在仓库里起个名：', def);
+      if (nm == null) return;
+      const rec = mapStoreRec(String(nm).trim() || def || '未命名');
+      rec.project = data;
+      rec.mapKey = '';                     // 裸工程不知道底图 → 载入时不做键校验 ✓
+      rec.base = data.base || '';
+      await putMap(rec);
+    } else {
+      toast('这份文件不是涂色方案 / 仓库存档。', true);
+      return;
+    }
+    await renderStoreList();
+    toast('已导入地图仓库。');
+  } catch (e) {
+    toast('导入失败：' + (e && e.message ? e.message : e), true);
+  }
+}
+
+/* ================================================================ 🎨 收藏调色板
+ * 侧栏「调色板」面板：喜欢的颜色扔进来，**跨游戏共用** ✓（localStorage ✓）
+ *   · 左键圆圈 = 直接用作画笔色（画图时的高频动作 ✓）
+ *   · 右键圆圈 = 从调色板删掉（用户定的："点击小圆圈就是去掉他们" ✓）
+ *   · 底部「＋ 收当前颜色」= 把当前画笔颜色收进来 ✓
+ *   · 上限 24 色：满了再收，最旧的被挤掉（提示一声 ✓） */
+const PAL_FAV_KEY = 'pdx-map-editor/palette-fav/v1';
+const PAL_FAV_MAX = 24;
+
+function paletteList() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(PAL_FAV_KEY) || '[]');
+    return Array.isArray(raw) ? raw.filter((c) => typeof c === 'string').slice(0, PAL_FAV_MAX) : [];
+  } catch (e) { return []; }
+}
+
+function paletteSaveArr(arr) {
+  try { localStorage.setItem(PAL_FAV_KEY, JSON.stringify(arr.slice(0, PAL_FAV_MAX))); } catch (e) { /* 存不进就算了 ✓ */ }
+  renderPaletteFav();
+}
+
+function paletteAdd(hex) {
+  const c = String(hex || '').toUpperCase();
+  if (!/^#[0-9A-F]{6}$/.test(c)) return false;
+  const arr = paletteList();
+  const at = arr.indexOf(c);
+  if (at >= 0) arr.splice(at, 1);            // 已有 → 挪到最前 ✓
+  if (arr.length >= PAL_FAV_MAX) toast('调色板满了（' + PAL_FAV_MAX + ' 色）：最旧的一个被挤掉了。');
+  arr.unshift(c);
+  paletteSaveArr(arr);
+  return true;
+}
+
+function paletteRemoveAt(i) {
+  const arr = paletteList();
+  if (i < 0 || i >= arr.length) return false;
+  arr.splice(i, 1);
+  paletteSaveArr(arr);
+  return true;
+}
+
+function paletteReset() { paletteSaveArr([]); }
+
+/** 收起色块的二级菜单 ✓（选中颜色 / 点外面 / 去拾色器时都会调 ✓）
+ *  ⚠ 2026-10-24：只写了调用忘了写函数本体 ✗ —— 独立版里点收藏色块直接
+ *    ReferenceError 红屏（用户截图 ✓）调用先于定义存在是正常的 ✓ 函数本体别忘 ✓ */
+function closeBrushMenu() {
+  const m = $('brush-menu');
+  if (m) m.hidden = true;
+}
+
+function renderPaletteFav() {
+  const box = $('palette-fav');
+  if (!box) return;
+  box.innerHTML = '';
+  /* 🎨 收藏行：圆角方块 + 行尾的「＋ 收当前颜色」✓
+   *   （2026-10-24 简化 ✓：单独那个收色按钮删了，收色就是点行尾这块 ✓）*/
+  paletteList().forEach((hex, i) => {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'chip';
+    chip.style.background = hex;
+    /* ⚠ 不写原生 title ✗（2026-10-22/25 用户：去掉悬停小白块 ✓）aria-label 留给读屏 ✓ */
+    chip.setAttribute('aria-label', '调色板颜色 ' + hex);
+    chip.addEventListener('click', () => {
+      const c = hexToRgb(hex);
+      if (c) setBrush(c, false);             // 不进「最近使用」✓ 它本来就是收藏 ✓
+      closeBrushMenu();
+    });
+    chip.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      paletteRemoveAt(i);
+    });
+    box.appendChild(chip);
+  });
+  const plus = document.createElement('button');
+  plus.type = 'button';
+  plus.className = 'chip palette-plus';
+  plus.textContent = '＋';
+  plus.setAttribute('aria-label', '收当前颜色进调色板');
+  plus.addEventListener('click', () => { paletteAdd(rgbToHex(state.brush)); });
+  box.appendChild(plus);
 }
 
 /**
@@ -6393,7 +6949,7 @@ function bindEvents() {
     if (dirty > 0 && !stashNow()) {
       // 存不进暂存区（无痕模式 / 配额满）才问一句 ✗ 至少不静默丢
       if (!window.confirm('这台浏览器不让暂存，回主菜单会丢掉还没导出的涂色（改动 ' + dirty + ' 处）。\n'
-        + '想留着就先点「导出 ▾ → 导出涂色」存一份。\n\n确定要回主菜单吗？')) return;
+        + '想留着就先点「文件 ▾ → 存入地图仓库」存一份。\n\n确定要回主菜单吗？')) return;
     }
     location.reload();
   };
@@ -6484,10 +7040,26 @@ function bindEvents() {
       const dy = (e.clientY - panning.y) / state.cam.scale;
       state.cam.cx = panning.cx - dx;
       state.cam.cy = panning.cy - dy;
+      noteViewMotion();
       invalidate();
       return;
     }
     if (!inside) {
+      if (state.hover.inside) {
+        state.hover.inside = false;
+        $('hover-card').hidden = true;
+        renderer.setHover(null);
+        labelDirty = true;
+      }
+      return;
+    }
+    /* 🖱 **光标在侧栏 / 浮层上 ≠ 在地图上**（2026-10-24 用户报的 ✓）：
+     *   侧栏是盖在画布上面的兄弟节点 ✓ window 级 mousemove 在它上面照样触发，
+     *   底下被盖住的地块就被高亮/悬停了 ✗
+     *   `e.target` 就是光标下最上层那个元素：不在 #stage 里 = 在别的浮层上 ✓
+     *   → 按出界处理：清悬停 ✓（顺带拖画也会停 —— 隔着栏涂下面的地本来就是误会 ✓）*/
+    const overMap = !!(e.target && e.target.closest && e.target.closest('#stage'));
+    if (!overMap) {
       if (state.hover.inside) {
         state.hover.inside = false;
         $('hover-card').hidden = true;
@@ -6603,10 +7175,29 @@ function bindEvents() {
       const c = hexToRgb($('brush-color').value);
       if (c) setBrush(c, true);
     });
+    /* 🎨 点大色块 → 弹**二级菜单**（2026-10-24 用户定的 ✓）：
+     *   里面自己选：去 RGB 拾色器调，或从调色板 / 最近使用里挑 ✓
+     *   （不再直接弹系统取色器 ✗）*/
     $('brush-swatch').onclick = () => {
+      const menu = $('brush-menu');
+      if (!menu) return;
+      menu.hidden = !menu.hidden;
+    };
+    $('brush-menu-custom').onclick = () => {
       $('brush-color').value = rgbToHex(state.brush);   // 每次打开都同步成当前色 ✓
+      closeBrushMenu();
       $('brush-color').click();
     };
+    // 点菜单外面就收起 ✓
+    // ⚠ 用**捕获阶段** ✗ —— 冒泡阶段的 click 会被画布那边的处理器截停 ✗
+    //   （2026-10-24 实测：合成点击关不掉就是这个 ✓）真实点击同样先走捕获 ✓*/
+    document.addEventListener('click', (e) => {
+      const menu = $('brush-menu');
+      if (!menu || menu.hidden) return;
+      if (e.target && e.target.closest && e.target.closest('#brush-menu')) return;
+      if (e.target && e.target.closest && e.target.closest('#brush-swatch')) return;
+      closeBrushMenu();
+    }, { capture: true });
     // 用 input 而不是 change：在取色器里拖着调的时候就能实时跟着变 ✓
     $('brush-color').addEventListener('input', () => {
       const c = hexToRgb($('brush-color').value);
@@ -7272,6 +7863,12 @@ function bindEvents() {
       if (_lm) _lm.checked = Number(s.labelMax) >= LABEL_MAX_UNLIMITED;
       const _lp = $('set-labelplacemax-unlimited');
       if (_lp) _lp.checked = Number(s.labelPlaceMax) >= 20;
+      /* 版图贴合（P社式排版）那个下拉 ✓ 老存档没有 → both ✓ */
+      const _mn = $('set-mapname');
+      if (_mn) _mn.value = (s.mapNameFit === 'power' || s.mapNameFit === 'off')
+        ? s.mapNameFit : 'both';
+      const _md = $('set-mapname-debug');
+      if (_md) _md.checked = !!s.mapNameDebug;
       _refreshDirty();
     };
 
@@ -7387,6 +7984,30 @@ function bindEvents() {
         state._placeCapped = null; state._placeKept = null;
       });
     }
+    // **版图贴合**（P社式排版）：off / power / both ✓
+    {
+      const el = $('set-mapname');
+      if (el) el.addEventListener('change', () => {
+        state.set.mapNameFit = el.value;
+        labelDirty = true;
+        applySettings();
+        scheduleSave();
+        _refreshDirty();
+        if (typeof invalidate === 'function') invalidate();
+      });
+    }
+    // **排版调试**：勾上就画基线 / 字框 / 包围盒 / 质心 ✓
+    {
+      const el = $('set-mapname-debug');
+      if (el) el.addEventListener('change', () => {
+        state.set.mapNameDebug = !!el.checked;
+        if (labels) labels.debug = !!el.checked || !!labels.debugHash;
+        labelDirty = true;
+        scheduleSave();
+        _refreshDirty();
+        if (typeof invalidate === 'function') invalidate();
+      });
+    }
     // **取色后切到**（涂抹 / 填色）：只存个偏好，跟界面/渲染都没关系 ✓（不走 applySettings）
     {
       const el = $('set-picktool');
@@ -7496,7 +8117,23 @@ function onExportFail(e) {
   $('btn-png-full').onclick = _wrap(() => exportFullPNG(1));
   // **高清 2×**：输出宽高都翻倍、边界按新尺度重画 ✓（用户要求 ✓）
   if ($('btn-png-full2')) $('btn-png-full2').onclick = _wrap(() => exportFullPNG(2));
-  $('btn-project').onclick = _wrap(exportProject);
+  $('btn-project').onclick = _wrap(openSaveMapDialog);
+  /* 导出涂色方案 .json 直通下载 ✓（不进仓库、不弹窗 ✓）*/
+  $('btn-export-project').onclick = _wrap(() => downloadProjectJSON());
+
+  /* 🗺 存档弹窗的确定 / 取消 / 回车 ✓ */
+  if ($('save-map-ok')) $('save-map-ok').onclick = _wrap(() => saveMapFromDialog());
+  if ($('save-map-cancel')) $('save-map-cancel').onclick = () => { const b = $('save-map'); if (b) b.hidden = true; };
+  if ($('save-map-name')) $('save-map-name').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); saveMapFromDialog(); }
+  });
+
+  /* 🎨 收藏调色板 ✓（渲染一次；之后增删都会自己重画 ✓）
+     ⚠ 仓库面板的绑定**不在这儿** ✗ —— 那是**选图页**的东西，
+       bindEvents() 要等选完图才跑 ✗ 那时选图页早就没用了 ✓
+       绑定在 pickMap 里（跟 map-import 同一处 ✓ 见那边 ✓）*/
+  renderPaletteFav();
+  // 收色入口 = 收藏行行尾那个「＋」块（见 renderPaletteFav ✓ 2026-10-24 简化 ✓）
   // 「导入涂色」：跟拖文件进来是同一个入口（importJSON），只是一个选文件、一个拖
   $('btn-import').onclick = _wrap(() => {
     const inp = document.createElement('input');
@@ -7597,7 +8234,16 @@ function onExportFail(e) {
 
 // ================================================================ 渲染循环
 
-function frame() {
+function frame(_ts) {
+  /* FPS：用 rAF 给的时间戳算（这才是"这一秒到底跑了几帧" ✓
+   * 别拿"重画间隔"当 FPS ✗ —— 静止时不重画，那样算出来是 0 ✓）*/
+  try {
+    if (_ts > 0) {
+      const dt = _ts - (PERF.S._rafAt || _ts);
+      PERF.S._rafAt = _ts;
+      if (dt > 0 && dt < 500) PERF.S.fps = PERF.S.fps * 0.9 + (1000 / dt) * 0.1;
+    }
+  } catch (e) { /* ✓ */ }
   /* **帧循环整个包一层** ✓ —— 这是唯一一处"出错就再也不重排"的地方：
    * 里面任何一句抛了，requestAnimationFrame(frame)（在最底下）就永远轮不到 ✗
    * → 画面冻在最后一帧、控制台一条错、界面上什么提示都没有 ✓（最难查的那种）
@@ -7634,7 +8280,101 @@ function frameStep(name, fn) {
   }
 }
 
+
+/* ==========================================================================
+   📊 **性能指标**（2026-10-23 用户："记得搞个指标什么的"）
+   --------------------------------------------------------------------------
+   只量"我们自己能改的那部分"，不做花哨的 FPS 面板：
+     · `frame`   —— frameBody 整段耗时（滚动平均 / 最近 2 秒最差）
+     · `render`  —— WebGL 那一次 render()
+     · `labels`  —— 画名字（2D canvas）
+     · `list`    —— 画名字里"凑名单"那一段（不含栅格化，纯 JS ✓ 优化它才有意义）
+     · `tile`    —— 这一帧补块 / 传块
+   开关：地址栏带 `#perf` / `#mapdebug`，或按 Shift+P。指标也进诊断报告 ✓
+   ========================================================================== */
+const PERF = (() => {
+  const S = {
+    frame: 16, render: 0, labels: 0, list: 0, tile: 0,
+    worst: 0, worstAt: 0, frames: 0, fps: 60,
+    drawn: 0, hits: 0, miss: 0, points: 0,
+    _t: 0, _hud: null, _on: false, _hudAt: 0,
+  };
+  const ema = (old, v) => (old * 0.85 + v * 0.15);
+  function begin() { S._t = performance.now(); return S._t; }
+  /** 记一段耗时（ms）*/
+  function mark(name, ms) {
+    if (!(ms >= 0) || !Number.isFinite(ms)) return;
+    if (name === 'frame') {
+      S.frame = ema(S.frame, ms);
+      if (ms > S.worst && performance.now() - S.worstAt > 2000) { S.worst = ms; S.worstAt = performance.now(); }
+      S.frames++;
+    } else if (S[name] != null) S[name] = ema(S[name], ms);
+  }
+  function since(t0) { return performance.now() - t0; }
+
+  function on() {
+    return S._on || (typeof location !== 'undefined' && /#(perf|mapdebug)/.test(location.hash || ''));
+  }
+
+  /** 5Hz 刷一次 HUD（**别每帧动 DOM** ✗ 那本身就会拖慢 ✓）*/
+  function hud() {
+    try {
+      if (!on()) {
+        if (S._hud && !S._hud.hidden) S._hud.hidden = true;
+        return;
+      }
+      const now = performance.now();
+      if (now - S._hudAt < 200) return;
+      S._hudAt = now;
+      if (!S._hud) {
+        const d = document.createElement('div');
+        d.id = 'perf-hud';
+        d.style.cssText = 'position:fixed;right:10px;bottom:34px;z-index:60;'
+          + 'padding:6px 9px;border-radius:8px;pointer-events:none;'
+          + 'background:rgba(12,18,26,.82);border:1px solid rgba(90,120,150,.45);'
+          + 'color:#bfe0ff;font:11px/1.55 ui-monospace,Consolas,monospace;white-space:pre';
+        document.body.appendChild(d);
+        S._hud = d;
+      }
+      const L = labels;
+      const hit = L ? (L._layoutHits | 0) : 0, miss = L ? (L._layoutMiss | 0) : 0;
+      const rate = (hit + miss) ? Math.round(100 * hit / (hit + miss)) : 0;
+      S._hud.textContent =
+        `帧 ${S.frame.toFixed(1)}ms（最差 ${S.worst.toFixed(0)}）\n`
+        + `渲染 ${S.render.toFixed(1)} · 补块 ${S.tile.toFixed(1)} · 名字 ${S.labels.toFixed(1)}（凑名单 ${S.list.toFixed(1)}）\n`
+        + `标签 ${S.drawn} · 候选 ${S.points} · 布局命中 ${rate}% · ${S.fps.toFixed(0)}fps`;
+    } catch (e) { /* 指标不许把画面搞坏 ✓ */ }
+  }
+
+  /** 给诊断报告用的一份快照 ✓ */
+  function snapshot() {
+    return {
+      '帧耗时': S.frame.toFixed(1) + ' ms（最近最差 ' + S.worst.toFixed(0) + ' ms）',
+      'WebGL 渲染': S.render.toFixed(1) + ' ms',
+      '补块 / 传块': S.tile.toFixed(1) + ' ms',
+      '画名字': S.labels.toFixed(1) + ' ms（凑名单 ' + S.list.toFixed(1) + ' ms）',
+      '标签 / 候选': S.drawn + ' / ' + S.points,
+      '布局缓存': ((labels && labels._layoutHits) | 0) + ' 命中 / '
+        + ((labels && labels._layoutMiss) | 0) + ' 重排',
+      'FPS': S.fps.toFixed(0),
+    };
+  }
+
+  function toggle() {
+    S._on = !on();
+    if (S._on) { hud(); }
+    else if (S._hud) S._hud.hidden = true;
+  }
+  return { S, begin, mark, since, hud, snapshot, toggle, on };
+})();
+try {
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'P' && e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) PERF.toggle();
+  });
+} catch (e) { /* ✓ */ }
+
 function frameBody() {
+    const _pT0 = PERF.begin();
     /* **标记表必须在这里写** - 全项目原来只有 applyHoverHighlight 里调过一次，
      * 那是悬停高亮那条路：没悬停 -> 永远不写 -> 没涂过的地标记全是 0，
      * 只有涂色自己的那条路写了标记。表现就是"这个标记居然只看填色的"（用户抓到的）。
@@ -7722,7 +8462,9 @@ function frameBody() {
       }
     }
   }
+  const _pT1 = performance.now();
   const drew = renderer.render();
+  PERF.mark('render', performance.now() - _pT1);
   const now = performance.now();
   if (state.focus && now > state.focusUntil) {
     state.focus = null;
@@ -7749,9 +8491,29 @@ function frameBody() {
   if (drew || labelDirty) {
     // 两套地名各自独立：原有的（头衔/地区名）和玩家的（手绘色块名），
     // 谁开着画谁，两套都开就合并成一张名单一次画完
-    drawLabels(viewRect());
+    /* 🔴 **名字层出错不许拖垮整帧** ✗✗（2026-10-23 体检：鲁棒性）
+     *   这里以前裸调 —— 一个坏数据（NaN 锚点 / 空数组）就能把整个渲染循环打断，
+     *   表现是"画面卡住、地图也不跟手"，比不显示名字严重得多 ✗
+     *   → 兜住、记一次日志（别每帧刷屏 ✓），下一帧照常 ✓ */
+    const _pL0 = performance.now();
+    try {
+      drawLabels(viewRect());
+    } catch (e) {
+      if (!state._labelErrAt || performance.now() - state._labelErrAt > 5000) {
+        state._labelErrAt = performance.now();
+        LOG.event('画名字失败', String(e && (e.message || e)));
+        console.warn('画名字失败（已兜住，不影响地图）:', e);
+      }
+    }
+    PERF.mark('labels', performance.now() - _pL0);
     labelDirty = false;
   }
+  PERF.mark('frame', performance.now() - _pT0);
+  if (typeof renderer !== 'undefined' && renderer && renderer._perfTileMs) {
+    PERF.mark('tile', renderer._perfTileMs);
+    renderer._perfTileMs = 0;
+  }
+  PERF.hud();
   // 上面那两条（syncLayerSwitches / syncParentBorder）
   // **已经挪到 render() 之前了** ✓ —— 放这儿会让画面晚一帧才跟上 ✗
   // （下一帧的排队在 frame() 那层做 —— 出错了也要接着排 ✓）
@@ -7948,11 +8710,19 @@ function rebuildPaintBlocks(all = false, unpainted = false) {
   const ident = new Map();
   if (all) {
     const nReal = state.meta.numRealTitles != null ? state.meta.numRealTitles : 1e9;
-    // **只有真在"国家/剧本"视图时才让没涂色的省参与** ✓
-    // 以前只要 all=true 就全图参与，于是导入一份只涂了少数的配色后，
-    // 几千个没涂的省会拿原版那一层的国名当势力名冒出来
-    //（用户报的「导入后看见 1789 的普鲁士／美利坚」就是这个 ✗）。
-    // 省份/地区视图下势力名只该来自玩家涂的块；原版那套由标签层按视图层自己画 ✓
+    /* 🔴 **没涂色的省也参与分组**（2026-10-25 改的 ✓）
+     *   EU4/EU5 默认停在省份层（2026-10-22 用户定的 ✓）—— 省份层 zoom 门槛 88%，
+     *   开局 20% 全图视角一条名字都不过闸 ✗ 色块名（门槛 20%）又因为
+     *   paintBlocks=0（没涂色 = 没块 ✗）一条都没有 ✗ → 开局一片空白 ✗
+     *   → 没涂色的省也进来：身份按"当前显示逻辑"算 ✓ 省份层算出来就是
+     *     "这省归哪个国家" ✓ = 原版政治地图的国名，一进去就有 ✓
+     *   ⚠ 2026-10-19 那个"导入后冒 1789 普鲁士"的坑不归这里防 ✗ ——
+     *     那次是 era 视图 + 用户主动导入配置，没涂的省显原色是**对**的 ✓
+     *     真正要防的是"玩家涂了色的块被没涂的省冲掉" ✓ 下面涂过的优先逻辑没动 ✓*/
+    /* 🔴 2026-10-25 改回原样（廿九："我没有选择任何剧本，凭什么让我看到剧本名字"）
+     *   原来这里是 `true` —— 没涂色的省**全都**进来当色块名，于是没选剧本时
+     *   整张图按"末代剧本"的国家分组，一进去就冒出 2025 / 1939 / 1789 的国名 ✗
+     *   恢复成"只有停在剧本层才顺带收没涂色的省"，其余情况只收涂过的 ✓ */
     const incUnpainted = unpainted || (nEra > 0 && state.tier < nEra);
     // 身份串**按头衔缓存** —— 同一个国家几万个省，没必要每省拼一遍字符串。
     // （V3 4 万省时，正是这一遍把全图重分组顶到 108 ms ✗）
@@ -7969,8 +8739,14 @@ function rebuildPaintBlocks(all = false, unpainted = false) {
           && pseudoNameAllowed(isWasteOrWaterTid(tid));
         let key = null;
         if (allowed) {
-          // 没涂过的地只能靠**原版那一层的名字**（它没有标签）✓
-          const nm0 = state.titles.names[tid] || '';
+          /* 🔴 **用"当前显示的名字"，不是原始 names** ✗✗（2026-10-22 用户规则）
+           *   用户："涂色空但当前剧本为 A 色 A 名 … 归类同一个"
+           *   改名工具把国家改成 A 名之后，没涂的那半必须也按 **A 名** 分组 ✓
+           *   以前这里读 `state.titles.names[tid]`（原始名）✗
+           *   → 改名后的没涂部分跟涂过的部分分家，又画两遍名字 ✓
+           *   `displayedLabel` 对没涂的地就是"改名优先 → 原名"✓ 同一个口径 ✓ */
+          const nm0 = (state.titleName && state.titleName.has(tid))
+            ? state.titleName.get(tid) : (state.titles.names[tid] || '');
           const c0 = state.titles.colors[tid] || [150, 150, 150];
           key = nm0 ? (nm0 + "|" + c0[0] + "," + c0[1] + "," + c0[2]) : null;
         }
@@ -8186,9 +8962,29 @@ function rebuildPaintBlocks(all = false, unpainted = false) {
     // 落点 = **这一坨连通域自己**的几何中心与像素数 ✓
     //   以前取的是"挑中的那一片"（首都/本土）—— 于是吞并全国之后，名字还只有老家那么大 ✗
     //   现在每坨各算各的：大块的名字就大、小岛的就小 ✓
+    /* 🔴 **这一坨能不能套"版图贴合"** ✗✗（2026-10-22 用户实拍报"根本没有"）
+     *   国名在年份视图里**不是**从普通头衔那条路画的 ✗ —— 是从这儿（色块名）画的 ✓
+     *   以前 `_maybeLayout` 一律跳过 `layer === 2`，所以国名一个都没排 ✓
+     *   → 这里给两个判据：
+     *     · `singleTid`：整坨都是**同一个头衔**（原版国家 ✓；玩家涂色跨了几国就不行 ✗）
+     *     · `paintedAny`：这一坨里有玩家涂过的省（名字是涂色标签，版图对不上 ✗）
+     *   ⚠ 只给 `singleTid && !paintedAny` 的套排版 ✓ 其余照旧 ✓ */
+    const _tid0 = nameTidOf(_p0n);
+    let _single = true, _paintedAny = false;
+    for (const q of g.pids) {
+      /* 🔴 **不能 break** ✗✗（2026-10-22 用户实测：取德国色填捷克斯洛伐克 → 排版全失效）
+       *   一旦碰到"另一个头衔"就 break，后面的**涂过的省**根本没机会把
+       *   `_paintedAny` 置真 ✓ → 这个色块被当成"纯原版、还跨头衔" →
+       *   `_maybeLayout` 直接拒绝 → 国名一下全不弯了 ✓
+       *   现在只记 `_single=false`，继续扫完，把 `paintedAny` 扫准 ✓ */
+      if (titleAt(q, cTier) !== _tid0) _single = false;
+      if (paint && paint[q * 4 + 3] > 0) _paintedAny = true;
+    }
     out.push({ name, x: g.x / g.w, y: g.y / g.w, area: g.w, rgb: g.rgb,
                w: Math.max(0, (g.maxx || 0) - (g.minx || 0)),   // 横向跨度 ✓（限字号用 ✓）
-               tid: nameTidOf(_p0n),   // 这一坨代表哪个头衔 ✓（图例里改名要写回它 ✓）
+               tid: _tid0,           // 这一坨代表哪个头衔 ✓（图例里改名要写回它 ✓）
+               mtier: cTier,         // 版图贴合按**这一层**的归属查（不是视图层 ✓）
+               singleTid: _single, paintedAny: _paintedAny,
                pids: g.pids });        // 图例算"这一族涂出来的面积"要用（legendEntries）
   }
   out.sort((a, b) => b.area - a.area);   // 大的先摆
@@ -8218,6 +9014,23 @@ function rebuildPaintBlocks(all = false, unpainted = false) {
     for (const b of _kept) out.push(b);
   }
   state.paintBlocks = out;
+  /* 🔴 **给每块色块一个块号，并记下"每个省属于哪一块"** ✗✗（2026-10-23 修卡顿）
+   *   上一版是每块色块现搭一张小栅格（`PaintedMaskSource`）——缓存 48 张，
+   *   可一屏国名几十上百个，等于**每帧重搭一遍** → 卡爆 ✓
+   *   现在改成一张**全图级**的"块号栅格"：排版器按 `blockOf(pid)` 分块，
+   *   一个块 = 一个色块 ✓ 全图只建一次（跟头衔栅格一样便宜 ✓）
+   *   ⚠ 涂色一变就换代：`_blockVer` 自增，排版器那边看到版本变了会重建栅格 ✓ */
+  for (let i = 0; i < out.length; i++) out[i].gid = i;
+  const _nProv = (state.meta && state.meta.numProvinces) | 0;
+  const _blockOf = new Int32Array(_nProv || 1).fill(-1);
+  for (let i = 0; i < out.length; i++) {
+    const pids = out[i].pids;
+    if (!pids) continue;
+    for (const pid of pids) if (pid > 0 && pid < _nProv) _blockOf[pid] = i;
+  }
+  state._blockOf = _blockOf;
+  state._blockVer = (state._blockVer || 0) + 1;
+
 
   /* 图例列表**不在这儿刷** ✗ —— 这里是"涂一笔就重新分组"的地方 ✓
    * 每次涂色都重建一遍图例 DOM 是白费力气 ✓（而且面板开着的时候你根本涂不了地图 ✓）
@@ -8454,6 +9267,15 @@ function groupComponents(ident, n) {
     if (!(a.area > 0)) continue;
     out.push({ id: a.id, x: a.x / a.area, y: a.y / a.area, area: a.area });
   }
+  /* 🔴 **把"每省属于哪个名字块"一起带出去**（2026-10-23）
+   *   排版器要用同一套块号 —— 名字的数量和版图的块必须是一个标准 ✓
+   *   值 = 那一块的代表省号；-1 = 不参与（没名字 / 不上地名 / 无主）✓ */
+  const roots = new Int32Array(n).fill(-1);
+  for (let pid = 1; pid < n; pid++) {
+    if (ident[pid] >= 0) roots[pid] = find(pid);
+  }
+  out.roots = roots;
+  out.ident = ident;
   return out;
 }
 
@@ -8492,14 +9314,51 @@ function buildPlaceComponents(tier) {
       if (hide && hide[t]) continue;   // 标了"不上地名"的（海/湖/河/山那类伪头衔）✓
       ident[pid] = t;
     }
-    for (const c of groupComponents(ident, n)) {
+    const comps = groupComponents(ident, n);
+    for (const c of comps) {
       out.push({ tid: c.id, x: c.x, y: c.y, area: c.area, tier: idx });
     }
+    /* 名字块号存一份，排版器要跟它对齐（见 maplabels 的 `groupOf` ✓）
+     * ⚠ 键跟 `_placeCache` 一致 ✗ —— 换图 / 换数据时要一起失效 ✓ */
+    if (!state._groupRoots) state._groupRoots = new Map();
+    state._groupRoots.set(key, comps.roots);
     // **大的在前** ✓ —— `placePointsFor` 的"每个头衔留最大的 N 个"直接靠这个顺序 ✓
     out.sort((a, b) => b.area - a.area);
   }
   state._placeCache.set(key, out);
   return out;
+}
+
+/** 某一层：这一省属于哪个名字块（**和 `buildPlaceComponents` 同一套并查集** ✓）
+ *
+ *  排版器建版图栅格时按这个分块 —— 名字有几个块、版图就几块，不会两套标准 ✓
+ *  没算过就现算（`buildPlaceComponents` 自己带缓存 ✓）
+ */
+function placeGroupAt(tier, pid) {
+  const idx = tier | 0;
+  const m = state.meta, T = state.titles;
+  const n = (m && m.numProvinces) | 0;
+  const kN = (T && T.keys && T.keys.length) | 0;
+  /* 📊 **键记忆**（2026-10-24 性能 · CPU 剖析 23.9% 的大头 ✓）
+   *   版图栅格 _build 时**每格**都要问一次"这省属于哪块"（CK3 每层 66 万格 ✓），
+   *   这里原来每次都**现拼字符串键 + Map.get** —— 拼键比查表还贵 ✓
+   *   调用方是逐格循环，同一层里键几乎不变 → 记上一次的键，一样就直接用 ✓
+   *   （换层 / 换图时键变 → 走正常路径重建 ✓）*/
+  if (state._pgKey === idx && state._pgN === n && state._pgK === kN
+      && state._pgRoots) {
+    return state._pgRoots[pid];
+  }
+  const key = idx + '|' + n + '|' + kN;
+  let roots = state._groupRoots && state._groupRoots.get(key);
+  if (!roots) {
+    buildPlaceComponents(idx);
+    roots = state._groupRoots && state._groupRoots.get(key);
+  }
+  state._pgKey = idx;
+  state._pgN = n;
+  state._pgK = kN;
+  state._pgRoots = roots || null;
+  return roots ? roots[pid] : -1;
 }
 
 /** 某一层**真正要画**的地名点：按「地名上限」**按头衔**截断 ✓
@@ -8529,8 +9388,17 @@ function placePointsFor(tier) {
     state._placeKept = kept;
   }
   const kept = state._placeKept || all;
-  const names = (state.titles && state.titles.names) || [];
-  for (const p of kept) p.name = names[p.tid] || '';
+  /* ⚠ **名字不能每帧重写一遍** ✗✗（2026-10-23 性能实测：EU5 最细层 2.3 万个点，
+   *   每帧两万多次字符串赋值 = 凑名单里的大头 ✓）
+   *   可 `placePointsFor` 的调用方（自测 / 预热）要求点上带着 `name` ✓
+   *   → 用"名字版本号"挡一下：只有改名 / 换图之后才写一轮 ✓
+   *   （`state._nameVer` 由改名的出口自增 ✓ 见 `renameAt`）*/
+  const ver = state._nameVer | 0;
+  if (state._placeNameVer !== ver || (kept.length && kept[0].name === undefined)) {
+    const names = (state.titles && state.titles.names) || [];
+    for (let i = 0; i < kept.length; i++) kept[i].name = names[kept[i].tid] || '';
+    state._placeNameVer = ver;
+  }
   return kept;
 }
 
@@ -8941,11 +9809,225 @@ function buildSeaLabelPoints() {
   return out;
 }
 
-function drawLabels(view) {
-  // 视口粗筛（边距跟 drawPoints 里那套一致 ✓）——省下大量入列与建对象 ✓
+/**
+ * **分块地图的"粗省份图"**（2026-10-23 加，用户："EU5 不知道为什么搞不了"）
+ *
+ * 原尺寸那张图（16384×8192）是切成 4×4 块的：`state.provinceIds` 只有一个
+ * 占位元素 → 排版器拿不到整张省份图 → `setRealmMask` 判成 null → 一个名字都排不出来 ✗
+ * 这里把每块解出来、**按 cell 抽稀**拼成一张粗图（1/8 = 2048×1024 ≈ 4MB ✓），
+ * 排版器只要"哪个像素属于哪个省"，抽稀后的精度对找基线完全够用 ✓
+ *
+ * 成本：16 块全解一遍 ≈ 2~4 秒（跟加载别的重活一个量级），
+ * 所以放在"就绪"之后、**逐块让出主线程**，画面照常跑 ✓
+ * 内存：每解一块就清一次分块缓存，峰值只有一块（16.8MB）✓
+ */
+async function buildTiledRealmMask(cell = 8) {
+  const m = state.tiles;
+  const map = state.tileMap;
+  if (!m || !map) return null;
+  /* 清单字段不对就别硬跑 —— 以前 NaN 会算出空循环 / 死循环 ✓（2026-10-23 体检）*/
+  if (!(m.mapW > 0) || !(m.mapH > 0) || !(m.tileW > 0) || !(m.tileH > 0)
+      || !(m.cols > 0) || !(m.rows > 0)) return null;
+  const cw = Math.ceil(m.mapW / cell), ch = Math.ceil(m.mapH / cell);
+  const ids = new Uint16Array(cw * ch);
+  const tw = m.tileW, th = m.tileH;
+  for (let r = 0; r < m.rows; r++) {
+    for (let c = 0; c < m.cols; c++) {
+      let tile = null;
+      try { tile = await map.get(r, c); } catch (e) { tile = null; }   // 缺一块就算了 ✓
+      if (tile) {
+        for (let y = 0; y < th; y += cell) {
+          const gy = (r * th + y) / cell | 0;
+          if (gy >= ch) break;
+          const row = y * tw, out = gy * cw;
+          for (let x = 0; x < tw; x += cell) {
+            const gx = (c * tw + x) / cell | 0;
+            if (gx >= cw) break;
+            ids[out + gx] = tile[row + x];
+          }
+        }
+      }
+      if (map.cache && map.cache.clear) map.cache.clear();   // 峰值内存只留一块 ✓
+      await nextTick();
+    }
+  }
+  return { ids, width: cw, height: ch };
+}
+
+/**
+ * 开局把**地名排版整层算一遍**（用户 2026-10-23：这些是定死的，不用每帧重算）
+ *
+ * 为什么能这么干：排版只跟（层 / 头衔 / 文字 / 字体 / 用户字号）有关，
+ * **跟缩放、相机位置都无关** ✓ 所以算一次就永远命中 ✓
+ * 为什么不能同步一次性算完：几万个名字 × 0.1ms 会把"就绪"卡住好几秒 ✗
+ * → 切成每段 12ms 的小块让出主线程 ✓ 画面照常跑 ✓
+ * ⚠ 换字体 / 调字号会让缓存整份作废（见 `clearLayouts`）→ 下次绘制再懒算 ✓
+ */
+/* 让出主线程的方式：MessageChannel 优先（~0ms 宏任务 ✓），setTimeout 兜底 ✓
+ * —— 见函数尾部的说明（setTimeout 嵌套钳 4ms 的问题 ✓）
+ * ⚠ **信道要懒建 + unref** ✗✗（2026-10-24 实测踩的）：
+ *   · 模块求值就 `new MessageChannel()` 的话，Node 端所有"拍平执行本文件"的
+ *     工具（check_standalone / test_modes / perf_*）进程**永远退不出去** ✗
+ *     —— port 句柄把事件循环钉住了 ✓ → 首次真用到才建 ✓
+ *   · 就算建了，Node 里也要 `unref()`：只送消息、**不为它留住进程** ✓
+ *     （浏览器没有 unref ✓ try/catch 兜住 ✓）*/
+let _prewarmYield = null;
+function _makePrewarmYield() {
+  if (typeof MessageChannel === 'undefined') return (f) => setTimeout(f, 0);
+  const mc = new MessageChannel();
+  let _pend = null;
+  mc.port1.onmessage = () => { const f = _pend; _pend = null; if (f) f(); };
+  /* ⚠ unref 必须在**挂上 onmessage 之后** ✗ —— Node 里挂监听（启动 port）会
+   *   重新 ref ✗ 先 unref 后挂监听 = 白做，进程照样退不出去（实测 ✓）✓
+   *   之后的 postMessage 不会重新 ref ✓（实测连发 7 条照样自然退出 ✓）*/
+  try {
+    if (mc.port1 && mc.port1.unref) mc.port1.unref();
+    if (mc.port2 && mc.port2.unref) mc.port2.unref();
+  } catch (e) { /* 浏览器没有 unref ✓ */ }
+  return (f) => { if (_pend) { setTimeout(f, 0); return; } _pend = f; mc.port2.postMessage(0); };
+}
+
+function prewarmMapNameLayouts() {
+  if (typeof labels === 'undefined' || !labels || !labels.realmMask || !labels.realmMask.usable) return;
+  const mode = (state.set && state.set.mapNameFit) || 'both';
+  if (mode === 'off') return;
+  const nEra = (state.meta.eraDates && state.meta.eraDates.length) || 0;
+  if (!state.meta || !(state.meta.tierNames)) return;
+  const nTier = (state.meta.tierNames || []).length;
+  const t0 = performance.now();
+  let tier = 0, pts = null, idx = 0, kind = 'place', warmed = 0;
+
+  /* 先暖**国名色块**（数量少、但每一块都是一个大名字 ✓）——
+   * 它们的位置来自涂色块的分组，跟地名不是一套几何 ✓ */
+  try {
+    const blocks = paintedPoints(true) || [];
+    for (const b of blocks) {
+      /* ⚠ 必须带上 `layer: 2` ✗ —— 画的时候那批点就是第 2 层（国名）✓
+       *   少了它就会按"头衔版图"去排（用的是另一套几何 ✗），白算一场 ✓ */
+      labels.warmPoint(Object.assign({}, b, { layer: 2 }), 'power');
+      warmed++;
+    }
+  } catch (e) { /* 没涂色数据就算了 ✓ */ }
+
+  const chunk = () => {
+    /* 🔴 **预热出任何错都只当作"没预热"**（2026-10-23）
+     *   这是启动后跑在 setTimeout 里的后台活 —— 一旦抛出去就是"未捕获错误"，
+     *   全局兜底会弹报错面板，看起来就像"开一半崩了" ✗
+     *   它本来只是提速手段：失败就算了，就地停掉 ✓ */
+    try {
+    const start = performance.now();
+    while (performance.now() - start < 12) {
+      if (!pts) {
+        if (tier >= nTier) {
+          LOG.event('版图贴合预热', `${warmed} 个名字 · ${(performance.now() - t0).toFixed(0)}ms`);
+          return;
+        }
+        kind = tier < nEra ? 'power' : 'place';
+        if (kind === 'place' && mode !== 'both') { tier++; continue; }
+        /* 单层出问题就跳过这一层，别把整轮预热带死 ✓（2026-10-23 体检）*/
+        try { pts = placePointsFor(tier) || []; } catch (e) { pts = []; }
+        idx = 0;
+        if (!pts.length) { pts = null; tier++; continue; }
+      }
+      if (idx >= pts.length) { pts = null; tier++; continue; }
+      labels.warmPoint(pts[idx++], kind);
+      warmed++;
+    }
+    } catch (e) {
+      LOG.event('版图预热中止', String((e && e.message) || e));
+      return;                       // 停在这儿，不再排队 ✓ 地图照常用 ✓
+    }
+    /* ⚠ 别用 `setTimeout(chunk, 0)` 排下一块 ✗ —— 浏览器对嵌套 5 层之后的
+     *   setTimeout 一律钳到 ~4ms ✓ 预热几百个小块就白等一两秒墙钟 ✗
+     *   MessageChannel 的让出是 **~0ms 的宏任务** ✓ 照样给渲染 / 输入让路 ✓；
+     *   没有它的环境（测试桩 / 老浏览器）退回 setTimeout ✓
+     *   （2026-10-24 版本对比：CK3 开图要等预热冷却 4.5s，白等的墙钟占一截 ✓）*/
+    (_prewarmYield || (_prewarmYield = _makePrewarmYield()))(chunk);
+  };
+  chunk();
+}
+
+/**
+ * **色块名字的点**（`{...block, tier:0, layer:2}` 的包装版 ✓ 2026-10-23 体检）
+ *
+ * 以前每帧对新数组里每个色块 spread 一次 —— 一屏上百个、每帧都在造对象 ✗
+ * 色块只在**涂色 / 换层**时变（`state._blockVer` 管着 ✓），所以按版本缓存一份就够 ✓
+ */
+/**
+ * 水名 / 荒地名点的**包装版**（`{...p, tier}` ✓ 2026-10-23 体检）
+ * 同样是"每帧 spread 一次"的问题 —— 按（源数组，层）缓存，涂色/换层才重建 ✓
+ */
+function seaLabelPoint(p, tier) {
+  let c = state._seaPtCache;
+  if (!c || c.src !== state.seaLabelPoints || c.tier !== tier) {
+    c = state._seaPtCache = { src: state.seaLabelPoints, tier, map: new Map() };
+  }
+  let q = c.map.get(p);
+  if (!q) { q = Object.assign({}, p, { tier }); c.map.set(p, q); }
+  return q;
+}
+
+function blockLabelPoints() {
+  const ver = state._blockVer | 0;
+  if (state._blockPts && state._blockPtsVer === ver) return state._blockPts;
+  const src = paintedPoints(true) || [];
+  const out = new Array(src.length);
+  for (let i = 0; i < src.length; i++) out[i] = Object.assign({}, src[i], { tier: 0, layer: 2 });
+  state._blockPts = out;
+  state._blockPtsVer = ver;
+  return out;
+}
+
+/**
+ * **视口内的地名点**（空间分桶 ✓ 2026-10-23 性能）
+ *
+ * 原来每帧都把这一层**所有**点扫一遍（CK3 最细层上万、VIC3 四万），
+ * 只为了挑出屏幕里那几百个 —— 一帧一次全表扫描，纯浪费 ✗
+ * 现在按 512px 分桶，只把视口覆盖的那几桶取出来，再按面积降序排一下
+ * （顺序跟原来一致 ✓ 上限截断时留下的还是"最大的那几块" ✓）
+ *
+ * 分桶表按（层，kept 数组身份）缓存：换层 / 涂色把它换成新数组时自然重建 ✓
+ */
+function placePointsInView(tier, view, pad) {
+  const kept = placePointsFor(tier);
+  if (!kept || !kept.length) return kept;
+  const CELL = 512;
+  let rec = state._placeGrid;
+  if (!rec || rec.src !== kept || rec.tier !== tier) {
+    const map = new Map();
+    for (let i = 0; i < kept.length; i++) {
+      const p = kept[i];
+      const k = ((p.x / CELL) | 0) + ',' + ((p.y / CELL) | 0);
+      let a = map.get(k);
+      if (!a) map.set(k, a = []);
+      a.push(p);
+    }
+    rec = state._placeGrid = { src: kept, tier, cell: CELL, map };
+  }
+  const x0 = Math.floor((view.x - pad) / CELL), x1 = Math.floor((view.x + view.w + pad) / CELL);
+  const y0 = Math.floor((view.y - pad) / CELL), y1 = Math.floor((view.y + view.h + pad) / CELL);
+  const out = [];
+  for (let cy = y0; cy <= y1; cy++) {
+    for (let cx = x0; cx <= x1; cx++) {
+      const a = rec.map.get(cx + ',' + cy);
+      if (a) for (let i = 0; i < a.length; i++) out.push(a[i]);
+    }
+  }
+  /* 面降序：跟原来 `placePointsFor` 的顺序口径一致 ✓（上限截断时先留大的 ✓）*/
+  if (out.length > 1) out.sort((a, b) => (b.area || 0) - (a.area || 0));
+  return out;
+}
+
+function drawLabels(view, capture = false) {
+  /* 视口粗筛：**内联判断，不再 filter 出新数组** ✓（2026-10-23 体检：
+   * 每帧一次 1 万多元素的 filter + 新数组，纯 GC 压力 ✓）
+   * 边距跟 `drawPoints` 里那套一致 ✓ */
   const _padC = Math.max(64, 900 / labels.scale);
-  const _cull = (arr) => arr.filter((q) => q.x >= view.x - _padC && q.x <= view.x + view.w + _padC
-                                        && q.y >= view.y - _padC && q.y <= view.y + view.h + _padC);
+  const _vx0 = view.x - _padC, _vx1 = view.x + view.w + _padC;
+  const _vy0 = view.y - _padC, _vy1 = view.y + view.h + _padC;
+  const _inView = (q) => q.x >= _vx0 && q.x <= _vx1 && q.y >= _vy0 && q.y <= _vy1;
+  const _listT0 = performance.now();
+  PERF.S.listMs = -1;       // 📊 裸值槽：这一帧这段还没量到就是 -1（mark 进 S.list 的是 EMA，自测要真值 ✓）
   labels.showAll = false;   // 「显示全部地名」那个开关删了 —— 一律按字号门槛来
   // 顺序就是叠放顺序：**原版地名先画、玩家地名后画** ——
   // 两套名字重叠时，玩家的那个压在上面（同一个画布，后画的在上层）。
@@ -9038,12 +10120,24 @@ function drawLabels(view) {
    *   ⚠ **剧本层本身不算地名** ✗ —— 那一层是国家 / 势力，归 ③ 那套管；
    *     剧本层只放行"自己那个名称开关开着"的水 / 荒地 ✓
    */
-  if ((state.showLabelsTitle || state.showWaterName || state.showWasteName)
+  /* 🔴 **这一层还没到"该出现"的缩放，就别凑名单了** ✗✗（2026-10-23 性能）
+   *   名单是在 drawPoints 里按 `zoom[tier]` 逐点过闸的 ——
+   *   可凑名单本身要扫全层（EU5 最细层 2.3 万点、CK3 1.2 万），
+   *   结果全被闸掉，白扫一遍（实测 EU5 全图视角 11.6ms/帧 ✓）
+   *   → 连门槛都还没到，直接跳过这一层 ✓ 门槛值跟 drawPoints 用同一份 `labels.zoom` ✓ */
+  const _zoomNeed = (labels && labels.zoom) ? labels.zoom[nameTier] : null;
+  const _zoomPct = (labels ? labels.scale : 1) * 100;
+  const _tierOpen = (_zoomNeed == null) || (_zoomPct >= _zoomNeed);
+  if (_tierOpen && (state.showLabelsTitle || state.showWaterName || state.showWasteName)
       && (nameTier >= nEra || state.showWaterName || state.showWasteName)) {
     const K = state.titles.keys || [];
     /* **取点：一个连通域一个标** ✓（2026-10-16 用户定的 ✓ 见 buildPlaceComponents ✓）
      *   以前是 `labels.pointsFor(nameTier)` ✗ —— 一个头衔只出一个标 ✓ */
-    for (const q of _cull(placePointsFor(nameTier))) {
+    const _namesOfPlace = (state.titles && state.titles.names) || [];
+    for (const q of placePointsInView(nameTier, view, _padC)) {
+      if (!_inView(q)) continue;
+      q.name = _namesOfPlace[q.tid] || '';    // 只给这一屏现取名字 ✓
+      if (!q.name) continue;
       const _key = String(K[q.tid] || '');
       /* 🔴 **这一格是水吗** ✗✗（2026-10-16 ✓「水域 · 名称」那个独立闸的判据 ✓）
        *   ⚠ 判据收在 `_isWaterLabel` 那一处 ✗（别在这儿另写一套 ✓
@@ -9136,7 +10230,7 @@ function drawLabels(view) {
          *   `buildSeaLabelPoints` 聚出来的荒地真名点带 `waste: true` ✓
          *   ⚠ 在这之前它们是跟着「地块 · 名称」走的 ✓ 现在独立 ✓ */
         if (p.waste && !state.showWasteName) continue;
-        list.push({ ...p, tier: nameTier });
+        list.push(seaLabelPoint(p, nameTier));
       }
     }
   }
@@ -9155,13 +10249,23 @@ function drawLabels(view) {
      *   `labels.js` 的 `_fontSize` 拿 `tier < nEra || layer === 2` 就分得清 ✓
      *   （年份层那些国名走 `tier < nEra` ✓ 同一套判据 ✓ 见 `_fontSize` 那段注释 ✓）
      *   → 我第一版给这儿加了个 `kind: 'power'` ✗ 那是**新造字段** ✓ 用户当场点破 ✓ */
-    for (const p of (paintedPoints(true) || [])) list.push({ ...p, tier: 0, layer: 2 });
+    for (const p of blockLabelPoints()) list.push(p);
   }
-  if (!list.length) { labels.clear(); return; }
+  PERF.S.listMs = performance.now() - _listT0;   // 📊 裸值（自测用 ✓），EMA 那份走 mark ✓
+  PERF.mark('list', PERF.S.listMs);
+  PERF.S.points = list.length;
+  PERF.S.drawn = labels.drawn | 0;
+  if (!list.length) {
+    /* ⚠ capture（导出抓名单）时**不许清屏** ✗ —— 那会把屏幕上的名字抹掉 ✓ */
+    if (!capture) labels.clear();
+    return capture ? [] : undefined;
+  }
 
   // 缩放门交给标签层按"每个点自己的层"判：
   //   头衔 / 地区 / 省份名 —— 按当前视图层的门槛；
   //   玩家色块名       —— 按第 0 层（国家那套），所以不用放大就能看见。
+  /* `capture` = 只要名单、先别画（整图导出要按导出尺寸另画一遍 ✓ 见 `paintLabelsForExport` ✓）*/
+  if (capture) return list;
   labels.drawPoints(list, view);
 }
 
@@ -9527,6 +10631,10 @@ function setBoot(step, pct) {
     _bootPrevAt = now;
   }
   if (step) $('boot-step').textContent = step;
+  /* 启动看门狗心跳（2026-10-23）：白屏 / 黑屏时靠它判断"卡在哪一步" ✓ */
+  if (step && window.PDXLOG && window.PDXLOG.tick) {
+    try { window.PDXLOG.tick(step); } catch (e) { /* ✓ */ }
+  }
   if (pct != null) $('boot-bar').style.width = pct.toFixed(0) + '%';
 }
 
@@ -9737,10 +10845,13 @@ async function importPackFlow(blob, onDone) {
 /** 让玩家挑一张。只有一套、而且没有导入入口时才直接进 */
 function pickMap(maps) {
   return new Promise((resolve) => {
+    /* 🗺 仓库的「载入」要从外面 resolve 这条流程 ✓（存档记下要哪张底图 ✓）*/
+    state._pickResolve = resolve;
     const box = $('map-pick');
     const list = $('map-pick-list');
     const fileInput = $('pack-file');
     let current = maps.slice();
+    let currentView = 'maps';
 
     /* 这行平时**不显示** ✗ —— 只有"这台浏览器存不下东西"的时候才跳出来警示：
        不说的话玩家会以为存上了，第二天发现没了还以为是编辑器坏的 ✓ */
@@ -9903,6 +11014,7 @@ function pickMap(maps) {
         b.onclick = () => {
           box.hidden = true;
           dropOff();
+          document.body.classList.remove('pick-open');
           resolve(m);
         };
         list.appendChild(b);
@@ -9916,7 +11028,12 @@ function pickMap(maps) {
     // ---- 导入入口：点一下 ／ 拖进来（**都可以一次好几个** ✓ 2026-10-12 用户要求）
     const onImportClick = () => {
       if (_importing) return;
-      if (fileInput) fileInput.click();
+      if (currentView === 'maps') {
+        if (fileInput) fileInput.click();
+      } else {
+        const sf = $('map-store-import');
+        if (sf) sf.click();
+      }
     };
     /** 挨个导 ✓ 一个不成不影响后面的 ✓
      *  **提示照旧** ✗ —— 每次 importPackFlow 自己会说那一句，这里不另报总数
@@ -9925,6 +11042,7 @@ function pickMap(maps) {
     const importMany = async (files) => {
       const todo = Array.from(files || []).filter(Boolean);
       for (const f of todo) await importPackFlow(f, afterImport);
+      if (todo.length) showPickView('maps');   // 导完直接亮出卡片 ✓
     };
     const onFilePicked = async () => {
       const files = fileInput && fileInput.files;
@@ -9941,7 +11059,11 @@ function pickMap(maps) {
       if (ev && ev.preventDefault) ev.preventDefault();
       const dt = ev && ev.dataTransfer;
       if (!dt || !dt.files || !dt.files.length) return;
-      await importMany(dt.files);
+      if (currentView === 'maps') {
+        await importMany(dt.files);
+      } else {
+        for (const f of dt.files) await storeImportFile(f);
+      }
     };
     const dropOff = () => {
       const boot = $('boot');
@@ -9952,6 +11074,43 @@ function pickMap(maps) {
     };
 
     $('map-import').onclick = onImportClick;
+    /* 🗺 **二分起步页**（2026-10-24 ✓ 用户定的）：落地两块（地图 / 涂色），点谁进谁 ✓
+     *   ⚠ 卡片**打开时就渲染进 #map-pick-list 了**（尾部的 render() ✓）——
+     *     落地页只是**视觉层** ✓：自测 / 调优工具程序化点卡片照常工作 ✓ */
+    const tabMaps = $('pick-tab-maps');
+    const tabStore = $('pick-tab-store');
+    /* 🗺 上排两个页签，点谁下面显示谁 ✓ 默认「地图包」✓（2026-10-24 用户定的 ✓）*/
+    const showPickView = (v) => {
+      const maps = v === 'maps';
+      currentView = v;
+      if (tabMaps) tabMaps.classList.toggle('on', maps);
+      if (tabStore) tabStore.classList.toggle('on', !maps);
+      /* .store-mode：仓库页专属样式的开关（大卡片 ✓）+ 隐藏地图侧提示 ✓ */
+      box.classList.toggle('store-mode', !maps);
+      /* 🗺 同一个 #map-pick-list ✓ 点谁就往里渲染谁 ✓
+       *   导入按钮 / 提示也跟着切文字 ✓（用户："不同场合区分导入的文件格式"✓）*/
+      list.innerHTML = '';
+      const mi = $('map-import');
+      if (maps) {
+        render();
+        if (mi) mi.textContent = '＋ 导入地图包…';
+      } else {
+        renderStoreList();
+        if (mi) mi.textContent = '＋ 导入涂色方案…';
+      }
+      const hint = $('map-import-hint');
+      if (hint) hint.textContent = maps
+        ? '点击导入按钮，或直接把 .pdxmap 文件拖进这一页。'
+        : '点击导入按钮，或直接把 .json 文件拖进这一页。';
+    };
+    if (tabMaps) tabMaps.onclick = () => showPickView('maps');
+    if (tabStore) tabStore.onclick = () => showPickView('store');
+    /* 仓库面板自己的导入按钮 ✓（从地图视图 / 涂色视图都能进仓库 ✓）*/
+    if ($('map-store-import')) $('map-store-import').onchange = async (e) => {
+      const file = e.target && e.target.files && e.target.files[0];
+      e.target.value = '';
+      if (file) await storeImportFile(file);
+    };
     if (fileInput) fileInput.onchange = onFilePicked;
     const bootBox = $('boot');
     if (bootBox && bootBox.addEventListener) {
@@ -9962,6 +11121,9 @@ function pickMap(maps) {
     clearPackMsg();
     render();
     box.hidden = false;
+    showPickView('maps');                // 默认「开始创作」页 ✓
+    /* 主菜单期间藏顶栏 ✓（2026-10-25 用户定的 ✓）选完图摘掉 ✓ */
+    document.body.classList.add('pick-open');
     /* 只有一套、而且这一套就是导入来的？那也得让人看见导入入口 ✓
        所以这里**不再**"只剩一张就跳过界面"：
        跳过了，玩家就永远没有第二个入口了 ✗（单文件版本来就有六七张，不受影响） */
@@ -10161,7 +11323,7 @@ window.addEventListener('unhandledrejection', (e) => {
  * README 里写着"涂色不会自动保存"（故意的 ✓），可**"故意的"不等于用户记得住** ✗
  * 真按 F5 把半小时的涂色丢掉，再回来看那句说明一点安慰都没有 ✓
  * 所以：**有改动、且还没导出过**才问一句 ✓
- *   · 点了导出涂色 / 导入过工程 → 认为你手上有备胎，不再打扰 ✓
+ *   · 存过地图仓库 / 导出过 / 导入过工程 → 认为你手上有备胎，不再打扰 ✓
  *   · "回主菜单"那条路有自己的暂存（goHome → stashNow）→ 也不算丢 ✓
  */
 window.addEventListener('beforeunload', (e) => {
@@ -10563,6 +11725,11 @@ function handleBootRendererFailure(err) {
 }
 
 async function boot() {
+  /* 启动期间**自己打心跳**：哪怕卡在一个很长的 await 上（读大图包要几十秒 ✓），
+   * 只要主线程还在转，看门狗就不会误报"没能启动" ✓（2026-10-23）*/
+  const _hbTimer = setInterval(() => {
+    try { if (window.PDXLOG && window.PDXLOG.tick) window.PDXLOG.tick('启动中…'); } catch (e) { /* ✓ */ }
+  }, 5000);
   try {
     // 启动屏那条**静态兜底提示**：脚本跑起来了就藏掉（它只在"脚本没跑"时才有意义 ✓）
     // 用 hidden 不用 remove() —— 测试用的假 DOM（tools/lib/browser_stub.js）没实现 remove ✓
@@ -10583,6 +11750,9 @@ async function boot() {
     }
 
     const chosen = await pickMap(maps);
+    /* 🗺 仓库载入的存档挂在这条选单上（见 storeLoad ✓）—— 记下来，就绪后套 ✓ */
+    if (chosen.__project) state._pendingProject = chosen.__project;
+    state.mapEmb = String(chosen.emb || chosen.key || '');
     LOG.event('选图', String(chosen.label || '')
       + (chosen.pack ? '（导入的地图包 ' + chosen.pack + '）'
          : isEmbedded() ? '（单文件内嵌）' : '（' + chosen.dir + '）'));
@@ -10848,6 +12018,64 @@ async function boot() {
      *   那时候 labels 还没建、会跳过 ✓ 于是"存过的偏好"要等用户动一下滑块才生效 ✓ */
     labels.alphaCountry = setNum('labelAC', 50) / 100;
     labels.alphaPlace = setNum('labelAP', 50) / 100;
+    /* 🔴 **P社式排版的"版图"从这儿接进去**（2026-10-22 ✓）
+     *   它要的两样东西都是现成的：逐像素省份图 + 逐省归属表 ✓
+     *   ⚠ 分块地图（EU5 原尺寸）没有整张省份图 ✗ → `setRealmMask` 会判成 null
+     *     → 全部退回老画法 ✓ 一个像素都不动 ✓
+     *   ⚠ 放在 `new LabelLayer` 之后、第一次画之前 ✓（早了构造还没建 ✓）*/
+    try {
+      labels.setRealmMask({
+        provinceIds: state.provinceIds,
+        width: meta.mapWidth,
+        height: meta.mapHeight,
+        titleAt: (pid, tier) => titleAt(pid, tier),
+        noTitle: NO_TITLE,
+        cell: 8,
+        /* 🔴 **块号听 app 的**（名字数量 / 分块是它定的 ✓ 2026-10-23）
+         * 排版器不再自己按像素分块 —— 两套标准会打架 ✗ */
+        groupOf: (pid, tier) => placeGroupAt(tier, pid),
+        /* 🔴 **色块的块号也给过来**（2026-10-23 修卡顿）——
+         *   排版器用一张全图级的"块号栅格"分块 ✓ 不再按块现搭 ✗ */
+        blockOf: (pid) => (state._blockOf && pid < state._blockOf.length
+          ? state._blockOf[pid] : -1),
+        blockVer: () => state._blockVer || 0,
+        /* 涂色块升级前的旧路（`PaintedMaskSource`）已经不用了 ✓
+         * `provPos` 还留着（其它地方要各省质心 ✓）*/
+        provPos: state.provPos,
+      });
+      labels.setMapNameMode((state.set && state.set.mapNameFit) || 'both');
+      labels.debug = !!(state.set && state.set.mapNameDebug) || !!labels.debugHash;
+    } catch (e) {
+      LOG.event('版图贴合未启用', String(e && (e.message || e)));
+    }
+    /* 🔴 **分块地图（EU5 原尺寸）补一条路** ✗✗（2026-10-23 用户："EU5 搞不了"）
+     *   分块时上面那张 `provinceIds` 是个占位数组 → `realmMask` 是 null ✓
+     *   这里逐块解出来拼一张 1/8 的粗省份图，再重新接一次 ✓ */
+    if (state.tiles && state.tileMap
+        && (!labels.realmMask || !labels.realmMask.usable)
+        && ((state.set && state.set.mapNameFit) || 'both') !== 'off') {
+      setBoot('建版图栅格（分块）…', 100);
+      buildTiledRealmMask(8).then((res) => {
+        if (!res) return;
+        try {
+          labels.setRealmMask({
+            provinceIds: res.ids,
+            width: res.width,
+            height: res.height,
+            titleAt: (pid, tier) => titleAt(pid, tier),
+            noTitle: NO_TITLE,
+            cell: 1,          // 这张图本身就抽稀过了，别再抽 ✓
+            groupOf: (pid, tier) => placeGroupAt(tier, pid),
+            blockOf: (pid) => (state._blockOf && pid < state._blockOf.length
+              ? state._blockOf[pid] : -1),
+            blockVer: () => state._blockVer || 0,
+            provPos: state.provPos,
+          });
+          LOG.event('版图贴合', `分块地图粗图 ${res.width}×${res.height}`);
+          prewarmMapNameLayouts();
+        } catch (e) { LOG.event('分块版图失败', String(e && (e.message || e))); }
+      }).catch((e) => LOG.event('分块版图失败', String(e && (e.message || e))));
+    }
     _tick('建标签索引');
 
     /* **边界图重算一次** ✓ —— 这时候层号、粒度、多级链全都定下来了 ✓
@@ -10868,8 +12096,46 @@ async function boot() {
     }
 
     setBoot('就绪', 100);
+    window.__PDX_BOOTED = true;      // 看门狗（log.js）看到这个就不再报"没能启动" ✓
+    clearInterval(_hbTimer);
     bootMark('⑦就绪');
     LOG.event('就绪', `${state.meta.numProvinces} 个地块 · ${GAME.name}`);
+    /* 🗺 **仓库载入**（2026-10-24 ✓）：选图页点「载入」的那份存档，就绪后套回来 ✓
+     *   ⚠ 必须排在 prewarm **之前** ✗ —— 套完的涂色/改名才是要预热的最终状态 ✓
+     *   底图对不上（mapKey 不一致）就不套 ✓ 照旧进编辑器 ✓ */
+    if (state._pendingProject) {
+      const pend = state._pendingProject;
+      state._pendingProject = null;
+      try {
+        /* 🔴 **先把层层数设成真值** ✗✗（2026-10-25 破案的 ✓）
+         *   TIER_COUNT 平时由 applyGameText() 设 ✓ 可它在这之后才跑（12187 ✓）
+         *   —— 消费点在这儿还是默认 5 ✗ EU4 的省份层（tier 17）被
+         *   `t.tiers[tid] >= TIER_COUNT` 当成"荒地"全滤掉 ✗ → n=0 ✗
+         *   （用户报"点了涂色方案再选地图，涂色没套上"就是这个 ✓）*/
+        TIER_KEYS = state.meta.tiers || TIER_KEYS;
+        TIER_COUNT = TIER_KEYS.length;
+        /* 🔴 **底图对不上也照样套**（2026-10-25 改的 ✓）
+         *   工程按**最细层的 key** 存 ✓ 不认识的 key 在 applyProject 里
+         *   自然被 t.index[key]===undefined 滤掉，涂不错位 ✗ 只是套上多少的问题 ✓
+         *   以前直接 return ✗ 用户换张底图载入就"什么都没发生"（toast 还被关着 ✗） */
+        {
+          const n = applyProject(pend.project) || 0;
+          if (n) {
+            recomputePainted();
+            blocksDirty = true;
+            labelDirty = true;
+            state._exported = true;      // 仓库里还有一份 ✓ 关页面不用再提醒 ✓
+            toast('已载入仓库存档「' + (pend.name || '') + '」：' + n + ' 处涂色。');
+            LOG.event('仓库载入', (pend.name || '') + ' · ' + n + ' 处');
+          } else {
+            toast('这份存档在「' + ((state.meta && state.meta.label) || '') + '」上没有能识别的涂色。', true);
+          }
+        }
+      } catch (e) { toast('仓库存档应用失败：' + (e && e.message ? e.message : e), true); }
+    }
+    /* **地名排版开局算一遍**（用户 2026-10-23）：跟缩放无关，算一次就定死 ✓
+     * 切块（每段 12ms）→ 不占"就绪"那一刻，也不卡第一帧 ✓ */
+    try { prewarmMapNameLayouts(); } catch (e) { LOG.event('排版预热失败', String(e)); }
 
     /* 报错日志：注册一份"导出时现取"的现状 ——
      * 视图 / 工具 / 改动数是随时变的，记死在启动那一刻没意义 ✓
@@ -10932,6 +12198,8 @@ async function boot() {
       } catch (e) {
         out['像素自检'] = '读不了：' + (e && e.message ? e.message : e);
       }
+      /* 性能指标（2026-10-23）：玩家报"卡"的时候，这几个数比描述有用 ✓ */
+      try { Object.assign(out, PERF.snapshot()); } catch (e) { /* ✓ */ }
       return out;
     });
 
@@ -10988,6 +12256,7 @@ async function boot() {
     //（回到同一张图，画的东西原样在那儿就够了 ✗ 不用再飘一条"恢复了 N 个势力"打断你）
     loadProject();
   } catch (e) {
+    clearInterval(_hbTimer);       // 别再打心跳了 ✓ 下面会给"没能启动"卡 ✓
     LOG.event('启动失败', (e && e.message) || String(e));
     console.error(e);
     // 渲染器失败那条已经在上面分类上屏了 → 别用一句更模糊的话把它盖掉 ✓
@@ -10996,6 +12265,12 @@ async function boot() {
       setBoot('出错了：' + msg, 100);
       const _bs = $('boot-step');
       if (_bs) _bs.style.color = 'var(--danger)';
+      /* 🔴 **失败要给出可读的说明卡** ✗✗（2026-10-23）
+       *   以前只把一句话塞进启动页那行小字 —— 玩家看到的就是"卡住 / 白屏" ✓
+       *   现在换成"没能启动"卡：环境事实 + 常见原因 + 重新加载 + 复制诊断 ✓ */
+      if (window.PDXLOG && window.PDXLOG.bootFail) {
+        try { window.PDXLOG.bootFail('启动过程中出错：' + msg); } catch (e2) { /* ✓ */ }
+      }
     }
   }
 }
@@ -11051,7 +12326,7 @@ if (typeof window.initTutorial === 'function') window.initTutorial();
     + '<strong>视图</strong>：地理层级，大洲 → 大区 → 区域 → 地区 → 省份，越往右边越细。<br>'
     + '<strong>工具</strong>：查看、吸管、填色、涂抹、橡皮、改名，一共六个。'
     + '涂抹是按住拖出一片；<strong>填色</strong>是点一下变化一次（担心手滑就用它）；橡皮擦回原样。<br>'
-    + '<strong>文件</strong>：导出整图 PNG、导出高清地图、导出涂色存档、导入存档，还有撤销、重做、清除。<br>'
+    + '<strong>文件</strong>：导出整图 PNG、导出高清地图、存入地图仓库、导入涂色，还有撤销、重做、清除。<br>'
     + '<strong>设置</strong>：颜色、边界线、名称、其他（界面白天 / 黑夜、导出图例）。设置面板也是按一下开、再按一下收。</p>'
 
     + '<h4>两个小提示</h4>'

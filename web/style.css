@@ -392,7 +392,31 @@ body.sb-folded .sidebar {
 
 /* ------------------------------------------------------------ 画笔 */
 
-.brush { display: flex; gap: 11px; align-items: stretch; }
+.brush { display: flex; gap: 11px; align-items: stretch; position: relative; }
+
+/* 🎨 色块的二级菜单（点大色块弹出 ✓ 2026-10-24 用户定的）：
+   自定义颜色（系统 RGB 拾色器）/ 收藏 / 最近使用，全在一处 ✓ */
+.brush-menu {
+  position: absolute; left: 0; top: calc(100% + 6px); z-index: 60;
+  width: max(100%, 250px);
+  background: var(--card, #161c24); border: 1px solid var(--line); border-radius: 10px;
+  padding: 10px; box-shadow: 0 10px 26px rgba(0, 0, 0, .45);
+}
+.brush-menu-custom {
+  appearance: none; cursor: pointer; width: 100%;
+  padding: 8px 10px; border-radius: 8px;
+  border: 1px solid var(--gold-dim); background: transparent;
+  color: var(--gold); font: 12.5px var(--ui, inherit); text-align: left;
+}
+.brush-menu-custom:hover { background: #26313d; }
+.brush-menu-cap {
+  display: flex; align-items: center; justify-content: space-between;
+  font: 11px var(--ui, inherit); color: var(--text-faint);
+  margin: 10px 2px 6px;
+}
+.brush-menu-cap .btn { padding: 1px 8px; font-size: 11px; }
+html[data-theme="light"] .brush-menu { background: #ffffff; }
+html[data-theme="light"] .brush-menu-custom:hover { background: #e9eef4; }
 .swatch {
   border-radius: 7px;
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .16), 0 2px 9px rgba(0, 0, 0, .45);
@@ -494,6 +518,7 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin
 
 .palette { display: flex; flex-wrap: wrap; gap: 6px; }
 .palette .chip {
+  appearance: none; border: none; padding: 0; font: inherit;
   width: 26px; height: 26px; border-radius: 6px; cursor: pointer;
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .18);
   transition: transform .1s;
@@ -2708,3 +2733,78 @@ html[data-theme="light"] #tutCard button.tut-next { background: #fdf5e0; border-
 /* ---- 危险按钮的边框 / 取色块占位底 ---- */
 html[data-theme="light"] .btn.danger { border-color: #c1867c; color: #8f2f1d; }
 html[data-theme="light"] .swatch { background: #d5dce4; }
+
+/* ============================================================ 地图仓库（2026-10-24）
+   选图页的「🗺 地图仓库…」面板 + 画图时「文件 ▾ → 存入地图仓库」✓
+   卡片样式沿用 .map-card 那套（同一个选图页 ✓ 视觉一致 ✓） */
+.map-actions { display: flex; gap: 8px; }
+.map-actions .map-import { flex: 1 1 0; min-width: 0; }
+
+/* 主菜单（选图页）不显示顶栏 ✓（2026-10-25 用户定的 ✓）
+   #boot 遮罩只盖 #stage（在 .body 里 ✓），顶栏在外面会露出来 ✗
+   → 选图期间 body.pick-open 藏顶栏 ✓ 选完图摘掉（见 pickMap ✓）*/
+body.pick-open .toolbar { display: none; }
+
+/* 🗺 主菜单页签（2026-10-24 ✓）：跟顶栏 .segmented 同一个视觉系统 ✓ */
+.pick-tabs {
+  display: flex;
+  background: #0f141a;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 2px;
+  gap: 1px;
+  margin-bottom: 12px;
+}
+.pick-tab {
+  appearance: none; border: 0; background: transparent;
+  flex: 1 1 0;
+  color: var(--text-dim); font: inherit; font-size: 13px;
+  padding: 6px 18px; border-radius: 5px;
+  cursor: pointer; white-space: nowrap;
+  transition: background .12s, color .12s;
+}
+.pick-tab.on {
+  background: linear-gradient(180deg, #3a3016, #2b2410);
+  color: #f0d98a;
+  box-shadow: inset 0 0 0 1px rgba(201, 162, 39, .38);
+}
+/* 🌞 白天版**照抄 .segmented 那套** ✓（2026-10-25 用户："二分栏的配色没改"✓）
+   顶栏层级按钮长什么样，这里就长什么样 ✓ 一个色都不发明 ✓ */
+html[data-theme="light"] .pick-tabs { background: var(--panel-2); border-color: #d4dee8; }
+html[data-theme="light"] .pick-tab { color: #5b6877; }
+html[data-theme="light"] .pick-tab:hover { background: #dde5ee; }
+html[data-theme="light"] .pick-tab.on {
+  background: rgba(47, 95, 143, .16);
+  color: #26598a;
+  box-shadow: none;
+}
+
+.map-store-list {
+  display: flex; flex-direction: column; gap: 8px;
+  max-height: 260px; overflow-y: auto; padding-right: 2px;
+}
+.map-store-list::-webkit-scrollbar { width: 8px; }
+.map-store-list::-webkit-scrollbar-thumb { background: #2b3542; border-radius: 4px; }
+/* 仓库卡片：**直接用 .map-card 那套** ✓（悬停浮起 / 金色名字 / 右下角动作 /
+   日间版全继承 ✓）只补差异：缩略图尺寸、动作行让位 ✓ */
+html[data-theme="light"] .map-store { background: #eef2f7; }
+html[data-theme="light"] .map-store-list::-webkit-scrollbar-thumb { background: #b7c3cf; }
+.store-card { padding-bottom: 27px; }
+.store-card .map-card-acts { flex-wrap: wrap; max-width: 172px; }
+
+/* ============================================================ 开局页二分起步页（2026-10-24）
+   落地两块（地图 / 涂色），点谁进谁 ✓ 返回按钮回到这一层 ✓ */
+
+/* 仓库页不显示地图侧的提示 / 消息 ✓（各页各的 ✓）*/
+.map-pick.store-mode .map-import-hint,
+.map-pick.store-mode .map-msg { display: none !important; }
+
+/* 仓库页的「导入涂色方案」也用 .map-import 同款 ✓ 跟地图包按钮并排 ✓ */
+.map-store-foot .map-import { margin-top: 0; }
+
+/* 仓库卡片做大（至少地图卡两倍 ✓ 2026-10-25 用户定的 ✓）
+   ⚠ 只作用于仓库页 ✗ —— .store-mode 由 showPickView 切换 ✓
+   两个页签共用 #map-pick-list，不带前缀会把地图卡也放大 ✗（踩过 ✓）*/
+.map-pick.store-mode .map-card { padding: 20px 22px; }
+.map-pick.store-mode .map-card b { font-size: 17px; }
+.map-pick.store-mode .map-card span { font-size: 12.5px; }

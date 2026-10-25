@@ -132,13 +132,16 @@ if (location.protocol === 'file:') {
         <!-- ⚠ **地图包不在这儿导** ✗（2026-10-20 ✓ 用户："地图包不要在进入里面的时候导入"）
              `.pdxmap` 只在**选图页**导（主菜单 → 选地图 → 底部那个按钮，或者直接拖进去）✓
              这一项是**涂色存档**（.json）✓ 名字写清楚，别让人误会 ✓ -->
-        <button class="btn ghost" id="btn-import">导入涂色</button>
+        <!-- 🗺 **保存地图**（2026-10-24 ✓）：起个名存进浏览器仓库，选图页统一管理 ✓ -->
+        <button class="btn ghost" id="btn-project">保存地图</button>
+        <button class="btn ghost" id="btn-import">导入涂色方案</button>
+        <!-- 导出涂色方案 .json：不进仓库、直接下载一份 ✓ -->
+        <button class="btn ghost" id="btn-export-project">导出涂色方案</button>
         <button class="btn ghost" id="btn-png">导出窗口</button>
         <button class="btn ghost" id="btn-png-full">导出整图</button>
         <!-- **高清导出**：输出宽高都 ×2，边界按新尺度重画 ✓（不是放大糊 ✗）
              一个地图像素变 2×2，细边界不再互相咬掉 ✓（用户要求 ✓）-->
         <button class="btn ghost" id="btn-png-full2">导出高清地图</button>
-        <button class="btn ghost" id="btn-project">导出涂色</button>
         <!-- 出毛病时把这一份发给作者就行 ✓（日志模块是 js/log.js，比 app.js 先加载 ✓） -->
         <button class="btn ghost" id="btn-log">导出日志</button>
       </div>
@@ -320,8 +323,9 @@ if (location.protocol === 'file:') {
         </div>
         <div class="brush">
           <div class="swatch big" id="brush-swatch"></div>
-          <!-- 点色块弹的就是它：跟设置页里那些 <input type="color"> 同一个系统取色器 ✓
-               （藏在旁边、不进布局；别用 display:none，某些浏览器就不弹了 ✗） -->
+          <!-- 点色块不再直接弹系统取色器 ✗（2026-10-24 用户定的 ✓）：
+               弹的是下面这个**二级菜单** —— 里面自己选：去 RGB 拾色器调，
+               或从调色板 / 最近使用里挑一个 ✓ -->
           <input type="color" id="brush-color" class="swatch-input" aria-label="取色">
           <div class="brush-fields">
             <label>HEX <input type="text" id="brush-hex" maxlength="7" spellcheck="false" autocomplete="off"></label>
@@ -331,8 +335,19 @@ if (location.protocol === 'file:') {
               <label>B <input type="number" id="brush-b" min="0" max="255"></label>
             </div>
             <label>标记
-              <input type="text" id="brush-label" spellcheck="false" autocomplete="off">
+              <input type="text" id="brush-label" spellcheck="false" autocomplete="off" placeholder="请输入文本">
             </label>
+          </div>
+          <!-- 🎨 **色块的二级菜单**（点大色块弹出 ✓）：
+               「自定义颜色」= 系统 RGB 拾色器随便调 ✓；
+               收藏 / 最近使用 = **圆角方块**，左键直接用作画笔色、右键删 ✓；
+               收藏行末尾的 ＋ 块 = 把当前颜色收进调色板 ✓ -->
+          <div class="brush-menu" id="brush-menu" hidden>
+            <button type="button" class="brush-menu-custom" id="brush-menu-custom">自定义颜色</button>
+            <div class="brush-menu-cap">调色板</div>
+            <div class="palette palette-fav" id="palette-fav"></div>
+            <div class="brush-menu-cap brush-menu-cap-row"><span>最近使用</span><button type="button" class="btn ghost" id="btn-clear-recent">清空</button></div>
+            <div class="palette" id="palette"></div>
           </div>
         </div>
         <div class="label-pick" id="label-pick" hidden>
@@ -379,15 +394,6 @@ if (location.protocol === 'file:') {
         </div>
       </section>
 
-      <section class="panel">
-        <div class="panel-head">
-          <h2>最近使用</h2>
-          <!-- 清空"最近用过" ✓（这份是**跟着设置持久化**的，所以清完也要落盘 ✓ 见 clearRecent）-->
-          <button type="button" class="btn ghost" id="btn-clear-recent">清空</button>
-        </div>
-        <div class="palette" id="palette"></div>
-      </section>
-
     </aside>
 
     <main class="stage" id="stage">
@@ -407,13 +413,26 @@ if (location.protocol === 'file:') {
 
           <div class="map-pick" id="map-pick" hidden>
             <div class="map-pick-hint">选一张地图</div>
+            <!-- 🗺 **二分起步页**（2026-10-24 ✓ 用户定的）：两个大块，点谁进谁 ——
+                 「地图」= 底图卡片，「涂色」= 仓库里存过的地图 ✓
+                 ⚠ 卡片在打开时就已经渲染进 #map-pick-list ✓（隐藏只是视觉层 ✓）
+                   自测 / 调优工具程序化点卡片不受影响 ✓ -->
+            <!-- 🗺 **主菜单分段按钮**（2026-10-24 ✓ 用户定的）：上排两个页签，
+                 点谁下面显示谁 ✓ 默认「地图包」✓ -->
+            <div class="pick-tabs" id="pick-tabs">
+              <button class="pick-tab on" id="pick-tab-maps" type="button">开始创作</button>
+              <button class="pick-tab" id="pick-tab-store" type="button">读取地图</button>
+            </div>
             <!-- 一张图都没有的时候（轻量版第一次打开就是这样）说清楚下一步干嘛 ✓
                  有卡片了 app.js 会把它藏起来 ✓ -->
             <div class="map-empty" id="map-empty" hidden>
               请点击下方按钮导入，或将 .pdxmap 文件直接拖进这一页。
             </div>
             <div class="map-pick-list" id="map-pick-list"></div>
-            <button class="map-import" id="map-import">＋ 导入地图包…</button>
+            <div class="map-actions" id="map-actions">
+              <button class="map-import" id="map-import">＋ 导入地图包…</button>
+              <input type="file" id="map-store-import" accept=".json,application/json" hidden>
+            </div>
             <!-- 这行平时**是空的** ✗ —— 只有"这台浏览器存不下东西"的时候才跳出来警示
                  （"刷新就没了"那句必须让玩家看见，所以位置留着 ✓） -->
             <div class="map-import-hint" id="map-import-hint" hidden></div>
@@ -636,6 +655,21 @@ if (location.protocol === 'file:') {
           <label class="set-row"><span class="set-l">势力名</span>
             <select id="set-font-power"><option value="">默认</option></select>
           </label>
+          <!-- 🔴 **P社式排版**（2026-10-22 ✓）
+               在版图里找基线，再逐字贴着曲线摆（见 js/maplabels.js ✓）
+               `both` = 国名 + 大地名（默认 ✓ 用户要的就是这个观感）—
+               地名太小的时候仍然横着写（排了也看不清 ✓） -->
+          <label class="set-row"><span class="set-l">版图贴合</span>
+            <select id="set-mapname">
+              <option value="both">国名 + 地名</option>
+              <option value="power">仅国名</option>
+              <option value="off">关闭</option>
+            </select>
+          </label>
+          <!-- 调试：画基线 / 字框 / 包围盒 / 质心（见 labels.js 的 _paintLayoutDebug ✓） -->
+          <label class="set-row"><span class="set-l">排版调试</span>
+            <input type="checkbox" id="set-mapname-debug">
+          </label>
           <div class="set-row"><span class="set-l">字体库</span>
             <button class="btn ghost" id="btn-font-import" type="button">导入…</button>
             <button class="btn ghost" id="btn-font-del" type="button">删除</button>
@@ -702,6 +736,18 @@ if (location.protocol === 'file:') {
       <div class="rename-foot">
         <button class="btn ghost" id="rename-cancel">取消</button>
         <button class="btn" id="rename-ok">确定</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 🗺 存入地图仓库的小弹窗（文件 ▾ → 存入地图仓库）—— 保存时得起个名 ✓ -->
+  <div class="modal" id="save-map" hidden>
+    <div class="modal-box rename-box">
+      <div class="modal-head"><h2>存入地图仓库</h2></div>
+      <input type="text" id="save-map-name" class="rename-input" placeholder="请输入文本" autocomplete="off" maxlength="40">
+      <div class="rename-foot">
+        <button class="btn ghost" id="save-map-cancel">取消</button>
+        <button class="btn" id="save-map-ok">保存</button>
       </div>
     </div>
   </div>

@@ -67,7 +67,7 @@ MAPS = (
 #: ⚠ 拍平只认行首那种静态 import ✗ —— 里面别写 `await import('./zip.js')`，
 #:   那种写法会被原样留在产物里，file:// 下必炸 ✓
 MODULES = ("log.js", "pack.js", "zip.js", "packstore.js", "fonts.js", "bitmapfont.js", "data.js", "bmp.js",
-           "gl.js", "labels.js", "tilemap.js", "tutorial.js", "app.js")
+           "gl.js", "maplabels.js", "labels.js", "tilemap.js", "tutorial.js", "app.js")
 
 
 def strip_module(src: str) -> str:

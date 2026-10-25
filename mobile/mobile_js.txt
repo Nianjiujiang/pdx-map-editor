@@ -266,7 +266,7 @@ function bindMobile() {
     if (dirty > 0 && !stashNow()) {
       // 存不进暂存区（无痕模式 / 配额满）才问一句 ✗ 至少不静默丢掉
       const ok = window.confirm('这台浏览器不让暂存，回主菜单会丢掉还没导出的涂色（改动 ' + dirty + ' 处）。\n'
-        + '想留着就先点「文件 → 导出涂色」存一份。\n\n确定要回主菜单吗？');
+        + '想留着就先点「文件 → 存入地图仓库」存一份。\n\n确定要回主菜单吗？');
       if (!ok) return;
     }
     // 换地图要把数据、渲染器整套重来 ✓ 页面自带的启动流程正好干这事 ✓
@@ -290,6 +290,7 @@ function bindMobile() {
   wait(() => {
     movePanelOf(gColor, 'brush-hex');        // 当前颜色：色块 / HEX / RGB / 标记
     movePanelOf(gColor, 'palette');          // 最近使用
+    movePanelOf(gColor, 'palette-fav');      // 🎨 收藏调色板（2026-10-24 ✓ 跟着搬 ✓）
     movePanelOf(gColor, 'results');          // 搜索
     move(gColor, $('label-pick'));
   });
@@ -1015,7 +1016,7 @@ function bindMobile() {
     + '（1444、1936 这种，整张地图的国界与配色都会跟着更换）；下面那一排是<strong>地理层级</strong>：'
     + '大洲 → 大区 → 区域 → 地区 → 省份，越往右边越细。<br>'
     + '<strong>设置</strong>：显示开关（颜色、边界、名称）、边界浓度、字号、导出图例。<br>'
-    + '<strong>文件</strong>：导出整图 PNG、导出涂色存档、导入存档，还有撤销、重做、清除。</p>'
+    + '<strong>文件</strong>：导出整图 PNG、存入地图仓库、导入涂色，还有撤销、重做、清除。</p>'
 
     + '<h4>上面那条</h4>'
     + '<p><strong>返回</strong>用来收起面板；<strong>永夜廿九</strong>是我的 B 站主页；'

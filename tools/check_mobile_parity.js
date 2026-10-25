@@ -87,6 +87,7 @@ const SIDEBAR = [
   ['display-panel', '显示区（四个分组的家）', "$('display-panel')"],
   ['brush-hex', '当前颜色', "$('brush-hex')"],
   ['palette', '最近使用', "$('palette')"],
+  ['palette-fav', '收藏调色板', "$('palette-fav')"],
   ['results', '搜索', "$('results')"],
   ['label-pick', '标记挑选', "$('label-pick')"],
 ];

@@ -22,7 +22,7 @@ const path = require('path');
 const ROOT = path.join(__dirname, '..', '..');
 
 //: 单文件版（build_standalone.py）的拼接顺序 —— **必须和那边一致** ✓
-const MODULES = ['log.js', 'pack.js', 'zip.js', 'packstore.js', 'fonts.js', 'bitmapfont.js', 'data.js', 'bmp.js', 'gl.js', 'labels.js', 'tilemap.js', 'tutorial.js', 'app.js'];
+const MODULES = ['log.js', 'pack.js', 'zip.js', 'packstore.js', 'fonts.js', 'bitmapfont.js', 'data.js', 'bmp.js', 'gl.js', 'maplabels.js', 'labels.js', 'tilemap.js', 'tutorial.js', 'app.js'];
 
 /** 开发时 index.html 只加载 app.js（真 ES module），这里按单文件版的顺序拍平 */
 function flattenModules(modules = MODULES, root = ROOT) {
@@ -1056,6 +1056,9 @@ _p('viewTierFor', viewTierFor); _p('isWaterPid', isWaterPid);
 _p('pressTier', pressTier); _p('eraTierCount', eraTierCount);
 _p('refreshTierButtons', refreshTierButtons);
 _p('projectData', projectData); _p('saveProject', saveProject); _p('applyProject', applyProject);
+/* 🗺 地图仓库 + 🎨 收藏调色板（2026-10-24 ✓）—— 自测要实测存取往返 ✓ */
+_p('listMaps', listMaps); _p('putMap', putMap); _p('getMap', getMap); _p('deleteMap', deleteMap);
+_p('paletteList', paletteList); _p('paletteAdd', paletteAdd); _p('paletteRemoveAt', paletteRemoveAt); _p('paletteReset', paletteReset);
 _p('labelForColor', labelForColor);
 _p('isDegradedBaron', isDegradedBaron); _p('screenToMap', screenToMap);
 _p('updateHover', updateHover); _p('rebuildPaintBlocks', rebuildPaintBlocks);

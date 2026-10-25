@@ -616,8 +616,181 @@
     } catch (e) { /* 没有 DOM 就算了 ✓ */ }
   }
 
+
+  /* ========================================================================
+     🔴 **启动看门狗**（2026-10-23）
+     有人报"白屏 / 黑屏 / 一打开就闪退"，但没过程、没日志 ✗
+     这里补两条命：
+       ① `tick(label)` —— app.js 每推进一个启动阶段就盖个时间戳（见 setBoot ✓）
+       ② 超过 25 秒**毫无推进**、且没置 `window.__PDX_BOOTED` → 把启动页
+          换成一张"没能启动"的说明卡：环境事实 + 常见原因 + 重新加载 + 复制诊断
+      这样连"app.js 压根没解析成功"（旧浏览器 / 私有模式禁 module / 文件损坏）
+      也能落到这张卡上，而不是一片白 ✓
+     ====================================================================== */
+  var _hb = { t: Date.now(), label: '（还没开始）' };
+  var _act = { t: 0 };            // 最后一次用户交互（点/按/滚 ✓ 有交互就不算卡死 ✓）
+  var _bootFailShown = false;
+
+  /** 启动进度心跳（app.js 的 setBoot 每步都调 ✓ 很便宜）*/
+  function tick(label) {
+    _hb.t = Date.now();
+    if (label) _hb.label = String(label);
+  }
+
+  function _supportsESModule() {
+    try {
+      var sc = window.document.createElement('script');
+      return 'noModule' in sc;
+    } catch (e) { return false; }
+  }
+
+  function _facts() {
+    var f = [];
+    try { f.push('浏览器 ' + (navigator.userAgent || '?')); } catch (e) { /* ✓ */ }
+    try { f.push('WebGL2 ' + (window.WebGL2RenderingContext ? '有' : '**没有**')); } catch (e) { /* ✓ */ }
+    try { f.push('ES module ' + (_supportsESModule() ? '支持' : '**不支持**')); } catch (e) { /* ✓ */ }
+    try { f.push('打开方式 ' + (location.protocol || '?')); } catch (e) { /* ✓ */ }
+    try { f.push('窗口 ' + window.innerWidth + '×' + window.innerHeight); } catch (e) { /* ✓ */ }
+    try { if (navigator.deviceMemory) f.push('内存约 ' + navigator.deviceMemory + ' GB'); } catch (e) { /* ✓ */ }
+    try { f.push('最后进度 "' + _hb.label + '"（' + Math.round((Date.now() - _hb.t) / 1000) + ' 秒前）'); } catch (e) { /* ✓ */ }
+    try { f.push('已记录错误 ' + rec.errors.length + ' 条'); } catch (e) { /* ✓ */ }
+    return f;
+  }
+
+  function _btn(text, onClick) {
+    var b = window.document.createElement('button');
+    b.textContent = text;
+    b.type = 'button';
+    b.style.cssText = 'margin:8px 8px 0 0;padding:7px 14px;border-radius:8px;cursor:pointer;'
+      + 'border:1px solid #3a4a5e;background:#22303f;color:#dbe7f3;font:inherit;font-size:13px';
+    b.addEventListener('click', onClick);
+    return b;
+  }
+
+  function _copy(text) {
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text);
+        return true;
+      }
+    } catch (e) { /* 走下面的兜底 ✓ */ }
+    try {
+      var ta = window.document.createElement('textarea');
+      ta.value = text;
+      ta.style.cssText = 'position:fixed;left:-9999px;top:0';
+      window.document.body.appendChild(ta);
+      ta.select();
+      var ok = window.document.execCommand && window.document.execCommand('copy');
+      window.document.body.removeChild(ta);
+      return !!ok;
+    } catch (e) { return false; }
+  }
+
+  /**
+   * 把启动页换成"没能启动"的说明卡
+   * @param {string} [reason] 一句话原因（不给就用"启动卡住/脚本没加载"）
+   * @param {string} [steps]  额外的排查建议（多行）
+   */
+  function bootFail(reason, steps) {
+    try {
+      if (_bootFailShown) return;
+      var doc = window.document;
+      var host = doc.getElementById && doc.getElementById('boot-inner');
+      if (!host) return;
+      _bootFailShown = true;
+
+      var isNoModule = !_supportsESModule();
+      var isNoGL2 = !window.WebGL2RenderingContext;
+      var title = '没能启动（画面白屏 / 黑屏）';
+      var body = reason || ('启动在「' + _hb.label + '」这一步停住了，'
+        + Math.round((Date.now() - _hb.t) / 1000) + ' 秒没有新的进展。');
+
+      var wrap = doc.createElement('div');
+      wrap.style.cssText = 'max-width:640px;margin:0 auto;text-align:left;'
+        + 'font:13px/1.65 -apple-system,Segoe UI,Microsoft YaHei,sans-serif;color:#dbe7f3';
+
+      var h = doc.createElement('div');
+      h.textContent = title;
+      h.style.cssText = 'font-size:17px;font-weight:600;margin:0 0 10px;color:#ffd27a';
+      wrap.appendChild(h);
+
+      var p1 = doc.createElement('p');
+      p1.textContent = body;
+      p1.style.cssText = 'margin:0 0 10px';
+      wrap.appendChild(p1);
+
+      var hints = [];
+      if (isNoModule) hints.push('这台浏览器**不支持 ES 模块**：请用新版 Chrome / Edge / Firefox / Safari。');
+      if (isNoGL2) hints.push('这台浏览器**没有 WebGL2**：多半是关了硬件加速，或显卡/驱动太旧。');
+      hints.push('如果是双击单文件打开的：确认文件完整（1 MB 出头），复制到本机磁盘再打开，别在压缩包里双击。');
+      hints.push('浏览器扩展（广告拦截 / 脚本管理）可能挡掉了脚本：用无痕窗口再试一次。');
+      hints.push('手机 / 平板：内存紧张时会被系统杀掉，先关掉别的标签页再重开。');
+      if (steps) hints.push(steps);
+
+      var ul = doc.createElement('ul');
+      ul.style.cssText = 'margin:6px 0 10px;padding-left:20px';
+      for (var i = 0; i < hints.length; i++) {
+        var li = doc.createElement('li');
+        li.textContent = hints[i].replace(/\*\*/g, '');
+        li.style.cssText = 'margin:3px 0';
+        ul.appendChild(li);
+      }
+      wrap.appendChild(ul);
+
+      var facts = doc.createElement('pre');
+      facts.textContent = _facts().join('\n');
+      facts.style.cssText = 'margin:8px 0 0;padding:9px 11px;border-radius:8px;'
+        + 'background:#141d26;border:1px solid #2a3a4a;color:#9fb3c8;'
+        + 'font:12px/1.5 ui-monospace,Consolas,monospace;white-space:pre-wrap;word-break:break-all';
+      wrap.appendChild(facts);
+
+      var row = doc.createElement('div');
+      row.appendChild(_btn('重新加载', function () { location.reload(); }));
+      row.appendChild(_btn('复制诊断', function (e) {
+        var ok = _copy(text());
+        e.target.textContent = ok ? '已复制' : '复制失败';
+        setTimeout(function () { e.target.textContent = '复制诊断'; }, 2000);
+      }));
+      row.appendChild(_btn('导出诊断报告', function () {
+        download('pdx-map-editor_诊断报告_' + idStamp(new Date()) + '.txt');
+      }));
+      wrap.appendChild(row);
+
+      host.textContent = '';
+      host.appendChild(wrap);
+      error('启动失败（看门狗）', String(body));
+    } catch (e) { /* 兜底里再出错就真的没办法了 ✓ */ }
+  }
+
+  /* 每 2 秒看一眼：25 秒没推进、也没就绪 → 上说明卡 ✓
+   * ⚠ 只在启动页还在的时候管（地图都显示了就说明启动过了 ✓）*/
+  function _watchdog() {
+    try {
+      if (_bootFailShown || window.__PDX_BOOTED) return;
+      var boot = window.document.getElementById && window.document.getElementById('boot');
+      if (boot && boot.hidden) return;
+      /* ⚠ **正在选图不算卡住** ✗✗（2026-10-23）
+       *   启动页停在"选一张地图"时，人可能去倒杯水 —— 那不是白屏 ✓
+       *   选图面板可见 / 用户几秒前还在点 → 一律不报 ✓ */
+      var pick = window.document.getElementById && window.document.getElementById('map-pick');
+      if (pick && !pick.hidden) return;
+      if (Date.now() - (_act.t || 0) < 8000) return;
+      if (Date.now() - _hb.t < 25000) return;
+      bootFail('启动卡住了：' + Math.round((Date.now() - _hb.t) / 1000) + ' 秒没有新进展'
+        + '（最后一步「' + _hb.label + '」）。');
+    } catch (e) { /* ✓ */ }
+  }
+  try {
+    ['pointerdown', 'keydown', 'wheel', 'touchstart'].forEach(function (ev) {
+      window.addEventListener(ev, function () { _act.t = Date.now(); }, { passive: true });
+    });
+  } catch (e) { /* ✓ */ }
+  try { window.setInterval(_watchdog, 2000); } catch (e) { /* ✓ */ }
+
   window.PDXLOG = {
     event: event,
+    tick: tick,
+    bootFail: bootFail,
     error: error,
     push: push,
     env: env,
@@ -637,5 +810,6 @@
   if (window.document && window.document.addEventListener) {
     window.document.addEventListener('DOMContentLoaded', bindBootExport);
   }
+  tick('日志模块已加载');
   event('日志就绪', '（这一条能看见 = 日志模块加载上了 ✓）');
 })(window);

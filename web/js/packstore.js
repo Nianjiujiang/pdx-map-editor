@@ -31,9 +31,13 @@ import { readZip, makeZipAsync } from './zip.js';
 import { validatePack } from './pack.js';
 
 //: 库名 / store 名。改名字等于把玩家已导入的图全弄丢 ✗ 别乱动 ✓
-const PS_DB = 'pdx-map-editor';const PS_VER = 1;
+const PS_DB = 'pdx-map-editor';
+//: ⚠ 2026-10-24：1 → 2 加了 `saved_maps`（地图仓库 ✓）。IndexedDB 升版本
+//:   只会**新增** store，已有的 packs / files 原封不动 ✓ 玩家导入的图安然无恙 ✓
+const PS_VER = 2;
 const PS_PACKS = 'packs';
 const PS_FILES = 'files';
+const PS_MAPS = 'saved_maps';
 
 //: 'idb' = 真存下来了 ✓ / 'memory' = 这次会话能用，刷新就没了 ✗ / null = 还没探过
 let PS_MODE = null;
@@ -41,6 +45,7 @@ let PS_DB_HANDLE = null;
 
 //: 降级模式下的内存仓库（跟 IndexedDB 那套行为一致，只是活不过刷新）
 const PS_MEM_PACKS = new Map();
+const PS_MEM_MAPS = new Map();
 const PS_MEM_FILES = new Map();
 
 /** 记一笔轨迹（日志模块是普通脚本，单文件版里也在；没有就安静跳过 ✓） */
@@ -83,6 +88,7 @@ export async function packStoreMode() {
         const db = req.result;
         if (!db.objectStoreNames.contains(PS_PACKS)) db.createObjectStore(PS_PACKS, { keyPath: 'id' });
         if (!db.objectStoreNames.contains(PS_FILES)) db.createObjectStore(PS_FILES);
+        if (!db.objectStoreNames.contains(PS_MAPS)) db.createObjectStore(PS_MAPS, { keyPath: 'id' });
       };
       req.onsuccess = () => { stop(); resolve(req.result); };
       req.onerror = () => { stop(); reject(req.error || psFail('打不开数据库')); };
@@ -434,4 +440,53 @@ export async function importPack(blob, opts = {}) {
   await putPack(key, manifest, files, (m, p) => say(m, 60 + Math.round(p * 0.4)));
   say('导入完成', 100);
   return { manifest, key, sameMap: same.length + 1 };
+}
+
+// ---------------------------------------------------------------- 地图仓库
+//
+// 🗺 **命名的涂色存档**（2026-10-24 ✓）：画地图时「存入地图仓库」，选图页统一管理。
+//   一条记录 = { id, name, created, updated, emb, base, game, mapKey, build,
+//               preview(缩略图 dataURL), project(工程 JSON ✓ projectData() 那份) }
+//   都很小（几十 KB）✓ 不用像地图包那样分两个 store ✓
+//   降级（无 IndexedDB）时存内存：行为一致，只是刷新就没 —— 跟地图包同一条规矩 ✓
+//   ⚠ 事务纪律跟 putPack 一样：事务里除了 IDB 请求不许 await 别的东西 ✓
+
+/** 仓库里全部存档，**新的在前** ✓ */
+export async function listMaps() {
+  const mode = await packStoreMode();
+  if (mode === 'memory') {
+    return Array.from(PS_MEM_MAPS.values()).sort((a, b) => (b.updated || 0) - (a.updated || 0));
+  }
+  const tx = psDb().transaction([PS_MAPS], 'readonly');
+  const all = await psReq(tx.objectStore(PS_MAPS).getAll());
+  return (all || []).sort((a, b) => (b.updated || 0) - (a.updated || 0));
+}
+
+/** 某条存档（没有就 null） */
+export async function getMap(id) {
+  const mode = await packStoreMode();
+  if (mode === 'memory') return PS_MEM_MAPS.get(id) || null;
+  const tx = psDb().transaction([PS_MAPS], 'readonly');
+  const v = await psReq(tx.objectStore(PS_MAPS).get(id));
+  return v || null;
+}
+
+/** 存 / 覆盖一条存档（id 相同 = 覆盖 ✓ 复制 / 改名走别的入口 ✓） */
+export async function putMap(rec) {
+  const mode = await packStoreMode();
+  if (mode === 'memory') { PS_MEM_MAPS.set(rec.id, rec); return rec; }
+  const tx = psDb().transaction([PS_MAPS], 'readwrite');
+  await psReq(tx.objectStore(PS_MAPS).put(rec));
+  psLog('地图仓库', String(rec.name || rec.id));
+  return rec;
+}
+
+/** 删一条存档 ✓ */
+export async function deleteMap(id) {
+  const mode = await packStoreMode();
+  if (mode === 'memory') { PS_MEM_MAPS.delete(id); return true; }
+  const tx = psDb().transaction([PS_MAPS], 'readwrite');
+  await psReq(tx.objectStore(PS_MAPS).delete(id));
+  psLog('仓库删除', String(id));
+  return true;
 }

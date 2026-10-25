@@ -477,6 +477,23 @@ function findTestPack() {
        hits.length === 0, hits.length ? hits.slice(0, 3).join(' ') : '一句都没有 ✓');
   }
 
+  /* 🔴 **白屏 / 闪退那几条护栏必须在产物里**（2026-10-23）
+   *   这些代码都在 app.js / log.js 里，单文件版是拼进去的 ——
+   *   这条守着"改了源码忘了重打"（用户拿到的是旧产物，等于没修 ✓） */
+  {
+    const raw = fs.readFileSync(HTML, 'utf8');
+    const need = [
+      ['启动看门狗', /没能启动/],
+      ['导出内存预算', /function exportBudgetTight/],
+      ['iOS 画布上限', /function isAppleTouch/],
+      ['导出看门狗', /function exportBlob/],
+      ['启动完成标志', /__PDX_BOOTED/],
+    ];
+    const miss = need.filter(([, re]) => !re.test(raw)).map(([n]) => n);
+    ok('白屏 / 闪退那几条护栏都打进产物了 ✓', miss.length === 0,
+       miss.length ? '缺：' + miss.join(' / ') : need.map(([n]) => n).join(' · '));
+  }
+
   {
     const src = fs.readFileSync(path.join(H.ROOT, 'web/js/app.js'), 'utf8').split('\n');
     const bad = [];

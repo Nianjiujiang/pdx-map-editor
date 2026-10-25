@@ -372,13 +372,14 @@ export class BitmapFont {
    * @param {{outline?:number}} [opt] outline = 描边粗细（0 = 不描 ✓）
    */
   draw(ctx, text, x, y, size, color, opt) {
+    /* ⚠ 描边半径取整（`_outlineFor` 用整数格膨胀 ✓ 见那里说明 ✓）*/
     const s = String(text || '');
     if (!s) return;
     const scale = size / this.lineHeight;
     const total = this.measure(s, size);
     const lineH = this.lineHeight * scale;
     const top = y - lineH / 2;
-    const outline = (opt && opt.outline) || 0;
+    const outline = Math.max(0, Math.round((opt && opt.outline) || 0));
 
     /* 🔴 **描边 = 对 alpha 做膨胀，不是把字形复制几遍** ✗✗
      *   （2026-10-20 ✓ 用户："他的描边方式是把字的每个偏旁复制到原本位置的上下左右，非常诡异"）
@@ -403,10 +404,25 @@ export class BitmapFont {
      *   膨胀是**整个圆盘**往外长，同样的半径覆盖面积大得多 ✓
      *   → 半径取一半，两种做法的视觉粗细才基本对齐（量完在 3000 px 上下 ✓）
      *   `ceil` 保留：位图字被缩放得厉害，宁可多半个像素也别少 ✓ */
-    const rGlyph = outline > 0
+    const rGlyph = this._outlineRadius(scale, outline);
+    this._run(ctx, s, x - total / 2, top, scale, color, rGlyph, strokeColor);
+  }
+
+  /**
+   * **屏幕上的描边粗细 → 字形像素半径**（2026-10-23）
+   *
+   * 🔴 这个换算必须**只有一处** ✗✗（用户报："导入的 TFR 字体，放大之后描边放大 N 多倍"）
+   *   原因：`size × 0.09` 是**屏幕像素**，可膨胀是在**字形像素**上做的。
+   *   不除缩放的话，放大 10 倍 = 半径也大 10 倍 → 每个字变成一块黑方砖 ✓
+   *   以前只有 `draw()` 那条路做了换算，逐字贴（`drawGlyph`）漏了 ✓
+   *   → 抽到这里，两条路共用 ✓ 以后加路径也不会再漏 ✓
+   *
+   * ⚠ 半径**减半再向上取整**（见 `draw()` 里那段量测：膨胀比偏移粗一倍多 ✓）
+   */
+  _outlineRadius(scale, outline) {
+    return outline > 0
       ? Math.max(1, Math.ceil(outline / Math.max(scale, 0.001) / 2 - 0.001))
       : 0;
-    this._run(ctx, s, x - total / 2, top, scale, color, rGlyph, strokeColor);
   }
 
   /** 一格里逐字贴（penX 是左端 ✓）
@@ -436,11 +452,19 @@ export class BitmapFont {
    */
   _outlineFor(g, color, r) {
     if (!this._outlineCache) this._outlineCache = new Map();
+    /* 🔴 **半径必须先取整** ✗✗（2026-10-23 用户："描边不知道去哪了"）
+     *   调用方传的是 `size × 0.09`（小数，比如 1.3）——
+     *   膨胀采样是 `for (dy = -r; dy <= r; dy++)`，r 是小数时
+     *   `sy = y0 + dy` 全落在非整数像素上，读 `src[(row+sx)*4+3]` 拿到 undefined
+     *   → best 恒为 0 → 画出来的整圈 alpha 都是 0 → **看起来就是没有描边** ✗
+     *   （整数路径 / 老字体碰巧没踩到，位图字体这条路一用就秃 ✓）
+     *   顺带也让缓存键稳定（1.3 / 1.35 不会再各铸一张 ✓）*/
+    const rr = Math.max(1, Math.round(r || 0));
     let m = this._outlineCache.get(g);
-    const key = color + '|' + r;
+    const key = color + '|' + rr;
     if (m && m.has(key)) return m.get(key);
 
-    const W = g.w + r * 2, H = g.h + r * 2;
+    const W = g.w + rr * 2, H = g.h + rr * 2;
     const cv = document.createElement('canvas');
     cv.width = W; cv.height = H;
     const c2 = cv.getContext('2d');
@@ -451,12 +475,12 @@ export class BitmapFont {
       for (let x = 0; x < W; x++) {
         /* 邻域取最大 alpha —— 注意坐标要减 r 换回字形自己的格子里 ✓ */
         let best = 0;
-        const y0 = y - r, x0 = x - r;
-        for (let dy = -r; dy <= r && best < 255; dy++) {
+        const y0 = y - rr, x0 = x - rr;
+        for (let dy = -rr; dy <= rr && best < 255; dy++) {
           const sy = y0 + dy;
           if (sy < 0 || sy >= g.h) continue;
           const row = sy * g.w;
-          for (let dx = -r; dx <= r; dx++) {
+          for (let dx = -rr; dx <= rr; dx++) {
             const sx = x0 + dx;
             if (sx < 0 || sx >= g.w) continue;
             const a = src[(row + sx) * 4 + 3];
@@ -483,6 +507,34 @@ export class BitmapFont {
   }
 
   /** 把一块字形数据染成目标色、铸成 canvas（按 字形+颜色 缓存 ✓）*/
+  /**
+   * **画单个字**：以 (x,y) 为中心、按 angle 旋转 —— 给"版图贴合"用 ✓
+   * （2026-10-23 用户："导入的字体没法实现版图适应弯曲"）
+   *
+   * `draw()` 是把一整段横着排；贴合排版是每个字有自己的位置和转角 ✗
+   * 所以这里单独开一个"画一个字"的出口：字形由自己的图集贴图来，
+   * 描边用同一套 alpha 膨胀（`_outlineFor` ✓），只是外面多套了一层旋转 ✓
+   */
+  drawGlyph(ctx, ch, x, y, size, angle, color, outline, strokeColor) {
+    const g = this.glyph(String(ch || '').codePointAt(0));
+    if (!g || !g.w || !g.h) return false;
+    const scale = size / this.lineHeight;
+    /* ⚠ 描边半径要换算成**字形像素**（见 `_outlineRadius` 的说明 ✓
+     *   以前这里直接拿屏幕像素当半径 → 放大后每个字变成一块黑方砖 ✓）*/
+    const r = this._outlineRadius(scale, outline);
+    const w = g.w * scale, h = g.h * scale;
+    ctx.save();
+    ctx.translate(x, y);
+    if (angle) ctx.rotate(angle);
+    if (r > 0) {
+      const ow = (g.w + r * 2) * scale, oh = (g.h + r * 2) * scale;
+      ctx.drawImage(this._outlineFor(g, strokeColor || '#000', r), -ow / 2, -oh / 2, ow, oh);
+    }
+    ctx.drawImage(this._canvasFor(g, color), -w / 2, -h / 2, w, h);
+    ctx.restore();
+    return true;
+  }
+
   _canvasFor(g, color) {
     if (!this._tintCache) this._tintCache = new Map();
     let m = this._tintCache.get(g);

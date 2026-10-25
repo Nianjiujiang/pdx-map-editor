@@ -196,9 +196,13 @@ function loadBitmap() {
       /FONT_FACE = \{ place: '', power: '' \}/.test(SRC_LABELS));
     ok('默认字体栈还在（导入的字体缺字时会退回去 ✓）',
       /function stackOf\(kind\)/.test(SRC_LABELS) && /FONT_STACK/.test(SRC_LABELS));
-    /* 绘制时按"层"分：国名 / 玩家名 → 势力名，其余 → 地块名 ✓ */
-    ok('绘制时按层挑字体（layer >= 1 算势力名 ✓）',
-      /Math\.floor\(key \/ KEY\) >= 1\) \? 'power' : 'place'/.test(SRC_LABELS));
+    /* 绘制时按"每个标自己的类别"分：国名 / 玩家名 → 势力名，其余 → 地块名 ✓
+     * ⚠ 2026-10-22 起不再只看桶键里的层 ✗ —— 年份层的国名是从"普通头衔点"
+     *   那条路来的（层号是 0，跟地名一样 ✓），只看层号会把国名当成地块名 ✓
+     *   现在 `_kind[]` 按 `tier < nEra || layer === 2` 记，画的时候直接取 ✓ */
+    ok('绘制时按每个标自己的类别挑字体（`_kind` ✓）',
+      /const kind = KINDS\[k\] \|\| \(layer >= 1 \? 'power' : 'place'\)/.test(SRC_LABELS)
+      && /KINDS\[n\] = kind;/.test(SRC_LABELS));
   }
 
   console.log('\n=== D. 界面和接线 ===');
@@ -288,6 +292,12 @@ function loadBitmap() {
       /Math\.ceil\(outline \/ Math\.max\(scale, 0\.001\) \/ 2/.test(SRC_BM));
     ok('描边层比字形大一圈（往外扩 r，绘制原点也挪 r ✓）',
       /\(g\.w \+ r \* 2\) \* scale/.test(SRC_BM) && /\(g\.xoff - r\) \* scale/.test(SRC_BM));
+    /* 🔴 逐字贴（版图贴合）那条路也**必须**走同一个换算 ✗✗
+     *   2026-10-23 用户："导入的 TFR 字体，放大之后描边放大 N 多倍" ——
+     *   `drawGlyph` 当时直接拿屏幕像素当半径，放大后每个字变成一块黑方砖 ✓ */
+    const _radUses = (SRC_BM.match(/_outlineRadius\(scale, outline\)/g) || []).length;
+    ok('逐字贴也用同一套半径换算（drawGlyph → _outlineRadius ✓）', _radUses >= 2,
+      _radUses + ' 处');
 
     /* 真渲染：拿一段字排版，核对落点 / 前进宽度 ✓ 不碰 canvas */
     const F = new Function(
