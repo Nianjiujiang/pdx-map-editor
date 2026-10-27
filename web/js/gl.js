@@ -162,6 +162,11 @@ function _createGL(canvas) {
     Object.assign({}, _GL_ATTRS, { powerPreference: 'high-performance' }),
     Object.assign({}, _GL_ATTRS, { powerPreference: 'default' }),
     Object.assign({}, _GL_ATTRS),
+    /* 最后再试一次**完全默认**的属性 ✓（2026-10-27 用户报 vivo 浏览器
+     *   "Failed to create a WebGL2 context"）—— 有些国产浏览器对
+     *   `alpha:false` / `premultipliedAlpha:false` 这类组合会直接拒绝，
+     *   默认属性反而给得出上下文 ✓ 能画总比报错强 ✓ */
+    {},
   ];
   let gl = null;
   let thrown = null;
@@ -840,6 +845,7 @@ bool viewsDiffer(CellView A, CellView B) {
 
 /* **沿 dir 找最近的填色分界线**（到缝的垂距，单位是地图像素 ✓）
  */
+/* @@MID_CUT_PAINTFN_BEGIN@@ */
 float rayDistPaint(ivec2 ip, vec2 f, ivec2 dir, int R) {
   // **显示出来的颜色边界**：手绘层不同 ✓ 或**显示色**不同 ✓ 都算
   //（地图本来就有的剧本色也算 ✓ —— 不用"先涂一笔"✗）
@@ -891,6 +897,7 @@ float rayDistPaint(ivec2 ip, vec2 f, ivec2 dir, int R) {
   }
   return 1e9;
 }
+/* @@MID_CUT_PAINTFN_END@@ */
 
 /** **沿 dir 找最近的一条"水域 ↔ 水域"的缝** ✓（到缝的垂距，单位是地图像素 ✓）
  *
@@ -909,6 +916,7 @@ float rayDistPaint(ivec2 ip, vec2 f, ivec2 dir, int R) {
  *    可"一头一尾头衔相同"中间照样可能夹着另一片水 ✗ → 直接走满全程 ✓
  *    （水面上这类像素本来就不多 ✓ 不会拖慢陆地 ✓）
  *  ⚠ 跳步（stride ✓）照旧要用 ✓ —— 缩小时它才是"不卡"的那一半 ✓ */
+/* @@MID_CUT_WATERFN_BEGIN@@ */
 float rayDistWater(ivec2 ip, vec2 f, ivec2 dir, uint t, int R) {
   int _st = max(1, int(uMapPerPx * 0.5));
   for (int k = 1; k <= MAXR; k++) {
@@ -924,6 +932,7 @@ float rayDistWater(ivec2 ip, vec2 f, ivec2 dir, uint t, int R) {
   }
   return 1e9;
 }
+/* @@MID_CUT_WATERFN_END@@ */
 
 /** **荒地 ↔ 荒地**那条缝最近在哪个方向、多远 ✓（2026-10-17 ✓ 照 「rayDistWater」 抄的 ✓）
  *
@@ -936,6 +945,7 @@ float rayDistWater(ivec2 ip, vec2 f, ivec2 dir, uint t, int R) {
  *
  *  ⚠ 跟水域那条一样：**先跳一步探路**的预筛在这儿不能用 ✗（理由同 ✓）
  *  ⚠ 跳步照旧要用 ✓ —— 缩小时它才是"不卡"的那一半 ✓ */
+/* @@MID_CUT_WASTEFN_BEGIN@@ */
 float rayDistWaste(ivec2 ip, vec2 f, ivec2 dir, uint t, int R) {
   int _st = max(1, int(uMapPerPx * 0.5));
   for (int k = 1; k <= MAXR; k++) {
@@ -951,6 +961,7 @@ float rayDistWaste(ivec2 ip, vec2 f, ivec2 dir, uint t, int R) {
   }
   return 1e9;
 }
+/* @@MID_CUT_WASTEFN_END@@ */
 
 /** **一条线在某一格里的距离** ✓（b 是那 4 个边标记位：1 左 · 2 右 · 4 上 · 8 下 ✓）
  *  f 是片元在格内的小数 ✓ 所以 f.x 天然就是"到左边那条边的距离" ✓
@@ -1098,6 +1109,7 @@ void main() {
       dTitle = min(dTitle, rayDistTitle(ip, f, ivec2( 0, 1), t0, R, -1));
       dTitle = min(dTitle, rayDistTitle(ip, f, ivec2( 0,-1), t0, R, -1));
     }
+    /* @@MID_CUT_PAINTRAY_BEGIN@@ */
     /* **填色边界的那趟射线**：只在「填色边界」开着时才算（dPaint 只有它用 ✓）*/
     if (_nearSeam && uBorderPaint == 1) {
       float _w0 = rayDistPaint(ip, f, ivec2( 1, 0), R);
@@ -1106,6 +1118,7 @@ void main() {
       float _w3 = rayDistPaint(ip, f, ivec2( 0,-1), R);
       dPaint = min(min(_w0, _w1), min(_w2, _w3));
     }
+    /* @@MID_CUT_PAINTRAY_END@@ */
     // 过渡带 ≈ 一个设备像素（**要提到外面**：下面多级边界那圈也要用 ✗）
     float ramp = 0.5 * uMapPerPx;
     if (dTitle < 1e8) {
@@ -1128,6 +1141,7 @@ void main() {
      *   💡 取舍：**兼容性 > 编译速度** ✗
      *     编译慢是"第一次打开等一会儿" ✓ 编译不过 = 直接不能用 ✓
      *   ⚠ 想再提速就从别处省 ✗ 这里不许动 ✓ */
+    /* @@MID_CUT_EXTRA_BEGIN@@ */
     for (int ex = 0; ex < 4; ex++) {
       if (ex >= uExtraCount) break;
       if (uExtraShow[ex] == 0) continue;
@@ -1156,6 +1170,7 @@ void main() {
         col = mix(col, vec3(0.035, 0.045, 0.06), be * uExtraA[ex]);
       }
     }
+    /* @@MID_CUT_EXTRA_END@@ */
     /* ============ **水域边界**（水域 ↔ 水域 ✓ 2026-10-16）============
      *  用户口径（原话见 handover §3.1 ✓）：水域边界开关**负责且仅负责**
      *    「水域之间（海洋 / 湖泊 / 河流 / 不可通行海域）的边界」✓
@@ -1173,6 +1188,7 @@ void main() {
      *    一侧水一侧陆 → waterIs 有一个 false → 这条通道不管 ✓ 交给本层线 ✓
      *  ⚠ 旧那两条通道在水水缝上已经被让开了 ✓（rayDistTitle / rayDistPaint ✓）
      *    → 同一条缝**只有一个出处** ✓ 不会"后画的赢" ✓ */
+    /* @@MID_CUT_WATER_BEGIN@@ */
     if (uWaterBorderOn == 1 && uWaterBorderA > 0.0) {
       uint tw = titleAt(pidAt(ip), uEditTier);
       int Rw = int(clamp(ceil(0.5 * uMapPerPx * (uWaterBorderW + 1.0)), 1.0, float(MAXR)));
@@ -1187,6 +1203,7 @@ void main() {
         col = mix(col, vec3(0.035, 0.045, 0.06), bw2 * uWaterBorderA);
       }
     }
+    /* @@MID_CUT_WATER_END@@ */
     /* ============ **荒地边界**（荒地 ↔ 荒地 ✓ 2026-10-17）============
      *  用户原话："给荒地加上边界开关，这个负责的是**荒地与荒地之间**的边界，
      *            你之前做了水域-水域的边界，这个应该轻车熟路了吧"✓
@@ -1201,6 +1218,7 @@ void main() {
      *       它**不看** 地区 / 势力 / 填色 那三个开关 ✓ 独立 ✓
      *    ② uWasteBorderA > 0 —— 浓度 0% = 那条线完全不画 ✓（跟别处同口径 ✓）
      *    ③ 射线找得到 ✓ */
+    /* @@MID_CUT_WASTE_BEGIN@@ */
     if (uWasteBorderOn == 1 && uWasteBorderA > 0.0) {
       uint tw2 = titleAt(pidAt(ip), uEditTier);
       int Rw2 = int(clamp(ceil(0.5 * uMapPerPx * (uWasteBorderW + 1.0)), 1.0, float(MAXR)));
@@ -1215,6 +1233,7 @@ void main() {
         col = mix(col, vec3(0.035, 0.045, 0.06), bq2 * uWasteBorderA);
       }
     }
+    /* @@MID_CUT_WASTE_END@@ */
   }
   /* @@LITE_CUT_END@@ */
   /* 🔴 **这个右花括号属于上面那个 if (pidAt(ip) != 0u)** ✗ ——
@@ -1295,6 +1314,73 @@ function makeLiteFragment(src) {
   const b = src.indexOf('/* @@LITE_CUT_END@@ */');
   if (a < 0 || b < 0 || b <= a) return null;      // 标记被人动过 → 宁可不给精简版 ✓
   return src.slice(0, a) + src.slice(b);
+}
+
+/* ==========================================================================
+ * **中间档着色器**（2026-10-27：Adreno 613 + vivo 浏览器）
+ *
+ *  用户报告：手机版「地区边界」怎么调都看不见 ✓
+ *  诊断报告写得明明白白：「完整着色器链接失败，已退到精简版（少了边界线）」✓
+ *  也就是说不是开关 / 涂色 / 数据的问题 —— **完整着色器在这台机器上根本链接不过** ✓
+ *
+ *  精简版为了保命把**整个边界块**都切了（连本层地区线也没了）✓
+ *  但 Adreno 613 并不是"一点边界都算不了"：它是被完整版那一大坨
+ *    「4 方向 × 12 步 × 最多 6 条通道」的射线循环拖垮的 ✓
+ *  → 做两档**逐步减负**的中间版，按"能链上、画质尽量高"的顺序试：
+ *
+ *    ① mid：保留本层头衔 / 填色 / **多级链**，只砍「水域」「荒地」两条独立通道 ✓
+ *    ② border：再砍多级链，只留本层头衔 + 填色 ✓（地区边界就是这条）
+ *    ③ lite：边界整块不要（最后保底）✓
+ *
+ *  ⚠ 三个版本都还是同一份 uniform 名单 ✓ 少用的由 GLSL 自己优化掉 ✓
+ *  ⚠ 切块靠 @@MID_CUT_*@@ 标记；标记被动了就返回 null，宁可不给 ✓
+ * ========================================================================== */
+
+/** 切掉一对 `@@MID_CUT_<name>_BEGIN/END@@` 之间的整段 */
+function cutAuxBlock(src, name) {
+  const bMark = '/* @@MID_CUT_' + name + '_BEGIN@@ */';
+  const eMark = '/* @@MID_CUT_' + name + '_END@@ */';
+  const a = src.indexOf(bMark);
+  const b = src.indexOf(eMark, a + bMark.length);
+  if (a < 0 || b <= a) return null;
+  return src.slice(0, a) + src.slice(b + eMark.length);
+}
+
+/** 中等着色器：多级边界还在，只砍水域 / 荒地两条独立通道（连同它们的射线函数） */
+function makeMidFragment(src) {
+  let out = cutAuxBlock(src, 'WATER');
+  if (out == null) return null;
+  out = cutAuxBlock(out, 'WASTE');
+  if (out == null) return null;
+  out = cutAuxBlock(out, 'WATERFN');
+  if (out == null) return null;
+  out = cutAuxBlock(out, 'WASTEFN');
+  return out;
+}
+
+/** 边界着色器：只留本层头衔 + 填色边界（地区 / 省份线就是这条） */
+function makeBorderOnlyFragment(src) {
+  let out = cutAuxBlock(src, 'EXTRA');
+  if (out == null) return null;
+  out = cutAuxBlock(out, 'WATER');
+  if (out == null) return null;
+  out = cutAuxBlock(out, 'WASTE');
+  if (out == null) return null;
+  out = cutAuxBlock(out, 'WATERFN');
+  if (out == null) return null;
+  out = cutAuxBlock(out, 'WASTEFN');
+  return out;
+}
+
+/** 最简边界版：只留**本层头衔线**，连填色的 4 条射线也砍掉
+ *  —— 万一 border 档还链不上，至少地区 / 省份边界要能看见 ✓ */
+function makeTitleOnlyFragment(src) {
+  let out = makeBorderOnlyFragment(src);
+  if (out == null) return null;
+  out = cutAuxBlock(out, 'PAINTRAY');
+  if (out == null) return null;
+  out = cutAuxBlock(out, 'PAINTFN');
+  return out;
 }
 
 /** 上下文是不是**被浏览器收走了**（驱动重置 / 切后台 / 显存紧张 ✓）
@@ -1677,6 +1763,8 @@ export class MapRenderer {
     let linkMs = _r.linkMs;
     let linkLog = _r.info;
     this.liteShader = false;
+    this.shaderTier = 'full';
+    this.liteWhy = '';
     if (!_r.prog) {
       /* ⚠ **先问上下文再说着色器** ✗ —— 上下文被收走时 LINK_STATUS 也是 false ✓
        *   这种"失败"等上下文回来重来一次就好了，报成链接失败会把人带偏 ✓ */
@@ -1690,22 +1778,38 @@ export class MapRenderer {
           { stageAt: 'link', log: linkLog, glError: ge0, linkMs });
       }
       if (ge0 !== 0x0505) {
-        /* 🔴 **完整版不行 → 立刻试精简版** ✓（这一句就是今天 VIC3 那台的解药）
-         *  ⚠ 只有"像个真着色器问题"时才试 ✗（显存不足再试一次只是白等 92 秒 ✓）*/
-        const _liteSrc = makeLiteFragment(FRAG);
-        if (_liteSrc) {
-          const lr = _linkTry(_liteSrc);
+        /* 🔴 **完整版不行 → 逐档减负，不要一步退到"没有边界"** ✗✗（2026-10-27）
+         *
+         *   Adreno 613 + vivo 浏览器：完整版链接失败（报告里就是这么写的 ✓）
+         *   旧代码只试「精简版」→ 边界线整块没了 → 用户怎么调开关都看不见地区边界 ✓
+         *   现在按画质从高到低试：
+         *     ① mid    —— 保留本层 + 填色 + 多级链，只砍水域 / 荒地两条独立通道
+         *     ② border —— 再砍多级链，保留本层头衔 + 填色（地区线就在这条）
+         *     ③ lite   —— 最后保底，没有边界线
+         *   ⚠ 只有"像个真着色器问题"时才试 ✗（显存不足再试只是白等 92 秒 ✓）
+         */
+        const _why = linkLog || '（驱动没给日志）';
+        const _variants = [
+          ['mid', makeMidFragment(FRAG), '中等着色器（保留本层 + 多级边界）'],
+          ['border', makeBorderOnlyFragment(FRAG), '边界着色器（仅本层头衔/填色）'],
+          ['title', makeTitleOnlyFragment(FRAG), '最简边界（仅本层头衔）'],
+          ['lite', makeLiteFragment(FRAG), '精简着色器（无边界线）'],
+        ];
+        for (const [tier, src, label] of _variants) {
+          if (!src) continue;
+          const lr = _linkTry(src);
           if (lr.prog) {
             _r = lr;
-            this.liteShader = true;
-            this.liteWhy = linkLog || '（驱动没给日志）';
+            this.shaderTier = tier;
+            this.liteShader = (tier === 'lite');
+            this.liteWhy = _why;
             this.liteLinkMs = lr.linkMs;
             linkMs = lr.linkMs;
             linkLog = '';
             try {
-              console.warn('[gl] 完整着色器链接失败，已退到精简版（少了边界线）：'
-                + (this.liteWhy || '无日志'));
+              console.warn('[gl] 完整着色器链接失败，已退到' + label + '：' + _why);
             } catch (e) { /* ✓ */ }
+            break;
           }
         }
       }
@@ -1716,7 +1820,7 @@ export class MapRenderer {
         _setupFail('shader-link',
           linkLog ? '着色器链接失败：' + linkLog : '着色器链接失败（驱动没给日志）', gl,
           { stageAt: 'link', log: linkLog, glError: ge0, linkMs,
-            liteTried: !!makeLiteFragment(FRAG),
+            liteTried: !!makeMidFragment(FRAG),
             liteLog: (this.liteWhy || ''), softwareGL: this.softwareGL });
       }
     }

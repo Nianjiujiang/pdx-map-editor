@@ -683,6 +683,469 @@ function findTestPack() {
     if (box) box.hidden = true;
   }
 
+  /* 2026-10-27：导出整图合并成「规格 + 范围 + 进度」✓ */
+  {
+    const raw = fs.readFileSync(HTML, 'utf8');
+    const need = [
+      ['只有一个「导出整图」', /id="btn-png-full">导出整图</],
+      ['没有旧的「导出高清地图」', /^(?![\s\S]*btn-png-full2)/],
+      ['四档倍率', /data-scale="0\.5"[\s\S]*data-scale="1"[\s\S]*data-scale="2"[\s\S]*data-scale="3"/],
+      ['倍率 / 分辨率分开', /export-label">倍率[\s\S]*export-size-label">分辨率/],
+      ['范围只有全图 / 框选', /data-range="full"[^>]*>全图[\s\S]*data-range="part"[^>]*>框选/],
+      ['没有多余的「在图上框选」', /^(?![\s\S]*id="export-pick")/],
+      ['没有多余的「默认整张地图」', /^(?![\s\S]*id="export-rect")/],
+      ['没有倍率提示行', /^(?![\s\S]*点上面的倍率快速选)/],
+      ['框选三键：取消 / 重选 / 确定', /id="export-pick-cancel"[^>]*>取消[\s\S]*id="export-pick-redo"[^>]*>重选[\s\S]*id="export-pick-ok"[^>]*>确定/],
+      ['框选三键加大', /\.export-pick-bar \.btn\s*\{[^}]*height:\s*40px[^}]*font-size:\s*13px/],
+      ['宽 / 高可以直接填', /id="export-w"[\s\S]*id="export-h"/],
+      ['进度条', /id="export-prog-bar"/],
+      ['停止按钮', /id="export-stop"/],
+    ];
+    const miss = need.filter(([, re]) => !re.test(raw)).map(([n]) => n);
+    ok('导出整图弹窗的规格 / 范围 / 进度都打进产物了 ✓', miss.length === 0,
+       miss.length ? '缺：' + miss.join(' / ') : '四档 · 两种范围 · 进度 · 停止');
+  }
+
+  {
+    ex.openExportDialog();
+    const modal = env.get('export-map');
+    const m = ex._exportMetrics ? ex._exportMetrics() : null;
+    ok('「导出整图」弹窗能打开，默认 1× 整张',
+       !!modal && modal.hidden === false
+       && env.get('export-form').hidden === false
+       && !!m && m.scale === 1 && m.part === false && !m.why,
+       m ? `默认 ${m.OW}×${m.OH} · ${m.needMB} MB` : '没有 metrics');
+    if (!modal) return;
+    /* 2026-10-27：默认 1× 整图把分块放宽到一整块（5632 宽的 EU4 少切一刀 ✓） */
+    {
+      const t1 = ex._exportTileSize ? ex._exportTileSize(1, { w: 5632, h: 2048 }) : 0;
+      const t2 = ex._exportTileSize ? ex._exportTileSize(2, { w: 5632, h: 2048 }) : 0;
+      ok('默认 1× 整图只切一块（2× 仍按安全分块 ✓）',
+         t1 === 5632 && t2 === 2048,
+         t1 ? `1× ${t1}px/块 · 2× ${t2}px/块` : '没有 tile size');
+    }
+    if (ex.exportFontPx) {
+      ok('导出只收 >15px 的字，并且字号按整像素画 ✓',
+         ex.exportFontPx(15) === 0 && ex.exportFontPx(15.1) === 16
+         && ex.exportFontPx(20.2) === 21,
+         `15→${ex.exportFontPx(15)} · 15.1→${ex.exportFontPx(15.1)} · 20.2→${ex.exportFontPx(20.2)}`);
+    }
+    /* 桩不解析 #export-map 的子树 ✗ 按钮点不到 —— 直接验状态机本身 ✓
+       （HTML 里四档按钮 / 两种范围另有静态断言 ✓） */
+    ex._exportDlg.scale = 3;
+    ex._exportDlg.range = 'full';
+    ex._exportDlg.rect = null;
+    ex._exportRefresh();
+    const m3 = ex._exportMetrics ? ex._exportMetrics() : null;
+    ok('桌面 3× 整张不会被误拦（手机预算另算 ✓）',
+       !!m3 && m3.scale === 3 && m3.OW === 16896 && m3.OH === 6144 && !m3.why,
+       m3 ? `${m3.OW}×${m3.OH} · ${m3.needMB} MB / ${m3.capMB} MB` : '没有 metrics');
+    ex._exportDlg.scale = 2;
+    ex._exportDlg.rect = { x: 100, y: 80, w: 1000, h: 500 };
+    ex._exportDlg.range = 'part';
+    ex._exportRefresh();
+    const m2 = ex._exportMetrics ? ex._exportMetrics() : null;
+    ok('2× + 框选后输出尺寸真的按倍率 / 矩形算（不是只换样式）',
+       !!m2 && m2.scale === 2 && m2.OW === 2000 && m2.OH === 1000
+       && /预计 \d+ MB 内存/.test(env.get('export-info').textContent || '')
+       && !/输出|(?:^|\D)2×/.test(env.get('export-info').textContent || ''),
+       m2 ? `${m2.OW}×${m2.OH} · ${env.get('export-info').textContent}` : '没有 metrics');
+    /* 2026-10-27：宽 / 高可以直接填，另一边按比例自动跟 ✓ */
+    ex._exportDlg.range = 'full';
+    ex._exportDlg.rect = null;
+    ex._exportDlg.scale = 1;
+    ex._exportDlg.sizeBad = false;
+    ex._exportSizeInput('w', '8000');
+    const mw = ex._exportMetrics ? ex._exportMetrics() : null;
+    ok('宽/高能直接填：写宽 8000，高按地图比例自动算 ✓',
+       !!mw && mw.OW === 8000 && mw.OH === 2909
+       && env.get('export-w').value === '8000'
+       && env.get('export-h').value === '2909'
+       && /预计 \d+ MB 内存/.test(env.get('export-info').textContent || '')
+       && !/8000 × 2909|输出/.test(env.get('export-info').textContent || ''),
+       mw ? `${mw.OW}×${mw.OH} · ${mw.scale} · ${env.get('export-info').textContent}` : '没有 metrics');
+    ex._exportSizeInput('w', '999999');
+    const mBad = ex._exportMetrics ? ex._exportMetrics() : null;
+    ok('填得离谱会当场拦住（倍率超过 8×，导出键变灰 ✓）',
+       !!mBad && !!mBad.why && ex._exportDlg.sizeBad === true
+       && env.get('export-start').disabled === true,
+       mBad ? mBad.why : '没有 metrics');
+    ex._exportSizeCommit();
+    ex._exportSizeInput('h', '3000');
+    const mh = ex._exportMetrics ? ex._exportMetrics() : null;
+    ok('改高也行：写高 3000，宽自动跟 ✓',
+       !!mh && mh.OH === 3000 && mh.OW === 8250
+       && env.get('export-w').value === '8250',
+       mh ? `${mh.OW}×${mh.OH}` : '没有 metrics');
+    ex._exportDlg.scale = 1;
+    ex._exportDlg.sizeBad = false;
+    ex._exportRefresh();
+    ex._exportPickStart();
+    ok('「框选一部分」会直接进框选层（弹窗先让开）',
+       env.get('export-pick-layer').hidden === false && modal.hidden === true);
+    const handles = (html.match(/data-handle="(?:nw|n|ne|e|se|s|sw|w)"/g) || []).length;
+    ok('框选层有八个把手（四角 + 四边，能像绘图软件那样调 ✓）',
+       handles === 8, `${handles} 个`);
+    const nr = ex._exportPickNorm({ x: 100, y: 100 }, { x: 500, y: 400 });
+    ex._exportPickState.rect = nr;
+    ex._exportPickRender();
+    ok('框选会显示尺寸角标，确认键也能点 ✓',
+       env.get('export-pick-box').hidden === false
+       && env.get('export-pick-size').textContent === '400 × 300 px'
+       && env.get('export-pick-ok').disabled === false,
+       `${env.get('export-pick-size').textContent} · ok=${!env.get('export-pick-ok').disabled}`);
+    const rr = ex._exportPickResizeRect(
+      { x: 100, y: 100, w: 400, h: 300 }, 'nw',
+      { x: 150, y: 120 }, { w: 10, h: 10 });
+    ok('拖左上把手会改 x / y / 宽 / 高（不是只重画边框 ✓）',
+       !!rr && rr.x === 150 && rr.y === 120 && rr.w === 350 && rr.h === 280,
+       rr ? `${rr.x},${rr.y} · ${rr.w}×${rr.h}` : '没有返回');
+    ex._exportPickConfirm();
+    ok('确认框选后回到弹窗，并把范围写回导出参数 ✓',
+       modal.hidden === false && env.get('export-pick-layer').hidden === true
+       && !!ex._exportDlg.rect && ex._exportDlg.rect.x === 100
+       && ex._exportDlg.rect.w === 400 && ex._exportDlg.rect.h === 300
+       && ex._exportDlg.range === 'part',
+       ex._exportDlg.rect ? JSON.stringify(ex._exportDlg.rect) : '没有 rect');
+    /* 收尾：别把 picking / 框选状态留给后面的断言 ✓ */
+    ex._exportDlg.picking = false;
+    ex._exportDlg.rect = null;
+    ex._exportDlg.range = 'full';
+    ex._exportDlg.scale = 1;
+    env.get('export-pick-layer').hidden = true;
+    modal.hidden = true;
+  }
+
+  /* 真跑一次**小范围导出**：不验像素，只验这条链能从分块渲染走到 PNG / 下载 ✓
+     （桩没有 toBlob 之前这里会静默走失败分支；有假 Blob 才跑得完 ✓） */
+  {
+    const before = env.savedBlob;
+    const seen = [];
+    const res = await ex.exportFullPNG(0.5, {
+      rect: { x: 0, y: 0, w: 80, h: 60 },
+      onProgress: (p) => seen.push(p),
+    });
+    ok('整图导出链路跑得通（分块 → PNG → 下载，不中途抛错）',
+       !!res && res.ok === true && env.savedBlob !== before,
+       res ? `输出 ${res.OW}×${res.OH} · ${env.savedBlob ? '已有 Blob' : '没有 Blob'}` : '没有返回');
+    ok('导出进度真的从 0 走到 100（不是只换文案）',
+       seen.length >= 4 && seen[seen.length - 1] === 100
+       && seen.every((v, i) => i === 0 || v >= seen[i - 1]),
+       seen.join(' → '));
+    const rc = await ex.exportFullPNG(0.5, {
+      rect: { x: 0, y: 0, w: 80, h: 60 },
+      shouldCancel: () => true,
+    });
+    ok('停止导出会返回 canceled，并且不下载半张图',
+       !!rc && rc.canceled === true && rc.ok === false);
+    const r125 = await ex.exportFullPNG(1.25, {
+      rect: { x: 0, y: 0, w: 80, h: 60 },
+    });
+    ok('自定义倍率也能真的导出（不是只认四档 ✓）',
+       !!r125 && r125.ok === true && r125.OW === 100 && r125.OH === 75,
+       r125 ? `${r125.OW}×${r125.OH}` : '没有返回');
+    /* 3× 整图直接过一遍名字绘制：记录每一条真正下笔的字号，确认没有 3px 蚂蚁字 ✓
+       （走 `paintLabelsForExport`，跟导出时同一条路径 ✓） */
+    let sizes = [];
+    let liveFlags = [];
+    let oldDraw = null;
+    let ctx = null;
+    const prevTier = ex.state.tier;
+    const prevTitle = ex.state.showLabelsTitle;
+    const prevPaint = ex.state.showLabelsPaint;
+    try {
+      ex.state.showLabelsTitle = true;
+      ex.state.showLabelsPaint = true;
+      ex.setTier(0);
+      ex.rebuildPaintBlocks(true);
+      ctx = env.sandbox.document.createElement('canvas').getContext('2d');
+      oldDraw = ex.labels && ex.labels._drawGlyphRun;
+      if (oldDraw) {
+        ex.labels._drawGlyphRun = function (o) {
+          if (o && Number.isFinite(o.size)) sizes.push(o.size);
+          if (o) liveFlags.push(!!o.exportText);
+          return oldDraw.call(this, o);
+        };
+      }
+      const oldFill = ctx && ctx.fillText;
+      if (oldFill) {
+        ctx.fillText = function (...args) {
+          const m = /([\d.]+)px/.exec(this.font || '');
+          if (m) sizes.push(Number(m[1]));
+          return oldFill.apply(this, args);
+        };
+      }
+      const n3 = ex.paintLabelsForExport(ctx, 3) | 0;
+      ok('3× 整图里下笔的名字都大于 15px（统一输出门槛 ✓）',
+         n3 > 0 && sizes.length > 0 && sizes.every((v) => v > 15),
+         sizes.length ? `min=${Math.min(...sizes)} · ${sizes.length} 个` : `画了 ${n3} 个但没记录到字号`);
+      ok('3× 整图里的名字走实时矢量绘制（高倍不糊 ✓）',
+         liveFlags.length > 0 && liveFlags.every(Boolean),
+         liveFlags.length ? `${liveFlags.length} 个全走矢量 ✓` : '没记录到绘制路径');
+    } catch (e) {
+      ok('3× 整图里下笔的名字都大于 15px（统一输出门槛 ✓）', false,
+         String(e && (e.message || e)));
+    } finally {
+      if (ex.labels && oldDraw) ex.labels._drawGlyphRun = oldDraw;
+      ex.state.showLabelsTitle = prevTitle;
+      ex.state.showLabelsPaint = prevPaint;
+      ex.setTier(prevTier);
+      ex.rebuildPaintBlocks(!!ex.state._blocksAll);
+    }
+  }
+
+  /* ---- 图例：预览 / 排版 / 导出共用一套 ---- */
+  {
+    const st = ex.state;
+    const stageEl = env.get('stage');
+    const oldW = stageEl.clientWidth;
+    const oldH = stageEl.clientHeight;
+    const oldBlocks = st.paintBlocks;
+    const oldPaint = ex.renderer && ex.renderer.paintData;
+    const oldOn = st.legendOn;
+    const oldNames = st.legendNames;
+    const oldOrder = st.legendOrder;
+    const oldSet = {
+      legend: st.set.legend, title: st.set.legendTitle, titleOnly: st.set.legendTitleOnly,
+      pos: st.set.legendPos, size: st.set.legendSize, font: st.set.legendFont,
+      cols: st.set.legendCols, bg: st.set.legendBg, alpha: st.set.legendBgAlpha,
+      border: st.set.legendBorder, fg: st.set.legendFg, fgAuto: st.set.legendFgAuto,
+      box: st.set.legendBox,
+    };
+    try {
+      stageEl.clientWidth = 1000;
+      stageEl.clientHeight = 600;
+      st.set.legend = true;
+      st.set.legendTitle = '测试图例';
+      st.set.legendTitleOnly = true;
+      st.set.legendPos = 'br';
+      st.set.legendSize = 'm';
+      st.set.legendFont = 'sans';
+      st.set.legendCols = 2;
+      st.set.legendBg = '#ffffff';
+      st.set.legendBgAlpha = 90;
+      st.set.legendBorder = '#000000';
+      st.set.legendFg = '#111111';
+      st.set.legendFgAuto = false;
+      st.set.legendBox = 'square';
+      st.paintBlocks = [];
+      st.legendOn = {};
+      st.legendNames = {};
+      st.legendOrder = [];
+      ex.renderLegendOverlay();
+      const ov = env.get('legend-overlay');
+      const cv = env.get('legend-canvas');
+      ok('图例预览会出现在地图上，并且外层真的拿到了宽高 ✓',
+         ov.hidden === false && cv.width > 0 && cv.height > 0
+         && parseFloat(ov.style.width) > 0 && parseFloat(ov.style.height) > 0,
+         `hidden=${ov.hidden} · ${ov.style.width}×${ov.style.height} · canvas ${cv.width}×${cv.height}`);
+      ok('图例选右下角时会贴到舞台右下（不是永远钉在左上 ✓）',
+         parseFloat(ov.style.left) > 500 && parseFloat(ov.style.top) > 300,
+         `left=${ov.style.left} · top=${ov.style.top}`);
+
+      /* 预览和导出必须用同一组四角坐标 —— 不然设置里看着在右下，导出来跑左上 ✗ */
+      const Lbr = ex.legendLayout(H.ctx2d(), 1000, 600, {
+        show: true, title: '测试图例', titleOnly: true, pos: 'br', size: 'm', scale: 1,
+        font: 'sans', cols: 2, bg: '#ffffff', bgAlpha: 90, border: '#000000',
+        fg: '#111111', fgAuto: false, box: 'square', x: 0.04, y: 0.04,
+      });
+      ok('预览和导出用同一组四角坐标（不是各算一套）',
+         !!Lbr && Math.abs(parseFloat(ov.style.left) - Lbr.x) <= 1
+         && Math.abs(parseFloat(ov.style.top) - Lbr.y) <= 1,
+         Lbr ? `预览 ${ov.style.left}/${ov.style.top} · 导出 ${Lbr.x}/${Lbr.y}` : '没有排版');
+
+      /* 5 个色块、2 列：应排成 3 行；标题单列时不排条目 */
+      ex.renderer.paintData = null;
+      st.paintBlocks = [1, 2, 3, 4, 5].map((i) => ({
+        name: '色块' + i, rgb: [i * 30, 100, 200 - i * 20], area: i * 100, pids: [i], tid: i,
+      }));
+      st.legendTitle = '图例';
+      st.legendTitleOnly = false;
+      st.set.legendTitleOnly = false;
+      const opts = {
+        show: true, title: '图例', titleOnly: false, pos: 'tl', size: 'm', scale: 1,
+        font: 'sans', cols: 2, bg: '#ffffff', bgAlpha: 90, border: '#000000',
+        fg: '#111111', fgAuto: false, box: 'square', x: 0.04, y: 0.04,
+      };
+      const c2 = H.ctx2d();
+      const L = ex.legendLayout(c2, 1000, 600, opts);
+      ok('图例按列数排（5 个条目 2 列 → 3 行 ✓）',
+         !!L && L.cols === 2 && L.rows === 3 && L.count === 5,
+         L ? `${L.cols} 列 · ${L.rows} 行 · count=${L.count}` : '没有排版');
+      const n = ex.drawLegend(c2, 1000, 600);
+      ok('图例绘制真的画了 5 条（不是只排了个空框 ✓）', n === 5, `画了 ${n} 条`);
+      const blocks9 = Array.from({ length: 9 }, (_, i) => ({
+        name: '色块' + (i + 1), rgb: [i * 20, 60 + i * 10, 190 - i * 10], area: 900 - i, pids: [i + 1], tid: i + 1,
+      }));
+      const savedBlocks = st.paintBlocks;
+      st.paintBlocks = blocks9;
+      const L8 = ex.legendLayout(c2, 1000, 600, Object.assign({}, opts, { cols: 8 }));
+      st.paintBlocks = savedBlocks;
+      ok('列数上限是 8（9 个条目选 8 列 → 8 列 2 行，不会被悄悄截成 6 ✓）',
+         !!L8 && L8.cols === 8 && L8.rows === 2,
+         L8 ? `${L8.cols} 列 · ${L8.rows} 行` : '没有排版');
+      st.legendTitleOnly = true;
+      const Lt = ex.legendLayout(c2, 1000, 600, Object.assign({}, opts, { titleOnly: true }));
+      ok('「只显示标题」时不再排条目，但标题还在 ✓',
+         !!Lt && Lt.grid.length === 0 && Lt.count === 1 && Lt.boxH > 0,
+         Lt ? `grid=${Lt.grid.length} · count=${Lt.count}` : '没有排版');
+
+      /* ---- 窄屏列数：390px 选 8 列不许把后几列画到框外 ---- */
+      st.paintBlocks = Array.from({ length: 9 }, (_, i) => ({
+        name: '很长很长的图例条目名字' + (i + 1), rgb: [i * 20, 60 + i, 190 - i * 10],
+        area: 900 - i, pids: [i + 1], tid: i + 1,
+      }));
+      st.set.legendTitleOnly = false;
+      const L390 = ex.legendLayout(c2, 390, 600, Object.assign({}, opts, { cols: 8 }));
+      let rightMost = 0;
+      if (L390) {
+        for (let r = 0; r < L390.grid.length; r++) {
+          for (let c = 0; c < L390.grid[r].length; c++) {
+            const cell = L390.grid[r][c];
+            if (!cell) continue;
+            let tw = 0;
+            for (const ln of cell.lines) tw = Math.max(tw, c2.measureText(ln).width);
+            const shapeW = opts.box === 'rect' ? Math.round(L390.sw * 1.4) : L390.sw;
+            rightMost = Math.max(rightMost, L390.pad + L390.colOffsets[c] + shapeW + L390.gap + tw);
+          }
+        }
+      }
+      ok('390px 宽选 8 列会自动收列，最后一列不出框',
+         !!L390 && L390.cols >= 1 && L390.cols < 8
+         && L390.boxW <= 390 - 2 * L390.M + 0.5
+         && rightMost <= L390.boxW - L390.pad + 0.5,
+         L390 ? `${L390.cols} 列 · boxW=${L390.boxW} · 最右=${Math.round(rightMost)}` : '没有排版');
+
+      /* ---- 读数 / 联动：改了要看得见，不生效的要置灰 ---- */
+      st.set.legendBg = '#123456';
+      st.set.legendBgAlpha = 35;
+      st.set.legendBorder = '#abcdef';
+      st.set.legendFg = '#fedcba';
+      ex.syncLegendControls(st.set);
+      ok('图例三种颜色都有 HEX 读数（不再是盲盒）',
+         env.get('v-set-legend-bg').textContent === '#123456'
+         && env.get('v-set-legend-border').textContent === '#ABCDEF'
+         && env.get('v-set-legend-fg').textContent === '#FEDCBA',
+         `${env.get('v-set-legend-bg').textContent} / ${env.get('v-set-legend-border').textContent} / ${env.get('v-set-legend-fg').textContent}`);
+      ok('背景透明度有百分比读数', env.get('v-set-legend-alpha').textContent === '35%',
+         env.get('v-set-legend-alpha').textContent);
+      st.set.legendTitleOnly = true;
+      st.set.legendFgAuto = true;
+      ex.syncLegendControls(st.set);
+      ok('「只显示标题」时条目列表置灰、排序按钮禁用',
+         env.get('legend-list').classList.contains('is-off') && env.get('legend-sort').disabled === true,
+         `is-off=${env.get('legend-list').classList.contains('is-off')} · disabled=${env.get('legend-sort').disabled}`);
+      ok('「同色块」时字色选择器禁用（改了也不生效）',
+         env.get('set-legend-fg').disabled === true,
+         `disabled=${env.get('set-legend-fg').disabled}`);
+      st.set.legendTitleOnly = false;
+      st.set.legendFgAuto = false;
+
+      /* ---- 空状态 / 可访问名称 ---- */
+      st.paintBlocks = [];
+      st.set.legend = true;
+      st.set.legendTitle = '';
+      ex.rebuildLegendPanel();
+      const listEl = env.get('legend-list');
+      ok('没有条目时只写「还没有条目」，不再附赠一长串解释',
+         listEl.style.display !== 'none' && /还没有条目/.test(listEl.innerHTML)
+         && !/按颜色自动分组/.test(listEl.innerHTML),
+         `display=${listEl.style.display} · ${String(listEl.innerHTML).slice(0, 36)}`);
+      /* 三种颜色必须是同一套卡片：同样的 class、同样的色块 + HEX 结构
+         ⚠ 别拿假 DOM 的 `#legend-colors.querySelectorAll()` 数：这个桩对
+         某些嵌套 div 的 class 查询会漏（真浏览器没这毛病）✗ —— 直接查烤好的
+         HTML 更硬，还能防止构建时把卡片烤丢 ✓ */
+      const rawHtml = fs.readFileSync(HTML, 'utf8');
+      const cardCount = (rawHtml.match(/class="legend-color-card"/g) || []).length;
+      const swatchCount = (rawHtml.match(/class="legend-swatch"/g) || []).length;
+      const hexCount = (rawHtml.match(/class="legend-hex"/g) || []).length;
+      ok('背景 / 边框 / 字色是同一套三张颜色卡（不再三种排版）',
+         cardCount === 3 && swatchCount === 3 && hexCount === 3,
+         `${cardCount} 张卡 · ${swatchCount} 个色块 · ${hexCount} 个 HEX`);
+      const fontSel = env.get('set-legend-font');
+      const fontVals = Array.from(fontSel.options || fontSel.querySelectorAll('option'))
+        .map((o) => o.value);
+      ok('图例字体下拉只留默认 + 导入字体，不再写死宋/楷/等宽',
+         fontVals.length === 1 && fontVals[0] === '',
+         fontVals.join(' / ') || '（空）');
+      /* 字体库里有东西时，下拉必须真的列出来、而且选完能进 legendOpts ✓ */
+      const oldLegendFont = st.set.legendFont;
+      await ex.refreshLegendFonts([{ id: 4242, name: '测试字体', kind: 'ttf' }]);
+      const importedVals = Array.from(fontSel.options || fontSel.querySelectorAll('option'))
+        .map((o) => o.value);
+      st.set.legendFont = 'PDX-Font-4242';
+      const importedOpts = ex.legendOpts();
+      ok('导入的字体真的进了图例下拉，并成为 canvas 字体族',
+         importedVals.includes('PDX-Font-4242')
+         && /PDX-Font-4242/.test(importedOpts.fontCss || ''),
+         importedVals.join(' / '));
+      st.set.legendFont = oldLegendFont;
+      await ex.refreshLegendFonts([]);
+      st.paintBlocks = [
+        { name: '甲族', rgb: [10, 20, 30], area: 100, pids: [1], tid: 1 },
+        { name: '乙族', rgb: [40, 50, 60], area: 90, pids: [2], tid: 2 },
+      ];
+      ex.rebuildLegendPanel();
+      const firstRow = listEl.querySelector('.legend-row');
+      const firstCb = firstRow && firstRow.querySelector('.legend-on');
+      ok('条目勾选框带上了具体名字（读屏不会只念“复选框”）',
+         !!firstCb && /甲族/.test(firstCb.getAttribute('aria-label') || ''),
+         firstCb ? firstCb.getAttribute('aria-label') : '没有勾选框');
+      const resetBtn = env.get('legend-reset-names');
+      ok('没有自定义名时「恢复自动名」是禁用的',
+         resetBtn.disabled === true, `disabled=${resetBtn.disabled}`);
+      const nameEl = firstRow && firstRow.querySelector('.legend-name');
+      if (nameEl) {
+        nameEl.value = '甲族自定义';
+        nameEl.dispatchEvent({ type: 'input' });
+      }
+      ok('改出第一个自定义名后，「恢复自动名」立刻可用（不用重开面板）',
+         resetBtn.disabled === false, `disabled=${resetBtn.disabled}`);
+      delete st.legendNames['10,20,30'];
+      ex.rebuildLegendPanel();
+
+      st.legendOn = { '10,20,30': false, '40,50,60': false };
+      ex.rebuildLegendPanel();
+      ok('条目全关掉时，说明会直说地图上什么都不显示',
+         /全关掉了/.test(env.get('legend-count').textContent),
+         env.get('legend-count').textContent);
+
+      /* 图例关着时外层 hidden，rect 是 0；这时选「自定义」不许把坐标清到左上角 */
+      st.set.legendX = 0.5;
+      st.set.legendY = 0.5;
+      ov.clientWidth = 0;
+      ov.clientHeight = 0;
+      ov.hidden = true;
+      ex._legendCustomFromBox();
+      ok('图例关着时选「自定义」不会把坐标重置到左上角',
+         st.set.legendX === 0.5 && st.set.legendY === 0.5,
+         `${st.set.legendX}, ${st.set.legendY}`);
+      ov.hidden = false;
+    } finally {
+      stageEl.clientWidth = oldW;
+      stageEl.clientHeight = oldH;
+      st.paintBlocks = oldBlocks;
+      if (ex.renderer) ex.renderer.paintData = oldPaint;
+      st.legendOn = oldOn;
+      st.legendNames = oldNames;
+      st.legendOrder = oldOrder;
+      st.set.legend = oldSet.legend;
+      st.set.legendTitle = oldSet.title;
+      st.set.legendTitleOnly = oldSet.titleOnly;
+      st.set.legendPos = oldSet.pos;
+      st.set.legendSize = oldSet.size;
+      st.set.legendFont = oldSet.font;
+      st.set.legendCols = oldSet.cols;
+      st.set.legendBg = oldSet.bg;
+      st.set.legendBgAlpha = oldSet.alpha;
+      st.set.legendBorder = oldSet.border;
+      st.set.legendFg = oldSet.fg;
+      st.set.legendFgAuto = oldSet.fgAuto;
+      st.set.legendBox = oldSet.box;
+      try { ex.renderLegendOverlay(); } catch (e) { /* 恢复失败不影响断言 */ }
+    }
+  }
+
   console.log('\n==========================================================');
   console.log(`通过 ${oks.length} 条，失败 ${fails.length} 条`);
   if (fails.length) {

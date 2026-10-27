@@ -600,7 +600,7 @@ html[data-theme="light"] .mob-set-foot .set-dirty { color: #5b6877; }
     border-radius: 24px; overflow: hidden; border: 1px solid #26313d;
     box-shadow: 0 30px 90px rgba(0, 0, 0, .75), 0 0 0 8px rgba(255, 255, 255, .02);
   }
-  #mob-sheet, #mob-backdrop, #mob-ui, #mob-intro, #rename, #save-map { position: absolute; }
+  #mob-sheet, #mob-backdrop, #mob-ui, #mob-intro, #rename, #save-map, #export-map { position: absolute; }
   #mob-backdrop { border-radius: 24px; }
   /* 🔴 **教程那三个也要收** ✗✗（2026-10-21 补）
    *   桌面 `style.css` 里 `#tutRing` / `#tutPing` / `#tutCard` 全是 `position: fixed` ✓
@@ -911,6 +911,86 @@ html[data-theme="light"] .mob-set-foot .set-dirty { color: #5b6877; }
 #save-map input, #save-map .rename-input { font-size: 15px !important; min-height: 40px !important; }
 #rename button, #save-map button { min-height: 38px !important; padding: 0 14px !important; font-size: 14px !important; }
 
+/* ===========================================================================
+   导出整图弹窗：手机上也用**居中卡片**，不铺满全屏
+   —— 规格 / 范围 / 进度就这么几行，铺满整屏反而像进了另一个页面 ✓
+   =========================================================================== */
+#export-map {
+  display: flex !important;
+  align-items: center !important; justify-content: center !important;
+  padding: 16px !important;
+}
+#export-map[hidden] { display: none !important; }
+#export-map .modal-box {
+  width: 100% !important; max-width: 410px !important;
+  height: auto !important; max-height: 88vh !important;
+  border-radius: 16px !important; border: 1px solid #2b3743 !important;
+  padding: 14px 16px 16px !important;
+  overflow-y: auto; scrollbar-width: none;
+}
+#export-map .modal-box::-webkit-scrollbar { width: 0; height: 0; display: none; }
+#export-map .modal-head { position: static !important; padding: 4px 0 8px !important; }
+#export-map .export-seg { height: 38px !important; }
+#export-map .export-size-label {
+  margin-top: 12px !important; margin-bottom: 0 !important;
+  font-size: 12px !important;
+}
+#export-map .export-size { gap: 7px !important; margin-top: 5px !important; }
+#export-map .export-size input {
+  width: 86px !important; height: 34px !important;
+  font-size: 13px !important;
+}
+#export-map .export-size-k, #export-map .export-size-x, #export-map .export-size-px {
+  font-size: 12px !important;
+}
+#export-map .export-foot button { min-height: 42px !important; padding: 0 18px !important; font-size: 14px !important; }
+
+/* 导出框选：手机上没有鼠标，把手得大到指尖按得住，底部按钮也要够高 */
+.export-pick-handle { width: 18px !important; height: 18px !important; border-radius: 4px !important; }
+.export-pick-handle.h-nw { left: -9px !important; top: -9px !important; }
+.export-pick-handle.h-n  { top: -9px !important; margin-left: -9px !important; }
+.export-pick-handle.h-ne { right: -9px !important; top: -9px !important; }
+.export-pick-handle.h-e  { right: -9px !important; margin-top: -9px !important; }
+.export-pick-handle.h-se { right: -9px !important; bottom: -9px !important; }
+.export-pick-handle.h-s  { bottom: -9px !important; margin-left: -9px !important; }
+.export-pick-handle.h-sw { left: -9px !important; bottom: -9px !important; }
+.export-pick-handle.h-w  { left: -9px !important; margin-top: -9px !important; }
+.export-pick-size { left: 8px !important; top: 8px !important; font-size: 11.5px !important; }
+.export-pick-tip { top: 10px !important; max-width: calc(100% - 20px) !important; font-size: 11.5px !important; }
+.export-pick-bar {
+  bottom: 12px !important; gap: 8px !important;
+  max-width: calc(100% - 16px) !important; padding: 8px !important;
+}
+.export-pick-bar .btn {
+  height: 46px !important; min-width: 82px !important;
+  padding: 0 18px !important; font-size: 14px !important;
+}
+
+
+/* 地图上的图例：手机上把手要按得住，别只有 18px ✓ */
+#legend-overlay { touch-action: none !important; -webkit-tap-highlight-color: transparent; }
+#legend-resize {
+  width: 30px !important; height: 30px !important;
+  right: -8px !important; bottom: -8px !important;
+  opacity: .9 !important;
+}
+#mob-sheet #set-legend-title { max-width: none !important; flex: 1 1 auto !important; }
+#mob-sheet .legend-tools { margin: 4px 0 6px !important; }
+#mob-sheet .legend-tools .btn { height: 30px !important; padding: 0 10px !important; font-size: 12px !important; }
+/* 图例二次精简：版式小格 + 三张同规格色卡（2026-10-27）
+   手机上只放触摸尺寸，结构跟桌面完全一致 ✓ */
+#mob-sheet .legend-grid { gap: 8px !important; }
+#mob-sheet .legend-cell select { height: 32px !important; font-size: 12.5px !important; }
+#mob-sheet .legend-color-card {
+  grid-template-columns: 34px minmax(0, 1fr) !important;
+  grid-template-rows: auto 30px !important;
+  padding: 7px 8px !important; gap: 4px 7px !important;
+}
+#mob-sheet .legend-swatch { width: 34px !important; height: 30px !important; }
+#mob-sheet .legend-hex { font-size: 10px !important; }
+#mob-sheet .legend-alpha-row { margin-top: 6px !important; }
+#mob-sheet .legend-alpha-row input[type=range] { max-width: none !important; height: 24px !important; }
+#mob-sheet .legend-count { font-size: 10.5px !important; }
 
 /* ===========================================================================
    图例条目在窄面板里也要排得下（现在一行是：勾选 + 色块 + 名字 + ↑↓）
@@ -957,10 +1037,14 @@ html[data-theme="light"] .mob-set-foot .set-dirty { color: #5b6877; }
 #mob-sheet .legend-row .legend-move { gap: 1px !important; }
 #mob-sheet .legend-row .legend-up,
 #mob-sheet .legend-row .legend-down {
-  width: 17px !important; height: 12px !important; font-size: 8px !important;
+  width: 24px !important; height: 18px !important; font-size: 10px !important;
 }
-#mob-sheet .legend-row .legend-drag { width: 16px !important; font-size: 12px !important; min-height: 20px !important; }
+#mob-sheet .legend-row .legend-drag { width: 22px !important; font-size: 13px !important; min-height: 22px !important; }
 #mob-sheet .legend-list { max-height: 190px; }
+/* 320~360 这类窄屏：背景那行少一个 HEX 读数，别把滑条挤出屏幕 ✓ */
+@media (max-width: 380px) {
+  #mob-sheet .legend-bg-v { display: none !important; }
+}
 
 /* ===========================================================================
    ② 「更高」按钮：把设置面板拔到 88vh，图例列表跟着放开 → 一次能看更多条
@@ -1418,7 +1502,8 @@ html[data-theme="light"] .mob-group .segmented button.grain:not(.on) {
 #mob-sheet input[type="number"],
 #mob-sheet input[type="search"],
 #mob-sheet select {
-  background: rgba(255, 255, 255, .09);
+  /* 只改颜色，别用 background 简写 —— 会把桌面版刚补的下拉箭头图清掉 ✗ */
+  background-color: rgba(255, 255, 255, .09);
   border-color: rgba(255, 255, 255, .16);
 }
 
@@ -1431,7 +1516,8 @@ html[data-theme="light"] .mob-group .segmented button.grain:not(.on) {
  *   → 一个元素只用一个选择器表达 ✓ 别为了"看起来更明确"多列一遍 ✓ */
 #mob-intro .modal-box,
 #rename .modal-box,
-#save-map .modal-box {
+#save-map .modal-box,
+#export-map .modal-box {
   background:
     linear-gradient(160deg, rgba(255, 255, 255, .08), transparent 42%),
     rgba(13, 19, 26, .86);
@@ -1559,7 +1645,8 @@ html[data-theme="light"] #mob-sheet input[type="text"],
 html[data-theme="light"] #mob-sheet input[type="number"],
 html[data-theme="light"] #mob-sheet input[type="search"],
 html[data-theme="light"] #mob-sheet select {
-  background: rgba(255, 255, 255, .92);
+  /* 同上：简写会清掉下拉箭头 ✓ */
+  background-color: rgba(255, 255, 255, .92);
   border-color: rgba(24, 36, 50, .18);
 }
 html[data-theme="light"] #mob-backdrop { background: rgba(24, 36, 50, .22); }
@@ -1648,7 +1735,8 @@ html[data-theme="light"] #mob-now {
 html[data-theme="light"] #app { border-color: rgba(24, 36, 50, .16); }
 html[data-theme="light"] #mob-intro .modal-box { border-color: rgba(24, 36, 50, .16) !important; }
 html[data-theme="light"] #rename .modal-box,
-html[data-theme="light"] #save-map .modal-box { border-color: rgba(24, 36, 50, .16) !important; }
+html[data-theme="light"] #save-map .modal-box,
+html[data-theme="light"] #export-map .modal-box { border-color: rgba(24, 36, 50, .16) !important; }
 
 /* ---- ⑥ 滚动条：白天那根深色条在浅底上像一道黑缝 ---- */
 html[data-theme="light"] *::-webkit-scrollbar-thumb { background: #b7c3cf; }
@@ -1792,7 +1880,8 @@ html[data-theme="light"] #mob-intro .modal-head {
  *   → 手机版这里**什么都不写** ✓ 底由上面那条 `.modal-box` 管 ✓
  */
 html[data-theme="light"] #rename .modal-box,
-html[data-theme="light"] #save-map .modal-box {
+html[data-theme="light"] #save-map .modal-box,
+html[data-theme="light"] #export-map .modal-box {
   background:
     linear-gradient(160deg, rgba(255, 255, 255, .85), transparent 42%),
     rgba(250, 252, 254, .90);

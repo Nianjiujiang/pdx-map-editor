@@ -18,6 +18,28 @@ import { importPack, listPacks, getPack, removePack, exportPackBytes, packStoreM
 
 const $ = (id) => document.getElementById(id);
 
+/* 位图字体解码缓存：地名 / 势力名 / 图例共用，别为同一套 .dds 反复解几十 MB ✓
+ * （2026-10-27：图例也要用导入字体，缓存从 bindFontPicker 的闭包里搬出来）*/
+const _bmFontCache = new Map();
+async function _loadBmFont(id) {
+  if (_bmFontCache.has(id)) return _bmFontCache.get(id);
+  const rec = await fontLibRecord(id);
+  let bf = null;
+  if (rec && rec.kind === 'bitmap' && rec.fnt) {
+    try {
+      bf = Array.isArray(rec.pages) && rec.pages.length
+        ? new BitmapFont(rec.pages)
+        : new BitmapFont(rec.fnt, rec.bytes);
+      if (!bf.ok) bf = null;
+    } catch (e) {
+      bf = null;
+      LOG.event('位图字体解析失败', ((e && e.message) || String(e)));
+    }
+  }
+  _bmFontCache.set(id, bf);
+  return bf;
+}
+
 /*
  * 水域 / 荒地 = **普通地块** ✓（2026-10-14 定案 ✓）
  *   原来的"紧急回滚开关"和它旁路的那套专属边界、专属颜色、专属高亮
@@ -322,8 +344,12 @@ const state = {
   // **背景那两条线各有一套宽度 + 浓度** ✓（用户要求可调 ✓；显示开关去掉了 ✗）
   //   宽度跟「势力线宽」一个口径（格数 ✓ 直接就是粗细）；浓度是百分比 ✓
   //   （水域 / 荒地那两条专属的「内部 / 外部」宽浓已退役 ✓ 水走普通头衔边界 ✓）
-    // 导出图例（用户要的：相关设置都放在「设置」这一页 ✓）
-    legend: false, legendTitle: '', legendPos: 'tl',
+    // 图例（2026-10-27 按 MapChart 那套整合：地图预览 + 导出共用 ✓）
+    legend: false, legendTitle: '', legendTitleOnly: false,
+    legendPos: 'tl', legendSize: 'm', legendScale: 1, legendFont: '',
+    legendCols: 1, legendBg: '#ffffff', legendBgAlpha: 90,
+    legendBorder: '#000000', legendFg: '#111111', legendFgAuto: false,
+    legendBox: 'square', legendX: 0.04, legendY: 0.04,
   },
   showTitles: true,
   /* 原版边界的开关原来挂在「头衔」那组的复选框上（state 里干脆没这个字段 ✗）——
@@ -393,6 +419,10 @@ const state = {
   labelNames: [],              // 标记编号 '名字
   labelIds: new Map(),         // 名字 '标记编号
   paintBlocks: [],             // 手绘层切出来的连通色'
+  // 图例条目自定义名：色块 key（"r,g,b"）→ 名字；空对象 = 全用地图上现在的名字 ✓
+  legendNames: {},
+  legendOn: {},
+  legendOrder: [],
   recent: [],
   changed: new Set(),
   history: { undo: [], redo: [] },
@@ -1543,6 +1573,12 @@ const SET_DEFAULTS = {
   mapNameDebug: false,
   // **取完色切到哪个画图工具**（涂抹 / 填色 ✓ 用户要求可在设置里选）
   pickTool: 'paint',
+  // 图例（2026-10-27 MapChart 式：预览 + 导出共用同一套排版 ✓）
+  legend: false, legendTitle: '', legendTitleOnly: false,
+  legendPos: 'tl', legendSize: 'm', legendScale: 1, legendFont: '',
+  legendCols: 1, legendBg: '#ffffff', legendBgAlpha: 90,
+  legendBorder: '#000000', legendFg: '#111111', legendFgAuto: false,
+  legendBox: 'square', legendX: 0.04, legendY: 0.04,
 };
 
 /** **两块字号取值的唯一口子** ✓（2026-10-17 加的 ✓）
@@ -1767,6 +1803,8 @@ function applySettings() {
   state._parentSig = null;
   syncParentBorder();
   labelDirty = true;
+  // 图例样式（列数 / 字体 / 颜色 / 尺寸）也走这个口子；预览跟着一起刷新 ✓
+  if (state.set && state.set.legend) scheduleLegendOverlay();
 }
 
 // ---------------------------------------------------------------- 改名
@@ -5493,13 +5531,20 @@ function stamp() {
  * 按导出倍率重画一遍 ✓
  * ⚠ 不用另给开关 ✗ —— 玩家不想要名字，把显示区那几个「…· 名称」关掉就行 ✓
  */
-function paintLabelsForExport(ctx, scale) {
+function paintLabelsForExport(ctx, scale, rect) {
   if (!labels || !state.meta || !(scale > 0) || !Number.isFinite(scale)) return 0;
   if (!(state.showLabelsTitle || state.showLabelsPaint
         || state.showWaterName || state.showWasteName)) return 0;
   const W = state.meta.mapWidth, H = state.meta.mapHeight;
+  const rx = rect && Number.isFinite(rect.x) ? Math.max(0, rect.x) : 0;
+  const ry = rect && Number.isFinite(rect.y) ? Math.max(0, rect.y) : 0;
+  const rw = rect && Number.isFinite(rect.w) ? Math.max(0, rect.w) : W;
+  const rh = rect && Number.isFinite(rect.h) ? Math.max(0, rect.h) : H;
+  if (!(rw > 0 && rh > 0)) return 0;
   let list = [];
   try {
+    /* 排版照旧按**整张图**排一遍 —— 只按框选区域排的话，边上的名字会跟屏幕上
+       的位置对不上；排完再在 paintExport 里按区域裁 ✓ */
     list = drawLabels({ x: 0, y: 0, w: W, h: H }, true) || [];
   } catch (e) {
     LOG.event('导出名字失败', String(e && (e.message || e)));
@@ -5523,8 +5568,10 @@ function paintLabelsForExport(ctx, scale) {
    *   ⚠ 跟 `scale` 无关 ✗：2× 导出只是把同样的名字画大一倍 ✓
    *     门槛仍按"整图缩进 1600px"算 ✓（字号那边已经乘过 scale 了 ✓） */
   const EXPORT_FIT_W = 1600;             // 整图导出的参考视口（1600px 宽 ✓）
-  const gate = Math.min(1, EXPORT_FIT_W / Math.max(1, W));
-  return labels.paintExport(ctx, list, scale, gate);
+  /* 框选导出按**框的宽度**算门槛：框越小，相当于视角越近，细层名字该出来 ✓
+     整张图时 rw = W，跟旧口径一模一样 ✓ */
+  const gate = Math.min(1, EXPORT_FIT_W / Math.max(1, rw));
+  return labels.paintExport(ctx, list, scale, gate, { x: rx, y: ry, w: rw, h: rh });
 }
 
 
@@ -5534,25 +5581,51 @@ function paintLabelsForExport(ctx, scale) {
    导出闪退**抓不到异常** —— 那不是 JS 报错，是浏览器把标签页 OOM 杀掉了 ✗
    所以只能"事前拦 + 事中看门狗"：
 
-   ① `exportBudgetTight(px)`：按"像素 × 4 字节 × 3 份"（画布 + PNG 编码 + 我们那份）
+   ① `exportBudgetInfo(px)`：按"像素 × 4 字节 × 2.2 份"（画布 + PNG 编码时的临时缓冲）
       估个内存量，超过预算就不让导 —— 宁可提示"改用 1×"，也别把人标签页搞崩 ✓
-      机器内存小的（`navigator.deviceMemory ≤ 4`）预算再砍一半 ✓
-   ② `toBlob` 包一层 90 秒看门狗：真卡死（不再回调）也能把画布释放掉、
+      真正分块渲染时只有**一张输出画布**，地名也是直接画上去的（没有第三份全图 ✓）
+   ② `toBlob` 包一层看门狗：真卡死（不再回调）也能把画布释放掉、
       给一句"导出超时，试试 1×"，而不是永远停在"正在导出" ✓
    ========================================================================== */
-function exportBudgetTight(px) {
+function exportBudgetInfo(px) {
   const n = Number(px);
-  if (!(n > 0) || !Number.isFinite(n)) return true;
+  if (!(n > 0) || !Number.isFinite(n)) {
+    return { blocked: true, needMB: 0, capMB: 0, reason: '输出尺寸不对' };
+  }
+  const needMB = Math.round(n * 4 * 2.2 / (1024 * 1024));
   /* 🔴 **iOS / iPadOS 的画布上限是硬限制**（2026-10-23）
    *   Safari（尤其旧版）单个画布约 1600 万像素，超过不是报错、是**整页崩掉** ✗
    *   手机上"点导出就闪退"十有八九是这个 ✓ 直接按像素挡，别等崩 ✓ */
-  if (isAppleTouch()) return n > 16777216;
-  const needMB = n * 4 * 3 / (1024 * 1024);
-  let capMB = 720;                       // 默认预算（约 1.5 亿像素的 1/2 ✓）
-  const dm = (navigator && navigator.deviceMemory) | 0;
-  if (dm && dm <= 4) capMB = 360;        // 4 GB 及以下：砍一半 ✓
-  else if (dm && dm >= 8) capMB = 900;
-  return needMB > capMB;
+  if (isAppleTouch()) {
+    const maxPx = 16777216;
+    return {
+      blocked: n > maxPx,
+      needMB,
+      capMB: Math.round(maxPx * 8.8 / (1024 * 1024)),
+      reason: n > maxPx ? '超过 iOS / iPadOS 单张画布约 1600 万像素的上限' : '',
+    };
+  }
+  /* 桌面默认 1100 MB；手机再紧一点 720 MB（3× 整张在手机上基本必崩 ✗）
+     4 GB 机器砍到 480 MB；8 GB 以上给到 1400 MB，3× 才有机会跑完 ✓ */
+  let capMB = 1100;
+  let dm = 0;
+  try { dm = (typeof navigator !== 'undefined' && navigator.deviceMemory) | 0; } catch (e) { /* ✓ */ }
+  if (_exportIsHandheld()) capMB = 720;
+  else if (dm && dm <= 4) capMB = 480;
+  else if (dm && dm >= 8) capMB = 1400;
+  return {
+    blocked: needMB > capMB,
+    needMB,
+    capMB,
+    reason: needMB > capMB
+      ? `预计要 ${needMB} MB，超过这台设备约 ${capMB} MB 的导出预算`
+      : '',
+  };
+}
+
+/** 兼容旧调用：只看"会不会撑爆" ✓ */
+function exportBudgetTight(px) {
+  return exportBudgetInfo(px).blocked;
 }
 
 /** 是不是 iOS / iPadOS（iPadOS 13 起 UA 伪装成 Mac，要看触点数 ✓） */
@@ -5578,8 +5651,9 @@ function releaseCanvas(cv) {
  * @param {HTMLCanvasElement} cv 输出画布
  * @param {function} onOk 成功回调（blob ✓）
  * @param {function} onFail 失败回调（原因字符串 ✓）
+ * @param {number} [timeoutMs] 看门狗时长；大图编码本来就慢，按像素放宽 ✓
  */
-function exportBlob(cv, onOk, onFail) {
+function exportBlob(cv, onOk, onFail, timeoutMs) {
   let done = false;
   const finish = (ok, arg) => {
     if (done) return false;
@@ -5593,9 +5667,10 @@ function exportBlob(cv, onOk, onFail) {
     }
     return true;
   };
+  const ms = (Number(timeoutMs) > 0) ? Number(timeoutMs) : 90000;
   const timer = setTimeout(() => {
-    finish(false, '导出超时（90 秒没有结果）');
-  }, 90000);
+    finish(false, `导出超时（${Math.round(ms / 1000)} 秒没有结果）`);
+  }, ms);
   try {
     if (typeof cv.toBlob !== 'function') throw new Error('no toBlob');
     cv.toBlob((b) => {
@@ -5682,89 +5757,914 @@ function exportViewPNG() {
  * ⚠ 分块尺寸要**按比例缩小** ✗：2× 时若还用 2048 的块，输出就是 4096×4096 的纹理，
  *   老显卡的最大纹理尺寸可能只有 4096（刚好卡线 ✓）甚至 2048 ✗ → 块要减半 ✓
  */
-async function exportFullPNG(scale = 1) {
+/* ============================================================================
+ * **导出整图：分辨率 + 范围 + 进度**（2026-10-27 用户要求合并 ✓）
+ *
+ * 以前是「导出整图」和「导出高清地图」两个按钮，各自从头跑一遍分块渲染 ✗
+ * 现在只有一个入口：先点 0.5× / 1× / 2× / 3×，或者直接填宽高，
+ * 再选整张 / 框选；渲染和 PNG 编码都在同一处，进度条按真实分块数走 ✓
+ * ========================================================================== */
+const EXPORT_SCALES = [0.5, 1, 2, 3];
+const EXPORT_SCALE_MIN = 0.1;
+const EXPORT_SCALE_MAX = 8;
+const _exportDlg = {
+  scale: 1,
+  sizeBad: false,     // 宽/高输入框里的字现在填不出合法尺寸
+  range: 'full',      // 'full' | 'part'
+  rect: null,         // { x, y, w, h }，地图像素
+  picking: false,
+  busy: false,
+  cancel: false,
+};
+let _exportYieldAt = 0;
+
+function _exportIsHandheld() {
+  try {
+    return /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || '');
+  } catch (e) { return false; }
+}
+
+/** 按设备能力挑分块上限：默认 4096，手机收到 2048，再按倍率折算回地图像素 ✓
+ *  `rect` 可省：1× / 0.5× 的大图如果一整个块仍塞得进 16MP 输出，就把块放宽到
+ *  6144 地图像素 —— 5632 宽的 EU4 默认整图能少切一刀，少一次 setView + 读回 ✓
+ *  手机 / 2× 以上不动：输出块再大就真会顶到内存和 GPU 上限 ✗ */
+function _exportTileSize(scale, rect) {
+  let cap = 6144;
+  try {
+    const gl = renderer && renderer.gl;
+    if (gl && gl.getParameter) {
+      const mt = gl.getParameter(gl.MAX_TEXTURE_SIZE) | 0;
+      const rb = gl.getParameter(gl.MAX_RENDERBUFFER_SIZE) | 0;
+      if (mt > 0) cap = Math.min(cap, mt);
+      if (rb > 0) cap = Math.min(cap, rb);
+      const vp = gl.getParameter(gl.MAX_VIEWPORT_DIMS);
+      if (vp && vp.length >= 2) {
+        if (vp[0] > 0) cap = Math.min(cap, vp[0]);
+        if (vp[1] > 0) cap = Math.min(cap, vp[1]);
+      }
+    }
+  } catch (e) { /* 有些假 GL / 老驱动不认这些参数，退回 4096 ✓ */ }
+  if (_exportIsHandheld()) cap = Math.min(cap, 2048);
+  /* 常规分块仍按 cap（桌面 4096 / 手机 2048）折算；下面的 fit 只给 1× / 0.5× 整图放宽 ✓ */
+  const baseCap = Math.min(4096, cap);
+  let tile = Math.max(256, Math.min(4096, Math.floor(baseCap / Math.max(0.5, scale))));
+  if (rect && !_exportIsHandheld()) {
+    const rw = Math.max(1, Math.floor(rect.w || 0));
+    const rh = Math.max(1, Math.floor(rect.h || 0));
+    /* 只放大到 6144 地图像素；且这一块的输出必须 ≤ 6144 边长 / 16MP ✓ */
+    const fit = Math.min(6144, cap, Math.max(rw, rh));
+    const ow = Math.min(rw, fit) * scale;
+    const oh = Math.min(rh, fit) * scale;
+    if (fit > tile && ow <= 6144 && oh <= 6144 && ow * oh <= 16777216) {
+      tile = fit;
+    }
+  }
+  return tile;
+}
+
+/** 让出主线程，但不要每块都等 16ms —— 攒到 30ms 再让，进度条照样会动 ✓ */
+function _exportYield(force) {
+  const now = (typeof performance !== 'undefined' && performance.now)
+    ? performance.now() : Date.now();
+  if (!force && now - _exportYieldAt < 30) return Promise.resolve();
+  _exportYieldAt = now;
+  return new Promise((r) => setTimeout(r, 0));
+}
+
+/** 把框选 / 整张统一成地图像素里的整数矩形；空 / 越界返回 null ✓ */
+function _exportNormRect(rect) {
+  const W = state.meta && state.meta.mapWidth;
+  const H = state.meta && state.meta.mapHeight;
+  if (!(W > 0 && H > 0)) return null;
+  if (!rect) return { x: 0, y: 0, w: W, h: H };
+  const x0 = Number(rect.x), y0 = Number(rect.y);
+  const x1 = x0 + Number(rect.w), y1 = y0 + Number(rect.h);
+  if (![x0, y0, x1, y1].every(Number.isFinite)) return null;
+  const x = Math.max(0, Math.floor(x0));
+  const y = Math.max(0, Math.floor(y0));
+  const x2 = Math.min(W, Math.ceil(x1));
+  const y2 = Math.min(H, Math.ceil(y1));
+  if (!(x2 > x && y2 > y)) return null;
+  return { x, y, w: x2 - x, h: y2 - y };
+}
+
+function _exportScaleValid(scale) {
+  const s = Number(scale);
+  return Number.isFinite(s) && s >= EXPORT_SCALE_MIN && s <= EXPORT_SCALE_MAX;
+}
+
+function _exportScaleText(scale) {
+  const s = Number(scale);
+  if (!_exportScaleValid(s)) return '—';
+  return `${Math.round(s * 1000) / 1000}×`;
+}
+
+/** 弹窗里当前这套选择的输出尺寸 / 内存 / 拦截原因 ✓ */
+function _exportMetrics() {
+  const W = state.meta && state.meta.mapWidth;
+  const H = state.meta && state.meta.mapHeight;
+  if (!(W > 0 && H > 0)) return null;
+  const rawScale = Number(_exportDlg.scale);
+  const scale = _exportScaleValid(rawScale) ? rawScale : 1;
+  const rect = _exportDlg.range === 'part' ? _exportDlg.rect : null;
+  const r = _exportNormRect(rect) || _exportNormRect(null);
+  const OW = Math.max(1, Math.round(r.w * scale));
+  const OH = Math.max(1, Math.round(r.h * scale));
+  const bi = exportBudgetInfo(OW * OH);
+  let why = '';
+  if (rect && !_exportNormRect(rect)) {
+    why = '框选范围无效，请重新框选';
+  } else if (_exportDlg.range === 'part' && !_exportDlg.rect) {
+    why = '先点「框选」，在图上拖出要导出的那一块';
+  } else if (_exportDlg.sizeBad) {
+    why = `宽 / 高要填正整数，而且倍率要在 ${EXPORT_SCALE_MIN}×–${EXPORT_SCALE_MAX}× 之间`;
+  } else if (OW > 32767 || OH > 32767 || OW * OH > 268435456) {
+    why = `输出 ${OW}×${OH} 超过浏览器画布上限（长边 32767 / 总面积 2.68 亿像素），`
+      + '请降低分辨率或者缩小框选范围';
+  } else if (bi.blocked) {
+    why = bi.reason;
+  }
+  return {
+    scale, rect: r, OW, OH,
+    needMB: bi.needMB, capMB: bi.capMB,
+    part: !(r.x === 0 && r.y === 0 && r.w === W && r.h === H),
+    why,
+  };
+}
+
+/**
+ * 宽 / 高输入：改一边，另一边按地图比例自动跟 ✓
+ * 只接受正整数；对应倍率超出 0.1×–8× 就当场标红并拦住导出 ✓
+ */
+function _exportSizeInput(which, raw) {
+  const m = _exportMetrics();
+  if (!m) return;
+  const v = Math.round(Number(String(raw == null ? '' : raw).replace(/[\s,，]/g, '')));
+  const base = which === 'w' ? m.rect.w : m.rect.h;
+  if (!Number.isFinite(v) || v < 1 || !(base > 0)) {
+    _exportDlg.sizeBad = true;
+    _exportRefresh();
+    return;
+  }
+  const s = v / base;
+  if (!_exportScaleValid(s)) {
+    _exportDlg.sizeBad = true;
+    _exportRefresh();
+    return;
+  }
+  _exportDlg.scale = s;
+  _exportDlg.sizeBad = false;
+  _exportRefresh();
+}
+
+/** 输入框失焦：填坏了就退回上一个合法尺寸，别让红字一直挂着 ✓ */
+function _exportSizeCommit() {
+  if (!_exportDlg.sizeBad) return;
+  _exportDlg.sizeBad = false;
+  _exportRefresh();
+}
+
+function _exportRefresh() {
+  const modal = $('export-map');
+  if (!modal || modal.hidden) return;
+  const m = _exportMetrics();
+  const seg = $('export-scale');
+  if (seg && seg.children) {
+    for (const b of Array.from(seg.children)) {
+      const v = Number(b.getAttribute && b.getAttribute('data-scale'));
+      const on = !_exportDlg.sizeBad && Number.isFinite(v)
+        && Math.abs(v - _exportDlg.scale) < 1e-9;
+      b.classList.toggle('on', on);
+      b.setAttribute('aria-pressed', on ? 'true' : 'false');
+    }
+  }
+  const wi = $('export-w'), hi = $('export-h');
+  if (wi || hi) {
+    const ae = (typeof document !== 'undefined' && document.activeElement) || null;
+    if (wi && ae !== wi && m) wi.value = String(m.OW);
+    if (hi && ae !== hi && m) hi.value = String(m.OH);
+    if (wi) {
+      wi.classList.toggle('bad', !!_exportDlg.sizeBad);
+      wi.setAttribute('aria-invalid', _exportDlg.sizeBad ? 'true' : 'false');
+    }
+    if (hi) {
+      hi.classList.toggle('bad', !!_exportDlg.sizeBad);
+      hi.setAttribute('aria-invalid', _exportDlg.sizeBad ? 'true' : 'false');
+    }
+  }
+  const rg = $('export-range');
+  if (rg && rg.children) {
+    for (const b of Array.from(rg.children)) {
+      const on = (b.getAttribute && b.getAttribute('data-range')) === _exportDlg.range;
+      b.classList.toggle('on', on);
+    }
+  }
+  if ($('export-info')) {
+    $('export-info').textContent = m
+      ? `预计 ${m.needMB} MB 内存`
+      : '地图还没加载好';
+  }
+  if ($('export-warn')) {
+    $('export-warn').hidden = !m || !m.why;
+    $('export-warn').textContent = m && m.why ? m.why : '';
+  }
+  if ($('export-start')) $('export-start').disabled = !m || !!m.why || _exportDlg.busy;
+}
+
+function _exportShow() {
+  const modal = $('export-map');
+  if (!modal) return;
+  $('export-form').hidden = false;
+  $('export-progress').hidden = true;
+  if ($('export-close')) $('export-close').disabled = false;
+  modal.hidden = false;
+  _exportRefresh();
+}
+
+function _exportClose() {
+  if (_exportDlg.busy) return;
+  if (_exportDlg.picking) _exportPickCancel(false);
+  const modal = $('export-map');
+  if (modal) modal.hidden = true;
+}
+
+function openExportDialog() {
+  if (_exportDlg.busy || _exportDlg.picking) return;
+  if (!state.meta) return toast('地图还没加载好，等它出现再导 ✓', true);
+  _exportDlg.rect = null;
+  _exportDlg.range = 'full';
+  _exportDlg.sizeBad = false;
+  _exportDlg.cancel = false;
+  _exportShow();
+}
+
+/** 屏幕坐标 → 被舞台裁过的屏幕坐标 + 地图像素坐标 ✓ */
+function _exportPoint(clientX, clientY) {
+  const stage = $('stage');
+  const v = viewRect();
+  const r = stage.getBoundingClientRect();
+  const sx = Math.min(Math.max(clientX - r.left, 0), Math.max(1, r.width));
+  const sy = Math.min(Math.max(clientY - r.top, 0), Math.max(1, r.height));
+  const W = state.meta.mapWidth, H = state.meta.mapHeight;
+  const x = Math.min(Math.max(v.x + sx / Math.max(1, r.width) * v.w, 0), W);
+  const y = Math.min(Math.max(v.y + sy / Math.max(1, r.height) * v.h, 0), H);
+  return { sx, sy, x, y };
+}
+
+/**
+ * 框选状态（画图软件那套）：
+ *   rect     当前框（地图像素，浮点）
+ *   prevRect 进框选前弹窗里的框 —— Esc / 取消要还原 ✓
+ *   drag     正在拖的那一下：new / move / resize
+ */
+const _exportPickState = {
+  rect: null,
+  prevRect: null,
+  drag: null,
+};
+
+function _exportPickMinSize() {
+  const stage = $('stage');
+  const v = viewRect();
+  const r = stage ? stage.getBoundingClientRect() : null;
+  const sw = Math.max(1, r ? r.width : 1);
+  const sh = Math.max(1, r ? r.height : 1);
+  /* 至少要拖出 4 个屏幕像素，不然手一抖就是一条缝 ✓ */
+  return {
+    w: Math.max(1, 4 * v.w / sw),
+    h: Math.max(1, 4 * v.h / sh),
+  };
+}
+
+function _exportPickClampRect(r) {
+  if (!r || !state.meta) return null;
+  const W = state.meta.mapWidth, H = state.meta.mapHeight;
+  const x = Math.min(Math.max(r.x, 0), W);
+  const y = Math.min(Math.max(r.y, 0), H);
+  return {
+    x, y,
+    w: Math.min(Math.max(r.w, 0), Math.max(0, W - x)),
+    h: Math.min(Math.max(r.h, 0), Math.max(0, H - y)),
+  };
+}
+
+/** 两点拖出来的框（往哪个方向拖都行 ✓） */
+function _exportPickNorm(a, b) {
+  return _exportPickClampRect({
+    x: Math.min(a.x, b.x),
+    y: Math.min(a.y, b.y),
+    w: Math.abs(a.x - b.x),
+    h: Math.abs(a.y - b.y),
+  });
+}
+
+/** 浮点框 → 导出用的整数地图像素（跟旧版 floor/ceil 口径一致 ✓） */
+function _exportPickRound(r) {
+  if (!r) return null;
+  const x = Math.floor(r.x), y = Math.floor(r.y);
+  const W = state.meta.mapWidth, H = state.meta.mapHeight;
+  return {
+    x, y,
+    w: Math.max(1, Math.min(Math.round(r.x + r.w) - x, W - x)),
+    h: Math.max(1, Math.min(Math.round(r.y + r.h) - y, H - y)),
+  };
+}
+
+/** 拖把手：nw / n / ne / e / se / s / sw / w ✓ */
+function _exportPickResizeRect(start, handle, p, min) {
+  if (!start || !state.meta) return null;
+  const W = state.meta.mapWidth, H = state.meta.mapHeight;
+  const mw = Math.min(Math.max(1, min.w), W);
+  const mh = Math.min(Math.max(1, min.h), H);
+  let left = start.x, top = start.y;
+  let right = start.x + start.w, bottom = start.y + start.h;
+  if (handle.indexOf('w') >= 0) {
+    left = Math.min(Math.max(p.x, 0), Math.max(0, right - mw));
+  }
+  if (handle.indexOf('e') >= 0) {
+    right = Math.max(Math.min(p.x, W), Math.min(W, left + mw));
+  }
+  if (handle.indexOf('n') >= 0) {
+    top = Math.min(Math.max(p.y, 0), Math.max(0, bottom - mh));
+  }
+  if (handle.indexOf('s') >= 0) {
+    bottom = Math.max(Math.min(p.y, H), Math.min(H, top + mh));
+  }
+  return _exportPickClampRect({
+    x: left, y: top, w: right - left, h: bottom - top,
+  });
+}
+
+function _exportPickInside(p, r) {
+  return !!r && p.x >= r.x && p.x <= r.x + r.w
+    && p.y >= r.y && p.y <= r.y + r.h;
+}
+
+function _exportPickInBar(el) {
+  for (let n = el; n; n = n.parentNode) {
+    if (n.id === 'export-pick-bar') return true;
+  }
+  return false;
+}
+
+function _exportPickRender(hint) {
+  const box = $('export-pick-box');
+  const ok = $('export-pick-ok');
+  const size = $('export-pick-size');
+  if (!box || !ok) return;
+  const r = _exportPickState.rect;
+  if (!r) {
+    box.hidden = true;
+    ok.disabled = true;
+    if (size) size.textContent = '—';
+  } else {
+    const stage = $('stage');
+    const sr = stage ? stage.getBoundingClientRect() : null;
+    const v = viewRect();
+    const sw = Math.max(1, sr ? sr.width : 1);
+    const sh = Math.max(1, sr ? sr.height : 1);
+    box.hidden = false;
+    box.style.left = `${(r.x - v.x) / Math.max(1, v.w) * sw}px`;
+    box.style.top = `${(r.y - v.y) / Math.max(1, v.h) * sh}px`;
+    box.style.width = `${r.w / Math.max(1, v.w) * sw}px`;
+    box.style.height = `${r.h / Math.max(1, v.h) * sh}px`;
+    const min = _exportPickMinSize();
+    ok.disabled = !(r.w >= min.w && r.h >= min.h);
+    if (size) size.textContent = `${Math.round(r.w)} × ${Math.round(r.h)} px`;
+  }
+  if ($('export-pick-tip')) {
+    $('export-pick-tip').textContent = hint || (r
+      ? '拖四角 / 四边改大小 · 在框里拖动挪位置 · Enter 确认'
+      : '按住拖动，框出要导出的范围 · Esc 取消');
+  }
+}
+
+function _exportPickStart() {
+  if (!state.meta || _exportDlg.busy || _exportDlg.picking) return;
+  const prev = _exportDlg.rect ? { ..._exportDlg.rect } : null;
+  _exportDlg.picking = true;
+  _exportDlg.range = 'part';
+  _exportPickState.prevRect = prev;
+  _exportPickState.rect = prev ? { ...prev } : null;
+  _exportPickState.drag = null;
+  const modal = $('export-map');
+  if (modal) modal.hidden = true;
+  $('export-pick-layer').hidden = false;
+  _exportPickRender();
+}
+
+/** show=false：别把弹窗弹出来（关闭整个导出窗时用 ✓） */
+function _exportPickClose(commit, show) {
+  const st = _exportPickState;
+  _exportDlg.picking = false;
+  st.drag = null;
+  const layer = $('export-pick-layer');
+  const box = $('export-pick-box');
+  if (layer) layer.hidden = true;
+  if (box) box.hidden = true;
+  if (commit && st.rect) {
+    _exportDlg.rect = _exportPickRound(st.rect);
+    _exportDlg.range = 'part';
+  } else {
+    _exportDlg.rect = st.prevRect ? { ...st.prevRect } : null;
+    _exportDlg.range = st.prevRect ? 'part' : 'full';
+  }
+  st.rect = null;
+  st.prevRect = null;
+  if (show) _exportShow();
+  else {
+    const modal = $('export-map');
+    if (modal) modal.hidden = true;
+  }
+}
+
+function _exportPickCancel(show) {
+  _exportPickClose(false, show !== false);
+}
+
+function _exportPickConfirm() {
+  if (!_exportDlg.picking || !_exportPickState.rect) return;
+  const min = _exportPickMinSize();
+  const r = _exportPickState.rect;
+  if (r.w < min.w || r.h < min.h) return;
+  _exportPickClose(true, true);
+}
+
+function _exportPickReset() {
+  if (!_exportDlg.picking) return;
+  _exportPickState.drag = null;
+  _exportPickState.rect = null;
+  _exportPickRender('拖出一个新范围 · Esc 取消');
+}
+
+function _exportPickAbortDrag() {
+  const d = _exportPickState.drag;
+  if (!d) return;
+  _exportPickState.drag = null;
+  if (d.mode === 'new') _exportPickState.rect = d.backup ? { ...d.backup } : null;
+  else if (d.startRect) _exportPickState.rect = { ...d.startRect };
+  _exportPickRender('已取消这次拖动');
+}
+
+function _exportPickApplyDrag(d, p) {
+  if (!d) return;
+  if (d.mode === 'new') {
+    _exportPickState.rect = _exportPickNorm(d.start, p);
+  } else if (d.mode === 'move') {
+    const W = state.meta.mapWidth, H = state.meta.mapHeight;
+    const x = Math.min(Math.max(d.startRect.x + (p.x - d.start.x), 0),
+      Math.max(0, W - d.startRect.w));
+    const y = Math.min(Math.max(d.startRect.y + (p.y - d.start.y), 0),
+      Math.max(0, H - d.startRect.h));
+    _exportPickState.rect = { x, y, w: d.startRect.w, h: d.startRect.h };
+  } else {
+    _exportPickState.rect = _exportPickResizeRect(
+      d.startRect, d.handle, p, _exportPickMinSize());
+  }
+}
+
+function _exportPickDown(e) {
+  if (!_exportDlg.picking || _exportDlg.busy) return;
+  /* 两只手指同时按下来时只认第一只，别让第二只把正在拖的框顶掉 ✓ */
+  if (_exportPickState.drag) return;
+  if (e.pointerType === 'mouse' && e.button !== 0) return;
+  if (_exportPickInBar(e.target)) return;
+  if (e.stopPropagation) e.stopPropagation();
+  e.preventDefault();
+  const p = _exportPoint(e.clientX, e.clientY);
+  const target = e.target;
+  const handle = target && target.getAttribute
+    ? target.getAttribute('data-handle') : null;
+  const st = _exportPickState;
+  if (handle && st.rect) {
+    st.drag = {
+      id: e.pointerId, mode: 'resize', handle,
+      start: p, startRect: { ...st.rect },
+    };
+  } else if (st.rect && _exportPickInside(p, st.rect)) {
+    st.drag = {
+      id: e.pointerId, mode: 'move',
+      start: p, startRect: { ...st.rect },
+    };
+  } else {
+    st.drag = {
+      id: e.pointerId, mode: 'new', start: p,
+      backup: st.rect ? { ...st.rect } : null,
+    };
+    st.rect = null;
+  }
+  const layer = $('export-pick-layer');
+  if (layer && e.pointerId != null && layer.setPointerCapture) {
+    try { layer.setPointerCapture(e.pointerId); } catch (err) { /* 老浏览器没有 */ }
+  }
+  _exportPickRender('拖动调整范围 · 松开完成');
+}
+
+function _exportPickMove(e) {
+  if (!_exportDlg.picking || !_exportPickState.drag) return;
+  const d = _exportPickState.drag;
+  if (d.id != null && e.pointerId != null && e.pointerId !== d.id) return;
+  e.preventDefault();
+  _exportPickApplyDrag(d, _exportPoint(e.clientX, e.clientY));
+  _exportPickRender('拖动调整范围 · 松开完成');
+}
+
+function _exportPickUp(e) {
+  if (!_exportDlg.picking || !_exportPickState.drag) return;
+  const d = _exportPickState.drag;
+  if (d.id != null && e.pointerId != null && e.pointerId !== d.id) return;
+  e.preventDefault();
+  const p = _exportPoint(e.clientX, e.clientY);
+  _exportPickApplyDrag(d, p);
+  _exportPickState.drag = null;
+  const r = _exportPickState.rect;
+  const min = _exportPickMinSize();
+  if (r && (r.w < min.w || r.h < min.h)) {
+    /* new：回到拖之前那块（可能是空）；resize：回到把手被拖之前 ✓
+       ⚠ 以前这里只看 d.backup，resize 拖太小会直接把整个框清掉 ✗ */
+    const backup = d.mode === 'new' ? d.backup : d.startRect;
+    _exportPickState.rect = backup ? { ...backup } : null;
+    _exportPickRender(backup
+      ? '框太小了，刚才的范围先留着 · Esc 取消'
+      : '框太小了，重新拖一块 · Esc 取消');
+    return;
+  }
+  _exportPickRender();
+}
+
+function _exportPickNudge(dx, dy) {
+  const r = _exportPickState.rect;
+  if (!r) return;
+  const W = state.meta.mapWidth, H = state.meta.mapHeight;
+  _exportPickState.rect = {
+    x: Math.min(Math.max(r.x + dx, 0), Math.max(0, W - r.w)),
+    y: Math.min(Math.max(r.y + dy, 0), Math.max(0, H - r.h)),
+    w: r.w, h: r.h,
+  };
+  _exportPickRender();
+}
+
+function _exportProgress(pct, note) {
+  const v = Math.max(0, Math.min(100, Math.round(pct)));
+  if ($('export-prog-bar')) $('export-prog-bar').style.width = `${v}%`;
+  if ($('export-prog-pct')) $('export-prog-pct').textContent = `${v}%`;
+  if (note && $('export-prog-note')) $('export-prog-note').textContent = note;
+}
+
+async function _exportRun() {
+  if (_exportDlg.busy) return;
+  const m = _exportMetrics();
+  if (!m) return toast('地图还没加载好 ✓', true);
+  if (m.why) return toast(m.why, true);
+  _exportDlg.busy = true;
+  _exportDlg.cancel = false;
+  $('export-form').hidden = true;
+  $('export-progress').hidden = false;
+  if ($('export-close')) $('export-close').disabled = true;
+  if ($('export-stop')) {
+    $('export-stop').disabled = false;
+    $('export-stop').textContent = '停止导出';
+  }
+  _exportProgress(0, '准备中…');
+  const job = { cancel: false };
+  _exportDlg.job = job;
+  try {
+    const r = await exportFullPNG(m.scale, {
+      rect: m.rect,
+      onProgress: (pct, note) => _exportProgress(pct, note),
+      shouldCancel: () => job.cancel,
+    });
+    if (r && r.canceled) {
+      $('export-map').hidden = true;
+      toast('已停止导出');
+    } else {
+      $('export-map').hidden = true;
+    }
+  } catch (e) {
+    onExportFail(e);
+    $('export-form').hidden = false;
+    $('export-progress').hidden = true;
+    _exportRefresh();
+  } finally {
+    _exportDlg.busy = false;
+    _exportDlg.job = null;
+    if ($('export-close')) $('export-close').disabled = false;
+  }
+}
+
+function _initExportDialog() {
+  const modal = $('export-map');
+  if (!modal) return;
+  const seg = $('export-scale');
+  if (seg && seg.children) {
+    /* 直接挂到每个按钮上：不依赖事件冒泡 ✓
+       （手机壳 / 假 DOM 里冒泡不一定在，挂按钮最稳 ✓） */
+    for (const b of Array.from(seg.children)) {
+      b.addEventListener('click', () => {
+        const v = Number(b.getAttribute && b.getAttribute('data-scale'));
+        if (!(v > 0)) return;
+        _exportDlg.scale = v;
+        _exportDlg.sizeBad = false;
+        _exportRefresh();
+      });
+    }
+  }
+  for (const [id, which] of [['export-w', 'w'], ['export-h', 'h']]) {
+    const el = $(id);
+    if (!el) continue;
+    el.addEventListener('input', () => _exportSizeInput(which, el.value));
+    el.addEventListener('change', _exportSizeCommit);
+    el.addEventListener('keydown', (e) => {
+      if (!e || e.key !== 'Enter') return;
+      if (e.preventDefault) e.preventDefault();
+      if (el.blur) el.blur();
+    });
+  }
+  const rg = $('export-range');
+  if (rg && rg.children) {
+    for (const b of Array.from(rg.children)) {
+      b.addEventListener('click', () => {
+        const v = b.getAttribute && b.getAttribute('data-range');
+        if (v !== 'full' && v !== 'part') return;
+        _exportDlg.range = v;
+        if (v === 'full') _exportDlg.rect = null;
+        _exportRefresh();
+        /* 没有「在图上框选」按钮了：点「框选」直接进画框层 ✓
+           已有框时也进去，方便再调位置 / 大小 ✓ */
+        if (v === 'part') _exportPickStart();
+      });
+    }
+  }
+  if ($('export-pick-cancel')) $('export-pick-cancel').onclick = () => _exportPickCancel(true);
+  if ($('export-pick-redo')) $('export-pick-redo').onclick = () => _exportPickReset();
+  if ($('export-pick-ok')) $('export-pick-ok').onclick = () => _exportPickConfirm();
+  if ($('export-start')) $('export-start').onclick = () => { _exportRun(); };
+  if ($('export-cancel')) $('export-cancel').onclick = () => _exportClose();
+  if ($('export-close')) $('export-close').onclick = () => _exportClose();
+  if ($('export-stop')) $('export-stop').onclick = () => {
+    const job = _exportDlg.job;
+    if (job) job.cancel = true;
+    $('export-stop').disabled = true;
+    $('export-stop').textContent = '正在停下…';
+    const pct = $('export-prog-pct') ? parseInt($('export-prog-pct').textContent, 10) : 0;
+    _exportProgress(Number.isFinite(pct) ? pct : 0,
+      '正在停下，等这一块渲染完…');
+  };
+  modal.addEventListener('click', (e) => {
+    if (e && e.target === modal && !_exportDlg.busy) _exportClose();
+  });
+  const layer = $('export-pick-layer');
+  if (layer) {
+    layer.addEventListener('pointerdown', _exportPickDown);
+    /* move / up 挂在 window 上：拖出舞台边缘也照样跟手 ✓ */
+    window.addEventListener('pointermove', _exportPickMove);
+    window.addEventListener('pointerup', _exportPickUp);
+    window.addEventListener('pointercancel', () => _exportPickAbortDrag());
+    /* 框选时锁住地图缩放：滚轮一旦缩放，选框还停在旧像素上就对不上了 ✓
+       右键菜单同理，别在选区上弹出来挡操作 ✓ */
+    layer.addEventListener('wheel', (e) => {
+      if (!_exportDlg.picking) return;
+      if (e.preventDefault) e.preventDefault();
+      if (e.stopPropagation) e.stopPropagation();
+    }, { passive: false });
+    layer.addEventListener('contextmenu', (e) => {
+      if (!_exportDlg.picking) return;
+      if (e.preventDefault) e.preventDefault();
+      if (e.stopPropagation) e.stopPropagation();
+    });
+  }
+  /* Esc 必须抢在全局「回主菜单」前面处理 ✓
+     全局那条是冒泡阶段；这里用捕获 + stopImmediatePropagation ✓
+     框选里再加 Enter 确认 / 方向键微调，跟绘图软件的手感靠一靠 ✓ */
+  window.addEventListener('keydown', (e) => {
+    if (!e || (e.key !== 'Escape' && e.key !== 'Esc')) {
+      if (!_exportDlg.picking || !e) return;
+      if (e.key === 'Enter') {
+        if (e.preventDefault) e.preventDefault();
+        if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+        _exportPickConfirm();
+        return;
+      }
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight'
+          || e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+        if (e.preventDefault) e.preventDefault();
+        if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+        const step = e.shiftKey ? 10 : 1;
+        const dx = e.key === 'ArrowLeft' ? -step : (e.key === 'ArrowRight' ? step : 0);
+        const dy = e.key === 'ArrowUp' ? -step : (e.key === 'ArrowDown' ? step : 0);
+        _exportPickNudge(dx, dy);
+        return;
+      }
+      /* 框选期间别让工具快捷键 / 撤销漏到底下的画布 ✓
+         Tab 留着，键盘用户还能挪焦点 ✓ */
+      if (e.key !== 'Tab') {
+        if (e.preventDefault) e.preventDefault();
+        if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+      }
+      return;
+    }
+    if (_exportDlg.picking) {
+      if (e.preventDefault) e.preventDefault();
+      if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+      _exportPickCancel(true);
+      return;
+    }
+    if (modal.hidden) return;
+    if (e.preventDefault) e.preventDefault();
+    if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+    if (!_exportDlg.busy) _exportClose();
+  }, true);
+}
+
+/**
+ * 导出整张地图 / 框选区域。
+ *
+ * `scale` 是输出像素 / 地图像素；`opts.rect` 是地图像素矩形。
+ * 视口照旧按**地图坐标**给，画布按倍率放大 —— 着色器的 `uMapPerPx`
+ * 自动变小，边界按新尺度重画，不是把 1× 放大糊 ✓
+ *
+ * 性能上三件事（2026-10-27）：
+ *   ① 分块从 2048 提到 4096（手机 2048），同样一张图少跑一半以上的块 ✓
+ *   ② 只有块尺寸变了才重设画布宽高，不再每块重新分配一次 ✓
+ *   ③ 每 30ms 才让一次主线程，进度条照样能画，少等几十次 4ms 定时器 ✓
+ */
+async function exportFullPNG(scale = 1, opts = {}) {
   const meta = state.meta;
-  const W = meta.mapWidth;
-  const H = meta.mapHeight;
-  const OW = W * scale;
-  const OH = H * scale;
-  /* **浏览器画布上限护栏** ✗ —— 面积上限约 2.68 亿像素、边长常见 32767。
-   *   EU5 原尺寸（16384×8192）点「导出高清地图」要 32768×16384 = 5.4 亿像素，
-   *   必超 —— 以前是**闷头渲染好几分钟**，到 toBlob 那一步才告诉你"可能图太大" ✗。
-   *   在这儿直接拦：说清楚要多大、怎么导才成 ✓ */
+  if (!meta) { toast('地图还没加载好 ✓', true); return { ok: false }; }
+  const s = Number(scale);
+  if (!_exportScaleValid(s)) {
+    toast(`导出倍率要在 ${EXPORT_SCALE_MIN}×–${EXPORT_SCALE_MAX}× 之间 ✓`, true);
+    return { ok: false };
+  }
+  const rect = _exportNormRect(opts.rect);
+  if (!rect) {
+    toast('框选范围无效，请重新框选 ✓', true);
+    return { ok: false };
+  }
+  const W = meta.mapWidth, H = meta.mapHeight;
+  const OW = Math.max(1, Math.round(rect.w * s));
+  const OH = Math.max(1, Math.round(rect.h * s));
+  const part = !(rect.x === 0 && rect.y === 0 && rect.w === W && rect.h === H);
+
   if (OW > 32767 || OH > 32767 || OW * OH > 268435456) {
     LOG.event('导出整图被拦', `${OW}×${OH} 超过浏览器画布上限`);
-    return toast(`这张图 ${scale}× 要 ${OW}×${OH}，超过浏览器能画的画布上限——`
-      + (scale > 1 ? '请改用普通的「导出整图」（1×）。' : '这张图太大了，导不出来。'), true);
+    toast(`这次要 ${OW}×${OH}，超过浏览器能画的画布上限——`
+      + '请降低分辨率，或者把框选范围缩小一点。', true);
+    return { ok: false };
   }
-  /* 🔴 **内存预算**（2026-10-23：「一部分人导出图片闪退」）
-   *   闪退是浏览器把标签页 OOM 杀了，JS 层抓不到 ✗ → 只能事前挡：
-   *   估算"画布 + PNG 编码 + 我们那份"要多少，超预算就别开始 ✓ */
-  if (exportBudgetTight(OW * OH)) {
-    const needMB = Math.round(OW * OH * 4 * 3 / (1024 * 1024));
-    LOG.event('导出整图被拦', `${OW}×${OH} 预计占用 ${needMB} MB，超过本机预算`);
-    return toast(`这张图 ${OW}×${OH} 预计要 ${needMB} MB 内存，很可能把标签页撑崩（闪退）——`
-      + (scale > 1 ? '请改用 1×，或者先把画面缩到整图用「导出当前画面」。'
-                   : '请用「导出当前画面」分片导，或者换台内存大点的机器。'), true);
+  const bi = exportBudgetInfo(OW * OH);
+  if (bi.blocked) {
+    LOG.event('导出整图被拦', `${OW}×${OH} 预计占用 ${bi.needMB} MB，超过本机预算`);
+    toast(`这次 ${OW}×${OH} 预计要 ${bi.needMB} MB 内存，很可能把标签页撑崩（闪退）——`
+      + '请降低分辨率，或者框选小一点再导。', true);
+    return { ok: false };
   }
+
+  const notify = (pct, note) => {
+    if (typeof opts.onProgress !== 'function') return;
+    try { opts.onProgress(pct, note); } catch (e) { /* 进度条坏了不能拖垮导出 ✓ */ }
+  };
+  const shouldCancel = () => !!(opts.shouldCancel && opts.shouldCancel());
+  const cancelErr = new Error('导出已取消');
+  cancelErr.__exportCanceled = true;
+  const checkCancel = () => { if (shouldCancel()) throw cancelErr; };
+
   const glCanvas = $('map');
-  // 输出块 = TILE × scale ≤ 2048 ✓（1× 时 2048、2× 时 1024 地图像素）
-  const TILE = Math.max(512, Math.floor(2048 / scale));
-  let _lgN2 = 0;                 // 图例画了几条（-1 = 勾了但没东西可画 ✓）
-  let _labN2 = 0;                // 名字画了几个（0 = 显示区那几个名称开关都关着 ✓）
+  const TILE = _exportTileSize(s, rect);
+  const total = Math.max(1, Math.ceil(rect.w / TILE) * Math.ceil(rect.h / TILE));
+  let done = 0;
+  let _lgN2 = 0;
+  let _labN2 = 0;
 
   const savedW = glCanvas.width;
   const savedH = glCanvas.height;
   const savedView = { ...renderer.view };
 
   const out = document.createElement('canvas');
-  out.width = W * scale;
-  out.height = H * scale;
-  const ctx = out.getContext('2d');
-  if (!ctx) return toast('导出失败：输出画布太大，这台设备画不出来', true);
+  out.width = OW;
+  out.height = OH;
+  if (out.width !== OW || out.height !== OH) {
+    releaseCanvas(out);
+    return toast('导出失败：输出画布太大，这台设备画不出来', true);
+  }
+  const ctx = out.getContext('2d', { alpha: false });
+  if (!ctx) {
+    releaseCanvas(out);
+    return toast('导出失败：输出画布太大，这台设备画不出来', true);
+  }
+  ctx.imageSmoothingEnabled = false;
 
   renderer.fixedSize = true;
-  // 关掉抗锯齿：整图导出时一个像素 = 一个地图像素，四点超采样会在两个色块
-  // 之间平均出一条混色带（放大看就是"糊的区域"）。屏幕上不受影响 ✓。
   renderer.noAA = true;
-  toast(scale > 1 ? `正在渲染整张地图（${scale}× 高清）` : '正在渲染整张地图');
+  _exportYieldAt = 0;
+  notify(1, part ? '准备渲染框选区域…' : '准备渲染整张地图…');
 
   let _restoreHover = null;
   try {
-    // 🔴 整图导出也一样：悬停高亮是画在着色器里的，不哑掉的话
-    //    正在悬停的那一块/那一族会被提亮进整张图 ✗（2026-10-17 用户报的）
+    await _exportYield(true);
+    checkCancel();
     _restoreHover = (renderer && renderer.muteHoverForExport)
       ? renderer.muteHoverForExport() : null;
-    for (let ty = 0; ty < H; ty += TILE) {
-      for (let tx = 0; tx < W; tx += TILE) {
-        const tw = Math.min(TILE, W - tx);
-        const th = Math.min(TILE, H - ty);
-        glCanvas.width = tw * scale;
-        glCanvas.height = th * scale;
-        renderer.setView(tx, ty, tw, th);        // 视口照旧是**地图坐标** ✓ 画布才是放大的那个 ✓
-        // 分块图（EU5 原尺寸）：这一块的省份 id 瓦片多半还没进显存 ——
-        // 平时靠 frame() 按视野异步补，导出必须先逐块拉齐再渲染，
-        // 否则没看过的区域全渲成 0 号省份的底色。
+    for (let ty = rect.y; ty < rect.y + rect.h; ty += TILE) {
+      for (let tx = rect.x; tx < rect.x + rect.w; tx += TILE) {
+        checkCancel();
+        const tw = Math.min(TILE, rect.x + rect.w - tx);
+        const th = Math.min(TILE, rect.y + rect.h - ty);
+        /* 输出边界用**累加后的整数边**算 ✓
+           0.5× 时每块 round 一次会差出一像素：拼起来是细缝 / 重叠 ✗
+           → 先算这块在输出里的左右上下边，再拿差当宽高 ✓ 总和必然等于 OW / OH ✓ */
+        const dx = Math.round((tx - rect.x) * s);
+        const dy = Math.round((ty - rect.y) * s);
+        const dx2 = Math.round((tx + tw - rect.x) * s);
+        const dy2 = Math.round((ty + th - rect.y) * s);
+        const dw = Math.max(1, dx2 - dx);
+        const dh = Math.max(1, dy2 - dy);
+        /* 只有尺寸变了才重设 ✓ 每块都写一次 width 会白白重分配显存 / 清屏 */
+        if (glCanvas.width !== dw || glCanvas.height !== dh) {
+          glCanvas.width = dw;
+          glCanvas.height = dh;
+        }
+        renderer.setView(tx, ty, tw, th);
         if (state.tileMap && renderer.provArrTex && renderer.tileInfo) {
           const jobs = [];
           for (const [r, c] of state.tileMap.tilesInView({ x: tx, y: ty, w: tw, h: th })) {
             const layer = r * state.tiles.cols + c;
+            /* 上一块 / 上一帧已经传过的块别再传一遍 ✓
+               `uploadTile` 每次都要把 Uint16 转成字节再 texSubImage3D；
+               相邻导出分块在边界上会看到同一块，整图导出时可能白传几十次 ✓
+               （跟帧循环那条判据一致：缓存里有 ≠ 显存里有，所以只看 uploadedTiles ✓） */
+            if (renderer.uploadedTiles && renderer.uploadedTiles.has(layer)) continue;
             const cached = state.tileMap.cache.get(`${r}_${c}`);
             if (cached) { renderer.uploadTile(layer, cached); continue; }
             jobs.push(state.tileMap.get(r, c).then((tile) => {
               if (tile) renderer.uploadTile(layer, tile);
             }).catch(() => {}));
           }
-          await Promise.all(jobs);
+          if (jobs.length) await Promise.all(jobs);
         }
+        checkCancel();
         renderer.dirty = true;
         renderer.render();
-        // 把这一块**按放大后的尺寸**贴到输出画布上 ✓（1:1，不再缩放 ✓）
-        ctx.drawImage(glCanvas, 0, 0, tw * scale, th * scale,
-                      tx * scale, ty * scale, tw * scale, th * scale);
-        await new Promise((r) => setTimeout(r, 0));   // 让主线程喘口'
+        ctx.drawImage(glCanvas, 0, 0, dw, dh, dx, dy, dw, dh);
+        done++;
+        notify(4 + 78 * done / total,
+          `正在渲染地图分块… ${done} / ${total}`);
+        await _exportYield(false);
       }
     }
+    checkCancel();
+    if (_restoreHover) { _restoreHover(); _restoreHover = null; }
+
+    notify(86, '正在绘制地名…');
+    await _exportYield(true);
+    checkCancel();
+    try { _labN2 = paintLabelsForExport(ctx, s, rect); } catch (e) {
+      LOG.event('导出名字失败', String(e && (e.message || e)));
+    }
+
+    notify(92, '正在绘制图例…');
+    await _exportYield(true);
+    checkCancel();
+    _lgN2 = maybeDrawLegend(ctx, OW, OH);
+
+    notify(96, '正在编码 PNG…');
+    await _exportYield(true);
+    checkCancel();
+    const timeoutMs = Math.min(300000,
+      Math.max(90000, Math.round(OW * OH / 1000000 * 2.2) * 1000));
+    const blob = await new Promise((resolve, reject) => {
+      exportBlob(out, resolve, (why) => reject(new Error(why)), timeoutMs);
+    });
+    checkCancel();
+    notify(100, '完成');
+
+    const tag = part
+      ? `_局部${_exportScaleText(s)}`
+      : `_整图${s !== 1 ? _exportScaleText(s) : ''}`;
+    download(blob, `${GAME.filePrefix}${tag}_${stamp()}.png`);
+    LOG.event('导出整图 PNG', `${OW}×${OH}` + (s !== 1 ? `（${_exportScaleText(s)}）` : '')
+      + (part ? ` · 框选 ${rect.x},${rect.y} ${rect.w}×${rect.h}` : '')
+      + (_labN2 ? ` · 名字 ${_labN2} 个` : ' · 不带名字')
+      + (_lgN2 ? ' · 图例 ' + _lgN2 + ' 条' : ''));
+    if (_lgN2 < 0) {
+      toast(`已导出${part ? '框选区域' : '整张地图'} ${OW}×${OH}，但图例是空的：`
+        + '这个视图里还没有可列的颜色 ✓ 先涂几块试试');
+    } else {
+      toast(`已导出${part ? '框选区域' : '整张地图'} ${OW}×${OH}`
+        + (s !== 1 ? `（${_exportScaleText(s)}）` : '')
+        + (_labN2 ? `（含 ${_labN2} 个名字）` : '（不带名字：显示区的名称开关关着）')
+        + (_lgN2 ? `（含 ${_lgN2} 条图例）` : ''));
+    }
+    return { ok: true, OW, OH };
+  } catch (e) {
+    if (e && e.__exportCanceled) {
+      releaseCanvas(out);
+      LOG.event('导出整图取消', `${OW}×${OH}`);
+      return { ok: false, canceled: true };
+    }
+    releaseCanvas(out);
+    LOG.event('导出整图 PNG 失败', String(e && (e.message || e)));
+    throw e;
   } finally {
     if (_restoreHover) { _restoreHover(); _restoreHover = null; }
     renderer.fixedSize = false;
@@ -5772,30 +6672,8 @@ async function exportFullPNG(scale = 1) {
     glCanvas.width = savedW;
     glCanvas.height = savedH;
     renderer.setView(savedView.x, savedView.y, savedView.w, savedView.h);
-    // 整图也把图例画上 ✓（放在 finally 里，前面就算哪块渲染失败也照样出一张带图例的图 ✓）
-    // 尺寸也按放大后的给 ✓ → 图例的字和色块跟着一起放大 ✓
-    /* **先画名字、再画图例** ✓（图例压在最上面 ✓ 名字开关听显示区那几个 ✓）*/
-    try { _labN2 = paintLabelsForExport(ctx, scale); } catch (e) {
-      LOG.event('导出名字失败', String(e && (e.message || e)));
-    }
-    _lgN2 = maybeDrawLegend(ctx, W * scale, H * scale);
     invalidate();
   }
-
-  const _tag = scale > 1 ? `_整图${scale}x` : '_整图';
-  exportBlob(out, (b) => {
-    download(b, `${GAME.filePrefix}${_tag}_${stamp()}.png`);
-    LOG.event('导出整图 PNG', `${OW}×${OH}` + (scale > 1 ? `（${scale}× 高清）` : '')
-      + (_labN2 ? ` · 名字 ${_labN2} 个` : ' · 不带名字')
-      + (_lgN2 ? ' · 图例 ' + _lgN2 + ' 条' : ''));
-    if (_lgN2 < 0) return toast('已导出，但图例是空的：这个视图里还没有可列的颜色 ✓ 先涂几块试试');
-    toast(`已导出整张地图 ${OW}×${OH}` + (scale > 1 ? `（${scale}× 高清）` : '')
-      + (_labN2 ? `（含 ${_labN2} 个名字）` : '（不带名字：显示区的名称开关关着）')
-      + (_lgN2 ? `（含 ${_lgN2} 条图例）` : ''));
-  }, (why) => {
-    LOG.event('导出整图 PNG 失败', why);
-    toast(`${why} —— 换 1× 再试，或者缩小导出范围`, true);
-  });
 }
 
 
@@ -5879,10 +6757,24 @@ function scheduleSave() {
 function projectData() {
   const t = state.titles;
   const out = { version: 1, generated: new Date().toISOString(), titles: {}, labels: {},
-                // 图例的设定，跟着「导出涂色」一起存 ✓（名字不再存 ✗ —— 列表里不能改名了 ✓）
+                // 图例的设定，跟着「导出涂色」一起存 ✓（含条目自定义名 / 顺序 ✓）
                 legend: { show: !!(state.set && state.set.legend),
                           title: (state.set && state.set.legendTitle) || '',
+                          titleOnly: !!(state.set && state.set.legendTitleOnly),
                           pos: (state.set && state.set.legendPos) || 'tl',
+                          size: (state.set && state.set.legendSize) || 'm',
+                          scale: Number(state.set && state.set.legendScale) || 1,
+                          font: (state.set && state.set.legendFont) || '',
+                          cols: (state.set && state.set.legendCols) || 1,
+                          bg: (state.set && state.set.legendBg) || '#ffffff',
+                          bgAlpha: state.set && state.set.legendBgAlpha != null ? state.set.legendBgAlpha : 90,
+                          border: (state.set && state.set.legendBorder) || '#000000',
+                          fg: (state.set && state.set.legendFg) || '#111111',
+                          fgAuto: !!(state.set && state.set.legendFgAuto),
+                          box: (state.set && state.set.legendBox) || 'square',
+                          x: Number(state.set && state.set.legendX),
+                          y: Number(state.set && state.set.legendY),
+                          names: Object.assign({}, state.legendNames || {}),
                           on: Object.assign({}, state.legendOn || {}),
                           // 图例的**手动顺序**也跟存档走 ✓（在图例列表里用 ↑↓ 排的 ✓）
                           order: Array.isArray(state.legendOrder) ? state.legendOrder.slice() : [] },
@@ -6004,13 +6896,31 @@ function applyProject(data) {
   // 导入：图例设定也还原回来 ✓
   if (data.legend) {
     state.set = state.set || {};
-    state.set.legend = !!data.legend.show;
-    state.set.legendTitle = data.legend.title || '';
-    state.set.legendPos = data.legend.pos || 'tl';
-    // 老存档里的 legend.names 直接忽略 ✓ —— 图例改名的功能已经删了 ✓
-    state.legendOn = Object.assign({}, data.legend.on || {});
+    const lg = data.legend;
+    state.set.legend = !!lg.show;
+    state.set.legendTitle = lg.title || '';
+    state.set.legendTitleOnly = !!lg.titleOnly;
+    state.set.legendPos = lg.pos || 'tl';
+    state.set.legendSize = lg.size || 'm';
+    state.set.legendScale = Number(lg.scale) > 0 ? Number(lg.scale) : 1;
+    state.set.legendFont = lg.font || '';
+    state.set.legendCols = Math.min(8, Math.max(1, Number(lg.cols) | 0 || 1));
+    state.set.legendBg = /^#[0-9a-f]{6}$/i.test(lg.bg || '') ? lg.bg : '#ffffff';
+    state.set.legendBgAlpha = Number(lg.bgAlpha);
+    if (!(state.set.legendBgAlpha >= 0 && state.set.legendBgAlpha <= 100)) state.set.legendBgAlpha = 90;
+    state.set.legendBorder = /^#[0-9a-f]{6}$/i.test(lg.border || '') ? lg.border : '#000000';
+    state.set.legendFg = /^#[0-9a-f]{6}$/i.test(lg.fg || '') ? lg.fg : '#111111';
+    state.set.legendFgAuto = !!lg.fgAuto;
+    state.set.legendBox = ['square', 'rect', 'circle'].includes(lg.box) ? lg.box : 'square';
+    state.set.legendX = Number(lg.x);
+    if (!(state.set.legendX >= 0 && state.set.legendX <= 1)) state.set.legendX = 0.04;
+    state.set.legendY = Number(lg.y);
+    if (!(state.set.legendY >= 0 && state.set.legendY <= 1)) state.set.legendY = 0.04;
+    // 老存档里的 names 也收下（没有就是空 = 全用自动名 ✓）
+    state.legendNames = Object.assign({}, lg.names || {});
+    state.legendOn = Object.assign({}, lg.on || {});
     // 图例顺序一起还原 ✓（老存档没有这个字段 → 空数组 = 照旧按大小排 ✓）
-    state.legendOrder = Array.isArray(data.legend.order) ? data.legend.order.slice() : [];
+    state.legendOrder = Array.isArray(lg.order) ? lg.order.slice() : [];
   }
   const labels = data.labels || {};
   if (data.names && typeof data.names === 'object') {
@@ -6588,8 +7498,6 @@ function bindFontPicker() {
 
   /** 下拉里有哪些选项：默认 + 本地字体库 ✓ */
   let fonts = [];
-  /** 已经造好的位图字体（id → BitmapFont ✓ 别重复解 ✓）*/
-  const bmCache = new Map();
 
   const familyOfId = (id) => fontLibFamily(id);
 
@@ -6608,25 +7516,8 @@ function bindFontPicker() {
     return hit ? hit.id : '';
   };
 
-  /** 取（必要时现造）一套位图字体 ✓ */
-  const loadBitmapFont = async (id) => {
-    if (bmCache.has(id)) return bmCache.get(id);
-    const rec = await fontLibRecord(id);
-    let bf = null;
-    if (rec && rec.kind === 'bitmap' && rec.fnt) {
-      try {
-        bf = Array.isArray(rec.pages) && rec.pages.length
-          ? new BitmapFont(rec.pages)
-          : new BitmapFont(rec.fnt, rec.bytes);
-        if (!bf.ok) bf = null;
-      } catch (e) {
-        bf = null;
-        LOG.event('位图字体解析失败', ((e && e.message) || String(e)));
-      }
-    }
-    bmCache.set(id, bf);
-    return bf;
-  };
+  /** 取（必要时现造）一套位图字体 ✓ —— 跟图例共用全局缓存 */
+  const loadBitmapFont = (id) => _loadBmFont(id);
 
   /** 把库里的字体刷进两个下拉 */
   const refresh = async () => {
@@ -6644,6 +7535,8 @@ function bindFontPicker() {
     }
     // 没有导入过任何字体时，删除按钮没意义 ✓
     if (btnDel) btnDel.disabled = fonts.length === 0;
+    // 图例的字体下拉也用同一个库；导入 / 删除 / 清空后跟着刷 ✓
+    refreshLegendFonts().catch(() => { /* 图例字体读取失败不影响字体库本身 ✓ */ });
   };
 
   /* **状态行**（2026-10-20 ✓）—— 一直留在设置里的那行字
@@ -6890,7 +7783,7 @@ function bindFontPicker() {
     btnClear.addEventListener('click', async () => {
       if (!confirm('清空整个本地字体库？\n（导入过的字体都会没掉，地图和涂色不受影响）')) return;
       try { await fontLibClear(); } catch (e) { /* ✓ */ }
-      bmCache.clear();
+      _bmFontCache.clear();
       await refresh();
       setLabelFont('place', ''); setLabelBitmap('place', null);
       setLabelFont('power', ''); setLabelBitmap('power', null);
@@ -6930,7 +7823,7 @@ function bindFontPicker() {
       if (!f) return;
       if (!confirm(`删除字体「${f.name}」？\n（用了它的地名 / 势力名会回到默认字体）`)) return;
       await fontLibRemove(id);
-      bmCache.delete(id);
+      _bmFontCache.delete(id);
       // 选中它的两槽都退回默认 ✓
       for (const [sel, kind] of [[selPlace, 'place'], [selPower, 'power']]) {
         if (sel && sel.value === id) { sel.value = ''; await applyFace(kind, sel); }
@@ -7494,14 +8387,10 @@ function bindEvents() {
       if (_lpmv0) _lpmv0.textContent = labelPlaceMaxText();
       // 取色后切到哪个画图工具（涂抹 / 填色 ✓）
       put('set-picktool', s.pickTool === 'fill' ? 'fill' : 'paint');
-      // 导出图例那一栏：回填勾选/标题/位置，并把条目列表刷出来 ✓
-      // （这里以前漏了 ✗ → 设置里那一栏是空的、勾选也回填不了 ✓）
-      const _lgEl0 = $('set-legend');
-      if (_lgEl0) _lgEl0.checked = !!(s.legend);
-      put('set-legend-title', s.legendTitle || '');
-      const _lpEl0 = $('set-legend-pos');
-      if (_lpEl0) _lpEl0.value = s.legendPos || 'tl';
-      rebuildLegendPanel();
+      // 图例那一栏：勾选 / 标题 / 位置 / 尺寸 / 颜色 / 字体 / 列数 / 色块 全部回填 ✓
+      // （以前只回填了三个 ✗ → 换完存档后其它控件还停在旧值上 ✓）
+      syncLegendControls(s);
+      legendFresh();               // 先补算色块再列，避免列到上一个剧本的条目 ✓
       syncAllCtls();              // 所有数值控件的当前值 / HEX / 不限那两个勾 ✓
     };
 
@@ -8048,13 +8937,8 @@ function bindEvents() {
         scheduleSave();
       });
     }
-    // 导出图例的三个控件 ✓（勾选 / 标题 / 位置）
-    const _lgEl = $('set-legend');
-    if (_lgEl) _lgEl.addEventListener('change', () => { state.set.legend = _lgEl.checked; scheduleSave(); });
-    const _ltEl = $('set-legend-title');
-    if (_ltEl) _ltEl.addEventListener('input', () => { state.set.legendTitle = _ltEl.value; scheduleSave(); });
-    const _lpEl = $('set-legend-pos');
-    if (_lpEl) _lpEl.addEventListener('change', () => { state.set.legendPos = _lpEl.value; scheduleSave(); });
+    // 图例控件（勾选 / 标题 / 位置 / 尺寸 / 颜色 / 字体 / 列数 / 色块 / 排序）✓
+    bindLegendControls();
     if ($('set-reset')) $('set-reset').onclick = () => {
       /* 恢复默认必须当场落盘（用户报：点了恢复默认、刷新之后还是改过的值）
        *   原因：这里原来只重置了内存（state.set）而没写盘
@@ -8068,6 +8952,11 @@ function bindEvents() {
        *   （库里的字体文件不会删 ✓ 只是"不再选中"）*/
       /* ⚠ 不再弹确认（2026-10-20 ✓ 用户："不要弹这个提示"）—— 点了就点了吧 ✓ */
       state.set = Object.assign({}, SET_DEFAULTS);
+      // 图例的每项开关 / 自定义名 / 手动顺序也是“改动”，恢复默认要一起清 ✓
+      // （原来只重置 state.set，列表里还留着上一张图的勾选和改名 ✗）
+      state.legendOn = {};
+      state.legendOrder = [];
+      state.legendNames = {};
       labelDirty = true;
       blocksDirty = true;
       try { saveMapPrefs(); } catch (e) { scheduleSave(); }
@@ -8157,9 +9046,9 @@ function onExportFail(e) {
     : '导出失败了：' + msg + '（细节记在导出日志里）', true);
 }
   $('btn-png').onclick = _wrap(exportViewPNG);
-  $('btn-png-full').onclick = _wrap(() => exportFullPNG(1));
-  // **高清 2×**：输出宽高都翻倍、边界按新尺度重画 ✓（用户要求 ✓）
-  if ($('btn-png-full2')) $('btn-png-full2').onclick = _wrap(() => exportFullPNG(2));
+  /* 「导出整图」现在先开分辨率 / 范围弹窗，不再直接按 1× 跑 ✓ */
+  _initExportDialog();
+  $('btn-png-full').onclick = _wrap(openExportDialog);
   $('btn-project').onclick = _wrap(openSaveMapDialog);
   /* 导出涂色方案 .json 直通下载 ✓（不进仓库、不弹窗 ✓）*/
   $('btn-export-project').onclick = _wrap(() => downloadProjectJSON());
@@ -8272,6 +9161,14 @@ function onExportFail(e) {
       setPanel.addEventListener('dragover', (e) => e.preventDefault());
       setPanel.addEventListener('drop', dropDispatch);
     }
+  }
+  // 图例预览：拖动 / 右下角缩放 / 方向键微调 ✓
+  bindLegendOverlay();
+  scheduleLegendOverlay();
+  window.addEventListener('resize', scheduleLegendOverlay);
+  const _legendWrap0 = $('legend-overlay');
+  if (_legendWrap0) {
+    _legendWrap0.addEventListener('wheel', (e) => e.stopPropagation(), { passive: true });
   }
 }
 
@@ -8528,6 +9425,7 @@ function frameBody() {
       rebuildPaintBlocks(!!state._blocksAll);    // 只有国家/剧本那层才全图重分组 ✓
       blocksDirty = false;
       labelDirty = true;
+      if (state.set && state.set.legend) scheduleLegendOverlay();
     }
   }
 
@@ -10386,14 +11284,19 @@ function legendEntries() {
   }
   const _ordered = [...seen.values()]
     .sort((a, b) => b.size - a.size)
-    .map((e) => ({
-      ...e,
-      // **名字用"现在显示的那个"** ✓ —— b.name 是 rebuildPaintBlocks 从
-      // state.titleName 现算的 ✓ 所以用「改名」工具改完，这边**立刻就是新名字** ✓
-      //（图例自己那份 legendNames 已经删了 ✗ —— 列表里不再能改名 ✓）
-      name: e.name || '',
-      on: !(state.legendOn && state.legendOn[e.key] === false),
-    }));
+    .map((e) => {
+      // 名字优先用图例自己的自定义名 ✓（空串 / 纯空白 → 退回地图上现在的名字）
+      const auto = e.name || '';
+      const raw = state.legendNames && state.legendNames[e.key];
+      const custom = raw == null ? '' : String(raw).trim();
+      return {
+        ...e,
+        autoName: auto,
+        customName: !!custom,
+        name: custom || auto,
+        on: !(state.legendOn && state.legendOn[e.key] === false),
+      };
+    });
   /* **手动顺序优先** ✓（在图例列表里用 ↑↓ 排过的 ✓ 存在 state.legendOrder ✓）
    * 排过的按你排的次序走 ✓；没排过的（比如刚涂出来的一族）接在后面按大小走 ✓
    * 不然手动排一次就把新来的条目挤没了 ✗ */
@@ -10438,6 +11341,56 @@ function freshPaintBlocks() {
 function legendFresh() {
   freshPaintBlocks();
   rebuildLegendPanel();
+  refreshLegendFonts().catch(() => { /* 字体库读不出来也照样显示图例 ✓ */ });
+  scheduleLegendOverlay();
+}
+
+/** 面板底部那句说明：把“为什么灰了 / 为什么没东西”说清楚，别让人猜 ✓ */
+function _legendNoteText(rows, shown) {
+  const s = state.set || {};
+  if (!s.legend) return rows ? '图例已关闭' : '';
+  if (s.legendTitleOnly) {
+    return String(s.legendTitle || '').trim() ? '只显示标题' : '只显示标题，但标题是空的';
+  }
+  if (!rows) return '';
+  const off = Math.max(0, rows - (shown == null ? rows : shown));
+  if (shown === 0 && rows > 0) return '共 ' + rows + ' 条 · 全关掉了';
+  return '共 ' + rows + ' 条' + (off ? ' · 关掉 ' + off + ' 条' : '');
+}
+
+function _legendRefreshNote() {
+  const cnt = $('legend-count');
+  const box = $('legend-list');
+  if (!cnt) return;
+  const rows = box ? box.querySelectorAll('.legend-row').length : 0;
+  const boxes = box ? [...box.querySelectorAll('.legend-on')] : [];
+  const shown = boxes.filter((b) => b.checked).length;
+  cnt.textContent = _legendNoteText(rows, shown);
+}
+
+/** 互相关联的控件：不生效的时候就置灰，别让人对着改了没反应的框发呆 ✓ */
+function _legendSyncLinkage() {
+  const s = state.set || {};
+  const titleOnly = !!s.legendTitleOnly;
+  const box = $('legend-list');
+  if (box) box.classList.toggle('is-off', titleOnly);
+  for (const id of ['legend-sort', 'legend-reset-names']) {
+    const b = $(id);
+    if (b) b.disabled = titleOnly;
+  }
+  const reset = $('legend-reset-names');
+  if (reset) {
+    const hasCustom = !!(state.legendNames && Object.keys(state.legendNames).length);
+    reset.disabled = titleOnly || !hasCustom;
+    reset.title = titleOnly
+      ? '「只显示标题」时条目不会画进图例'
+      : (hasCustom ? '把自定义名全部清掉，恢复地图上的名字' : '还没有改过名字');
+  }
+  const fg = $('set-legend-fg');
+  if (fg) {
+    fg.disabled = !!s.legendFgAuto;
+    fg.title = fg.disabled ? '勾了「同色块」：字色跟每个色块走，这个颜色不生效' : '图例里文字的颜色';
+  }
 }
 
 /** 把设置页里的图例列表刷一遍（打开设置、涂完色都该刷 ✓） */
@@ -10446,33 +11399,43 @@ function rebuildLegendPanel() {
   if (!box) return;
   const list = legendEntries();
   if (!list.length) {
-    /* 一条都没有：**什么都不写** ✓ 连这个空框一起藏起来 ✓
-     * （用户：那句提示字去掉 ✓ 加它是为了诊断"我图例呢"，现在刷新已经修好了 ✓
-     *   有涂过的时候，点开这一页就会列出条目 ✓ 真的没内容就安安静静不显示 ✓） */
-    box.innerHTML = '';
-    box.style.display = 'none';
+    /* 一条都没有：**说清楚为什么空** ✓
+     * 以前这里是 display:none，第一次打开这一页的人只会看到一片空白，
+     * 既不知道条目从哪来，也不知道去涂个色就会有了 ✗ */
+    box.style.display = '';
+    box.innerHTML = '<div class="legend-empty" role="note">还没有条目</div>';
+    _legendSyncLinkage();
+    const emptyCnt = $('legend-count');
+    if (emptyCnt) emptyCnt.textContent = _legendNoteText(0);
     return;
   }
   box.style.display = '';
+  const cnt = $('legend-count');
+  if (cnt) cnt.textContent = _legendNoteText(list.length, list.filter((e) => e.on).length);
   // 名字的 HTML 转义（就地在模板里拼，别让 & < > " 把结构破了 ✗）
   const esc = (s) => String(s == null ? '' : s)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-  box.innerHTML = list.map((e, i) => (
-    '<div class="legend-row" data-key="' + esc(e.key) + '">'
-    + '<input type="checkbox" class="legend-on"' + (e.on ? ' checked' : '') + '>'
-    + '<span class="legend-sw" style="background:' + _hexOf(e.rgb) + '"></span>'
-    // **名字只读** ✓ —— 列表里不再能改名（想改走「改名」工具 ✓）
-    // title 里放全名：太长了会被省略号截掉，悬停还能看全 ✓
-    + '<span class="legend-name" title="' + esc(e.name) + '">' + esc(e.name) + '</span>'
-    + '<span class="legend-move">'
-    +   '<button type="button" class="legend-up" aria-label="上移"'
-    +     (i === 0 ? ' disabled' : '') + '>▲</button>'
-    +   '<button type="button" class="legend-down" aria-label="下移"'
-    +     (i === list.length - 1 ? ' disabled' : '') + '>▼</button>'
-    + '</span>'
-    + '<span class="legend-drag" aria-label="按住拖动排序">⠿</span>'
-    + '</div>'
-  )).join('');
+  box.innerHTML = list.map((e, i) => {
+    const nm = esc(e.name);
+    return '<div class="legend-row" role="listitem" data-key="' + esc(e.key) + '">'
+      + '<input type="checkbox" class="legend-on" aria-label="在图例里显示「' + nm + '」"'
+      + (e.on ? ' checked' : '') + '>'
+      + '<span class="legend-sw" aria-hidden="true" style="background:' + _hexOf(e.rgb) + '"></span>'
+      // 名字可编辑 ✓（留空 = 用自动名 ✓）
+      + '<input type="text" class="legend-name" maxlength="60" spellcheck="false"'
+      + ' aria-label="「' + nm + '」的图例名，留空用自动名"'
+      + ' value="' + esc(e.customName ? e.name : '') + '" placeholder="' + esc(e.autoName) + '"'
+      + ' title="' + esc(e.autoName) + '">'
+      + '<span class="legend-move">'
+      +   '<button type="button" class="legend-up" aria-label="上移「' + nm + '」" title="上移"'
+      +     (i === 0 ? ' disabled' : '') + '>▲</button>'
+      +   '<button type="button" class="legend-down" aria-label="下移「' + nm + '」" title="下移"'
+      +     (i === list.length - 1 ? ' disabled' : '') + '>▼</button>'
+      + '</span>'
+      + '<span class="legend-drag" aria-hidden="true" title="按住拖动排序">⠿</span>'
+      + '</div>';
+  }).join('');
+  _legendSyncLinkage();
   let dragRow = null;      // 正在拖的那一行（拖动排序用 ✓ 一次只可能有一行 ✓）
 
   /** 拖动中：看指针掠过哪一行，就把拖的那行插到它前/后 ✓（事件挂在 window 上 ✓ 见下面说明） */
@@ -10551,92 +11514,392 @@ function rebuildLegendPanel() {
     if (on) on.addEventListener('change', () => {
       state.legendOn = state.legendOn || {};
       state.legendOn[key] = on.checked;
+      _legendRefreshNote();
+      scheduleLegendOverlay();
       scheduleSave();
     });
-    /* 「在图例列表里改名」这条路已经删掉 ✓（用户要的）
-     * 名字就是地图上现在显示的那个；真要改名走「改名」工具（renameAt）✓ */
+    // 图例里的名字：改这里只影响图例，不动地图上的正式名字 ✓
+    const nameInput = row.querySelector('.legend-name');
+    if (nameInput) nameInput.addEventListener('input', () => {
+      state.legendNames = state.legendNames || {};
+      const v = String(nameInput.value || '').trim();
+      if (v) state.legendNames[key] = nameInput.value;
+      else delete state.legendNames[key];
+      _legendSyncLinkage();   // 改出第一个自定义名之后，「恢复自动名」要立刻能按 ✓
+      scheduleLegendOverlay();
+      scheduleSave();
+    });
+    if (nameInput) nameInput.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter') { ev.preventDefault(); nameInput.blur(); }
+      ev.stopPropagation();
+    });
   }
 }
 
 /**
+ * 图例的排版 / 绘制（2026-10-27 按 MapChart 那套整合）
+ * 地图预览、导出、设置里的条目共用这一套；预览只是换个画布和字号基准 ✓
+ */
+const LEGEND_FONTS = {
+  sans: '"Microsoft YaHei","PingFang SC","Noto Sans SC",system-ui,sans-serif',
+  song: '"Songti SC","SimSun","Noto Serif SC",serif',
+  kai: '"Kaiti SC","KaiTi","STKaiti","Noto Serif SC",serif',
+  mono: '"Cascadia Mono","Consolas","Noto Sans Mono",monospace',
+};
+const LEGEND_SIZE_FACTOR = { s: 0.78, m: 1, l: 1.24, xl: 1.5 };
+
+/* 图例字体：默认 + 本地字体库（2026-10-27）
+ * 字体库存的是「钥匙」：TTF = 族名，位图 = bm:<id>；老存档的 sans/song/kai/mono
+ * 仍能画（LEGEND_FONTS 兜底），但下拉里只列默认和真正导入的字体 ✓ */
+let _legendFontList = [];
+function _legendFontKey(f) {
+  return f.kind === 'bitmap' ? 'bm:' + f.id : fontLibFamily(f.id);
+}
+function _legendFontSpec(key) {
+  const raw = String(key || '');
+  if (!raw || LEGEND_FONTS[raw]) {
+    return { key: raw, css: LEGEND_FONTS[raw] || LEGEND_FONTS.sans, bitmap: null, imported: false, kind: 'system', name: '' };
+  }
+  const f = _legendFontList.find((x) => _legendFontKey(x) === raw);
+  if (!f) return { key: '', css: LEGEND_FONTS.sans, bitmap: null, imported: false, kind: 'system', name: '' };
+  if (f.kind === 'bitmap') {
+    const bm = _bmFontCache.get(f.id) || null;
+    return { key: raw, css: LEGEND_FONTS.sans, bitmap: bm, imported: true, kind: 'bitmap', name: f.name || f.id };
+  }
+  return {
+    key: raw,
+    css: '"' + fontLibFamily(f.id) + '","Microsoft YaHei","PingFang SC",sans-serif',
+    bitmap: null, imported: true, kind: 'ttf', name: f.name || f.id,
+  };
+}
+
+/** 把字体库刷进图例下拉；当前选的是位图就顺手解出来 ✓ */
+async function refreshLegendFonts(given) {
+  /* 自检可以直接喂一份清单，省得为了验下拉先去造一个真字体文件 ✓
+     不传就照常读本地字体库 ✓ */
+  const list = Array.isArray(given) ? given : await fontLibList().catch(() => []);
+  _legendFontList = list;
+  const sel = $('set-legend-font');
+  const cur = String((state.set && state.set.legendFont) || '');
+  if (sel) {
+    sel.innerHTML = '';
+    const def = document.createElement('option');
+    def.value = '';
+    def.textContent = '默认（系统黑体）';
+    sel.appendChild(def);
+    for (const f of list) {
+      const o = document.createElement('option');
+      o.value = _legendFontKey(f);
+      o.textContent = (f.name || f.id) + (f.kind === 'bitmap' ? ' · 位图' : '');
+      sel.appendChild(o);
+    }
+    const opts = sel.options || sel.querySelectorAll('option');
+    const has = Array.prototype.some.call(opts || [], (o) => o && o.value === cur);
+    sel.value = has ? cur : '';
+    sel.title = list.length
+      ? '使用字体库里导入的字体'
+      : '字体库为空；先去「名称 → 字体库」导入字体';
+  }
+  const spec = _legendFontSpec(cur);
+  if (spec.kind === 'bitmap' && !spec.bitmap) {
+    await _loadBmFont(spec.key.slice(3));
+  }
+  scheduleLegendOverlay();
+}
+
+function _legendClamp(v, lo, hi) { return v < lo ? lo : (v > hi ? hi : v); }
+
+function legendOpts() {
+  const s = (state && state.set) || {};
+  const num = (v, d) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : d;
+  };
+  const color = (v, d) => (/^#[0-9a-f]{6}$/i.test(String(v || '')) ? String(v) : d);
+  const pos = ['tl', 'tr', 'bl', 'br', 'custom'].includes(s.legendPos) ? s.legendPos : 'tl';
+  const size = ['s', 'm', 'l', 'xl', 'custom'].includes(s.legendSize) ? s.legendSize : 'm';
+  const fontSpec = _legendFontSpec(s.legendFont);
+  return {
+    show: !!s.legend,
+    title: String(s.legendTitle || '').trim(),
+    titleOnly: !!s.legendTitleOnly,
+    pos,
+    size,
+    scale: _legendClamp(num(s.legendScale, 1), 0.35, 3),
+    font: fontSpec.key || 'sans',
+    fontCss: fontSpec.css,
+    fontBitmap: fontSpec.bitmap,
+    fontImported: fontSpec.imported,
+    fontKind: fontSpec.kind,
+    cols: Math.round(_legendClamp(num(s.legendCols, 1), 1, 8)),
+    bg: color(s.legendBg, '#ffffff'),
+    bgAlpha: _legendClamp(num(s.legendBgAlpha, 90), 0, 100),
+    border: color(s.legendBorder, '#000000'),
+    fg: color(s.legendFg, '#111111'),
+    fgAuto: !!s.legendFgAuto,
+    box: ['square', 'rect', 'circle'].includes(s.legendBox) ? s.legendBox : 'square',
+    x: _legendClamp(num(s.legendX, 0.04), 0, 1),
+    y: _legendClamp(num(s.legendY, 0.04), 0, 1),
+  };
+}
+
+function _legendHexA(hex, a) {
+  const h = String(hex || '#000000').replace('#', '');
+  const n = parseInt(h.length === 3 ? h.split('').map((c) => c + c).join('') : h, 16) || 0;
+  return 'rgba(' + ((n >> 16) & 255) + ',' + ((n >> 8) & 255) + ',' + (n & 255) + ',' + a + ')';
+}
+
+function _legendRoundRect(ctx, x, y, w, h, r) {
+  const rr = Math.max(0, Math.min(r, Math.min(w, h) / 2));
+  ctx.beginPath();
+  ctx.moveTo(x + rr, y);
+  ctx.arcTo(x + w, y, x + w, y + h, rr);
+  ctx.arcTo(x + w, y + h, x, y + h, rr);
+  ctx.arcTo(x, y + h, x, y, rr);
+  ctx.arcTo(x, y, x + w, y, rr);
+  ctx.closePath();
+}
+
+/** 按字符折行；中文没有空格，逐字量最稳 ✓（最多 4 行，超出加省略号）
+ *  measure 可换成位图字体的量法（它不走 ctx.font ✓）*/
+function _legendWrap(ctx, text, maxW, maxLines, measure) {
+  const s = String(text == null ? '' : text);
+  if (!s) return [''];
+  const mw = measure || ((t) => ctx.measureText(t).width);
+  const chars = Array.from(s);
+  const lines = [];
+  let line = '';
+  for (const ch of chars) {
+    if (ch === '\n') { lines.push(line); line = ''; continue; }
+    const test = line + ch;
+    if (line && mw(test) > maxW) {
+      lines.push(line);
+      line = ch;
+    } else {
+      line = test;
+    }
+  }
+  if (line || !lines.length) lines.push(line);
+  const cap = Math.max(1, maxLines || 3);
+  if (lines.length > cap) {
+    lines.length = cap;
+    let last = lines[cap - 1];
+    while (last && mw(last + '…') > maxW) last = last.slice(0, -1);
+    lines[cap - 1] = (last || '') + '…';
+  }
+  return lines;
+}
+
+function legendLayout(ctx, W, H, opts) {
+  const opt = opts || legendOpts();
+  if (!ctx || !(W > 0) || !(H > 0)) return null;
+  let list = opt.titleOnly ? [] : legendEntries().filter((e) => e.on);
+  const title = opt.title;
+  if (!list.length && !title) return null;
+  const font = opt.fontCss || LEGEND_FONTS.sans;
+  const bm = opt.fontBitmap || null;
+  const titleWeight = opt.fontKind === 'ttf' ? '600' : '700';
+  const rowWeight = opt.fontKind === 'ttf' ? '600' : '500';
+  const setFont = (weight, size) => { if (!bm) ctx.font = weight + ' ' + size + 'px ' + font; };
+  const measure = (text, weight, size) => {
+    if (bm) return bm.measure(text, size);
+    ctx.font = weight + ' ' + size + 'px ' + font;
+    return ctx.measureText(text).width;
+  };
+  // 基准字号跟原版一样跟图宽走；size 只是乘一个档位（自定义就是拖角算出来的 scale）
+  const base = Math.max(9, Math.round(W / 175));
+  const factor = opt.size === 'custom' ? opt.scale : (LEGEND_SIZE_FACTOR[opt.size] || 1);
+  const fs = Math.max(8, Math.round(base * factor));
+  const titleFs = Math.max(fs, Math.round(fs * 1.17));
+  const pad = Math.max(5, Math.round(fs * 0.8));
+  const lineH = Math.max(10, Math.round(fs * 1.3));
+  const rowGap = Math.max(2, Math.round(fs * 0.35));
+  const sw = Math.max(7, Math.round(fs * 1.15));
+  // 长方形色块比方形更宽，排版时也得按实际宽度留位置；否则字会压到色块上 ✗
+  const swEff = opt.box === 'rect' ? Math.round(sw * 1.4) : sw;
+  const gap = Math.max(5, Math.round(fs * 0.65));
+  const colGap = Math.max(8, Math.round(fs * 1.2));
+  const M = Math.max(6, Math.round(fs * 1.4));
+  const maxBoxW = Math.max(72, W - M * 2);
+  const maxBoxH = Math.max(56, H - M * 2);
+  ctx.save();
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  setFont(titleWeight, titleFs);
+  const titleMaxW = Math.max(60, Math.min(Math.round(W * 0.62), maxBoxW - pad * 2));
+  const measureTitle = (t) => measure(t, titleWeight, titleFs);
+  const titleLines = title ? _legendWrap(ctx, title, titleMaxW, 3, measureTitle) : [];
+  let titleW = 0;
+  for (const ln of titleLines) titleW = Math.max(titleW, measureTitle(ln));
+  const titleLineH = Math.max(11, Math.round(titleFs * 1.28));
+  const titleH = titleLines.length ? titleLines.length * titleLineH + Math.round(fs * 0.6) : 0;
+
+  /* **列数得看图上放不放得下** ✗
+   * 以前只按 opt.cols 排：手机 390px 选 8 列，每列被 42px 的文字下限撑着，
+   * 后几列直接画到框外，被 .stage 的 overflow:hidden 裁掉 —— 图例看起来“缺一半” ✓
+   * 现在先算一行至少要多宽（色块 + 间距 + 最短可读文字），放不下就把列数收回来 ✓ */
+  const minCellW = swEff + gap + 42;
+  const maxCols = Math.max(1, Math.floor((maxBoxW - pad * 2 + colGap) / (minCellW + colGap)));
+  let cols = list.length ? Math.min(opt.cols, list.length, maxCols) : 1;
+  cols = Math.max(1, cols);
+  let rows = list.length ? Math.ceil(list.length / cols) : 0;
+  const availableW = Math.max(48, maxBoxW - pad * 2 - (cols - 1) * colGap);
+  const maxTextW = Math.max(42, Math.min(Math.round(W * 0.28),
+    Math.floor(availableW / cols) - swEff - gap));
+
+  const build = (rr) => {
+    const grid = [];
+    const colW = new Array(cols).fill(0);
+    const rowHeights = [];
+    let totalH = 0;
+    let visible = 0;
+    setFont(rowWeight, fs);
+    const measureRow = (t) => measure(t, rowWeight, fs);
+    for (let r = 0; r < rr; r++) {
+      const row = [];
+      let rh = 0;
+      for (let c = 0; c < cols; c++) {
+        const e = list[c * rr + r];
+        if (!e) { row.push(null); continue; }
+        const lines = _legendWrap(ctx, e.name, maxTextW, 2, measureRow);
+        let tw = 0;
+        for (const ln of lines) tw = Math.max(tw, measureRow(ln));
+        const cell = { e, lines, textW: tw };
+        row.push(cell);
+        colW[c] = Math.max(colW[c], swEff + gap + tw);
+        rh = Math.max(rh, Math.max(1, lines.length) * lineH + rowGap);
+        visible++;
+      }
+      grid.push(row);
+      rowHeights.push(rh || (lineH + rowGap));
+      totalH += rowHeights[r];
+    }
+    return { grid, colW, rowHeights, totalH, visible };
+  };
+
+  let built = build(rows);
+  // 图矮的时候从下面裁行，别把图例画出图外 ✓
+  while (rows > 1 && pad * 2 + titleH + built.totalH > maxBoxH) {
+    rows--;
+    built = build(rows);
+  }
+  const contentW = built.colW.reduce((a, b) => a + b, 0) + colGap * (cols - 1);
+  const boxW = Math.round(Math.min(maxBoxW, Math.max(60, pad * 2 + Math.max(contentW, titleW))));
+  const boxH = Math.round(pad * 2 + titleH + built.totalH);
+  const pos = opt.pos;
+  let x;
+  let y;
+  const xMax = Math.max(M, W - boxW - M);
+  const yMax = Math.max(M, H - boxH - M);
+  if (pos === 'custom') {
+    x = _legendClamp(opt.x * W, M, xMax);
+    y = _legendClamp(opt.y * H, M, yMax);
+  } else {
+    const onRight = pos === 'tr' || pos === 'br';
+    const onBottom = pos === 'bl' || pos === 'br';
+    x = onRight ? xMax : M;
+    y = onBottom ? yMax : M;
+  }
+  const colOffsets = [];
+  let cx = 0;
+  for (let c = 0; c < cols; c++) {
+    colOffsets.push(cx);
+    cx += built.colW[c] + colGap;
+  }
+  ctx.restore();
+  const count = list.length
+    ? built.visible + (titleLines.length && built.visible === 0 ? 1 : 0)
+    : (titleLines.length ? 1 : 0);
+  return {
+    opt, fs, titleFs, pad, lineH, sw, gap, colGap, M,
+    boxW, boxH, x, y, titleLines, titleLineH, titleH,
+    cols, rows, grid: built.grid, rowHeights: built.rowHeights,
+    colOffsets, count,
+  };
+}
+
+function _legendPaintBox(ctx, L, x, y) {
+  const opt = L.opt;
+  const font = opt.fontCss || LEGEND_FONTS.sans;
+  const bm = opt.fontBitmap || null;
+  const titleWeight = opt.fontKind === 'ttf' ? '600' : '700';
+  const rowWeight = opt.fontKind === 'ttf' ? '600' : '500';
+  const drawLine = (text, lx, cy, size, weight, color) => {
+    if (bm) {
+      const w = bm.measure(text, size);
+      bm.draw(ctx, text, lx + w / 2, cy, size, color);
+      return;
+    }
+    ctx.font = weight + ' ' + size + 'px ' + font;
+    ctx.fillStyle = color;
+    ctx.fillText(text, lx, cy);
+  };
+  ctx.save();
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  _legendRoundRect(ctx, x, y, L.boxW, L.boxH, Math.round(L.fs * 0.55));
+  if (opt.bgAlpha > 0) {
+    ctx.fillStyle = _legendHexA(opt.bg, opt.bgAlpha / 100);
+    ctx.fill();
+  }
+  ctx.lineWidth = Math.max(1, Math.round(L.fs / 16));
+  ctx.strokeStyle = _legendHexA(opt.border, 0.72);
+  ctx.stroke();
+  let ty = y + L.pad;
+  if (L.titleLines.length) {
+    for (const ln of L.titleLines) {
+      drawLine(ln, x + L.pad, ty + L.titleLineH / 2, L.titleFs, titleWeight, opt.fg);
+      ty += L.titleLineH;
+    }
+    ty += Math.round(L.fs * 0.6);
+  }
+  for (let r = 0; r < L.grid.length; r++) {
+    const row = L.grid[r];
+    const rh = L.rowHeights[r] || L.lineH;
+    for (let c = 0; c < row.length; c++) {
+      const cell = row[c];
+      if (!cell) continue;
+      const cx = x + L.pad + (L.colOffsets[c] || 0);
+      const line1 = ty + L.lineH / 2;
+      const shapeW = opt.box === 'rect' ? Math.round(L.sw * 1.4) : L.sw;
+      const shapeH = opt.box === 'rect' ? Math.round(L.sw * 0.8) : L.sw;
+      const sy = line1 - shapeH / 2;
+      ctx.fillStyle = _hexOf(cell.e.rgb);
+      if (opt.box === 'circle') {
+        ctx.beginPath();
+        ctx.arc(cx + L.sw / 2, line1, L.sw / 2, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.lineWidth = Math.max(1, Math.round(L.fs / 20));
+        ctx.strokeStyle = 'rgba(0,0,0,.45)';
+        ctx.stroke();
+      } else {
+        ctx.fillRect(cx, sy, shapeW, shapeH);
+        ctx.lineWidth = Math.max(1, Math.round(L.fs / 20));
+        ctx.strokeStyle = 'rgba(0,0,0,.45)';
+        ctx.strokeRect(cx, sy, shapeW, shapeH);
+      }
+      const lineColor = opt.fgAuto ? _hexOf(cell.e.rgb) : opt.fg;
+      for (let i = 0; i < cell.lines.length; i++) {
+        drawLine(cell.lines[i], cx + shapeW + L.gap, line1 + i * L.lineH, L.fs, rowWeight, lineColor);
+      }
+    }
+    ty += rh;
+  }
+  ctx.restore();
+}
+
+/**
  * 把图例画到导出用的 2D 画布上 ✓
- * **标题和图例分开对待** ✓：只要有标题就画标题（哪怕一条图例都没有 ✓）
- *   （踩过的坑：以前"没条目就整个 return" ✗ → 连标题都不画，看着像功能坏了 ✗）
  * @returns 画了几行（0 = 什么都没画）
  */
 function drawLegend(ctx, W, H) {
-  const all = legendEntries().filter((e) => e.on);
-  const _title0 = String((state.set && state.set.legendTitle) || '').trim();
-  if (!ctx || !(W > 0) || !(H > 0)) return 0;
-  if (!all.length && !_title0) return 0;
-  const title = _title0;
-  const pos = (state.set && state.set.legendPos) || 'tl';
-  const FONT = '"Microsoft YaHei","Noto Sans SC",system-ui,sans-serif';
-  // 字号随图宽走，但**调小了**（用户要求：小一点 → 一屏塞得更多 ✓）
-  //   以前 W/110，9216 宽的整图算出来 84px ✗ 又大又占地方
-  const fs = Math.max(11, Math.round(W / 175));
-  const pad = Math.round(fs * 0.85);
-  const rowH = Math.round(fs * 1.7);                     // 行距也压紧一点 ✓
-  const sw = Math.round(fs * 1.15);
-  const M = Math.round(fs * 1.4);                        // 离图边的距离 ✓
-  // **能塞多少塞多少**：按图高算行数（以前写死 40 ✗ 图小就画到外面、图大又浪费 ✓）
-  const maxRows = Math.max(4, Math.floor(
-    (H - M * 2 - pad * 2 - (title ? fs * 2 : 0)) / rowH));
-  const list = all.slice(0, maxRows);
-  const more = all.length - list.length;
-  ctx.save();
-  ctx.font = '600 ' + fs + 'px ' + FONT;
-  const tw = title ? ctx.measureText(title).width : 0;
-  let nameW = 0;
-  for (const e of list) nameW = Math.max(nameW, ctx.measureText(e.name).width);
-  const boxW = Math.round(pad * 2 + sw + fs * 0.7 + Math.max(nameW, tw));
-  const boxH = Math.round(pad * 2 + (title ? fs * 2 : 0) + list.length * rowH);
-  // 位置：**左上 / 右上 / 左下 / 右下** ✓（原先只留了上面两个 ✓ 用户要四个角 ✓）
-  // 认不出来的一律当左上 ✓ 不会画到图外 ✓（老存档里可能存着别的值 ✓）
-  const onRight = pos === 'tr' || pos === 'br';
-  const onBottom = pos === 'bl' || pos === 'br';
-  const x = onRight ? Math.max(M, W - boxW - M) : M;
-  const y = onBottom ? Math.max(M, H - boxH - M) : M;
-  // 底板：半透明白，浅色深色底图都读得清 ✓
-  const r = Math.round(fs * 0.6);
-  ctx.beginPath();
-  ctx.moveTo(x + r, y);
-  ctx.arcTo(x + boxW, y, x + boxW, y + boxH, r);
-  ctx.arcTo(x + boxW, y + boxH, x, y + boxH, r);
-  ctx.arcTo(x, y + boxH, x, y, r);
-  ctx.arcTo(x, y, x + boxW, y, r);
-  ctx.closePath();
-  ctx.fillStyle = 'rgba(255,255,255,.90)';
-  ctx.fill();
-  ctx.lineWidth = Math.max(1, Math.round(fs / 14));
-  ctx.strokeStyle = 'rgba(0,0,0,.32)';
-  ctx.stroke();
-  let ty = y + pad + fs * 0.9;
-  if (title) {
-    ctx.font = '700 ' + Math.round(fs * 1.15) + 'px ' + FONT;
-    ctx.fillStyle = '#111';
-    ctx.fillText(title, x + pad, ty + fs * 0.15);
-    ty += fs * 2;
-  }
-  ctx.font = '500 ' + fs + 'px ' + FONT;
-  for (const e of list) {
-    const sy = Math.round(ty - sw + fs * 0.15);
-    ctx.fillStyle = _hexOf(e.rgb);
-    ctx.fillRect(x + pad, sy, sw, sw);
-    ctx.lineWidth = Math.max(1, Math.round(fs / 18));
-    ctx.strokeStyle = 'rgba(0,0,0,.45)';
-    ctx.strokeRect(x + pad, sy, sw, sw);
-    ctx.fillStyle = '#111';
-    ctx.fillText(e.name, x + pad + sw + Math.round(fs * 0.8), ty);
-    ty += rowH;
-  }
-  if (more > 0) {
-    // **不再画「另有 N 组…」那一行了** ✓（用户：这个去掉 ✓）
-    // more 还留着（只是个数字 ✓）万一以后想在别处用 ✓ 但图上不再画它 ✓
-  }
-  ctx.restore();
-  // 画了标题也算"画到了东西" ✓（哪怕一条图例都没有 —— 不然调用方会误报"空的" ✗）
-  return list.length + (title && !list.length ? 1 : 0);
+  if (!ctx) return 0;
+  const opt = legendOpts();
+  if (!opt.show) return 0;
+  const L = legendLayout(ctx, W, H, opt);
+  if (!L) return 0;
+  _legendPaintBox(ctx, L, L.x, L.y);
+  return L.count;
 }
 
 /** 导出前统一调这个：勾了图例就画上去 ✓
@@ -10653,6 +11916,345 @@ function maybeDrawLegend(ctx, W, H) {
     const n = drawLegend(ctx, W, H);
     return n > 0 ? n : -1;
   } catch (e) { return 0; }   // 图例坏了不能连累导出 ✗
+}
+
+/* ================================================================ 图例预览
+ *
+ * 地图上直接摆一块和导出一模一样的图例 ✓（所见即所得）
+ *   · 画布不铺满舞台：外层 div 只有图例那么大，所以可以拖 ✓
+ *   · 四角 / 自定义：位置存在 state.set.legendX / legendY（按舞台宽高归一化 ✓）
+ *   · 拖右下角 = 改 legendSize='custom' + legendScale（0.35~3 倍）
+ *   · 只在“显示图例”打开时才画；关掉立刻隐藏，不留一块透明层挡地图 ✓
+ */
+let _legendOverlayRaf = 0;
+
+function scheduleLegendOverlay() {
+  if (typeof requestAnimationFrame !== 'function') {
+    try { renderLegendOverlay(); } catch (e) { /* ✓ */ }
+    return;
+  }
+  if (_legendOverlayRaf) return;
+  _legendOverlayRaf = requestAnimationFrame(() => {
+    _legendOverlayRaf = 0;
+    try { renderLegendOverlay(); } catch (e) { /* 图例坏了不拖垮地图 ✓ */ }
+  });
+}
+
+function renderLegendOverlay() {
+  const wrap = $('legend-overlay');
+  const cv = $('legend-canvas');
+  const stageEl = $('stage');
+  if (!wrap || !cv || !stageEl) return;
+  const opt = legendOpts();
+  if (!opt.show) { wrap.hidden = true; return; }
+  freshPaintBlocks();
+  const W = stageEl.clientWidth || stageEl.getBoundingClientRect().width || 0;
+  const H = stageEl.clientHeight || stageEl.getBoundingClientRect().height || 0;
+  if (!(W > 0) || !(H > 0)) { wrap.hidden = true; return; }
+  const ctx = cv.getContext && cv.getContext('2d');
+  if (!ctx) { wrap.hidden = true; return; }
+  const L = legendLayout(ctx, W, H, opt);
+  if (!L) { wrap.hidden = true; return; }
+  const dpr = Math.min(2, Math.max(1, (typeof window !== 'undefined' && window.devicePixelRatio) || 1));
+  cv.width = Math.max(1, Math.round(L.boxW * dpr));
+  cv.height = Math.max(1, Math.round(L.boxH * dpr));
+  cv.style.width = L.boxW + 'px';
+  cv.style.height = L.boxH + 'px';
+  /* 画布是绝对定位的，不会把外层撑开 ✗ ——
+     所以外层也得显式给宽高，不然 wrap 是 0×0，拖拽区域和右上角定位全错 ✓ */
+  wrap.style.width = L.boxW + 'px';
+  wrap.style.height = L.boxH + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  _legendPaintBox(ctx, L, 0, 0);
+  const M = L.M;   // 跟导出的排版用同一个边距，预览和成品位置才一致 ✓
+  let left;
+  let top;
+  if (opt.pos === 'custom') {
+    left = opt.x * W;
+    top = opt.y * H;
+  } else {
+    left = (opt.pos === 'tr' || opt.pos === 'br') ? W - L.boxW - M : M;
+    top = (opt.pos === 'bl' || opt.pos === 'br') ? H - L.boxH - M : M;
+  }
+  left = Math.max(M, Math.min(left, W - L.boxW - M));
+  top = Math.max(M, Math.min(top, H - L.boxH - M));
+  wrap.style.left = Math.round(left) + 'px';
+  wrap.style.top = Math.round(top) + 'px';
+  wrap.hidden = false;
+}
+
+/** 把当前框的位置换算成归一化坐标（拖动开始时用 ✓） */
+function _legendCustomFromBox() {
+  const wrap = $('legend-overlay');
+  const stageEl = $('stage');
+  if (!wrap || !stageEl) return;
+  const r = wrap.getBoundingClientRect();
+  const sr = stageEl.getBoundingClientRect();
+  if (!(sr.width > 0) || !(sr.height > 0)) return;
+  /* 图例关着的时候外层是 hidden，rect 全是 0 ✗
+     这时选「自定义（拖动）」不能把坐标写成左上角 —— 关一次再开就跑了 ✓ */
+  if (!(r.width > 0) || !(r.height > 0)) return;
+  state.set.legendX = _legendClamp((r.left - sr.left) / sr.width, 0, 1);
+  state.set.legendY = _legendClamp((r.top - sr.top) / sr.height, 0, 1);
+}
+
+function _legendSyncCustomUi() {
+  const p = $('set-legend-pos');
+  if (p) p.value = state.set.legendPos || 'tl';
+  const s = $('set-legend-size');
+  if (s) s.value = state.set.legendSize || 'm';
+}
+
+function bindLegendOverlay() {
+  const wrap = $('legend-overlay');
+  const stageEl = $('stage');
+  const handle = $('legend-resize');
+  if (!wrap || !stageEl || wrap._legendBound) return;
+  wrap._legendBound = true;
+  /* 侧栏收起 / 设置面板开合 / 手机横竖屏切换都不一定发 window.resize，
+     但舞台尺寸变了，图例的四角定位就会飘 ✓ 用 ResizeObserver 兜住 */
+  if (typeof ResizeObserver === 'function') {
+    try {
+      const ro = new ResizeObserver(() => scheduleLegendOverlay());
+      ro.observe(stageEl);
+      wrap._legendRO = ro;
+    } catch (e) { /* 老浏览器没有就算了，window.resize 还在 ✓ */ }
+  }
+  let drag = null;
+
+  const onMove = (ev) => {
+    if (!drag) return;
+    ev.preventDefault();
+    let dx = ev.clientX - drag.startX;
+    let dy = ev.clientY - drag.startY;
+    /* **3px 死区内不动状态** ✓
+     * 点一下图例只是想让它聚焦，结果位置从“右上”变成“自定义”还写盘 ✗
+     * 手指点一下也会误触 → 必须真的拖了才切自定义 ✓ */
+    if (!drag.moved) {
+      if (Math.abs(dx) + Math.abs(dy) < 3) return;
+      drag.moved = true;
+      _legendCustomFromBox();
+      state.set.legendPos = 'custom';
+      if (drag.mode === 'resize') {
+        const opt = legendOpts();
+        const cur = opt.size === 'custom' ? opt.scale : (LEGEND_SIZE_FACTOR[opt.size] || 1);
+        state.set.legendSize = 'custom';
+        state.set.legendScale = _legendClamp(cur, 0.35, 3);
+        drag.startScale = state.set.legendScale;
+        drag.startX = ev.clientX;   // 重新起算，第一下别跳 ✓
+        drag.startY = ev.clientY;
+        dx = 0;
+        dy = 0;
+      }
+    }
+    if (drag.mode === 'resize') {
+      if (!(drag.startW > 0)) return;
+      /* 把手在右下角：横着拖、竖着拖都该有反应 ✓
+       * 以前只看 dx —— 手指/鼠标直着往下拉，图例纹丝不动，像坏了 ✗
+       * 取位移大的那根轴，斜着拖也不会突然反向 ✓ */
+      const dd = Math.abs(dx) >= Math.abs(dy) ? dx : dy;
+      const ratio = (drag.startW + dd) / drag.startW;
+      state.set.legendSize = 'custom';
+      state.set.legendScale = _legendClamp(drag.startScale * ratio, 0.35, 3);
+    } else {
+      const sr = stageEl.getBoundingClientRect();
+      if (!(sr.width > 0) || !(sr.height > 0)) return;
+      state.set.legendPos = 'custom';
+      state.set.legendX = _legendClamp((drag.left + dx) / sr.width, 0, 1);
+      state.set.legendY = _legendClamp((drag.top + dy) / sr.height, 0, 1);
+    }
+    _legendSyncCustomUi();
+    renderLegendOverlay();
+  };
+
+  const onUp = () => {
+    if (!drag) return;
+    const moved = drag.moved;
+    drag = null;
+    window.removeEventListener('pointermove', onMove);
+    window.removeEventListener('pointerup', onUp);
+    window.removeEventListener('pointercancel', onUp);
+    if (moved) scheduleSave();   // 只是点了一下聚焦，别写盘 ✓
+  };
+
+  wrap.addEventListener('pointerdown', (ev) => {
+    if (drag) return;
+    if (ev.button != null && ev.button !== 0) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    const r = wrap.getBoundingClientRect();
+    const isResize = !!(handle && (ev.target === handle || handle.contains(ev.target)));
+    drag = {
+      mode: isResize ? 'resize' : 'move',
+      startX: ev.clientX, startY: ev.clientY,
+      startW: r.width,
+      left: r.left - stageEl.getBoundingClientRect().left,
+      top: r.top - stageEl.getBoundingClientRect().top,
+      moved: false,
+    };
+    try { wrap.focus({ preventScroll: true }); } catch (e) { /* ✓ */ }
+    window.addEventListener('pointermove', onMove, { passive: false });
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+  });
+
+  // 键盘：方向键微调 4px，Shift + 方向键缩放，省得鼠标拖不准 ✓
+  wrap.addEventListener('keydown', (ev) => {
+    const map = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
+    const d = map[ev.key];
+    if (!d) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (ev.shiftKey) {
+      // 缩放不需要先切成自定义位置：四角锚点不动，只改大小 ✓
+      const opt = legendOpts();
+      const cur = opt.size === 'custom' ? opt.scale : (LEGEND_SIZE_FACTOR[opt.size] || 1);
+      const dir = (ev.key === 'ArrowLeft' || ev.key === 'ArrowUp') ? -1 : 1;
+      state.set.legendSize = 'custom';
+      state.set.legendScale = _legendClamp(cur + dir * 0.06, 0.35, 3);
+      _legendSyncCustomUi();
+      renderLegendOverlay();
+      scheduleSave();
+      return;
+    }
+    const W = stageEl.clientWidth || 1;
+    const H = stageEl.clientHeight || 1;
+    if (state.set.legendPos !== 'custom') _legendCustomFromBox();
+    state.set.legendPos = 'custom';
+    state.set.legendX = _legendClamp((state.set.legendX || 0) + d[0] * 4 / W, 0, 1);
+    state.set.legendY = _legendClamp((state.set.legendY || 0) + d[1] * 4 / H, 0, 1);
+    _legendSyncCustomUi();
+    renderLegendOverlay();
+    scheduleSave();
+  });
+}
+
+/** 颜色行右边的 HEX / 透明度读数：跟颜色页那套一致，别让图例三色当“盲盒” ✓ */
+function _legendSyncReadouts() {
+  const s = state.set || {};
+  const hex = (v, d) => String(v || d).toUpperCase();
+  const put = (id, text) => { const el = $(id); if (el) el.textContent = text; };
+  put('v-set-legend-bg', hex(s.legendBg, '#ffffff'));
+  put('v-set-legend-border', hex(s.legendBorder, '#000000'));
+  put('v-set-legend-fg', hex(s.legendFg, '#111111'));
+  const a = Number(s.legendBgAlpha != null ? s.legendBgAlpha : 90);
+  put('v-set-legend-alpha', Math.round(Number.isFinite(a) ? a : 90) + '%');
+}
+
+function syncLegendControls(s) {
+  s = s || state.set || {};
+  const put = (id, v) => {
+    const el = $(id);
+    if (!el) return;
+    if (el.type === 'checkbox') { el.checked = !!v; return; }
+    el.value = v;
+  };
+  put('set-legend', !!s.legend);
+  put('set-legend-title', s.legendTitle || '');
+  put('set-legend-title-only', !!s.legendTitleOnly);
+  put('set-legend-pos', s.legendPos || 'tl');
+  put('set-legend-size', s.legendSize || 'm');
+  {
+    /* 下拉里只列「默认 + 导入字体」；老存档的 sans/song/kai/mono 没有对应项 →
+       显示默认，但配色仍会按老值画（见 legendOpts 的 LEGEND_FONTS 兜底）*/
+    const sel = $('set-legend-font');
+    if (sel) {
+      const want = String(s.legendFont || '');
+      /* 测试用的假 DOM 可能没有 `select.options`（只有 querySelectorAll）✗
+         用两套都兜一下，别为了一个回填把整页自检弄崩 ✓ */
+      const opts = sel.options || sel.querySelectorAll('option');
+      const has = Array.prototype.some.call(opts || [], (o) => o && o.value === want);
+      sel.value = has ? want : '';
+    }
+  }
+  put('set-legend-cols', String(s.legendCols || 1));
+  put('set-legend-bg', s.legendBg || '#ffffff');
+  put('set-legend-bg-alpha', s.legendBgAlpha != null ? s.legendBgAlpha : 90);
+  put('set-legend-border', s.legendBorder || '#000000');
+  put('set-legend-fg', s.legendFg || '#111111');
+  put('set-legend-fg-auto', !!s.legendFgAuto);
+  put('set-legend-box', s.legendBox || 'square');
+  _legendSyncReadouts();
+  _legendSyncLinkage();
+}
+
+function bindLegendControls() {
+  const on = (id, ev, fn) => {
+    const el = $(id);
+    if (el) el.addEventListener(ev, fn);
+  };
+  const changed = () => {
+    _legendSyncReadouts();
+    _legendSyncLinkage();
+    _legendRefreshNote();
+    scheduleLegendOverlay();
+    scheduleSave();
+  };
+  on('set-legend', 'change', (e) => {
+    state.set.legend = !!e.target.checked;
+    changed();
+  });
+  on('set-legend-title', 'input', (e) => {
+    state.set.legendTitle = e.target.value;
+    changed();
+  });
+  on('set-legend-title-only', 'change', (e) => {
+    state.set.legendTitleOnly = !!e.target.checked;
+    changed();
+  });
+  on('set-legend-pos', 'change', (e) => {
+    if (e.target.value === 'custom') _legendCustomFromBox();
+    state.set.legendPos = e.target.value;
+    changed();
+  });
+  on('set-legend-size', 'change', (e) => {
+    const v = e.target.value;
+    if (v === 'custom') {
+      /* 从「大 / 特大」切到自定义时，别把 scale 硬写成 1 ✗
+         否则一选“自定义（拖角）”图例先缩回中号，再拖一下才回来 ✓ */
+      const opt = legendOpts();
+      const cur = opt.size === 'custom' ? opt.scale : (LEGEND_SIZE_FACTOR[opt.size] || 1);
+      state.set.legendScale = _legendClamp(cur, 0.35, 3);
+    } else {
+      state.set.legendScale = 1;
+    }
+    state.set.legendSize = v;
+    changed();
+  });
+  on('set-legend-font', 'change', async (e) => {
+    const v = e.target.value;
+    state.set.legendFont = v;
+    if (v.startsWith('bm:')) {
+      const bf = await _loadBmFont(v.slice(3));
+      if (!bf) {
+        state.set.legendFont = '';
+        e.target.value = '';
+        toast('这套位图字体读不出来，先用默认字体');
+      }
+    }
+    changed();
+  });
+  on('set-legend-cols', 'change', (e) => { state.set.legendCols = Number(e.target.value) || 1; changed(); });
+  on('set-legend-bg', 'input', (e) => { state.set.legendBg = e.target.value; changed(); });
+  on('set-legend-bg-alpha', 'input', (e) => { state.set.legendBgAlpha = Number(e.target.value); changed(); });
+  on('set-legend-border', 'input', (e) => { state.set.legendBorder = e.target.value; changed(); });
+  on('set-legend-fg', 'input', (e) => { state.set.legendFg = e.target.value; changed(); });
+  on('set-legend-fg-auto', 'change', (e) => { state.set.legendFgAuto = !!e.target.checked; changed(); });
+  on('set-legend-box', 'change', (e) => { state.set.legendBox = e.target.value; changed(); });
+  on('legend-sort', 'click', () => {
+    const list = legendEntries().slice()
+      .sort((a, b) => String(a.name).localeCompare(String(b.name), 'zh-Hans-CN'));
+    state.legendOrder = list.map((e) => e.key);
+    rebuildLegendPanel();
+    scheduleLegendOverlay();
+    scheduleSave();
+  });
+  on('legend-reset-names', 'click', () => {
+    state.legendNames = {};
+    rebuildLegendPanel();
+    scheduleLegendOverlay();
+    scheduleSave();
+  });
 }
 
 function paintedPoints(forNames = false) {
@@ -11661,6 +13263,7 @@ function describeRendererFailure(err) {
         + '显卡驱动太旧、远程桌面 / 虚拟机 / 旧显卡，或者浏览器策略禁用了 WebGL。',
       steps: [
         '在浏览器设置里打开「使用硬件加速」，重启浏览器再试',
+        '手机自带浏览器（vivo / 华为 / 小米等）有时会禁用 WebGL2，请改用 Chrome 打开这个文件',
         '更新显卡驱动；关掉远程桌面 / 虚拟机再试',
         '换最新版 Chrome / Edge（Firefox 也行）',
         '都不行 → 点下面「导出日志」发给作者',
@@ -11999,7 +13602,10 @@ async function boot() {
      *   报告里不写清楚，下次又只能靠猜 ✓ */
     try {
       const _mode = [];
-      if (renderer.liteShader) _mode.push('精简着色器（无边界线）');
+      if (renderer.shaderTier === 'mid') _mode.push('中等着色器（保留本层 + 多级边界）');
+      else if (renderer.shaderTier === 'border') _mode.push('边界着色器（仅本层头衔/填色）');
+      else if (renderer.shaderTier === 'title') _mode.push('最简边界（仅本层头衔）');
+      else if (renderer.liteShader) _mode.push('精简着色器（无边界线）');
       if (renderer._smallIds) _mode.push('id图缩' + (renderer.provScale || 1) + '倍');
       if (renderer.arrOk === 'bad') _mode.push('数组纹理采不出来');
       if (_mode.length) {

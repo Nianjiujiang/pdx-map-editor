@@ -287,6 +287,16 @@ const TIER_MIN_FONT = [2, 0, 0, 0, 0];
 /** 真正允许画出来的最小字号：字号阶梯从这里起步 */
 const MIN_DRAW = 4;
 
+/* 导出图里只收**大于 15px** 的名字（2026-10-27 用户要求）：
+ * 低倍率导出时 4–15px 的字在 PNG 里只剩一团灰，既不好认又拖慢导出；
+ * 字号顺便取整，保证 canvas 按整像素栅格化，不会因为 15.4px 这种字号发虚。
+ * 返回 0 = 这个字号不画。 */
+const EXPORT_MIN_FONT = 15;
+function exportFontPx(size) {
+  const px = Math.ceil(Number(size));
+  return px > EXPORT_MIN_FONT ? px : 0;
+}
+
 //: 逐层的字号倍率。细层级（CK3 的伯爵领 / 男爵领，EU4 的地区 / 省份）再放大两成 ——
 //: 这些地块本身就小，按面积等比算出来的字偏小，缩到那一层看着费劲。
 //: 它是个常数倍率，所以字号对缩放还是线性的。
@@ -385,7 +395,10 @@ class SpriteCache {
      *   不区分的话换字体之后屏幕上还是旧字形 ✓ 而且看起来"怎么换都没反应" ✓
      *   位图字体再额外带上实例 uid ✓（两套位图字体也可能同名 ✓）*/
     const fk = fontTag(kind);
-    const key = size.toFixed(1) + '|' + color + '|' + fk + '|' + text;
+    /* dpr 必须进键 ✗：屏幕上是 2x 贴图，导出是 1x；混用会把 2x 贴图缩着画，
+       字就发糊（2026-10-27 用户反馈"字体有点糊" ✓） */
+    const dk = (Number(dpr) > 0 ? Number(dpr) : 1).toFixed(2);
+    const key = dk + '|' + size.toFixed(1) + '|' + color + '|' + fk + '|' + text;
     const hit = this.map.get(key);
     if (hit !== undefined) return hit;
     if (size > SPRITE_MAX_FONT) return null;
@@ -515,7 +528,9 @@ class GlyphCache {
    * @returns {{c:object,w:number,h:number,ox:number,oy:number,px:number}|null}
    */
   get(ch, size, color, dpr, kind) {
-    const key = size.toFixed(1) + '|' + color + '|' + fontTag(kind) + '|' + ch;
+    /* 同 `SpriteCache`：屏幕贴图 / 导出贴图的 dpr 不同，不能共用一张 ✗ */
+    const dk = (Number(dpr) > 0 ? Number(dpr) : 1).toFixed(2);
+    const key = dk + '|' + size.toFixed(1) + '|' + color + '|' + fontTag(kind) + '|' + ch;
     const hit = this.map.get(key);
     if (hit !== undefined) return hit;
     if (size > SPRITE_MAX_FONT) return null;
@@ -945,7 +960,11 @@ export class LabelLayer {
     const origin = o.origin;
     if (typeof origin !== 'function') return 0;
     const bfg = BITMAP[kind];
-    const live = !bfg && size > SPRITE_MAX_FONT;
+    /* 高倍导出直接走实时矢量，不再从字形贴图里取样 ✓
+     *   （2026-10-27 用户："高倍下字体应该更清晰"）
+     *   贴图是按字号缓存再 drawImage 的，高倍下会有一次重采样；
+     *   实时 fillText 没有这一步，边缘更干净 ✓ 1× 仍走贴图，省时间 ✓ */
+    const live = !bfg && (o.exportText || size > SPRITE_MAX_FONT);
     if (live) {
       ctx.font = fontFor(size, kind);
       ctx.lineWidth = Math.max(1.3, size * 0.14);
@@ -1541,21 +1560,41 @@ export class LabelLayer {
    * @param {Array} points `drawLabels(view, true)` 抓到的那份名单
    * @param {number} scale 导出倍率（输出像素 / 地图像素）
    * @param {number} gateScale 决定"这一层名字出不出来"的缩放比（= 整图视角的倍率 ✓）
+   * @param {{x:number,y:number,w:number,h:number}} [rect] 只画这块地图区域（缺省 = 整张）
    * @returns {number} 画了几个名字
    */
-  paintExport(ctx, points, scale, gateScale) {
+  paintExport(ctx, points, scale, gateScale, rect) {
     if (!points || !points.length || !(scale > 0)) return 0;
+    const ox = rect && Number.isFinite(rect.x) ? rect.x : 0;
+    const oy = rect && Number.isFinite(rect.y) ? rect.y : 0;
+    const rw = rect && Number.isFinite(rect.w) ? Math.max(0, rect.w) : Infinity;
+    const rh = rect && Number.isFinite(rect.h) ? Math.max(0, rect.h) : Infinity;
+    if (rect && !(rw > 0 && rh > 0)) return 0;
     const oldScale = this.scale;
     /* 借 this.scale 给 `_fitGrow` / `_fontSize` 用（画完立刻还回去 ✓）*/
     this.scale = scale;
     const nEra = this.nEra || 0;
     const zoom = this.zoom || [];
     const hasLayout = this.mapNameMode !== 'off' && this.realmMask && this.realmMask.usable;
+    /* 整张导出时这里会跑几千上万个地名：
+       · 原点换算提成一个函数，别每个名字都新建一个闭包 ✓
+       · 对齐 / 基线 / 圆角只设一次，每个名字只改 alpha ✓
+       · 不再每个名字 save/restore 一次状态栈 ✓
+       （下面 finally 统一把 alpha / 对齐 / 变换恢复干净 ✓） */
+    const origin = (g) => ({
+      x: (g.x - ox) * scale,
+      y: (g.y - oy) * scale,
+    });
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.lineJoin = 'round';
     let drawn = 0;
     try {
       for (const p of points) {
         if (!p || !p.name) continue;
         if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) continue;
+        /* 框选导出：只画落在区域里的名字 ✓ 坐标再平移到输出画布左上角 ✓ */
+        if (p.x < ox || p.x > ox + rw || p.y < oy || p.y > oy + rh) continue;
         const t = p.tier != null ? (p.tier | 0) : 0;
         /* 层的门槛按"整图视角"判（跟屏幕上那套一致 ✓ 只是倍率换成整图 ✓）*/
         const need = zoom[t];
@@ -1566,18 +1605,18 @@ export class LabelLayer {
           ? (this.alphaCountry == null ? 0.5 : this.alphaCountry)
           : (this.alphaPlace == null ? 0.5 : this.alphaPlace);
         const lay = hasLayout ? this._maybeLayout(p, kind, 0) : null;
-        ctx.save();
         ctx.globalAlpha = alpha;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.lineJoin = 'round';
         if (lay) {
           /* 逐字画：**跟屏幕同一个出口** ✓（2026-10-23 体检去重）
            * 只有坐标变换不一样：导出是"地图坐标 × 倍率"，没有视口偏移 ✓ */
-          const size = quantizeFont(lay.fs * scale * this._fitGrow(lay));
+          /* 门槛统一按**最终输出字号**算：15px 就是 15px，不随倍率变成 45px ✓
+           *   （2026-10-27 用户："都按 15px 来"）
+           *   高倍下字更大、再用实时矢量绘制，清晰度靠渲染质量，不靠抬门槛 ✓ */
+          const size = exportFontPx(quantizeFont(lay.fs * scale * this._fitGrow(lay)));
+          if (!size) continue;
           this._drawGlyphRun({
-            ctx, lay, size, kind, color: p.color || LABEL_FG, dpr: 1,
-            origin: (g) => ({ x: g.x * scale, y: g.y * scale }),
+            ctx, lay, size, kind, color: p.color || LABEL_FG, dpr: 1, origin,
+            exportText: scale > 1,
           });
         } else {
           /* 排不出来 / 关掉了贴合 → 老画法：横着写在锚点上 ✓
@@ -1585,27 +1624,30 @@ export class LabelLayer {
            *   屏幕上这里是两条路：挂了**位图字体**就 `bf.draw`，否则才 `fillText` +
            *   当前字体栈 ✓ 导出这一版只写了后者 → 用了位图字体的图，导出就退回默认字体 ✗
            *   → 照抄屏幕那条判据 ✓ 位图字体直接用 ✓ */
-          const size = this._fontSize(p.area, p.tier || 0, p.layer || 0);
-          if (!(size > 0)) { ctx.restore(); continue; }
+          /* 老画法也一样：按最终输出字号过 15px 门槛 ✓ */
+          const size = exportFontPx(this._fontSize(p.area, p.tier || 0, p.layer || 0) * scale);
+          if (!size) continue;
           const bf = BITMAP[kind];
           const color = p.color || LABEL_FG;
           if (bf) {
-            bf.draw(ctx, p.name, p.x * scale, p.y * scale, size, color,
+            bf.draw(ctx, p.name, (p.x - ox) * scale, (p.y - oy) * scale, size, color,
               { outline: Math.max(1, size * 0.09), stroke: LABEL_STROKE });
           } else {
             ctx.font = fontFor(size, kind);
             ctx.lineWidth = Math.max(1.3, size * 0.14);
             ctx.strokeStyle = LABEL_STROKE;
             ctx.fillStyle = color;
-            ctx.strokeText(p.name, p.x * scale, p.y * scale);
-            ctx.fillText(p.name, p.x * scale, p.y * scale);
+            ctx.strokeText(p.name, (p.x - ox) * scale, (p.y - oy) * scale);
+            ctx.fillText(p.name, (p.x - ox) * scale, (p.y - oy) * scale);
           }
         }
-        ctx.restore();
         drawn++;
       }
     } finally {
       ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.globalAlpha = 1;
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'alphabetic';
       this.scale = oldScale;      // 一定要还回去 ✓ 不然屏幕上的字号全变 ✗
     }
     return drawn;

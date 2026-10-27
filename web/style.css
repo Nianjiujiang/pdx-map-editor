@@ -532,8 +532,118 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin
 #map { cursor: crosshair; }
 #overlay { pointer-events: none; }
 
+/* 地图上的图例：独立的小画布，不铺满舞台 ✓
+   ⚠ 它在 `.stage canvas` 那条通用规则之后，必须把 inset / 宽高收回来 ✗ */
+#legend-overlay {
+  position: absolute; inset: auto; z-index: 4;
+  width: auto; height: auto; display: block;
+  cursor: move; touch-action: none; user-select: none;
+  border-radius: 4px; outline: none;
+  filter: drop-shadow(0 2px 10px rgba(0, 0, 0, .35));
+}
+#legend-overlay[hidden] { display: none; }
+#legend-overlay:focus-visible { box-shadow: 0 0 0 2px rgba(240, 217, 138, .9); }
+#legend-overlay canvas {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  display: block; pointer-events: none;
+}
+#legend-resize {
+  position: absolute; right: -1px; bottom: -1px;
+  width: 22px; height: 22px; cursor: nwse-resize;
+  touch-action: none; border-radius: 3px;
+  background: linear-gradient(135deg, transparent 48%, rgba(240, 217, 138, .95) 49%);
+  opacity: .75;
+}
+#legend-overlay:hover #legend-resize, #legend-resize:hover { opacity: 1; }
+
+/* 整图导出的框选层：只盖住舞台，地图怎么拖都不影响相机 ✓
+   画法照绘图软件：框外压暗、虚线框、八个把手、尺寸角标 + 底部操作条 ✓ */
+.export-pick-layer {
+  position: absolute; inset: 0; z-index: 45;
+  cursor: crosshair;
+  touch-action: none;
+  user-select: none;
+  overflow: hidden;
+  background: transparent;
+}
+.export-pick-layer[hidden] { display: none; }
+.export-pick-box {
+  position: absolute;
+  /* 框本身接指针：框里显示移动光标，点框里就能挪位置 ✓
+     框外的压暗区仍然由下层图层接（那里是 crosshair）✓ */
+  pointer-events: auto; cursor: move;
+  border: 1px dashed #f6e6b0;
+  /* 框内**不铺色**：选中的地图颜色要原样看得见，只压暗框外 ✓ */
+  box-shadow:
+    0 0 0 9999px rgba(3, 6, 9, .46),
+    0 0 0 1px rgba(0, 0, 0, .65),
+    inset 0 0 0 1px rgba(255, 255, 255, .16);
+}
+.export-pick-box[hidden] { display: none; }
+.export-pick-handle {
+  position: absolute; width: 11px; height: 11px;
+  box-sizing: border-box;
+  border: 1px solid rgba(54, 38, 4, .9);
+  border-radius: 2px;
+  background: #fff8df;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .5);
+  pointer-events: auto;
+}
+.export-pick-handle.h-nw { left: -6px; top: -6px; cursor: nwse-resize; }
+.export-pick-handle.h-n  { left: 50%; top: -6px; margin-left: -5.5px; cursor: ns-resize; }
+.export-pick-handle.h-ne { right: -6px; top: -6px; cursor: nesw-resize; }
+.export-pick-handle.h-e  { right: -6px; top: 50%; margin-top: -5.5px; cursor: ew-resize; }
+.export-pick-handle.h-se { right: -6px; bottom: -6px; cursor: nwse-resize; }
+.export-pick-handle.h-s  { left: 50%; bottom: -6px; margin-left: -5.5px; cursor: ns-resize; }
+.export-pick-handle.h-sw { left: -6px; bottom: -6px; cursor: nesw-resize; }
+.export-pick-handle.h-w  { left: -6px; top: 50%; margin-top: -5.5px; cursor: ew-resize; }
+.export-pick-size {
+  position: absolute; left: 7px; top: 7px;
+  max-width: calc(100% - 14px);
+  padding: 3px 7px; border-radius: 5px;
+  background: rgba(8, 12, 17, .82);
+  border: 1px solid rgba(255, 255, 255, .14);
+  color: #f6e6b0;
+  font: 500 11px/1.2 var(--mono, ui-monospace, Consolas, monospace);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  pointer-events: none;
+}
+.export-pick-tip {
+  position: absolute; left: 50%; top: 14px; transform: translateX(-50%);
+  z-index: 3;
+  max-width: calc(100% - 28px);
+  padding: 7px 12px; border-radius: 999px;
+  background: rgba(12, 17, 23, .92);
+  border: 1px solid var(--glass-brd);
+  color: var(--text);
+  font-size: 12px; line-height: 1.45; text-align: center;
+  white-space: normal;
+  pointer-events: none;
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+}
+.export-pick-bar {
+  position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%);
+  z-index: 3;
+  display: flex; align-items: center; gap: 8px;
+  max-width: calc(100% - 20px);
+  padding: 8px;
+  border-radius: 14px;
+  background: rgba(12, 17, 23, .92);
+  border: 1px solid var(--glass-brd);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, .35);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+}
+.export-pick-bar .btn {
+  height: 40px; padding: 0 20px;
+  font-size: 13px; white-space: nowrap;
+}
+.export-pick-bar .btn:disabled { opacity: .45; cursor: default; }
+
 .zoom-box {
-  position: absolute; left: 12px; bottom: 12px;
+  position: absolute; left: 12px; bottom: 12px; z-index: 5;
   display: flex; flex-direction: column; gap: 4px;
 }
 .zoom-box .btn {
@@ -901,6 +1011,74 @@ body.tb-folded #tool-group { display: none; }
 }
 .modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
 .modal-head h2 { font-size: 13px; color: var(--gold); letter-spacing: 1px; margin: 0; }
+
+/* ---- 导出整图的小窗 ---- */
+.export-box { width: min(448px, 92vw); padding: 14px 16px 16px; }
+.export-x {
+  width: 28px; height: 28px; padding: 0;
+  border: 0; border-radius: 7px; background: transparent;
+  color: var(--text-faint); font-size: 20px; line-height: 1; cursor: pointer;
+}
+.export-x:hover { background: rgba(255, 255, 255, .06); color: var(--text); }
+.export-x:disabled { opacity: .35; cursor: default; }
+.export-field { margin-top: 13px; }
+.export-label {
+  margin-bottom: 6px; color: var(--text-faint);
+  font-size: 10.5px; letter-spacing: .6px;
+}
+.export-seg { height: 32px; }
+.export-seg > button { font: 500 11.5px/1 var(--mono, ui-monospace, Consolas, monospace); }
+.export-size-label { margin-top: 10px; margin-bottom: 0; }
+.export-size {
+  display: flex; align-items: center; gap: 6px;
+  margin-top: 5px; color: var(--text-faint); font-size: 10.5px;
+}
+.export-size input {
+  width: 76px; height: 29px; padding: 0 7px;
+  border: 1px solid var(--line); border-radius: 6px;
+  background: rgba(255, 255, 255, .045);
+  color: var(--text); text-align: center;
+  font: 500 11.5px/1 var(--mono, ui-monospace, Consolas, monospace);
+  font-variant-numeric: tabular-nums;
+}
+.export-size input:focus {
+  outline: none; border-color: var(--gold-dim);
+  background: rgba(255, 255, 255, .07);
+}
+.export-size input.bad { border-color: #c86a55; color: #f0a18e; }
+.export-size-x, .export-size-px { color: var(--text-faint); }
+.export-size-k { flex: none; }
+.export-info, .export-warn {
+  margin-top: 7px; font-size: 11px; line-height: 1.5; color: var(--text-faint);
+}
+.export-info { color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.export-warn { color: #e0a33a; }
+.export-warn[hidden], #export-form[hidden], #export-progress[hidden] { display: none; }
+.export-foot {
+  display: flex; justify-content: flex-end; gap: 8px;
+  margin-top: 18px; padding-top: 13px; border-top: 1px solid var(--line);
+}
+.export-prog-head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  margin: 6px 0 8px; color: var(--text); font-size: 12.5px;
+}
+.export-prog-head > span:last-child {
+  color: var(--gold); font: 600 12px/1 var(--mono, ui-monospace, Consolas, monospace);
+}
+.export-prog-track {
+  height: 8px; overflow: hidden; border-radius: 999px;
+  background: rgba(255, 255, 255, .07);
+  border: 1px solid var(--line);
+}
+.export-prog-bar {
+  width: 0; height: 100%; border-radius: inherit;
+  background: linear-gradient(90deg, var(--gold-dim), var(--gold));
+  transition: width .12s linear;
+}
+.export-prog-note {
+  min-height: 32px; margin-top: 9px;
+  color: var(--text-faint); font-size: 11px; line-height: 1.5;
+}
 .set-grid { display: flex; gap: 22px; flex-wrap: wrap; }
 /* **设置这一个弹窗要更宽一点** ✓（用户要求：不然标签那列会把字挤换行 ✓）
    四列（颜色 / 边界 / 导出图例 / 名字等）各占 ≥240px，加三道 22px 的缝 ≈ 1026px ✓
@@ -1099,44 +1277,53 @@ body.tb-folded #tool-group { display: none; }
 .tut-toast.on { opacity: 1; transform: translate(-50%, 0); }
 
 /* ===========================================================================
-   设置页里的「导出图例」那一栏
-   —— 条目是自动列出来的（同色一组 ✓），名字**只读**、能关掉 ✓
+   设置页里的「图例」那一栏
+   —— 条目是自动列出来的（同色一组 ✓），名字可以直接改 ✓
    =========================================================================== */
 .legend-list {
   margin: 8px 0 6px; max-height: 190px; overflow: auto;
   border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px;
   background: rgba(8, 12, 17, .6);
 }
-.legend-list .legend-empty { font-size: 12px; color: var(--text-faint); padding: 6px 4px; }
+.legend-list .legend-empty {
+  padding: 10px 8px; font-size: 11.5px; line-height: 1.65;
+  color: var(--text-faint);
+}
 .legend-row { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
 .legend-row .legend-on { flex: none; }
 .legend-row .legend-sw {
   flex: none; width: 18px; height: 18px; border-radius: 4px;
   border: 1px solid rgba(255, 255, 255, .35); box-shadow: 0 0 0 1px rgba(0, 0, 0, .5) inset;
 }
-/* 名字只读（列表里不再能改名 ✓）—— 想改走「改名」工具 ✓
-   太长就省略号截掉，全名挂在 title 上，悬停还能看全 ✓ */
+/* 名字可编辑（留空 = 用地图上的名字 ✓）
+   太长就省略号截掉，全名挂在 title / aria-label 上 ✓ */
 .legend-row .legend-name {
-  flex: 1 1 auto; min-width: 0; overflow: hidden;
-  color: var(--text); padding: 4px 2px;
-  white-space: nowrap; text-overflow: ellipsis;
-  font-size: 12px; line-height: 1.4;
+  flex: 1 1 auto; min-width: 44px; width: 100%;
+  color: var(--text); padding: 3px 5px;
+  font: 12px/1.4 inherit;
+  background: transparent; border: 1px solid transparent; border-radius: 4px;
+  outline: none; text-overflow: ellipsis;
 }
+.legend-row .legend-name:hover { border-color: #2b3947; }
+.legend-row .legend-name:focus { border-color: var(--gold); background: #0d141b; }
+.legend-row .legend-name::placeholder { color: #657384; }
 /* 图例条目的**顺序调整**：每行两个小箭头 ✓（点一下换一格 ✓ 手机上也好点 ✓） */
 .legend-row .legend-move {
   flex: none; display: flex; flex-direction: column; gap: 2px;
 }
 .legend-row .legend-up, .legend-row .legend-down {
-  width: 20px; height: 15px; padding: 0; line-height: 1; cursor: pointer;
+  width: 22px; height: 16px; padding: 0; line-height: 1; cursor: pointer;
   display: flex; align-items: center; justify-content: center;
   background: #121a22; color: var(--text-dim); border: 1px solid var(--line); border-radius: 4px;
-  font-size: 9px;
+  font-size: 10px;
 }
 .legend-row .legend-up:hover, .legend-row .legend-down:hover { color: var(--gold); border-color: #4a5a6b; }
 .legend-row .legend-up:disabled, .legend-row .legend-down:disabled { opacity: .3; cursor: default; }
 /* **按住拖动排序**的把手 ✓（鼠标 / 手指通用 ✓ 用 Pointer Events 那套 ✓） */
 .legend-row .legend-drag {
-  flex: none; width: 18px; text-align: center; cursor: grab;
+  flex: none; width: 20px; height: 22px; display: flex;
+  align-items: center; justify-content: center;
+  cursor: grab; border-radius: 4px;
   color: #5d6b7c; font-size: 13px; line-height: 1; user-select: none;
   touch-action: none;                    /* 手机上按住它别变成滚页面 ✓ */
 }
@@ -1149,20 +1336,122 @@ body.tb-folded #tool-group { display: none; }
    —— 以前用的是浏览器默认白底 ✗ 在深色面板上特别扎眼 ✓
       这里跟整页风格对齐：深底、细边、金色聚焦 ✓ */
 #set-legend-title,
-#set-legend-pos {
+#set-legend-pos,
+#set-legend-size,
+#set-legend-font,
+#set-legend-cols,
+#set-legend-box {
   background: #121a22;
   color: #e8eef6;
   border: 1px solid #26313d;
   border-radius: 6px;
   padding: 4px 8px;
   font: 12px/1.4 inherit;
-  min-width: 132px;
+  min-width: 112px;
+  max-width: 132px;
   outline: none;
 }
-#set-legend-pos { appearance: none; cursor: pointer; padding-right: 22px; }
+#set-legend-pos, #set-legend-size, #set-legend-font,
+#set-legend-cols, #set-legend-box { appearance: none; cursor: pointer; padding-right: 22px; }
+/* 下拉箭头：`appearance:none` 之后浏览器不再画箭头 ✗
+   五个框长得和文本框一模一样，用户根本不知道能点 ✓
+   只设 image / position / size，别用 background 简写 ——
+   日间那几条 `background:#fff` 在后面，会被简写清掉 ✓ */
+#set-legend-pos, #set-legend-size, #set-legend-font,
+#set-legend-cols, #set-legend-box {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%238b9aab' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  background-size: 9px 6px;
+}
+/* 上面 `#settings .set-row select` 的 `padding: 0 6px` 权重更高，会把右侧留白压掉 ✗
+   箭头就贴在字尾上。这里用两个 id 提权，把 22px 的箭头位保住 ✓ */
+#settings #set-legend-pos,
+#settings #set-legend-size,
+#settings #set-legend-font,
+#settings #set-legend-cols,
+#settings #set-legend-box { padding-right: 22px; }
 #set-legend-title:focus,
-#set-legend-pos:focus { border-color: #f0d98a; }
+#set-legend-pos:focus,
+#set-legend-size:focus,
+#set-legend-font:focus,
+#set-legend-cols:focus,
+#set-legend-box:focus { border-color: #f0d98a; }
 #set-legend-title::placeholder { color: #5d6b7c; }
+#set-legend-title { min-width: 132px; max-width: 150px; }
+.legend-color { display: inline-flex; align-items: center; gap: 7px; flex: none; }
+.legend-color input[type=color] { width: 34px !important; height: 20px; flex: none; }
+.legend-color input[type=color]:disabled { opacity: .35; cursor: default; }
+.legend-color input[type=range] { width: 78px; }
+.legend-check { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--text-faint); white-space: nowrap; }
+.legend-tools { display: flex; gap: 6px; margin: 2px 0 6px; }
+.legend-tools .btn { height: 24px; padding: 0 9px; font-size: 11px; }
+.legend-tools .btn:disabled { opacity: .4; cursor: default; }
+.legend-row .legend-on { width: 14px; height: 14px; flex: none; }
+.legend-alpha { flex: 0 0 32px !important; min-width: 0 !important; font-size: 11px; }
+.legend-alpha-cap { flex: 0 0 auto; font-size: 10.5px; color: var(--text-faint); }
+/* 抽屉窄到 400 以下，先让「不透明」三个字退场；再窄连 HEX 一起收，滑条和百分比必须留住 ✓ */
+@media (max-width: 400px) { .legend-alpha-cap { display: none; } }
+@media (max-width: 380px) { .legend-bg-v { display: none !important; } }
+
+/* ---- 图例二次精简（2026-10-27）-----------------------------------------------
+   原来每个设置占一整行，背景 / 边框 / 字色还各长各的；现在收成：
+     版式 = 两列小格（字体单独占一整行）
+     颜色 = 三个同规格色卡（标题 + 色块 + HEX）
+   手机端只调触摸尺寸，不再另起一套结构 ✓ */
+.legend-grid {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px 8px; margin: 3px 0 1px;
+}
+.legend-cell { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.legend-cell-wide { grid-column: 1 / -1; }
+.legend-cell-l { font-size: 10.5px; line-height: 1; color: var(--text-faint); }
+.legend-cell select {
+  width: 100% !important; min-width: 0 !important; max-width: none !important;
+  height: 28px;
+}
+.legend-count {
+  min-height: 15px; margin: 2px 0 1px;
+  font-size: 10.5px; line-height: 1.45; color: var(--text-faint);
+}
+.legend-count:empty { display: none; }
+.legend-colors {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px; margin: 4px 0 3px;
+}
+.legend-color-card {
+  display: grid; grid-template-columns: 30px minmax(0, 1fr);
+  grid-template-rows: auto 25px; gap: 4px 7px;
+  align-items: center; min-width: 0; padding: 6px 7px;
+  border: 1px solid var(--line); border-radius: 7px;
+  background: rgba(8, 12, 17, .35);
+}
+.legend-color-l { grid-column: 1 / -1; font-size: 10.5px; line-height: 1; color: var(--text-faint); }
+.legend-swatch {
+  display: block; width: 30px; height: 24px; overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, .28); border-radius: 5px;
+  background: #0a0f14; cursor: pointer;
+}
+.legend-swatch input[type=color] {
+  display: block; width: 100% !important; height: 100% !important;
+  padding: 0; border: 0; background: none; cursor: pointer;
+  -webkit-appearance: none; appearance: none;
+}
+.legend-swatch input[type=color]::-webkit-color-swatch-wrapper { padding: 0; }
+.legend-swatch input[type=color]::-webkit-color-swatch { border: 0; }
+.legend-swatch input[type=color]::-moz-color-swatch { border: 0; }
+.legend-swatch input[type=color]:disabled { opacity: .35; cursor: default; }
+.legend-hex {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font: 10.5px/1 ui-monospace, Consolas, monospace; color: var(--text-dim);
+}
+.legend-alpha-row { margin-top: 3px; }
+.legend-alpha-row input[type=range] { flex: 1 1 auto; min-width: 0; max-width: 150px; }
+.legend-alpha-row .legend-alpha { flex: 0 0 32px; text-align: right; }
+html[data-theme="light"] .legend-color-card { background: #f5f2ea; border-color: #d9d1bf; }
+html[data-theme="light"] .legend-swatch { border-color: #bdb5a3; background: #fff; }
+html[data-theme="light"] .legend-hex { color: #6d6353; }
+
 
 /* 启动页角落的版本戳（就一行小灰字 ✓ 不占地方） */
 .boot-ver { margin-left: 0; font-size: 11px; color: #56616f; letter-spacing: .3px; }
@@ -1489,7 +1778,7 @@ html { color-scheme: dark; }          /* 复选框 / range 轨道 / 下拉弹层
 }
 #settings #font-status { color: var(--text-faint); }
 
-/* ---- 图例：父开关关掉时整块变灰且点不动 ---- */
+/* ---- 图例：「只显示标题」时条目不会画进图例，整块变灰且点不动 ---- */
 #settings .legend-list { max-height: 240px; overflow: auto; margin-top: 6px; }
 #settings .legend-list.is-off { opacity: .45; pointer-events: none; }
 
@@ -2163,6 +2452,10 @@ html[data-theme="light"] .boot-ver { color: #3f4b58; }
  *  权重比通用那条 `input[type=text]` 高 → 单独点它们的名 ✓ */
 html[data-theme="light"] #set-legend-title,
 html[data-theme="light"] #set-legend-pos,
+html[data-theme="light"] #set-legend-size,
+html[data-theme="light"] #set-legend-font,
+html[data-theme="light"] #set-legend-cols,
+html[data-theme="light"] #set-legend-box,
 html[data-theme="light"] #set-picktool,
 html[data-theme="light"] #set-font-place,
 html[data-theme="light"] #set-font-power {
@@ -2171,7 +2464,27 @@ html[data-theme="light"] #set-font-power {
   border-color: var(--line);
 }
 html[data-theme="light"] #set-legend-title::placeholder { color: #7a8794; }
-html[data-theme="light"] #set-legend-pos option { background: #fff; color: #1a232e; }
+/* 日间下拉箭头：上面那条底色用了 `background` 简写，会在箭头之后把图清掉 ✗
+   所以箭头必须在这之后单独补一次（只设 image / position / size ✓） */
+html[data-theme="light"] #set-legend-pos,
+html[data-theme="light"] #set-legend-size,
+html[data-theme="light"] #set-legend-font,
+html[data-theme="light"] #set-legend-cols,
+html[data-theme="light"] #set-legend-box {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23616f7d' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  background-size: 9px 6px;
+}
+html[data-theme="light"] #set-legend-pos option,
+html[data-theme="light"] #set-legend-size option,
+html[data-theme="light"] #set-legend-font option,
+html[data-theme="light"] #set-legend-cols option,
+html[data-theme="light"] #set-legend-box option { background: #fff; color: #1a232e; }
+/* 图例名字框的悬停/聚焦：深色下只是亮一点，白天不能还压着一层黑 ✓ */
+html[data-theme="light"] .legend-row .legend-name:hover { border-color: #b6c2cf; }
+html[data-theme="light"] .legend-row .legend-name:focus { background: #fff; color: var(--text); }
+html[data-theme="light"] .legend-row .legend-name::placeholder { color: #7a8794; }
 /* 标签页那一行在日间也要跟着透，不然是一块灰板 */
 html[data-theme="light"] .set-tabs { border-bottom-color: var(--glass-brd); }
 
@@ -2697,7 +3010,9 @@ html[data-theme="light"] .set-row input[type=text],
 html[data-theme="light"] .set-row input[type=number],
 html[data-theme="light"] .set-row select,
 html[data-theme="light"] .rename-input {
-  background: #fff;
+  /* ⚠ 这里只改底色，别用 `background:` 简写 ——
+     它会把图例下拉的箭头 background-image 一起清掉 ✗（2026-10-27） */
+  background-color: #fff;
   border-color: var(--line);
   color: var(--text);
 }
@@ -2740,6 +3055,36 @@ html[data-theme="light"] .ctl-seg > button.on {
   color: #6b4f0e;
   box-shadow: inset 0 0 0 1px rgba(150, 117, 26, .45);
 }
+html[data-theme="light"] .export-x:hover { background: rgba(24, 36, 50, .07); }
+html[data-theme="light"] .export-warn { color: #9a6200; }
+html[data-theme="light"] .export-size input {
+  background: #fff; border-color: rgba(24, 36, 50, .16); color: #1d2a36;
+}
+html[data-theme="light"] .export-size input.bad { border-color: #b34a35; color: #8f2f1e; }
+html[data-theme="light"] .export-prog-track { background: #e8edf2; }
+html[data-theme="light"] .export-pick-layer {
+  /* 框选层只压暗框外；白天压暗也必须是浅的 ✓ */
+  background: transparent;
+}
+html[data-theme="light"] .export-pick-box {
+  border-color: #8a6a12;
+  /* 框外压暗，框内保持原色 ✓ */
+  box-shadow:
+    0 0 0 9999px rgba(24, 36, 50, .26),
+    0 0 0 1px rgba(255, 255, 255, .75),
+    inset 0 0 0 1px rgba(90, 65, 10, .22);
+}
+html[data-theme="light"] .export-pick-size {
+  background: rgba(255, 252, 242, .96);
+  border-color: rgba(90, 65, 10, .22);
+  color: #6b4f0e;
+}
+html[data-theme="light"] .export-pick-tip,
+html[data-theme="light"] .export-pick-bar {
+  background: rgba(247, 250, 253, .96);
+  border-color: rgba(24, 36, 50, .14);
+}
+html[data-theme="light"] .export-pick-bar { box-shadow: 0 10px 30px rgba(24, 36, 50, .14); }
 
 /* ---- 老教程卡（现在不用了，补上免得哪天翻出来又白字白底）---- */
 html[data-theme="light"] #tutCard button { background: var(--panel-2); border-color: var(--line); color: var(--text); }

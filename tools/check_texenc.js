@@ -95,16 +95,76 @@ console.log('\n=== C. 精简版着色器（链接失败时的保底）===');
     `${lite.length} vs ${FRAG.length}`);
 }
 
-console.log('\n=== D. 链接失败要自动退精简版 ===');
+console.log('\n=== C2. 中间档着色器（Adreno 613 链接失败的退路）===');
 {
-  ok('_build 里先试完整版、失败再试精简版',
-    /_linkTry\(FRAG\)/.test(GL) && /_linkTry\(_liteSrc\)/.test(GL));
-  ok('退成功之后记了 liteShader 标记（报告要看得见）',
-    /this\.liteShader = true/.test(GL) && /if \(renderer\.liteShader\)/.test(APP));
-  ok('精简版的**原因**也留着（下次排查不用再猜）',
-    /this\.liteWhy = linkLog/.test(GL));
-  /* ⚠ 显存不足（0x0505）时不许再试精简版 ✗ —— 再试一次只是白等 92 秒 ✓ */
-  ok('显存不足时不白试精简版（白等 92 秒的事不许再来）',
+  const a = GL.indexOf('function cutAuxBlock');
+  const b = GL.indexOf('function ctxLost');
+  ok('能抠出切块函数', a >= 0 && b > a, `@${a} / @${b}`);
+  const mk = a >= 0 && b > a
+    ? new Function(GL.slice(a, b) + '; return { cutAuxBlock, makeMidFragment, makeBorderOnlyFragment, makeTitleOnlyFragment };')()
+    : null;
+  const mid = mk ? mk.makeMidFragment(FRAG) : null;
+  const border = mk ? mk.makeBorderOnlyFragment(FRAG) : null;
+  const title = mk ? mk.makeTitleOnlyFragment(FRAG) : null;
+  const bal = (s, x, y) => s.split(x).length - s.split(y).length;
+  const midCode = stripComments(mid || '');
+  const borderCode = stripComments(border || '');
+  const titleCode = stripComments(title || '');
+
+  ok('mid 生成得出来', !!mid, mid ? `${mid.length} 字符` : 'null ✗');
+  ok('mid 还留着本层头衔 / 填色 / 多级链',
+    /rayDistTitle\(/.test(midCode) && /rayDistPaint\(/.test(midCode) && /uExtraCount/.test(midCode));
+  ok('mid 砍掉了水域 / 荒地两条独立通道',
+    !/rayDistWater\(/.test(midCode) && !/rayDistWaste\(/.test(midCode));
+  ok('mid 大括号 / 小括号配平',
+    bal(mid || '', '{', '}') === 0 && bal(mid || '', '(', ')') === 0);
+
+  ok('border 生成得出来', !!border, border ? `${border.length} 字符` : 'null ✗');
+  ok('border 只留本层头衔 + 填色边界',
+    /rayDistTitle\(/.test(borderCode) && /rayDistPaint\(/.test(borderCode)
+    && !/for \(int ex/.test(borderCode) && !/uExtraShow\[ex\]/.test(borderCode)
+    && !/rayDistWater\(/.test(borderCode) && !/rayDistWaste\(/.test(borderCode));
+  ok('border 大括号 / 小括号配平',
+    bal(border || '', '{', '}') === 0 && bal(border || '', '(', ')') === 0);
+
+  ok('title 生成得出来', !!title, title ? `${title.length} 字符` : 'null ✗');
+  ok('title 只留本层头衔线（填色 / 多级 / 水 / 荒地全砍）',
+    /rayDistTitle\(/.test(titleCode)
+    && !/rayDistPaint\(/.test(titleCode)
+    && !/for \(int ex/.test(titleCode) && !/uExtraShow\[ex\]/.test(titleCode)
+    && !/rayDistWater\(/.test(titleCode) && !/rayDistWaste\(/.test(titleCode));
+  ok('title 大括号 / 小括号配平',
+    bal(title || '', '{', '}') === 0 && bal(title || '', '(', ')') === 0);
+
+  ok('五个切割标记都成对（EXTRA / WATER / WASTE / PAINTRAY / PAINTFN）',
+    ['EXTRA', 'WATER', 'WASTE', 'PAINTRAY', 'PAINTFN'].every((n) => {
+      const x = FRAG.indexOf('/* @@MID_CUT_' + n + '_BEGIN@@ */');
+      const y = FRAG.indexOf('/* @@MID_CUT_' + n + '_END@@ */');
+      return x >= 0 && y > x;
+    }));
+}
+
+console.log('\n=== D. 链接失败要逐档退，不许一步退到没边界 ===');
+{
+  ok('_build 里先试完整版',
+    /_linkTry\(FRAG\)/.test(GL));
+  ok('完整版失败后会试 mid / border / title / lite 四档',
+    /makeMidFragment\(FRAG\)/.test(GL)
+    && /makeBorderOnlyFragment\(FRAG\)/.test(GL)
+    && /makeTitleOnlyFragment\(FRAG\)/.test(GL)
+    && /makeLiteFragment\(FRAG\)/.test(GL)
+    && /_linkTry\(src\)/.test(GL));
+  ok('退成功之后记了 shaderTier（报告要看得见）',
+    /this\.shaderTier = tier/.test(GL)
+    && /renderer\.shaderTier === 'mid'/.test(APP)
+    && /renderer\.shaderTier === 'border'/.test(APP)
+    && /renderer\.shaderTier === 'title'/.test(APP));
+  ok('精简版仍然有 liteShader 标记（保底那条报告要看得见）',
+    /this\.liteShader = \(tier === 'lite'\)/.test(GL) && /if \(renderer\.liteShader\)/.test(APP));
+  ok('降级原因也留着（下次排查不用再猜）',
+    /this\.liteWhy = _why/.test(GL));
+  /* ⚠ 显存不足（0x0505）时不许再试 ✗ —— 再试一次只是白等 92 秒 ✓ */
+  ok('显存不足时不白试降级着色器（白等 92 秒的事不许再来）',
     /ge0 !== 0x0505/.test(GL));
 }
 

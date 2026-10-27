@@ -138,10 +138,10 @@ if (location.protocol === 'file:') {
         <!-- 导出涂色方案 .json：不进仓库、直接下载一份 ✓ -->
         <button class="btn ghost" id="btn-export-project">导出涂色方案</button>
         <button class="btn ghost" id="btn-png">导出窗口</button>
+        <!-- **整图 / 高清 / 局部都从一个口出**（2026-10-27 用户要求合并 ✓）
+             点开先选规格（0.5× / 1× / 2× / 3×），再选范围（全图 / 框选）✓
+             原来的「导出高清地图」按钮已经并进来，不再单独露出 ✓ -->
         <button class="btn ghost" id="btn-png-full">导出整图</button>
-        <!-- **高清导出**：输出宽高都 ×2，边界按新尺度重画 ✓（不是放大糊 ✗）
-             一个地图像素变 2×2，细边界不再互相咬掉 ✓（用户要求 ✓）-->
-        <button class="btn ghost" id="btn-png-full2">导出高清地图</button>
         <!-- 出毛病时把这一份发给作者就行 ✓（日志模块是 js/log.js，比 app.js 先加载 ✓） -->
         <button class="btn ghost" id="btn-log">导出日志</button>
       </div>
@@ -399,6 +399,36 @@ if (location.protocol === 'file:') {
     <main class="stage" id="stage">
       <canvas id="map"></canvas>
       <canvas id="overlay"></canvas>
+      <!-- 地图上的图例：位置跟着四角/自定义走，拖它可移动，右下角把手缩放 ✓
+           样式和导出共用同一套 drawLegend，所见即所得 ✓ -->
+      <div class="legend-overlay" id="legend-overlay" hidden tabindex="0"
+           role="group" aria-label="地图图例：拖动移动，右下角缩放，方向键微调，Shift 加方向键缩放">
+        <canvas id="legend-canvas"></canvas>
+        <span class="legend-resize" id="legend-resize" aria-hidden="true"></span>
+      </div>
+      <!-- 整图导出的「框选一部分」：盖在地图上的透明选择层 ✓
+           只在框选期间显示；不框选时完全不挡鼠标 ✓
+           框选按绘图软件那套来：拖出框 → 八个把手调大小 → 框里拖动挪位置 →
+           尺寸角标 + 取消 / 重选 / 确定 ✓ -->
+      <div class="export-pick-layer" id="export-pick-layer" hidden>
+        <div class="export-pick-box" id="export-pick-box" hidden>
+          <span class="export-pick-handle h-nw" data-handle="nw"></span>
+          <span class="export-pick-handle h-n" data-handle="n"></span>
+          <span class="export-pick-handle h-ne" data-handle="ne"></span>
+          <span class="export-pick-handle h-e" data-handle="e"></span>
+          <span class="export-pick-handle h-se" data-handle="se"></span>
+          <span class="export-pick-handle h-s" data-handle="s"></span>
+          <span class="export-pick-handle h-sw" data-handle="sw"></span>
+          <span class="export-pick-handle h-w" data-handle="w"></span>
+          <span class="export-pick-size" id="export-pick-size">—</span>
+        </div>
+        <div class="export-pick-tip" id="export-pick-tip">按住拖动，框出要导出的范围 · Esc 取消</div>
+        <div class="export-pick-bar" id="export-pick-bar">
+          <button class="btn ghost" id="export-pick-cancel" type="button">取消</button>
+          <button class="btn ghost" id="export-pick-redo" type="button">重选</button>
+          <button class="btn" id="export-pick-ok" type="button" disabled>确定</button>
+        </div>
+      </div>
       <div class="hover-card" id="hover-card" hidden></div>
       <div class="zoom-box">
         <button class="btn tiny" id="btn-zoom-out">−</button>
@@ -548,15 +578,12 @@ if (location.protocol === 'file:') {
         <button class="set-tab on" type="button" data-group="color">颜色</button>
         <button class="set-tab" type="button" data-group="border">边界线</button>
         <button class="set-tab" type="button" data-group="label">名称</button>
-        <button class="set-tab" type="button" data-group="legend">其他</button>
+        <button class="set-tab" type="button" data-group="legend">图例</button>
         <span class="set-tabs-sp"></span>
         <!-- 🔴🔴 **2026-10-21：白天/黑夜按钮挪进「其他」页** ✗✗（用户点名）
              原话："晨昏按钮放在设置的【其他】页面" ✓
-             ⚠ 它原来在这一行（标签行最右、× 左边）✓ 现在挪到 `.set-col[data-group=legend]`
-               里当一行正常设置 ✓（见下面那一栏 ✓）
-             ⚠ **只搬家、不换 id / 不换类** ✗ —— `app.js` 那段是 `$('btn-theme')`
-               然后挂 `btn.onclick` ✓ id 一改就断 ✓
-               手机版也按 `#btn-theme` 把它搬去顶栏（见 mobile_js.txt）✓ -->
+             ⚠ 2026-10-22 又按用户要求挪回面板顶部了（见 `.set-theme-row`）✓
+             现在这一页只剩图例，标签也跟着叫「图例」✓ -->
         <button class="set-x" id="set-close" type="button">×</button>
       </div>
 
@@ -688,31 +715,101 @@ if (location.protocol === 'file:') {
         </section>
 
         <!-- ================= ④ 其他（图例 + 界面主题）=================
-             🔴 **2026-10-21：这一栏改叫「其他」**（标签也跟着改 ✓ 用户口径 ✓）
-             里面现在有两块：
-               ① 导出图例（原来就有 ✓）
-               ② **白天 / 黑夜**（新搬进来的 ✓ 用户："晨昏按钮放在设置的【其他】页面"）
-             ⚠ 主题那条放在**最上面** ✗ 不放最底下 ——
-               它是"整个界面长什么样"的开关，比导出图例更高一层 ✓
-               而且它一按整页就变色，放顶端一眼看得到变化 ✓ -->
+             🔴 **2026-10-27：改叫「图例」**（标签也跟着改 ✓）
+             主题按钮早搬去面板顶部了，这一栏现在**只剩图例** ✓
+             再叫「其他」等于把唯一的功能藏进一个不收件箱 ✗ -->
         <section class="set-col" data-group="legend">
           <!-- ⚠ **「白天 / 黑夜」不在这儿了** ✗（2026-10-22 挪到面板顶部，见 `.set-theme-row`）
                这里曾经有一行 `label.theme-row` + `#btn-theme` ✓ 已搬走 ✓
-               那一页现在只剩导出图例 ✓（分组标题也去掉了，空了就别硬留）-->
+               分组标题也去掉了：标签已经叫「图例」，再写一个小标题是重复 ✓ -->
 
-          <div class="set-sub">导出图例</div>
-          <label class="set-row"><span class="set-l">导出时显示</span><input type="checkbox" id="set-legend"></label>
-          <label class="set-row"><span class="set-l">标题</span><input type="text" id="set-legend-title" maxlength="40" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"></label>
-          <label class="set-row"><span class="set-l">位置</span>
-            <select id="set-legend-pos">
-              <option value="tl">左上</option>
-              <option value="tr">右上</option>
-              <option value="bl">左下</option>
-              <option value="br">右下</option>
-            </select>
+          <label class="set-row"><span class="set-l">显示图例</span><input type="checkbox" id="set-legend"></label>
+          <label class="set-row"><span class="set-l">标题</span><input type="text" id="set-legend-title" maxlength="60" placeholder="留空就不显示标题" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"></label>
+          <label class="set-row"><span class="set-l">只显示标题</span><input type="checkbox" id="set-legend-title-only"></label>
+
+          <div class="set-sub">条目</div>
+          <div class="legend-tools">
+            <button class="btn tiny" id="legend-sort" type="button" title="按图例里现在的名字排序">按名称 A→Z</button>
+            <button class="btn tiny" id="legend-reset-names" type="button" title="把自定义名全部清掉，恢复地图上的名字">恢复自动名</button>
+          </div>
+          <div class="legend-count" id="legend-count" role="status" aria-live="polite"></div>
+          <div class="legend-list" id="legend-list" role="list" aria-label="图例条目"></div>
+
+          <div class="set-sub">版式</div>
+          <div class="legend-grid">
+            <label class="legend-cell legend-cell-wide"><span class="legend-cell-l">字体</span>
+              <select id="set-legend-font" title="使用字体库里导入的字体">
+                <option value="">默认（系统黑体）</option>
+              </select>
+            </label>
+            <label class="legend-cell"><span class="legend-cell-l">位置</span>
+              <select id="set-legend-pos">
+                <option value="tl">左上</option>
+                <option value="tr">右上</option>
+                <option value="bl">左下</option>
+                <option value="br">右下</option>
+                <option value="custom">自定义</option>
+              </select>
+            </label>
+            <label class="legend-cell"><span class="legend-cell-l">大小</span>
+              <select id="set-legend-size">
+                <option value="s">小</option>
+                <option value="m">中</option>
+                <option value="l">大</option>
+                <option value="xl">特大</option>
+                <option value="custom">自定义</option>
+              </select>
+            </label>
+            <label class="legend-cell"><span class="legend-cell-l">列数</span>
+              <select id="set-legend-cols">
+                <option value="1">1 列</option>
+                <option value="2">2 列</option>
+                <option value="3">3 列</option>
+                <option value="4">4 列</option>
+                <option value="5">5 列</option>
+                <option value="6">6 列</option>
+                <option value="7">7 列</option>
+                <option value="8">8 列</option>
+              </select>
+            </label>
+            <label class="legend-cell"><span class="legend-cell-l">色块</span>
+              <select id="set-legend-box">
+                <option value="square">方形</option>
+                <option value="rect">长方形</option>
+                <option value="circle">圆形</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="set-sub">颜色</div>
+          <div class="legend-colors" id="legend-colors">
+            <div class="legend-color-card">
+              <span class="legend-color-l">背景</span>
+              <label class="legend-swatch" title="图例背景色">
+                <input type="color" id="set-legend-bg" aria-label="图例背景色">
+              </label>
+              <span class="legend-hex" id="v-set-legend-bg">#FFFFFF</span>
+            </div>
+            <div class="legend-color-card">
+              <span class="legend-color-l">边框</span>
+              <label class="legend-swatch" title="图例边框色">
+                <input type="color" id="set-legend-border" aria-label="图例边框色">
+              </label>
+              <span class="legend-hex" id="v-set-legend-border">#000000</span>
+            </div>
+            <div class="legend-color-card">
+              <span class="legend-color-l">字色</span>
+              <label class="legend-swatch" title="图例文字颜色">
+                <input type="color" id="set-legend-fg" aria-label="图例字色">
+              </label>
+              <span class="legend-hex" id="v-set-legend-fg">#111111</span>
+            </div>
+          </div>
+          <label class="set-row legend-alpha-row"><span class="set-l">背景不透明度</span>
+            <input type="range" id="set-legend-bg-alpha" min="0" max="100" step="5" aria-label="图例背景不透明度">
+            <span class="set-v legend-alpha" id="v-set-legend-alpha">90%</span>
           </label>
-          <div class="legend-list" id="legend-list"></div>
-          <div class="set-note" id="legend-count"></div>
+          <label class="set-row"><span class="set-l">字色跟随色块</span><input type="checkbox" id="set-legend-fg-auto"></label>
         </section>
 
       </div>
@@ -748,6 +845,69 @@ if (location.protocol === 'file:') {
       <div class="rename-foot">
         <button class="btn ghost" id="save-map-cancel">取消</button>
         <button class="btn" id="save-map-ok">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 🖼 **导出整图**（文件 ▾ → 导出整图）
+       倍率（0.5× / 1× / 2× / 3×）、分辨率（宽高）和范围（全图 / 框选）都在这里选，
+       导出时同一块地方换成进度条 ✓ -->
+  <div class="modal" id="export-map" hidden>
+    <div class="modal-box export-box" role="dialog" aria-modal="true" aria-labelledby="export-map-title">
+      <div class="modal-head">
+        <h2 id="export-map-title">导出整图</h2>
+        <button class="export-x" id="export-close" type="button" aria-label="关闭">×</button>
+      </div>
+
+      <div id="export-form">
+        <div class="export-field">
+          <div class="export-label">倍率</div>
+          <div class="ctl-seg export-seg" id="export-scale" role="group" aria-label="导出倍率">
+            <button type="button" data-scale="0.5">0.5×</button>
+            <button type="button" data-scale="1" class="on">1×</button>
+            <button type="button" data-scale="2">2×</button>
+            <button type="button" data-scale="3">3×</button>
+          </div>
+          <div class="export-label export-size-label">分辨率</div>
+          <div class="export-size">
+            <span class="export-size-k">宽</span>
+            <input id="export-w" type="text" inputmode="numeric" pattern="[0-9]*"
+                   autocomplete="off" spellcheck="false" aria-label="输出宽度（像素）" placeholder="自动">
+            <span class="export-size-x">×</span>
+            <span class="export-size-k">高</span>
+            <input id="export-h" type="text" inputmode="numeric" pattern="[0-9]*"
+                   autocomplete="off" spellcheck="false" aria-label="输出高度（像素）" placeholder="自动">
+            <span class="export-size-px">px</span>
+          </div>
+        </div>
+
+        <div class="export-field">
+          <div class="export-label">范围</div>
+          <div class="ctl-seg export-seg" id="export-range" role="group" aria-label="导出范围">
+            <button type="button" data-range="full" class="on">全图</button>
+            <button type="button" data-range="part">框选</button>
+          </div>
+        </div>
+
+        <div class="export-info" id="export-info">预计内存 —</div>
+        <div class="export-warn" id="export-warn" hidden></div>
+
+        <div class="export-foot">
+          <button class="btn ghost" id="export-cancel" type="button">取消</button>
+          <button class="btn" id="export-start" type="button">导出</button>
+        </div>
+      </div>
+
+      <div id="export-progress" hidden>
+        <div class="export-prog-head">
+          <span id="export-prog-title">正在导出整图</span>
+          <span id="export-prog-pct">0%</span>
+        </div>
+        <div class="export-prog-track"><div class="export-prog-bar" id="export-prog-bar"></div></div>
+        <div class="export-prog-note" id="export-prog-note">准备中…</div>
+        <div class="export-foot">
+          <button class="btn ghost" id="export-stop" type="button">停止导出</button>
+        </div>
       </div>
     </div>
   </div>

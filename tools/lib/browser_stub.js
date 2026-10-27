@@ -529,6 +529,14 @@ class El {
              right: this.clientWidth, bottom: this.clientHeight };
   }
   getContext(kind) { return kind === '2d' ? ctx2d() : fakeGL(); }
+  /** 桩里的画布也能“编码”一张 PNG：只回一个带 PNG 头的假 Blob ✓
+   *  导出链路（进度 / 看门狗 / 释放画布）要有地方验，真像素这里不看 ✓ */
+  toBlob(cb, type) {
+    setTimeout(() => {
+      try { cb(new Blob([new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])],
+        { type: type || 'image/png' })); } catch (e) { cb(null); }
+    }, 0);
+  }
   /* 🔴 **子树查询要真的能查** ✗✗（2026-10-19 ✓ 2026-10-21 升级）
    *   原来是两个空壳（`return []` / `return null`）✓
    *   剧本下拉栏那段用 `btn.querySelector('.dd-label')`、`panel.querySelectorAll('[data-role="era-item"]')`
@@ -644,8 +652,13 @@ function ctx2d() {
 }
 
 /** WebGL：Proxy 兜住 —— 真渲染不验，只求 gl.js 不炸 */
+/*: 让前 N 次 linkProgram 失败（2026-10-27：验证「完整版失败 → 中间档 → 精简版」的顺序） */
+let forceLinkFail = 0;
+function setForceLinkFail(n) { forceLinkFail = Math.max(0, n | 0); }
 function fakeGL() {
   const t = {};
+  let linkCalls = 0;
+  let linkFailed = false;
   return new Proxy(t, {
     get(_, k) {
       const s = String(k);
@@ -656,7 +669,13 @@ function fakeGL() {
         if (s === 'getUniformLocation') return { __m: 'loc', name: a[1] };
         if (s === 'getAttribLocation') return 0;
         if (s === 'getParameter') return 16384;                // MAX_TEXTURE_SIZE 之类
-        if (s === 'getShaderParameter' || s === 'getProgramParameter') return true;
+        if (s === 'linkProgram') {
+          linkCalls++;
+          linkFailed = linkCalls <= forceLinkFail;
+          return undefined;
+        }
+        if (s === 'getProgramParameter') return !linkFailed;
+        if (s === 'getShaderParameter') return true;
         if (s === 'getExtension') return null;
         if (s.startsWith('get')) return 0;
         return undefined;
@@ -1030,6 +1049,16 @@ _p('pickTitle', pickTitle); _p('paintTitle', paintTitle); _p('restoreTitle', res
 _p('undo', undo); _p('redo', redo); _p('recomputePainted', recomputePainted);
 /* 2026-10-27 v1.10.1：清除全部要能撤销 / 保存地图默认名 ✓ */
 _p('resetAll', resetAll); _p('defaultSaveName', defaultSaveName); _p('openSaveMapDialog', openSaveMapDialog);
+/* 2026-10-27：导出整图弹窗（规格 / 范围 / 进度）✓
+   框选按绘图软件那套：八个把手 / 移动 / 确认，导出纯函数给自测用 ✓ */
+_p('openExportDialog', openExportDialog); _p('_exportDlg', _exportDlg); _p('_exportMetrics', _exportMetrics);
+_p('_exportRefresh', _exportRefresh); _p('_exportPickStart', _exportPickStart);
+_p('_exportTileSize', _exportTileSize);
+_p('_exportPickState', _exportPickState); _p('_exportPickNorm', _exportPickNorm);
+_p('_exportPickResizeRect', _exportPickResizeRect); _p('_exportPickConfirm', _exportPickConfirm);
+_p('_exportPickCancel', _exportPickCancel); _p('_exportPickRender', _exportPickRender);
+_p('_exportSizeInput', _exportSizeInput); _p('_exportSizeCommit', _exportSizeCommit);
+_p('exportFullPNG', exportFullPNG);
 _p('provInfoAt', provInfoAt); _p('paintTargetsAt', paintTargetsAt);
 _p('labelMaxValue', labelMaxValue); _p('buildBorderEdges'); _p('buildBorderDepth', buildBorderDepth); _p('refreshBorderField', refreshBorderField); _p('editTier', editTier);
 _p('saveMapPrefs', saveMapPrefs); _p('loadMapPrefs', loadMapPrefs);
@@ -1070,9 +1099,12 @@ _p('paintAt', paintAt); _p('hoverGroupRgb', hoverGroupRgb); _p('stableColor', st
 _p('hoverTargetTid', hoverTargetTid); _p('applyHoverHighlight', applyHoverHighlight);
 _p('readablePlaceName', readablePlaceName); _p('manualWaterName', manualWaterName);
 _p('drawLabels', drawLabels); _p('legendEntries', legendEntries);
+_p('legendOpts', legendOpts); _p('refreshLegendFonts', refreshLegendFonts);
 /* 整图导出的名字（2026-10-27 用户："手机版导出地图没有附赠名字"）
  * 自检要量：手机宽度下 export 也该按 1600px 参考视口放行国名 ✓ */
 _p('paintLabelsForExport', paintLabelsForExport);
+/* 2026-10-27 用户："导出的时候只有字体大于 15px 的才扔进去" —— 自检要直接量阈值 ✓ */
+_p('exportFontPx', exportFontPx);
 /* 色块名单（blockLabelPoints）—— 2026-10-27 自检要用：
  *   清除 / 切无剧本之后，这份缓存必须立刻变空 ✓ 不是等下一次涂色才更新 ✓
  *   ⚠ 这段在模板字符串里 ✗ 注释里不许出现反引号 ✓ */
@@ -1080,7 +1112,10 @@ _p('blockLabelPoints', blockLabelPoints);
 /* **地名的连通域取点** ✓（2026-10-16 ✓ 探针 / test_modes 要能量它 ✓） */
 _p('buildPlaceComponents', buildPlaceComponents); _p('placePointsFor', placePointsFor);
 _p('groupComponents', groupComponents); _p('labelPlaceMaxValue', labelPlaceMaxValue);
-_p('drawLegend', drawLegend); _p('rebuildLegendPanel', rebuildLegendPanel);
+_p('drawLegend', drawLegend); _p('legendLayout', legendLayout);
+_p('renderLegendOverlay', renderLegendOverlay); _p('rebuildLegendPanel', rebuildLegendPanel);
+_p('syncLegendControls', syncLegendControls); _p('bindLegendControls', bindLegendControls);
+_p('_legendCustomFromBox', _legendCustomFromBox);
 _p('impassLabel', impassLabel); _p('specialTileLabel', specialTileLabel);
 _p('categoryNameOf', categoryNameOf); _p('nameIsMeaningful', nameIsMeaningful);
 _p('realNameAtTier', realNameAtTier); _p('isWaterKey', isWaterKey);
@@ -1181,6 +1216,6 @@ function readStandalone(htmlPath) {
 
 module.exports = {
   ROOT, MODULES, flattenModules, moduleListFor, makeEnv, instantiate, readStandalone,
-  El, ctx2d, fakeGL, stats, resetCanvasStats,
+  El, ctx2d, fakeGL, stats, resetCanvasStats, setForceLinkFail,
   makeIndexedDBFake,
 };

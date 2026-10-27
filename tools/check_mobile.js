@@ -71,10 +71,28 @@ function readScript(htmlPath) {
    *   改名窗早就是居中卡片了 ✓ 保存地图窗漏了 ✓
    *   这里验**烤出来的产物**里三条都在：居中 / 卡片自适应高度 / hidden 压得住 ✓ */
   ok('小输入弹窗是居中卡片（保存地图不再铺满全屏 ✓）',
-     /#rename, #save-map\s*\{[^}]*align-items:\s*center/.test(html)
+     /#rename, #save-map(?:, #export-map)?\s*\{[^}]*align-items:\s*center/.test(html)
      && /#save-map \.modal-box[^{}]*\{[^}]*height:\s*auto/.test(html)
      && /#save-map\[hidden\][^{]*\{[^}]*display:\s*none\s*!important/.test(html),
      /#save-map \.modal-box[^{}]*\{[^}]*height:\s*auto/.test(html) ? '小卡片 ✓' : '还是全屏 ✗');
+  /* 2026-10-27：导出整图也用小卡片，别在手机上又铺满一屏 ✓ */
+  ok('导出整图弹窗在手机上是居中卡片（规格/范围/进度不铺满 ✓）',
+     /#export-map\s*\{[^}]*align-items:\s*center/.test(html)
+     && /#export-map \.modal-box[^{}]*\{[^}]*max-width:\s*410px/.test(html)
+     && /#export-map\[hidden\][^{]*\{[^}]*display:\s*none\s*!important/.test(html),
+     /#export-map\s*\{[^}]*align-items:\s*center/.test(html) ? '居中卡片 ✓' : '没找到导出弹窗样式 ✗');
+  /* 2026-10-27：范围只留「全图 / 框选」，旧提示和「在图上框选」按钮都撤掉 ✓ */
+  ok('导出范围只剩全图 / 框选（旧提示和按钮都撤了 ✓）',
+     /id="export-range"[\s\S]*>全图<[\s\S]*>框选</.test(html)
+     && !/class="export-note"/.test(html)
+     && !/id="export-rect"/.test(html)
+     && !/id="export-pick"/.test(html),
+     /id="export-rect"/.test(html) ? '旧范围提示还在 ✗' : '干净 ✓');
+  /* 2026-10-27：框选三键要大到手指按得住 ✓ */
+  ok('框选三键够大且是「取消 / 重选 / 确定」',
+     /\.export-pick-bar \.btn\s*\{[^}]*height:\s*46px[^}]*min-width:\s*82px/.test(html)
+     && /id="export-pick-cancel"[^>]*>取消[\s\S]*id="export-pick-redo"[^>]*>重选[\s\S]*id="export-pick-ok"[^>]*>确定/.test(html),
+     /id="export-pick-ok"[^>]*>确定/.test(html) ? '46px 大字 ✓' : '按钮字还没换 ✗');
   /* 🔴 **剧本 + 下级层级两颗都得亮** ✗（2026-10-27 用户："省份按钮仅仅是颜色变了一点点"）
    *   手机版那套玻璃按钮会把桌面的 `.grain` 底/边盖掉 ✓
    *   → 产物里必须有手机专属的蓝底 + 内圈，而且日间版也得在 ✓ */

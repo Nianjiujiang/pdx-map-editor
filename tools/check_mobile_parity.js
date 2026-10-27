@@ -185,20 +185,23 @@ ok('手机版能切白天/黑夜（有 data-theme 的写入口）',
   const tabsSeg = HTML.slice(tabsStart, tabsEnd);
   ok('主题按钮不在标签行里（那是更早的位置 ✗）', !/id="btn-theme"/.test(tabsSeg));
 
-  /* ⚠ 也不能还留在「其他」页里 ✗ 搬走就得搬干净 ✓ */
+  /* ⚠ 也不能还留在图例页里 ✗ 搬走就得搬干净 ✓ */
   const lgStart = HTML.indexOf('<section class="set-col" data-group="legend"');
   const lgEnd = HTML.indexOf('</section>', lgStart);
   const lgSeg = lgStart >= 0 ? HTML.slice(lgStart, lgEnd) : '';
-  ok('主题按钮不在「其他」页里（搬走了就别留副本 ✓）',
+  ok('主题按钮不在图例页里（搬走了就别留副本 ✓）',
      !/id="btn-theme"/.test(lgSeg));
 
   const nTh = (HTML.match(/id="btn-theme"/g) || []).length;
   ok('全页只有一个主题按钮（两颗的话有一颗点了没反应 ✗）', nTh === 1, `${nTh} 个`);
 
-  /* 那一页的标签也该叫「其他」✓（用户口径）*/
-  ok('「其他」页的标签写着「其他」（不叫「图例 ✓）',
-     /data-group="legend"[^>]*>\s*其他/.test(HTML),
-     /data-group="legend"[^>]*>\s*其他/.test(HTML) ? '对 ✓' : '标签还是旧的 ✗');
+  /* 那一页的标签叫「图例」✓
+   * 2026-10-27 改：主题按钮早搬去面板顶部了，这一页只剩图例；
+   * 还叫「其他」等于把唯一的功能藏在一个不收件箱里 ✗
+   * （旧断言测的是“用户当时让叫其他”，前提已经没了，所以改断言 ✓） */
+  ok('图例页的标签写着「图例」（这一页只剩图例，不叫「其他」）',
+     /data-group="legend"[^>]*>\s*图例/.test(HTML),
+     /data-group="legend"[^>]*>\s*图例/.test(HTML) ? '对 ✓' : '标签还是旧的 ✗');
 }
 
 /* ---------------------------------------------------------------- ③ CSS */
@@ -390,9 +393,9 @@ console.log('\n===== ③.5 小输入弹窗：不许铺满全屏 =====');
   }
   ok('能扫出带文本输入框的弹窗', withInput.length > 0, withInput.join(' / '));
 
-  /* 手机版保留的小输入弹窗：改名 / 保存地图 ✓
+  /* 手机版保留的小输入弹窗：改名 / 保存地图 / 导出整图 ✓
      ⚠ 「设置」在手机版是整块 `display:none`（内容搬进抽屉了）✓ 不进清单 ✓ */
-  const MINI = new Set(['rename', 'save-map']);
+  const MINI = new Set(['rename', 'save-map', 'export-map']);
   for (const id of withInput) {
     if (id === 'settings') continue;
     ok(`「${id}」这种小输入弹窗登记进小卡片清单了`,
@@ -969,8 +972,10 @@ console.log('\n===== ⑧ 电脑版：写死深色的都有日间版吗 =====');
    *   ⚠ 白名单只放**故意**不改的：
    *     `.modal` 那层遮罩 —— 它的职责是"把背后的地图压暗" ✓
    *     浅色主题下也该是暗的 ✓ 改成浅色反而压不住、弹窗会糊在地图上 ✓
+   *     `.export-pick-handle` —— 奶油色小方块 + 深色描边，白天夜里都
+   *     一样才看得清；它的深边不是"忘了跟主题"，是刻意的 ✓
    */
-  const ALLOW = ['.modal'];
+  const ALLOW = ['.modal', '.export-pick-handle'];
   const cssD = fs.readFileSync(path.join(ROOT, 'web', 'style.css'), 'utf8')
     .replace(/\/\*[\s\S]*?\*\//g, '');
   const parseD = (s) => {

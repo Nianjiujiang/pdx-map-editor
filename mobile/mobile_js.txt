@@ -475,8 +475,8 @@ function bindMobile() {
       { key: 'border', title: '边界' },
       { key: 'label', title: '名字' },
       /* ⚠ key 仍叫 legend ✗（别改，页里还有几处按它找 DOM ✓）
-       *   只把**标题**改成「其他」—— 跟桌面那栏对齐 ✓ */
-      { key: 'legend', title: '其他' },
+       *   标题跟桌面那栏对齐，叫「图例」✓（这一页只剩图例了，没有别的） */
+      { key: 'legend', title: '图例' },
     ];
     const paneEls = {};
     let firstTab = null;

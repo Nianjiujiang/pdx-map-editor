@@ -1668,18 +1668,33 @@ const factory = new Function(
       ok('滑条旁边有当前值提示（跟「名字上限」同一套 ✓）',
          /function buildSliderTips/.test(appSrc) && /const SLIDER_TIPS = \[/.test(appSrc)
          && /margin-right: auto/.test(css));
-      /* **高清导出（2×）** ✓（用户要求：一个地图像素拆成 2×2 ✓
-       *   边界按**新的尺度**重画 ✓ —— 靠的是"视口照旧按地图坐标给、画布尺寸翻倍"，
-       *   着色器那边 `uMapPerPx = view.w / canvas.width` 自动减半 ✓
-       *   不是把 1× 的图放大那种糊 ✗）*/
-      ok('导出菜单有「导出高清地图」（画布翻倍而视口不变 ✓）',
-         /id="btn-png-full2">导出高清地图</.test(HTML)
-         && /async function exportFullPNG\(scale = 1\)/.test(appSrc)
-         && /out\.width = W \* scale/.test(appSrc)
-         && /glCanvas\.width = tw \* scale/.test(appSrc)
-         && /renderer\.setView\(tx, ty, tw, th\)/.test(appSrc)
-         && /Math\.max\(512, Math\.floor\(2048 \/ scale\)\)/.test(appSrc)
-         && /maybeDrawLegend\(ctx, W \* scale, H \* scale\)/.test(appSrc));
+      /* **导出整图（2026-10-27 合并）** ✓
+       *   用户要求：两个入口并成一个，先选 0.5/1/2/3 倍规格，再选整张/框选，
+       *   带进度条，高清别卡死 ✓
+       *   ⚠ 不再是「高清地图」单独一个按钮 ✗ 所以旧断言必须跟着换 ✓ */
+      ok('导出菜单合并成一个「导出整图」（不再留两个入口）',
+         /id="btn-png-full">导出整图</.test(HTML)
+         && !/btn-png-full2/.test(HTML));
+      ok('「导出整图」有 0.5/1/2/3 倍规格 + 整张/框选范围',
+         /id="export-scale"/.test(HTML)
+         && (HTML.match(/data-scale="/g) || []).length === 4
+         && /data-scale="0\.5"/.test(HTML)
+         && /data-range="full"/.test(HTML)
+         && /data-range="part"/.test(HTML));
+      ok('导出弹窗有真实进度条 + 停止按钮',
+         /id="export-progress"/.test(HTML)
+         && /id="export-prog-bar"/.test(HTML)
+         && /id="export-stop"/.test(HTML));
+      ok('整图导出接受矩形 / 进度 / 取消（画布仍按倍率放大，视口按地图坐标 ✓）',
+         /async function exportFullPNG\(scale = 1, opts = \{\}\)/.test(appSrc)
+         && /_exportNormRect\(opts\.rect\)/.test(appSrc)
+         && /onProgress/.test(appSrc) && /shouldCancel/.test(appSrc)
+         && /out\.width = OW/.test(appSrc)
+         && /renderer\.setView\(tx, ty, tw, th\)/.test(appSrc));
+      ok('高清分块按设备上限放大（桌面 4096 · 手机 2048）',
+         /function _exportTileSize/.test(appSrc)
+         && /MAX_RENDERBUFFER_SIZE/.test(appSrc)
+         && /_exportIsHandheld/.test(appSrc));
       /* ✅ **边界栏的命名规范 —— 2026-10-16 第二轮整条重写** ✓
        *   用户原话："**最大关键点：滑块左边就写边界宽度而不是省份边界宽度**"✓
        *   旧那条盯的是「省份边界宽度 / 地区边界浓度」那种**长标签** ✗
