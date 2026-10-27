@@ -379,7 +379,9 @@ const state = {
   _wastePerimSeq: 0,
   _wasteCfgSeq: 0,
   painted: new Set(),          // **涂过的最细层节点**集合（`recomputePainted` 从每格反推的缓存 ✓）
-  brushLabel: '',                 // 当前画笔的标记：默认空 ✓（2026-10-25 用户：去掉"请输入文本"✓）
+  brushLabel: '请输入文本',      // 当前画笔的标记：开局不能空 ✓（2026-10-27 用户要求恢复）
+                                // ⚠ 之前（2026-10-25）改成空字符串，标注框一进去是空的 ✓
+                                //   用户现在明确要「真正的五个字」做默认值 ✓ 别再改回空 ✗
   titleName: new Map(),        // 头衔 → 改过的名字（改名工具写的）
   colorIndex: new Map(),
   labelTint: null,            // 势力名 → 它当前显示的颜色（「势力名取色」按钮给的 ✓）
@@ -5503,9 +5505,25 @@ function paintLabelsForExport(ctx, scale) {
     LOG.event('导出名字失败', String(e && (e.message || e)));
     return 0;
   }
-  /* 层的显示门槛按"整图视角"算（≈ 现在这个窗口装下整张图时的缩放 ✓）
-   * —— 不然 1× 全图导出相当于 100% 缩放，会把最细那一层的几万个名字全画上 ✗ */
-  const gate = (labels.cssW || 1600) / Math.max(1, W);
+  /* 层的显示门槛按"整图视角"算（≈ 把整张图缩进一个 **1600px 宽的参考视口** ✓）
+   * —— 不然 1× 全图导出相当于 100% 缩放，会把最细那一层的几万个名字全画上 ✗
+   *
+   * 🔴🔴 **这里原来用的是 `labels.cssW`（当前屏幕宽）** ✗✗（2026-10-27 用户：
+   *   "手机版导出地图好像没有附赠名字"）
+   *
+   *   手机上 `cssW` 只有 ~390px ✓ 算出来 gate = 390 / 5632 ≈ **6.9%** ✓
+   *   而国名层的门槛（`computeLabelZoom`）是按 **1600px 视口**定的 ≈ 20% ✓
+   *   → 手机上导出的整图**所有名字都过不了门槛** → 一张干干净净没有字的地图 ✓
+   *   电脑上 `cssW` ~1600 → gate ~28% → 国名正常出现 ✓（所以只有手机版报 ✓）
+   *
+   *   ⚠ 导出图不该跟着"你手上这台设备的屏幕宽度"变脸 ✗
+   *     同一张图在手机和电脑上导出来应该**同一套名字** ✓
+   *   → 固定按 **1600px 参考视口**算 ✓（跟 `computeLabelZoom` 的旧口径同一个数 ✓）
+   *     国名层现在门槛 = 0 ✓ 这个参考视口只影响细层（地理层）的取舍 ✓
+   *   ⚠ 跟 `scale` 无关 ✗：2× 导出只是把同样的名字画大一倍 ✓
+   *     门槛仍按"整图缩进 1600px"算 ✓（字号那边已经乘过 scale 了 ✓） */
+  const EXPORT_FIT_W = 1600;             // 整图导出的参考视口（1600px 宽 ✓）
+  const gate = Math.min(1, EXPORT_FIT_W / Math.max(1, W));
   return labels.paintExport(ctx, list, scale, gate);
 }
 
@@ -6126,14 +6144,29 @@ async function saveMapToStore(name) {
   return rec;
 }
 
+/** 保存地图的默认名 ✓（2026-10-27 v1.10.1：省得每次手打）
+ *  · 格式：「EU4 · 10月27日」✓ 一眼知道是哪张图、哪天存的 ✓
+ *  · 只是**预填并全选** ✓ 想改直接打字就覆盖掉 ✓ 不改点保存也行 ✓ */
+function defaultSaveName() {
+  const d = new Date();
+  const day = (d.getMonth() + 1) + '月' + d.getDate() + '日';
+  const game = (typeof GAME !== 'undefined' && GAME && GAME.name) ? GAME.name : '地图';
+  return game + ' · ' + day;
+}
+
 /** 存档弹窗（起名 ✓） */
 function openSaveMapDialog() {
   const box = $('save-map');
   if (!box) return;
   const inp = $('save-map-name');
-  if (inp) inp.value = '';
+  if (inp) {
+    inp.value = defaultSaveName();
+    box.hidden = false;
+    inp.focus();
+    inp.select();
+    return;
+  }
   box.hidden = false;
-  if (inp) { inp.focus(); inp.select(); }
 }
 
 /** 存档弹窗的保存按钮 ✓（之前只写了绑定忘了定义 ✓ 2026-10-25 用户 ✓） */
@@ -6473,21 +6506,20 @@ function importJSON(file) {
 }
 
 function resetAll() {
-  // **静默执行，不弹提示** ✓ —— 「清除」是你亲手按的 ✗ 不用再告诉你一遍
-  // 按**地块**清（手绘层的真相就是"每格自己的颜色"✓），不再绕"涂过的头衔"那一圈 ✗
+  /* 🔴 **「清除全部」现在也能撤销** ✗✗（2026-10-27 用户定：v1.10.1 加这一条）
+   *   以前这里点完直接 `undo.length = 0` —— 误触一下，整张图的涂色和
+   *   所有撤销记录一起没了，Ctrl+Z 也救不回来 ✓
+   *   现在走 `paintPidsAsOne()`：一次点击 = **一步历史** ✓
+   *   所以不需要弹确认（用户原话："不用再告诉你一遍"✓），后悔按 Ctrl+Z ✓
+   *   ⚠ 别再清空撤销栈 ✗ —— 清了就等于这一步也撤不回来 ✓ */
   const pd = renderer && renderer.paintData;
   const n = state.meta ? state.meta.numProvinces : 0;
   const pids = [];
   for (let q = 1; q < n; q++) if (pd && pd[q * 4 + 3] > 0) pids.push(q);
   if (!pids.length) return;
-  LOG.event('清除全部改动', `${pids.length} 格`);
-  paintPids(pids, null);
-  state.history.undo.length = 0;
-  state.history.redo.length = 0;
-  updateHistoryUI();
+  LOG.event('清除全部改动', `${pids.length} 格（可撤销）`);
+  paintPidsAsOne(pids, null);
   renderHoverCard(state.hover.pid);
-
-  recomputePainted();   // 手绘层变了：账本重算一遍 ✓
 }
 
 /**
@@ -8046,7 +8078,18 @@ function bindEvents() {
       if (sp) sp.value = '';
       if (sw) sw.value = '';
       if (typeof syncFontPicker === 'function') syncFontPicker();
-      _open();
+      /* 🔴🔴 **这里原来写的是 `_open()` —— 那个函数早就拆成 `_fill` / `openSettings` 了** ✗✗
+       *   （2026-10-27 用户："电脑和手机的恢复默认设置都没用"）
+       *   点下去 → `state.set` 其实已经回到默认、`applySettings()` 也跑了 ✓
+       *   可下一行 `_open()` 直接 ReferenceError ✓
+       *   → 后面的 `_fill()` 永远没跑到 → 控件还停在旧值上 ✓
+       *   → 用户看着滑块 / 勾选 / 颜色**一个都没动**，自然说"没用" ✓
+       *
+       *   ⚠ 恢复完必须**回填控件** ✗ —— 只改 state 不改 DOM 等于界面在撒谎 ✓
+       *   `_fill()` 会走 syncAllCtls / _refreshDirty / 图例列表 ✓ 一步到位 ✓
+       *   ⚠ 别再调 openSettings  ✗ —— 手机版这时候面板本来就是开着的 ✓
+       *     桌面版也没必要因为"恢复默认"强行把抽屉打开 ✓ */
+      _fill();
       if (typeof refreshFontStatus === 'function') { /* 由 syncFontPicker 内部刷 ✓ */ }
     };
 
@@ -8691,10 +8734,31 @@ function applyHoverHighlight(pid, hl) {
  */
 function rebuildPaintBlocks(all = false, unpainted = false) {
   state.paintBlocks = [];
+  /* 🔴🔴 **没涂色 / 没数据也要给"色块缓存"换代** ✗✗（2026-10-27 用户：
+   *   "切空白剧本 / 无剧本后国名不消失，必须画一下才刷新"
+   *   "清除和橡皮点了之后国名仍然没消失，需要画一下才刷新"）
+   *
+   *   根因：下面两处 early return 原来**只把 paintBlocks 清空** ✓
+   *   可 `blockLabelPoints()` 是**按 `_blockVer` 缓存**的 ✗
+   *   → 版本没变 → 它照样返回上一次那份旧点（1444 的国名）✓
+   *   → drawLabels 把旧国名原样画回来 ✓
+   *   → 只有再涂一笔（走到函数末尾 `_blockVer++`）才会换代 ✓
+   *
+   *   这正好解释用户报的三件事：切剧本 / 切无剧本 / 清除 / 橡皮，
+   *   只要把涂色清空或切到"没有块"的层，就会停在旧名字上 ✓
+   *
+   *   → 只要这次重建结果为空（或者数据还没就绪），就**必须** `_blockVer++`
+   *     并把 `_blockOf` 清成 -1 ✓（空结果也是一次新的结果 ✓）
+   *   ⚠ 别只在末尾 ++ ✗ —— 那正是"有块才换代、没块就卡住"的漏洞 ✓ */
+  const _invalidateBlockCache = () => {
+    state._blockVer = (state._blockVer || 0) + 1;
+    const _np = (state.meta && state.meta.numProvinces) | 0;
+    state._blockOf = new Int32Array(_np || 1).fill(-1);
+  };
   const adj = state.adjacency;
   const pos = state.provPos;
   const paint = renderer && renderer.paintData;
-  if (!adj || !pos || !paint) return;
+  if (!adj || !pos || !paint) { _invalidateBlockCache(); return; }
 
   const n = state.meta.numProvinces;
   const offsets = new Uint32Array(adj.buffer, adj.byteOffset, n + 1);
@@ -8797,7 +8861,7 @@ function rebuildPaintBlocks(all = false, unpainted = false) {
   }
   // 一块都没涂：没有色块可分（**这句必须在"建 isPainted 表"之前** ✓
   // —— 不然 4 万格的空图也要白扫一遍数组）
-  if (!painted.length) return;
+  if (!painted.length) { _invalidateBlockCache(); return; }
   const find = (x) => {
     let r = x;
     while (parent[r] !== r) r = parent[r];
@@ -11088,7 +11152,11 @@ function pickMap(maps) {
       /* .store-mode：仓库页专属样式的开关（大卡片 ✓）+ 隐藏地图侧提示 ✓ */
       box.classList.toggle('store-mode', !maps);
       /* 🗺 同一个 #map-pick-list ✓ 点谁就往里渲染谁 ✓
-       *   导入按钮 / 提示也跟着切文字 ✓（用户："不同场合区分导入的文件格式"✓）*/
+       *   导入按钮的文字跟着切 ✓（用户："不同场合区分导入的文件格式"✓）
+       * ⚠ **别往 `#map-import-hint` 里写东西** ✗ —— 那个条是"这台浏览器存不下数据"
+       *   的**警告专用位** ✓ 平时必须是空的、隐着的 ✓
+       *   以前这里塞过"点击导入按钮…"✓ 结果把内存模式的警告顶掉了 ✓
+       *   （`tools/check_standalone.js` 的「入口下面平时不摆说明文字」就是盯这个 ✓）*/
       list.innerHTML = '';
       const mi = $('map-import');
       if (maps) {
@@ -11098,10 +11166,6 @@ function pickMap(maps) {
         renderStoreList();
         if (mi) mi.textContent = '＋ 导入涂色方案…';
       }
-      const hint = $('map-import-hint');
-      if (hint) hint.textContent = maps
-        ? '点击导入按钮，或直接把 .pdxmap 文件拖进这一页。'
-        : '点击导入按钮，或直接把 .json 文件拖进这一页。';
     };
     if (tabMaps) tabMaps.onclick = () => showPickView('maps');
     if (tabStore) tabStore.onclick = () => showPickView('store');
@@ -12330,7 +12394,7 @@ if (typeof window.initTutorial === 'function') window.initTutorial();
     + '<strong>设置</strong>：颜色、边界线、名称、其他（界面白天 / 黑夜、导出图例）。设置面板也是按一下开、再按一下收。</p>'
 
     + '<h4>两个小提示</h4>'
-    + '<p>涂错了就点「文件 → 撤销」（<strong>Ctrl + Z</strong>），或者直接用「清除」重新开始，'
+    + '<p>涂错了就点「撤销」（<strong>Ctrl + Z</strong>），或者直接用「清除」重新开始，'
     + '随便尝试也不会弄乱真正的文件。<br>'
     + '想留住作品就选「文件 → 导出」，存下来的涂色下次导入依然可以接着修改。</p>'
 

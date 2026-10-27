@@ -327,6 +327,35 @@ html[data-theme="light"] .mob-theme-bar .theme-btn {
 #mob-sheet .segmented button { min-height: 32px; padding: 0 11px; font-size: 13px; }
 #mob-sheet .chip { width: 32px; height: 32px; }
 #mob-sheet .palette { gap: 8px; flex-wrap: wrap; }
+
+/* ===========================================================================
+   🎨 手机版：色块二级菜单退役 → 调色板 / 最近使用直接摆在「颜色」页底部
+   （2026-10-27 用户："关于二级窗口可以取消，调色板和常用颜色放在面板下方"）
+   ---------------------------------------------------------------------------
+   ⚠ 标题（调色板 / 最近使用）和色块是一起从 `#brush-menu` 搬出来的 ✓
+     别只搬色块 ✗ 那样面板底下会冒出两排没名字的方块 ✓
+   =========================================================================== */
+.mob-color-kit {
+  margin-top: 14px; padding-top: 10px;
+  border-top: 1px dashed #26313d;
+}
+.mob-color-kit .brush-menu-cap {
+  margin: 8px 2px 6px; font-size: 11.5px; color: #8b9aab;
+}
+.mob-color-kit .palette { gap: 8px; }
+/* 手指点得到：26px 太小，长按也容易滑 ✗
+   ⚠ 必须带 `#mob-sheet` ✗ —— 上面 `#mob-sheet .chip { 32px }` 是 id 权重 ✓ */
+#mob-sheet .mob-color-kit .palette .chip { width: 34px; height: 34px; border-radius: 8px; }
+#mob-sheet .mob-color-kit .brush-menu-cap .btn {
+  min-height: 30px; padding: 0 10px; font-size: 12px;
+}
+.mob-color-hint {
+  margin: 8px 2px 0; font-size: 11px; line-height: 1.5; color: #7d8b9c;
+}
+html[data-theme="light"] .mob-color-kit { border-top-color: #ccd5df; }
+html[data-theme="light"] .mob-color-kit .brush-menu-cap { color: #5b6877; }
+html[data-theme="light"] .mob-color-hint { color: #6b7887; }
+
 #mob-sheet .result { min-height: 34px; }
 #mob-sheet .chain-row { min-height: 34px; }
 #mob-sheet input[type="text"], #mob-sheet input[type="number"] { font-size: 13.5px; padding: 6px 8px; }
@@ -411,14 +440,22 @@ html[data-theme="light"] .mob-theme-bar .theme-btn {
 
 /* 悬停卡 / 缩放条 / 教程卡片 */
 .hover-card { max-width: 72vw; font-size: 13px; padding: 8px 10px; border-radius: 10px; z-index: 50; }
-.zoom-box { right: 10px; bottom: 86px; }
+/* 🔴 **缩放条必须真正贴右边** ✗✗（2026-10-27 用户："三个小按钮怎么跑到左边了"）
+ *   桌面基类是 `left: 12px` ✓ 手机版只写了 `right: 10px` ✗
+ *   → left + right 同时存在 = 容器被撑成整屏宽 ✓
+ *   → `flex-direction: column` 的子项默认靠左 ✓ 三个按钮就掉到左边去了 ✓
+ *   → 必须 `left: auto` 把左边放开 ✓ 再 `align-items: flex-end` 兜一层 ✓ */
+.zoom-box { left: auto !important; right: 10px; bottom: 86px; align-items: flex-end; }
 #tutCard { max-width: calc(100vw - 24px); padding: 14px 16px; border-radius: 12px; }
 #tutCard button { min-height: 42px; padding: 0 16px; font-size: 14px; }
 
 /* 设置那个弹窗在手机版用不上了 ✓ —— 内容整块搬进了「设置」二级面板 ✗ 不再套第三层 */
 #settings { display: none !important; }
 
-/* 改名弹窗还是要的 ✓ 竖屏全屏、一栏 */
+/* 弹窗底子：竖屏全屏、一栏
+   ⚠ 这是给「设置」那种**大弹窗**写的 ✗
+     改名 / 保存地图这种"一行输入"的小窗在后面单独改成居中卡片 ✓
+     （见「小输入弹窗」那一节 ✓ 别在这里改，不然大窗也跟着缩 ✓） */
 .modal { align-items: stretch; justify-content: stretch; padding: 0; }
 .modal-box {
   width: 100% !important; max-width: none; height: 100%; max-height: none;
@@ -519,6 +556,12 @@ html[data-theme="light"] #mob-backdrop { background: rgba(24, 36, 50, .28); }
 .mob-set-foot {
   display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
   margin: 12px 0 0; padding-top: 10px; border-top: 1px dashed #26313d;
+  /* 🔴 **底必须是透明的** ✗✗（2026-10-27 用户："这一块莫名其妙是更灰色的底
+   *   （似乎是沿用电脑版设定），和旁边不一样"）
+   *   桌面 `.set-foot` 有一条 `background: rgba(0,0,0,.18)` ✓ 那是抽屉底栏的色 ✓
+   *   搬进手机面板后就成了面板中间一块灰板 ✓ 跟旁边格格不入 ✓ */
+  background: transparent !important;
+  box-shadow: none !important;
 }
 .mob-set-foot .set-dirty { flex: 1 1 auto; font-size: 12.5px; color: #8b9aab; }
 .mob-set-foot .btn { min-height: 34px; padding: 0 12px; font-size: 13px; }
@@ -557,7 +600,7 @@ html[data-theme="light"] .mob-set-foot .set-dirty { color: #5b6877; }
     border-radius: 24px; overflow: hidden; border: 1px solid #26313d;
     box-shadow: 0 30px 90px rgba(0, 0, 0, .75), 0 0 0 8px rgba(255, 255, 255, .02);
   }
-  #mob-sheet, #mob-backdrop, #mob-ui, #mob-intro, #rename { position: absolute; }
+  #mob-sheet, #mob-backdrop, #mob-ui, #mob-intro, #rename, #save-map { position: absolute; }
   #mob-backdrop { border-radius: 24px; }
   /* 🔴 **教程那三个也要收** ✗✗（2026-10-21 补）
    *   桌面 `style.css` 里 `#tutRing` / `#tutPing` / `#tutCard` 全是 `position: fixed` ✓
@@ -835,32 +878,38 @@ html[data-theme="light"] .mob-set-foot .set-dirty { color: #5b6877; }
 
 
 /* ===========================================================================
-   改名弹窗 = **居中的小卡片**，不要铺满全屏（用户：手机版改名不要覆盖全屏）
+   小输入弹窗（改名 / 保存地图）= **居中的小卡片**，不要铺满全屏
    —— 上面那段 .modal 是给"设置弹窗"写的竖屏全屏版 ✗
-      改名只有一行输入，铺满整屏太唬人、还看不见地图 ✓
+      它们只有一行输入，铺满整屏太唬人、还看不见地图 ✓
+      （2026-10-27 用户："保存地图等输入框会占满全屏，不像改名工具那样"）
+   ⚠ 以后再加这种"一行输入"的小弹窗，**记得把 id 加进下面这组选择器** ✗
+     `tools/check_mobile_parity.js` 的「小弹窗」那一节会扫 HTML，
+     带文本输入框却没登记的弹窗会直接报红 ✓
    =========================================================================== */
-#rename {
+#rename, #save-map {
   display: flex !important;
   align-items: center !important; justify-content: center !important;
   padding: 16px !important;
 }
 /* **必须补这一句** ✗ —— 上面那个 display:flex 带 !important ✓
-   会把元素自带的 hidden 属性压过去 ✓ 于是改名窗**一进页面就杵在屏幕中间** ✗
+   会把元素自带的 hidden 属性压过去 ✓ 于是弹窗**一进页面就杵在屏幕中间** ✗
    （用户报的"一点进去一个大大的改名"就是这个 ✓）
    [hidden] 是属性选择器、权重比单独的 #rename 高 ✓ 所以这句一定压得住 ✓
    —— 教程那个介绍窗当初就记得写了 ✓ 改名窗漏了 ✗） */
-#rename[hidden] { display: none !important; }
-#rename .modal-box {
+#rename[hidden], #save-map[hidden] { display: none !important; }
+#rename .modal-box, #save-map .modal-box {
   width: 100% !important; max-width: 380px !important;
   height: auto !important; max-height: 70vh !important;
   border-radius: 16px !important; border: 1px solid #2b3743 !important;
   padding: 14px 16px 16px !important;
   overflow-y: auto; scrollbar-width: none;
 }
-#rename .modal-box::-webkit-scrollbar { width: 0; height: 0; display: none; }
-#rename .modal-head { position: static !important; padding: 4px 0 10px !important; }
-#rename input, #rename .rename-input { font-size: 15px !important; min-height: 40px !important; }
-#rename button { min-height: 38px !important; padding: 0 14px !important; font-size: 14px !important; }
+#rename .modal-box::-webkit-scrollbar,
+#save-map .modal-box::-webkit-scrollbar { width: 0; height: 0; display: none; }
+#rename .modal-head, #save-map .modal-head { position: static !important; padding: 4px 0 10px !important; }
+#rename input, #rename .rename-input,
+#save-map input, #save-map .rename-input { font-size: 15px !important; min-height: 40px !important; }
+#rename button, #save-map button { min-height: 38px !important; padding: 0 14px !important; font-size: 14px !important; }
 
 
 /* ===========================================================================
@@ -920,11 +969,24 @@ html[data-theme="light"] .mob-set-foot .set-dirty { color: #5b6877; }
    =========================================================================== */
 #mob-sheet .mob-tallbtn {
   margin-left: auto; align-self: center;
-  min-height: 26px; padding: 0 10px; border-radius: 13px;
-  border: 1px solid #2b3743; background: #101820; color: #9fb0c2;
-  font: 600 12px/1 "Microsoft YaHei", system-ui, sans-serif;
+  /* 🔴 2026-10-27 用户："「更高」小按钮的 UI 样式和晨昏按钮不一样，统一按晨昏按钮的来"
+   *   → 尺寸 / 圆角 / 字重 / 玻璃底全部照抄 `.mob-theme-bar .theme-btn` ✓
+   *     （原来是自己一套 26px 深黑板 ✓ 跟旁边的晨昏胶囊完全不像一家人 ✓）*/
+  min-height: 34px; padding: 0 16px; border-radius: 17px;
+  border: 1px solid rgba(255, 255, 255, .14);
+  background: rgba(255, 255, 255, .07);
+  color: #dfe7f0;
+  font: 600 13.5px/1 "Microsoft YaHei", system-ui, sans-serif;
+  -webkit-backdrop-filter: blur(10px) saturate(145%);
+  backdrop-filter: blur(10px) saturate(145%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .08);
 }
-#mob-sheet .mob-tallbtn.on { border-color: #c9a94e; color: #f0d98a; }
+#mob-sheet .mob-tallbtn.on {
+  border-color: rgba(201, 169, 78, .7);
+  color: #f6dfa0;
+  background: linear-gradient(180deg, rgba(201, 169, 78, .24), rgba(201, 169, 78, .12));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .16), 0 2px 10px rgba(0, 0, 0, .28);
+}
 
 /* ===========================================================================
    🔴 **「更高」那个小圆钮的日间配色**（2026-10-21 ✓ 用户截图："这个按钮为什么没有跟随晨昏变化"）
@@ -947,14 +1009,16 @@ html[data-theme="light"] .mob-set-foot .set-dirty { color: #5b6877; }
      `.on`（已经拔高了）：浅蓝玻璃 + 蓝边 ✓ 跟「显示」那个选中标签一个口径 ✓
    =========================================================================== */
 html[data-theme="light"] #mob-sheet .mob-tallbtn {
-  background: rgba(255, 255, 255, .6);
+  background: rgba(255, 255, 255, .62);
   border-color: rgba(24, 36, 50, .14);
-  color: #414e5d;
+  color: #1a232e;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .9);
 }
 html[data-theme="light"] #mob-sheet .mob-tallbtn.on {
-  background: rgba(47, 95, 143, .16);
+  background: linear-gradient(180deg, rgba(47, 95, 143, .18), rgba(47, 95, 143, .10));
   border-color: rgba(47, 95, 143, .55);
   color: #26598a;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .9);
 }
 
 /* 高度**不写死** ✗ —— JS 会把它顶到 place() 算出来的那个上限（贴着底部往上长 ✓）
@@ -1269,6 +1333,28 @@ html[data-theme="light"] #mob-sheet .mob-tallbtn.on {
   color: #f6dfa0;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, .16), 0 2px 10px rgba(0, 0, 0, .28);
 }
+/* 🔴🔴 **「借用粒度」那一档在手机上也要看得出来** ✗✗（2026-10-27 用户：
+ *   "同时选中剧本和某个下级层级（比如省份）时，省份按钮仅仅是颜色变了一点点
+ *    而没有选中效果"）
+ *
+ *   根因：桌面 `.segmented button.grain` 有深蓝底 + 一圈蓝边 ✓
+ *     可手机这套玻璃按钮（`#mob-sheet .segmented button` 等）写在后面 ✗
+ *     权重又带 id → 把 grain 的 background / box-shadow 全盖掉 ✓
+ *     只剩桌面那句 `color` 活着 → 看着就是"字稍微亮了一点" ✓
+ *
+ *   现在给手机补一条专属的 grain：淡蓝玻璃底 + 内圈蓝边 ✓
+ *   仍然比金色 `.on` 弱一档 ✓（金色 = 当前视图；蓝色 = 笔刷 / 边界用的层级 ✓）
+ *   ⚠ `:not(.on)` 是保险：万一两个类同时挂上，金色必须赢 ✓
+ *   ⚠ **别只改 `color`** ✗ —— 手机上一排全是玻璃底，只换字色等于没选中 ✓ */
+#mob-sheet .segmented button.grain:not(.on),
+.mob-pane .segmented button.grain:not(.on),
+.mob-group .segmented button.grain:not(.on) {
+  background: linear-gradient(180deg, rgba(122, 152, 192, .30), rgba(122, 152, 192, .18));
+  border-color: rgba(122, 152, 192, .62);
+  color: #d7e7f7;
+  box-shadow: inset 0 0 0 1px rgba(122, 152, 192, .62),
+              inset 0 1px 0 rgba(255, 255, 255, .14);
+}
 /* 🔴🔴 **2026-10-21 晚：选中态在白天要换成深蓝** ✗✗
  *   （用户截图："这里的字怎么还是亮金色的（白天模式下）" —— 指「涂抹」那一项）
  *
@@ -1294,6 +1380,18 @@ html[data-theme="light"] .mob-tab.on {
   border-color: rgba(47, 95, 143, .55);
   color: #26598a;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, .9);
+}
+/* 「借用粒度」的日间版：同一套淡蓝，别用亮金/淡白 ✓
+ * ⚠ 权重必须压过上面 `html[data-theme="light"] #mob-sheet .segmented button` 那条
+ *   （它带 id ✗）→ 这里也带 `#mob-sheet` ✓ */
+html[data-theme="light"] #mob-sheet .segmented button.grain:not(.on),
+html[data-theme="light"] .mob-pane .segmented button.grain:not(.on),
+html[data-theme="light"] .mob-group .segmented button.grain:not(.on) {
+  background: linear-gradient(180deg, rgba(47, 95, 143, .18), rgba(47, 95, 143, .10));
+  border-color: rgba(47, 95, 143, .48);
+  color: #2b5f85;
+  box-shadow: inset 0 0 0 1px rgba(47, 95, 143, .40),
+              inset 0 1px 0 rgba(255, 255, 255, .9);
 }
 /* 剧本下拉的面板：**浮在面板之上** ✓ 它是"面板里的浮层"✓ 底子要更实一点 ✓ */
 .mob-era .dd-panel {
@@ -1332,7 +1430,8 @@ html[data-theme="light"] .mob-tab.on {
  *       其实是 `.modal-box` 那条日间版在管着它 ✓ 误报 ✓）
  *   → 一个元素只用一个选择器表达 ✓ 别为了"看起来更明确"多列一遍 ✓ */
 #mob-intro .modal-box,
-#rename .modal-box {
+#rename .modal-box,
+#save-map .modal-box {
   background:
     linear-gradient(160deg, rgba(255, 255, 255, .08), transparent 42%),
     rgba(13, 19, 26, .86);
@@ -1479,7 +1578,7 @@ html[data-theme="light"] #mob-backdrop { background: rgba(24, 36, 50, .22); }
      · `.modal-head` / `#mob-intro .modal-head` —— 介绍窗和改名窗的**吸顶标题条**
      · `.mob-group .menu-item` / `#export-menu button` —— 「文件」面板里那排按钮
      · `#mob-now` —— 左上角那个"当前工具/颜色"的小胶囊
-     · `#app` 的边框、`#rename` / `#mob-intro` 的边框
+     · `#app` 的边框、`#rename` / `#save-map` / `#mob-intro` 的边框
 
    ⚠⚠ **这一节统一用 `.mob-btn` 那一套的口径** ✗ 不要各写各的：
      底 = `rgba(255,255,255,.58~.62)` ✓
@@ -1548,7 +1647,8 @@ html[data-theme="light"] #mob-now {
 /* ⚠ 宽屏调试时 `#app` 是个带圆角的手机框 ✓ 边框深色在浅底上像一道黑边 ✓ */
 html[data-theme="light"] #app { border-color: rgba(24, 36, 50, .16); }
 html[data-theme="light"] #mob-intro .modal-box { border-color: rgba(24, 36, 50, .16) !important; }
-html[data-theme="light"] #rename .modal-box { border-color: rgba(24, 36, 50, .16) !important; }
+html[data-theme="light"] #rename .modal-box,
+html[data-theme="light"] #save-map .modal-box { border-color: rgba(24, 36, 50, .16) !important; }
 
 /* ---- ⑥ 滚动条：白天那根深色条在浅底上像一道黑缝 ---- */
 html[data-theme="light"] *::-webkit-scrollbar-thumb { background: #b7c3cf; }
@@ -1691,7 +1791,8 @@ html[data-theme="light"] #mob-intro .modal-head {
  *
  *   → 手机版这里**什么都不写** ✓ 底由上面那条 `.modal-box` 管 ✓
  */
-html[data-theme="light"] #rename .modal-box {
+html[data-theme="light"] #rename .modal-box,
+html[data-theme="light"] #save-map .modal-box {
   background:
     linear-gradient(160deg, rgba(255, 255, 255, .85), transparent 42%),
     rgba(250, 252, 254, .90);

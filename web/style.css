@@ -2725,6 +2725,21 @@ html[data-theme="light"] .ctl-seg > button {
   color: var(--text);
 }
 html[data-theme="light"] .ctl-step > button { color: var(--text-dim); }
+/* 🔴 **白昼模式下「不透明度」分段条的选中块要看得出来** ✗✗（2026-10-27 用户：
+ *   "白昼模式下不透明度块块根本看不见谁是谁"）
+ *
+ *   根因：上面这条 `html[data-theme="light"] .ctl-seg > button` 权重跟
+ *   `.ctl-seg > button.on` 一样（都是 0,2,1）✓ 但它写在后面 ✗
+ *   → 把选中块的 background / color 一起盖成了"普通按钮" ✓
+ *   → 25 / 50 / 75 / 100 四块看着一模一样 ✓ 根本不知道现在选的是哪档 ✓
+ *
+ *   ⚠ 别只改 color ✗ —— 底色一样的话，浅底上还是分不出块 ✓
+ *   → 给选中块一块**淡金底 + 深金字 + 内圈** ✓（跟夜间同一套金，只是翻成浅版）*/
+html[data-theme="light"] .ctl-seg > button.on {
+  background: #f0e3c0;
+  color: #6b4f0e;
+  box-shadow: inset 0 0 0 1px rgba(150, 117, 26, .45);
+}
 
 /* ---- 老教程卡（现在不用了，补上免得哪天翻出来又白字白底）---- */
 html[data-theme="light"] #tutCard button { background: var(--panel-2); border-color: var(--line); color: var(--text); }

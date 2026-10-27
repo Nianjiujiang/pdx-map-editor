@@ -289,10 +289,126 @@ function bindMobile() {
 
   wait(() => {
     movePanelOf(gColor, 'brush-hex');        // 当前颜色：色块 / HEX / RGB / 标记
-    movePanelOf(gColor, 'palette');          // 最近使用
-    movePanelOf(gColor, 'palette-fav');      // 🎨 收藏调色板（2026-10-24 ✓ 跟着搬 ✓）
     movePanelOf(gColor, 'results');          // 搜索
     move(gColor, $('label-pick'));
+
+    /* ============================================================ 颜色：取消二级菜单
+     * 🔴 2026-10-27 用户：
+     *   "关于二级窗口可以取消，调色板和常用颜色放在面板下方，
+     *    那个颜色块的功能重新回调为改颜色。此外手机用不了右键，
+     *    没法清除调色板的颜色很恼火"
+     *
+     *   原来点大色块弹 `#brush-menu`（自定义颜色 / 收藏 / 最近使用）✓
+     *   手机上它是个浮层，还会被面板裁掉；而且用户点色块的本意就是**改颜色** ✓
+     *   → 手机版直接取消这个二级窗口：
+     *     ① 点大色块 = 打开系统取色器（走原来的 `#brush-menu-custom` 那条路 ✓）
+     *     ② 收藏调色板 / 最近使用**搬到底部**，一直看得见 ✓
+     *     ③ 色块上长按 = 删除（手机没有右键 ✓）
+     *   ⚠ 只动手机版 ✓ 桌面版那颗色块仍然按 2026-10-24 的二级菜单走 ✓
+     */
+    const colorPanel = panelOf($('brush-swatch')) || gColor;
+    const bmenu = $('brush-menu');
+    const fav = $('palette-fav');
+    const recent = $('palette');
+    if (colorPanel && bmenu && fav && recent) {
+      /* 把二级菜单里那两段（标题 + 色块）整段搬出来 ✓
+         ⚠ 标题节点是 palette 的前一个兄弟 ✗ 别只搬 palette 色块 ✓
+           （不然面板底下会冒出两排没名字的方块 ✓）*/
+      const kids = Array.prototype.slice.call(bmenu.children || []);
+      const favCap = kids[kids.indexOf(fav) - 1] || null;
+      const recentCap = kids[kids.indexOf(recent) - 1] || null;
+      const kit = document.createElement('div');
+      kit.className = 'mob-color-kit';
+      if (favCap) kit.appendChild(favCap);
+      kit.appendChild(fav);
+      if (recentCap) kit.appendChild(recentCap);
+      kit.appendChild(recent);
+      /* 手机没有右键，长按是个隐藏手势 ✗ 给一行小字说清楚 ✓ */
+      const hint = document.createElement('div');
+      hint.className = 'mob-color-hint';
+      hint.textContent = '长按色块可以删掉';
+      kit.appendChild(hint);
+      colorPanel.appendChild(kit);
+      /* 二级菜单整个退役 ✓（自定义颜色那个按钮还留着，只是不显示 ✓
+         大色块的 onclick 会直接调它 ✓）*/
+      bmenu.hidden = true;
+      bmenu.style.display = 'none';
+    }
+
+    /* 大色块 = 改颜色 ✓（不再弹二级菜单）*/
+    const sw = $('brush-swatch');
+    if (sw) sw.onclick = () => {
+      const custom = $('brush-menu-custom');
+      if (custom && typeof custom.onclick === 'function') custom.onclick();
+    };
+
+    /* **长按色块 = 删除** ✓（手机没有右键 ✓ 跟地图上"长按取色"同一个手势 ✓）
+     *  · 收藏调色板：长按 → paletteRemoveAt(i) ✓
+     *  · 最近使用： 长按 → removeRecent(rgb) ✓
+     *  · 「＋」那个收色块不删 ✓
+     *  ⚠ 长按之后浏览器还会补一个 click ✗ —— 用 suppress 把它吃掉，
+     *    不然删完又顺手把颜色设成画笔色了 ✓ */
+    const bindLongDelete = (box, onDelete) => {
+      if (!box) return;
+      let timer = 0, sx = 0, sy = 0, suppress = false;
+      const cancel = () => { clearTimeout(timer); timer = 0; };
+      const chipHit = (target) => {
+        const chip = target && target.closest ? target.closest('.chip') : null;
+        if (!chip || (chip.classList && chip.classList.contains('palette-plus'))) return null;
+        const chips = Array.prototype.slice.call(box.children || [])
+          .filter((x) => x.classList && x.classList.contains('chip')
+            && !x.classList.contains('palette-plus'));
+        const i = chips.indexOf(chip);
+        return i >= 0 ? { chip: chip, i: i } : null;
+      };
+      box.addEventListener('touchstart', (e) => {
+        const hit = chipHit(e.target);
+        if (!hit) return;
+        suppress = false;              // 新手势开始 → 上次长按的"吃掉 click"作废 ✓
+        const t = e.touches && e.touches[0];
+        sx = t ? t.clientX : 0; sy = t ? t.clientY : 0;
+        cancel();
+        timer = setTimeout(() => {
+          timer = 0;
+          suppress = true;
+          /* 这 0.5 秒里色块可能已经被右键 / contextmenu 删掉了 ✓
+             再删一次就会误伤下一个 ✓ → 先确认它还在原来的位置 ✓ */
+          if (Array.prototype.indexOf.call(box.children || [], hit.chip) < 0) return;
+          try { onDelete(hit.i); } catch (err) { /* 删失败也别拖垮手势 ✓ */ }
+          try { if (navigator && navigator.vibrate) navigator.vibrate(20); } catch (err) { /* ✓ */ }
+        }, 520);
+      }, { passive: true });
+      box.addEventListener('touchmove', (e) => {
+        const t = e.touches && e.touches[0];
+        if (!t) return cancel();
+        if (Math.abs(t.clientX - sx) > 10 || Math.abs(t.clientY - sy) > 10) cancel();
+      }, { passive: true });
+      box.addEventListener('touchend', cancel);
+      box.addEventListener('touchcancel', cancel);
+      /* 桌面右键走的是原来的 contextmenu ✓ 先取消长按计时，别删两次 ✓
+         ⚠ 长按已经删过了就**别再让 chip 自己的 contextmenu 再删一次** ✗
+           不然删的是"下一个"颜色 ✓ */
+      box.addEventListener('contextmenu', (e) => {
+        cancel();
+        if (suppress && e) {
+          if (e.preventDefault) e.preventDefault();
+          if (e.stopPropagation) e.stopPropagation();
+        }
+      }, true);
+      box.addEventListener('click', (e) => {
+        if (!suppress) return;
+        suppress = false;
+        if (e && e.preventDefault) e.preventDefault();
+        if (e && e.stopPropagation) e.stopPropagation();
+      }, true);
+    };
+    bindLongDelete(fav, (i) => { try { paletteRemoveAt(i); } catch (e) { /* ✓ */ } });
+    bindLongDelete(recent, (i) => {
+      try {
+        const e = state.recent && state.recent[i];
+        if (e && e.rgb) removeRecent(e.rgb);
+      } catch (e) { /* ✓ */ }
+    });
   });
   wait(() => {
     move(gTool, $('tool-group'));
@@ -1023,7 +1139,7 @@ function bindMobile() {
     + '<strong>教程</strong>就是你现在看到的这一个；<strong>文件</strong>跟底下那个是同一个。</p>'
 
     + '<h4>两个小提示</h4>'
-    + '<p>涂错了就点「文件 → 撤销」，或者直接用「清除」重新开始，随便尝试也不会弄乱真正的文件。'
+    + '<p>涂错了就点「撤销」，或者直接用「清除」重新开始，随便尝试也不会弄乱真正的文件。'
     + '想留住作品就选「文件 → 导出」，存下来的涂色下次导入依然可以接着修改。</p>';
 
   const showIntro = () => {

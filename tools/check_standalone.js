@@ -218,6 +218,48 @@ function findTestPack() {
      !!ex.state.provinceIds || !!ex.state.tileMap,
      ex.state.tileMap ? '分块' : '整张');
   ok('标签层建起来了', !!ex.labels);
+  /* 2026-10-27 用户："国名显示不要那个 20 门槛，无论手机版还是电脑版"
+   *   国名层（有年份 = 年份层；没有 = 最粗那层）门槛必须是 **0** ✓
+   *   （0 = 不设缩放门槛，不是"永不显示" ✓） */
+  ok('国名层没有缩放门槛（0 = 缩到全图也画 ✓）',
+     !!(ex.labels && ex.state.meta && ex.state.meta.labelZoom)
+     && ex.labels.zoom[0] === 0 && ex.state.meta.labelZoom[0] === 0,
+     ex.labels ? `labels.zoom[0]=${ex.labels.zoom[0]} · meta=${ex.state.meta && ex.state.meta.labelZoom && ex.state.meta.labelZoom[0]}` : '标签层没建起来');
+  /* 真在 5% 缩放下画一帧：以前 `20% 门槛` 会让 `draw()` 整层直接 return ✓
+   * 现在 `zoom[0]=0`，加上国名字号底线降到 2px → 最大那几个国家应该画得出来 ✓ */
+  {
+    const W = ex.state.meta ? ex.state.meta.mapWidth : 5632;
+    const H = ex.state.meta ? ex.state.meta.mapHeight : 2048;
+    const cv = ex.labels && ex.labels.canvas;
+    const oldCW = cv ? cv.clientWidth : 0;
+    if (ex.labels && cv && W > 0) {
+      cv.clientWidth = 1000;                 // 让 resize() 算出 scale = 1000 / 20000 = 5%
+      ex.labels.draw({ x: 0, y: 0, w: 20000, h: 20000 * H / W }, 0, null);
+      ok('国名在 5% 缩放也真的画出来了（不是只把门槛改成 0 ✓）',
+         ex.labels.drawn > 0, `${ex.labels.drawn} 个 · scale=${(ex.labels.scale * 100).toFixed(1)}%`);
+      cv.clientWidth = oldCW;
+      try { ex.labels.resize(); } catch (e) { /* ✓ */ }
+    } else {
+      ok('国名在 5% 缩放也真的画出来了（不是只把门槛改成 0 ✓）', false, '没有标签层 ✗');
+    }
+  }
+  /* 🔴 **空色块也必须换代** ✗✗（2026-10-27 用户：
+   *   "切空白剧本 / 无剧本后国名不消失，必须画一下才刷新"
+   *   "清除和橡皮点了之后国名仍然没消失，需要画一下才刷新"）
+   *
+   *   根因：`rebuildPaintBlocks()` 在两处 early return 里只清空了 `paintBlocks` ✓
+   *   可 `blockLabelPoints()` 是按 `_blockVer` 缓存的 ✗
+   *   → 版本没变 → 旧国名点原样返回 → 用户看到名字赖着不走 ✓
+   *   → 只有再涂一笔（走到函数末尾 ++）才换代 ✓
+   *
+   *   这条直接量版本号：**空结果也必须算一次新结果** ✓ */
+  {
+    const v0 = ex.state._blockVer | 0;
+    ex.rebuildPaintBlocks(false);
+    const v1 = ex.state._blockVer | 0;
+    ok('空色块重建也会换版本号（旧国名缓存不会再赖着 ✓）',
+       v1 > v0, `paintBlocks=${(ex.state.paintBlocks || []).length} · ${v0} → ${v1}`);
+  }
 
   // 报错日志：log.js 得**真的拼进单文件**，而且 boot 完已经有东西可导 ✓
   // 漏拼的话 app.js 那边是个空壳、编辑器照常跑 —— 这种"功能悄悄没了"
@@ -517,6 +559,128 @@ function findTestPack() {
     }
     ok('viewTierFor(pid) 的每一处，作用域里都有 pid（不然悬停直接崩）',
        bad.length === 0, bad.length ? bad.join(' · ') : `${src.filter((l) => /viewTierFor\(pid\)/.test(l)).length} 处全有`);
+  }
+
+  /* 🔴 **白昼模式：不透明度那四块要分得清谁是谁** ✗✗（2026-10-27 用户：
+   *   "白昼模式下不透明度块块根本看不见谁是谁"）
+   *
+   *   根因：`html[data-theme="light"] .ctl-seg > button` 跟 `.ctl-seg > button.on`
+   *   权重一样、但写在后面 ✗ → 选中块的 background/color 被盖成"普通按钮" ✓
+   *   → 四块一模一样，看不出 25 / 50 / 75 / 100 哪档亮着 ✓
+   *
+   *   判据：日间必须有一条**后写的** `.ctl-seg > button.on`，
+   *   而且真的写了背景 / 字色 / 内圈 ✓（只改字色也会在浅底上糊掉 ✓） */
+  {
+    const raw = fs.readFileSync(HTML, 'utf8');
+    const m = /html\[data-theme="light"\] \.ctl-seg > button\.on\s*\{([^}]*)\}/.exec(raw);
+    const body = m ? m[1] : '';
+    ok('白昼模式：不透明度分段条的选中块看得出来（底 / 字 / 内圈 ✓）',
+       !!m && /background\s*:/.test(body) && /color\s*:/.test(body) && /box-shadow\s*:/.test(body),
+       m ? '有日间选中态 ✓' : '没有日间选中态 ✗ 四块长得一样');
+  }
+
+  /* 🔴 **清除之后，色块名单必须立刻变空** ✗✗（2026-10-27 用户：
+   *   "清除功能和橡皮工具点了之后国名仍然没消失，需要画一下才刷新"）
+   *
+   *   上面那条验的是"空重建也换代" ✓ 这条直接验**用户看到的结果**：
+   *     涂一笔 → 名单有名字 ✓ → 全清 → 名单必须当场 0 条 ✓
+   *   旧代码在"清空后重建"那一步会命中 early return、版本不换代 ✓
+   *   `blockLabelPoints()` 拿着上一版的缓存 → 国名原样复活 ✓
+   *
+   *   ⚠ 放在最后：这里会把测试图上的涂色清掉 ✓ 不影响前面的断言 ✓ */
+  {
+    const nProv = ex.state.meta ? ex.state.meta.numProvinces : 0;
+    const nTier = (ex.state.meta && ex.state.meta.tiers || []).length;
+    let tid = -1;
+    for (let p = 1; p < Math.min(nProv, 300); p++) {
+      const t = ex.titleAt(p, nTier - 1);
+      if (t != null && t >= 0) { tid = t; break; }
+    }
+    if (tid >= 0 && nProv > 1) {
+      ex.paintTitle(tid, [200, 40, 40], true, false);
+      ex.rebuildPaintBlocks(false);
+      const paintedPts = (ex.blockLabelPoints() || []).length;
+      const pd = ex.renderer && ex.renderer.paintData;
+      const all = [];
+      for (let p = 1; p < nProv; p++) if (pd && pd[p * 4 + 3] > 0) all.push(p);
+      ex.paintPids(all, null);                 // 全清
+      ex.rebuildPaintBlocks(false);            // 清完立刻重建（正是出问题那步）
+      const emptyPts = (ex.blockLabelPoints() || []).length;
+      ok('清除后色块名单立刻清空（不是等下一次涂色 ✓）',
+         paintedPts > 0 && emptyPts === 0,
+         `涂色后 ${paintedPts} 条 → 清除后 ${emptyPts} 条`);
+    } else {
+      console.log('  （这张图找不到可涂头衔，跳过"清除后名单清空"检查）');
+    }
+  }
+
+  /* 🔴 **切空白剧本 / 无剧本，国名名单也要立刻清空** ✗✗（2026-10-27 用户）
+   *   和上面"清除"同一个根：空重建不换代 → `blockLabelPoints()` 的旧缓存复活 ✓
+   *   这里走真实入口 `setTier()` + 对应的 `rebuildPaintBlocks(all)` ✓
+   *   ⚠ 放在最后：只动层级，不动涂色（前面已经清空了）✓ */
+  {
+    const nEra = ex.eraTierCount();
+    const nTier = (ex.state.meta && ex.state.meta.tiers || []).length;
+    const names = (ex.state.meta && ex.state.meta.tierNames) || [];
+    const blankIdx = names.findIndex((n) => /空白/.test(String(n || '')));
+    if (nEra > 0 && nTier > nEra) {
+      ex.setTier(0);
+      ex.rebuildPaintBlocks(true);            // 1444 那层：没涂也按原版国名分组 ✓
+      const eraPts = (ex.blockLabelPoints() || []).length;
+      const blank = blankIdx >= 0 ? blankIdx : nEra;
+      ex.setTier(blank);
+      ex.rebuildPaintBlocks(true);            // 空白剧本：全是无主地 → 空 ✓
+      const blankPts = (ex.blockLabelPoints() || []).length;
+      ex.setTier(nTier - 1);
+      ex.rebuildPaintBlocks(false);           // 无剧本（地理层）：只画涂过的 → 空 ✓
+      const noEraPts = (ex.blockLabelPoints() || []).length;
+      ok('切空白剧本 / 无剧本后，国名名单立刻清空（不用再画一下 ✓）',
+         eraPts > 0 && blankPts === 0 && noEraPts === 0,
+         `剧本 ${eraPts} 条 → 空白 ${blankPts} 条 → 无剧本 ${noEraPts} 条`);
+    } else {
+      console.log('  （这张图没有剧本层，跳过"切空白 / 无剧本"检查）');
+    }
+  }
+
+  /* 🔴 **「清除全部」要能撤销** ✗✗（2026-10-27 用户定：v1.10.1 加这一条）
+   *   旧代码点完直接清空撤销栈 ✓ 误触就真没了 ✓
+   *   新代码走 `paintPidsAsOne` → 一步历史 → Ctrl+Z 能回来 ✓ */
+  {
+    const nProv = ex.state.meta ? ex.state.meta.numProvinces : 0;
+    const nTier = (ex.state.meta && ex.state.meta.tiers || []).length;
+    let tid = -1;
+    for (let p = 1; p < Math.min(nProv, 300); p++) {
+      const t = ex.titleAt(p, nTier - 1);
+      if (t != null && t >= 0) { tid = t; break; }
+    }
+    const pd = ex.renderer && ex.renderer.paintData;
+    if (tid >= 0 && pd) {
+      ex.paintTitle(tid, [200, 40, 40], true, false);
+      let pid = 0;
+      for (let p = 1; p < nProv; p++) if (pd[p * 4 + 3] > 0) { pid = p; break; }
+      const undo0 = ex.state.history.undo.length;
+      if (pid) ex.resetAll();
+      const undo1 = ex.state.history.undo.length;
+      const cleared = pid ? pd[pid * 4 + 3] : -1;
+      if (pid) ex.undo();
+      const back = pid ? pd[pid * 4 + 3] : -1;
+      ok('「清除全部」记为一步撤销，Ctrl+Z 能恢复涂色',
+         !!pid && undo1 > undo0 && cleared === 0 && back > 0,
+         `undo ${undo0}→${undo1} · 清除后 alpha=${cleared} · 撤销后 alpha=${back}`);
+    } else {
+      ok('「清除全部」记为一步撤销，Ctrl+Z 能恢复涂色', false, '找不到可涂头衔 ✗');
+    }
+  }
+  /* 2026-10-27 v1.10.1：保存地图默认名 ✓ */
+  {
+    const name = ex.defaultSaveName ? ex.defaultSaveName() : '';
+    ex.openSaveMapDialog();
+    const inp = env.get('save-map-name');
+    const box = env.get('save-map');
+    ok('保存地图弹窗预填了「地图名 · 日期」并全选',
+       /^.+ · \d{1,2}月\d{1,2}日$/.test(name) && !!inp && inp.value === name && !!box && box.hidden === false,
+       `默认名="${name}" · input="${inp ? inp.value : '(没有)'}"`);
+    if (box) box.hidden = true;
   }
 
   console.log('\n==========================================================');

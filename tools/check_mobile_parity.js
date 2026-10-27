@@ -352,7 +352,7 @@ ok('设置弹窗里的内容确实被搬出来了（有 .set-col 或 set-foot �
     ok('宽屏里把 `.stage` 的 absolute 收回来了',
        stageFix, stageFix ? '已改回 relative ✓' : '还是 absolute;inset:0 ✗');
     /* 弹窗类也得跟着手机框走 */
-    const modalFix = inWide(/(^|[\s,])\.modal\b|#rename|#mob-intro/).some((b) => /position\s*:\s*absolute/.test(b.body));
+    const modalFix = inWide(/(^|[\s,])\.modal\b|#rename|#save-map|#mob-intro/).some((b) => /position\s*:\s*absolute/.test(b.body));
     ok('宽屏里弹窗类改成了 absolute（跟着手机框走 ✓）',
        modalFix, modalFix ? '改了 ✓' : '还是 fixed ✗');
   }
@@ -363,6 +363,100 @@ ok('设置弹窗里的内容确实被搬出来了（有 .set-col 或 set-foot �
     && /max-width\s*:/.test(b.body));
   ok('宽屏那条把 `.boot-inner` 的宽度收进手机框了（有 max-width ✓）',
      wideOk, wideOk ? '收住了 ✓' : '没收 ✗ 进度条会横贯屏幕');
+}
+
+/* ---------------------------------------------------------------- ③.5 小输入弹窗 */
+
+console.log('\n===== ③.5 小输入弹窗：不许铺满全屏 =====');
+{
+  /* 2026-10-27 用户："保存地图等输入框会占满全屏，不像改名工具那样"
+   *
+   * 根因：手机版 `.modal` / `.modal-box` 是给「设置」写的**竖屏全屏**版 ✓
+   *   改名窗后来单独覆盖成了居中卡片 ✓ 保存地图窗没跟上 ✗
+   *   → 以后凡是"弹窗里只有一个文本输入框"的，都得进这个清单 ✓
+   *
+   * 判据分两半：
+   *   ① **HTML 侧**：带 `input[type=text]` 的弹窗，除设置外都得登记 ✓
+   *   ② **CSS 侧**：登记过的，必须真有"居中 + 卡片高度自适应"那几条 ✓
+   *      （光登记不写样式 = 白登记 ✓ 上次就是这种半截活 ✓）
+   */
+  const modals = [...HTML.matchAll(/<div class="modal(?: [^"]*)?" id="([^"]+)"/g)];
+  const withInput = [];
+  for (let i = 0; i < modals.length; i++) {
+    const start = modals[i].index;
+    const end = i + 1 < modals.length ? modals[i + 1].index : HTML.length;
+    const chunk = HTML.slice(start, end);
+    if (/<input[^>]*type="text"/.test(chunk)) withInput.push(modals[i][1]);
+  }
+  ok('能扫出带文本输入框的弹窗', withInput.length > 0, withInput.join(' / '));
+
+  /* 手机版保留的小输入弹窗：改名 / 保存地图 ✓
+     ⚠ 「设置」在手机版是整块 `display:none`（内容搬进抽屉了）✓ 不进清单 ✓ */
+  const MINI = new Set(['rename', 'save-map']);
+  for (const id of withInput) {
+    if (id === 'settings') continue;
+    ok(`「${id}」这种小输入弹窗登记进小卡片清单了`,
+       MINI.has(id), MINI.has(id) ? '在清单里 ✓' : '漏了 ✗ 会铺满全屏');
+  }
+
+  /* 剥注释再扫规则：注释里也写着 `#rename[hidden]` 这些字面量 ✓ 会误伤 ✓ */
+  const css = MOB_CSS.replace(/\/\*[\s\S]*?\*\//g, '');
+  const rules = [];
+  {
+    const re = /([^{}]+)\{([^{}]*)\}/g;
+    let m;
+    while ((m = re.exec(css))) {
+      const sels = m[1].split(',').map((x) => x.trim()).filter(Boolean);
+      rules.push({ sels, body: m[2] });
+    }
+  }
+  const rule = (sel, re) => rules.some((r) => r.sels.includes(sel) && re.test(r.body));
+  for (const id of MINI) {
+    const outer = '#' + id;
+    const box = outer + ' .modal-box';
+    const centered = rule(outer, /display\s*:\s*flex/)
+      && rule(outer, /align-items\s*:\s*center/)
+      && rule(outer, /justify-content\s*:\s*center/);
+    ok(`「${id}」是居中弹窗（不是 stretch 满屏）`, centered,
+       centered ? '居中 ✓' : '没写成居中 ✗ 会像设置抽屉那样铺满');
+    const hideOk = rule(outer + '[hidden]', /display\s*:\s*none[^;]*!important/);
+    ok(`「${id}」的 [hidden] 压得住 display:flex !important`, hideOk,
+       hideOk ? '压得住 ✓' : '少了这句 → 一打开页面就杵在屏幕中间 ✗');
+    const card = rule(box, /height\s*:\s*auto/) && rule(box, /max-height\s*:\s*\d+(?:\.\d+)?(?:vh|px)/);
+    ok(`「${id}」的卡片高度自适应（height:auto + max-height）`, card,
+       card ? '小卡片 ✓' : '还是 100% 高 ✗ 会占满全屏');
+    ok(`「${id}」的 id 也在宽屏 absolute 那条里（电脑上调试时跟着手机框 ✓）`,
+       rule(outer, /position\s*:\s*absolute/));
+  }
+}
+
+/* ---------------------------------------------------------------- ③.6 剧本 + 下级层级 */
+
+console.log('\n===== ③.6 剧本 + 下级层级：两颗都得亮 =====');
+{
+  /* 2026-10-27 用户："同时选中剧本和某个下级层级（比如省份）时，
+   *   省份按钮仅仅是颜色变了一点点而没有选中效果"
+   *
+   * 根因：桌面 `.segmented button.grain` 有深蓝底 + 蓝边 ✓
+   *   手机版后面那套玻璃按钮（带 `#mob-sheet` id）把 background / box-shadow 盖掉了 ✗
+   *   只剩一句 `color` → 看着就是"字稍微亮了一点" ✓
+   *
+   * 判据：手机版必须有一条**带 id 的** `.grain` 规则，而且真的写了
+   *   背景 / 内圈 / 字色 ✓ —— 只改 color 不算 ✓
+   *   `:not(.on)` 是保险：金色选中态永远优先 ✓
+   */
+  const css = MOB_CSS.replace(/\/\*[\s\S]*?\*\//g, '');
+  const pick = (re) => { const m = re.exec(css); return m ? m[1] : ''; };
+  const dark = pick(/#mob-sheet \.segmented button\.grain:not\(\.on\)[^{]*\{([^}]*)\}/);
+  ok('手机版给「借用粒度」写了可见选中态（蓝底 + 蓝圈）',
+     /background\s*:/.test(dark) && /box-shadow\s*:/.test(dark) && /color\s*:/.test(dark),
+     dark ? '背景 / 内圈 / 字色都有 ✓' : '没有 grain 规则 ✗ 只剩桌面那句字色');
+  const light = pick(/html\[data-theme="light"\] #mob-sheet \.segmented button\.grain:not\(\.on\)[^{]*\{([^}]*)\}/);
+  ok('日间版的「借用粒度」也没漏（浅底上要看得见 ✓）',
+     /background\s*:/.test(light) && /box-shadow\s*:/.test(light) && /color\s*:\s*#2b5f85/.test(light),
+     light ? '有日间版 ✓' : '没有日间版 ✗ 白天会看不见');
+  ok('金色选中态永远优先（`.grain:not(.on)` ✓）',
+     /button\.grain:not\(\.on\)/.test(css));
 }
 
 /* ---------------------------------------------------------------- ④ 液态玻璃 */

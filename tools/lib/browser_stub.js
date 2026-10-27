@@ -440,6 +440,7 @@ class El {
   removeAttribute(k) { delete this._attrs[k]; }
   hasAttribute(k) { return this._attrs[k] !== undefined; }
   focus() {}
+  select() {}
   blur() {}
   /* 🔴 **`remove()` / `cloneNode()` 必须真有** ✗✗（2026-10-21 补）
    *
@@ -1027,6 +1028,8 @@ _p('GAMES', GAMES); _p('frame', frame);
 _p('titleAt', titleAt); _p('renderHoverCard', renderHoverCard); _p('actAt', actAt);
 _p('pickTitle', pickTitle); _p('paintTitle', paintTitle); _p('restoreTitle', restoreTitle);
 _p('undo', undo); _p('redo', redo); _p('recomputePainted', recomputePainted);
+/* 2026-10-27 v1.10.1：清除全部要能撤销 / 保存地图默认名 ✓ */
+_p('resetAll', resetAll); _p('defaultSaveName', defaultSaveName); _p('openSaveMapDialog', openSaveMapDialog);
 _p('provInfoAt', provInfoAt); _p('paintTargetsAt', paintTargetsAt);
 _p('labelMaxValue', labelMaxValue); _p('buildBorderEdges'); _p('buildBorderDepth', buildBorderDepth); _p('refreshBorderField', refreshBorderField); _p('editTier', editTier);
 _p('saveMapPrefs', saveMapPrefs); _p('loadMapPrefs', loadMapPrefs);
@@ -1067,6 +1070,13 @@ _p('paintAt', paintAt); _p('hoverGroupRgb', hoverGroupRgb); _p('stableColor', st
 _p('hoverTargetTid', hoverTargetTid); _p('applyHoverHighlight', applyHoverHighlight);
 _p('readablePlaceName', readablePlaceName); _p('manualWaterName', manualWaterName);
 _p('drawLabels', drawLabels); _p('legendEntries', legendEntries);
+/* 整图导出的名字（2026-10-27 用户："手机版导出地图没有附赠名字"）
+ * 自检要量：手机宽度下 export 也该按 1600px 参考视口放行国名 ✓ */
+_p('paintLabelsForExport', paintLabelsForExport);
+/* 色块名单（blockLabelPoints）—— 2026-10-27 自检要用：
+ *   清除 / 切无剧本之后，这份缓存必须立刻变空 ✓ 不是等下一次涂色才更新 ✓
+ *   ⚠ 这段在模板字符串里 ✗ 注释里不许出现反引号 ✓ */
+_p('blockLabelPoints', blockLabelPoints);
 /* **地名的连通域取点** ✓（2026-10-16 ✓ 探针 / test_modes 要能量它 ✓） */
 _p('buildPlaceComponents', buildPlaceComponents); _p('placePointsFor', placePointsFor);
 _p('groupComponents', groupComponents); _p('labelPlaceMaxValue', labelPlaceMaxValue);

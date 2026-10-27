@@ -74,11 +74,28 @@ const MIN_ZOOM_PERCENT = [8, 30, 60, 120, 250];
 //: HOI4 省份 165→158、V3 省份 150→132、EU5 地点 240→129（原尺寸 65）。
 //: 觉得太早（CK3 那种上万块细层的图名字会碎）就调大：25 / 35 / 45 各是一档 ✓
 export const ARRIVE_SPAN = 20;
-//: 国名层（年份层；CK3 是最粗那层）的口径：把整张图缩进 ~1600px 视口的时候出现 ✓
-const COUNTRY_FIT = 0.7;
-const VIEW_W = 1600;
+//: 国名层（年份层；CK3 是最粗那层）**不设缩放门槛** ✓（2026-10-27 用户：
+//: "国名显示不要那个 20 门槛，无论手机版还是电脑版"）
+//: 原来按"整张图缩进 1600px 视口"算出一个 ~20% 的门槛 ✓
+//: 于是缩到 19% 时国名整层消失；用户要它一直出 ✓
+//: ⚠ 字号本身还有一道 4px 的可读性门槛（见 `_fontSize`）✓
+//:   缩得特别小的时候只有大国名够 4px，这是"别糊成一团"的底线，不是缩放门槛 ✓
 const ZOOM_MIN = 4;
 const ZOOM_MAX = 800;
+
+/** 国名层数：有年份层就是年份层数；没有年份时最粗那层算国名 ✓ */
+function countryTierCount(meta) {
+  const nEra = (meta && meta.eraDates && meta.eraDates.length) || 0;
+  return nEra > 0 ? nEra : 1;
+}
+
+/** 把一份门槛表里的国名层**全部置 0** ✓（0 = 不设缩放门槛，不是"永不显示" ✓） */
+function zeroCountryGates(arr, meta) {
+  const out = (arr || []).slice();
+  const nCountry = countryTierCount(meta);
+  for (let t = 0; t < nCountry && t < out.length; t++) out[t] = 0;
+  return out;
+}
 
 /**
  * 按**这张图自己的地块大小**算每一层的地名门槛（缩放百分比）。
@@ -86,8 +103,8 @@ const ZOOM_MAX = 800;
  * 两条口径：
  *   · 细层：`100 × 70 / 这一层的中位地块跨度`（地图像素）——
  *     地块小的图（V3 的省份 15px、HOI4 的省份 12.6px）门槛自然就高 ✓
- *   · 国名层（`meta.eraDates` 那几层；没有年份时是最粗那层）：按"整张图看得见"算，
- *     这样一进去 / 一缩到全图就能看见国名 ✓
+ *   · 国名层（`meta.eraDates` 那几层；没有年份时是最粗那层）：**= 0，不设缩放门槛** ✓
+ *     （2026-10-27 用户："国名显示不要那个 20 门槛" ✓ 原来按整图视角算 ≈20% ✓）
  *
  * 拿 CK3 复算验证过：帝国/王国/公爵领/伯爵领/男爵领 = 12/30/61/119/221%，
  * 跟当年手调的 8/30/60/120/250% 基本一致 —— 说明这才是那套数背后的口径 ✓
@@ -99,13 +116,12 @@ const ZOOM_MAX = 800;
 export function computeLabelZoom(meta, titles) {
   const areaArr = titles && (titles.blockArea || titles.area);
   if (!meta || !titles || !titles.tiers || !areaArr) {
-    return (meta && meta.labelZoom) || MIN_ZOOM_PERCENT;
+    return zeroCountryGates((meta && meta.labelZoom) || MIN_ZOOM_PERCENT, meta);
   }
   const nT = meta.tiers ? meta.tiers.length : 0;
-  if (!nT) return (meta && meta.labelZoom) || MIN_ZOOM_PERCENT;
+  if (!nT) return zeroCountryGates((meta && meta.labelZoom) || MIN_ZOOM_PERCENT, meta);
   const real = meta.numRealTitles || meta.numTitles || titles.tiers.length;
-  const nEra = (meta.eraDates || []).length;
-  const nCountry = nEra > 0 ? nEra : 1;      // 国名层的层数（CK3 没有年份 → 最粗那层）
+  const nCountry = countryTierCount(meta);
   const spans = [];
   for (let t = 0; t < nT; t++) spans.push([]);
   for (let i = 0; i < titles.tiers.length && i < real && i < areaArr.length; i++) {
@@ -117,7 +133,7 @@ export function computeLabelZoom(meta, titles) {
   for (let t = 0; t < nT; t++) {
     let z;
     if (t < nCountry) {
-      z = 100 * COUNTRY_FIT * VIEW_W / (meta.mapWidth || VIEW_W);
+      z = 0;                                  // 国名：不设缩放门槛 ✓
     } else if (spans[t].length) {
       const arr = spans[t].sort((a, b) => a - b);
       const med = arr[arr.length >> 1];       // 中位数：一半地块够大就该上地名了
@@ -125,11 +141,13 @@ export function computeLabelZoom(meta, titles) {
     } else {
       z = 0;
     }
-    if (!(z > 0)) {
+    if (t >= nCountry && !(z > 0)) {
       const fb = (meta.labelZoom && meta.labelZoom[t]) || MIN_ZOOM_PERCENT[t] || 30;
       z = fb;
     }
-    out[t] = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, Math.round(z)));
+    /* ⚠ 0 = 不设门槛，**不能**被 ZOOM_MIN 夹回去 ✗
+     *   以前统一 `Math.max(ZOOM_MIN, …)` → 国名层再怎么样也至少 4% ✓ */
+    out[t] = z > 0 ? Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, Math.round(z))) : 0;
   }
   return out;
 }
@@ -255,12 +273,16 @@ export function setFontScale(k) {
 /**
  * 各层的"显示门槛"：算出来比它小就整个不画。
  *
- * 只给**国名那层**留门槛（4px），因为一国之地往往横跨半个屏幕，
- * 名字太小会跟别国糊在一起。地区 / 省份这些细层一律 **0 = 全显示**：
+ * 只给**国名那层**留 2px 的可读底线（2026-10-27 试验：从 4px 降到 2px ✓
+ *   用户："国名显示不要那个 20 门槛" —— 光去掉缩放门槛没用，
+ *   真正卡住的是这道字号线：4px 时大部分国名要缩到 ~20% 才够大 ✓
+ *   → 降到 2px 后，5% 全图视角也能先浮出几个最大国的名字 ✓
+ *   ⚠ 再往下（0）会变成几百个 1px 蚂蚁字糊满屏，试验过，不可读 ✗）
+ * 地区 / 省份这些细层一律 **0 = 全显示**：
  * 它们各自有 meta.labelZoom 的缩放门（没到那个缩放整层都不出现），
  * 门一开就该把这一层全摆出来 —— 跟 CK3 伯爵领那套一样。
  */
-const TIER_MIN_FONT = [4, 0, 0, 0, 0];
+const TIER_MIN_FONT = [2, 0, 0, 0, 0];
 
 /** 真正允许画出来的最小字号：字号阶梯从这里起步 */
 const MIN_DRAW = 4;
@@ -574,6 +596,14 @@ export class LabelLayer {
     this.frameBudgetMs = Infinity;
     this._truncated = false;
     this.zoom = (meta && meta.labelZoom) || MIN_ZOOM_PERCENT;
+    /* 🔴 国名层不设缩放门槛（2026-10-27 用户："不要那个 20 门槛"）
+     *   `computeLabelZoom()` 已经给 0 了 ✓ 这里再兜一道：
+     *   老数据 / 别处直接传进来的 labelZoom 里国名层还可能是 20 ✓
+     *   ⚠ 0 = 不设门槛，不是"永不显示" ✗（`draw` / `paintExport` 判 `need == null` 才跳过）*/
+    {
+      const _nCountry = countryTierCount(meta);
+      for (let t = 0; t < _nCountry && t < this.zoom.length; t++) this.zoom[t] = 0;
+    }
     this.sprites = new SpriteCache();
     this.glyphs = new GlyphCache();
 
@@ -1137,18 +1167,19 @@ export class LabelLayer {
     const boost = TIER_FONT_BOOST[tier] || 1;
     const _userScale = this._userScale(tier, layer);
     const size = side * FONT_RATIO * boost * _userScale;
-    // **只有最粗那一层（国名/大洲名）留门槛**，其余层一律 0 = 全显示。
+    // **只有最粗那一层（国名/大洲名）留一道可读底线**，其余层一律 0 = 全显示。
     // 不按下标查表：层数每个游戏不一样（EU5 有 6 层），查不到就会退回 MIN_FONT，
     // 结果细层又被卡住 —— 统一成"第 0 层之外都全显示"就没这个问题。
-    // 0 层（国名）留一道**字号门槛**：`√像素 × 缩放 × 0.18` 小于它就不画。
-    // 于是缩小的时候只有大国名浮出来，越放大冒出越多 —— 这就是"渐次出现"。
-    // 门槛值 4px：EU4 的 1444 有 665 个国家（HOI4 才 96 个），同样是 4px，
-    // 它天生就比别的模式热闹 —— 这是国家的绝对数量决定的，不是逻辑差异。
+    // 0 层（国名）留一道**字号底线**：`√像素 × 缩放 × 0.18` 小于它就不画。
+    // （2026-10-27 用户："不要那个 20 门槛" → 4px 降到 **2px** ✓
+    //   4px 时 EU4 的 665 个国家大多要 ~20% 才够大 ✓ 降到 2px 后
+    //   10% 就能浮出二十来个、20% 上百个；再往下会糊成蚂蚁字 ✗）
+    // ⚠ 这里是"可读性底线"，不是缩放门槛 ✗ —— 缩放门槛已经全部置 0 ✓
     // 「全部地名」只管"要不要隐藏"，**不改字号** —— 该多大就多大。
     // （以前这里写成 Math.max(size, 8)，一勾上小于 8px 的地名全被放大，
     //   看起来就是"勾了之后字号变了"。）
     if (this.showAll) return size;
-    const floor = tier < (this.nEra || 1) ? (TIER_MIN_FONT[0] || 4) : 0;
+    const floor = tier < (this.nEra || 1) ? (TIER_MIN_FONT[0] ?? 4) : 0;
     return size < floor ? 0 : size;
   }
 

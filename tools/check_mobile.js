@@ -67,6 +67,40 @@ function readScript(htmlPath) {
   ok('JS 补丁的启动挂点也在（bindMobile() 的调用）',
      /bindEvents\(\);\s*\n\s*bindMobile\(\)/.test(js));
   ok('HTML 那段注释也打了（手机版界面说明）', html.includes('手机版的界面'));
+  /* 🔴 **小输入弹窗别铺满全屏** ✗（2026-10-27 用户："保存地图等输入框会占满全屏"）
+   *   改名窗早就是居中卡片了 ✓ 保存地图窗漏了 ✓
+   *   这里验**烤出来的产物**里三条都在：居中 / 卡片自适应高度 / hidden 压得住 ✓ */
+  ok('小输入弹窗是居中卡片（保存地图不再铺满全屏 ✓）',
+     /#rename, #save-map\s*\{[^}]*align-items:\s*center/.test(html)
+     && /#save-map \.modal-box[^{}]*\{[^}]*height:\s*auto/.test(html)
+     && /#save-map\[hidden\][^{]*\{[^}]*display:\s*none\s*!important/.test(html),
+     /#save-map \.modal-box[^{}]*\{[^}]*height:\s*auto/.test(html) ? '小卡片 ✓' : '还是全屏 ✗');
+  /* 🔴 **剧本 + 下级层级两颗都得亮** ✗（2026-10-27 用户："省份按钮仅仅是颜色变了一点点"）
+   *   手机版那套玻璃按钮会把桌面的 `.grain` 底/边盖掉 ✓
+   *   → 产物里必须有手机专属的蓝底 + 内圈，而且日间版也得在 ✓ */
+  ok('「借用粒度」有手机专属的选中态（蓝底 + 蓝圈 ✓）',
+     /#mob-sheet \.segmented button\.grain:not\(\.on\)[^{]*\{[^}]*background:/.test(html)
+     && /#mob-sheet \.segmented button\.grain:not\(\.on\)[^{]*\{[^}]*box-shadow:/.test(html)
+     && /html\[data-theme="light"\] #mob-sheet \.segmented button\.grain:not\(\.on\)[^{]*\{[^}]*color:\s*#2b5f85/.test(html),
+     /button\.grain:not\(\.on\)/.test(html) ? '蓝玻璃选中态 ✓' : '没有 grain 规则 ✗');
+  /* 2026-10-27 用户："缩放三个小按钮怎么跑到左边了" */
+  ok('缩放条贴右边（`left:auto` 把桌面的 left:12px 放开 ✓）',
+     /\.zoom-box\s*\{[^}]*left:\s*auto[^}]*right:\s*10px/.test(html),
+     /\.zoom-box\s*\{[^}]*left:\s*auto/.test(html) ? '贴右 ✓' : '还是会跑到左边 ✗');
+  /* 2026-10-27 用户："「更高」按钮样式和晨昏按钮不一样" */
+  {
+    const m = /#mob-sheet \.mob-tallbtn\s*\{([^}]*)\}/.exec(html);
+    const tail = m ? m[1] : '';
+    ok('「更高」小按钮跟晨昏按钮同一套玻璃胶囊',
+       /min-height:\s*34px/.test(tail) && /padding:\s*0 16px/.test(tail)
+       && /border-radius:\s*17px/.test(tail) && /rgba\(255,\s*255,\s*255,\s*\.07\)/.test(tail)
+       && /backdrop-filter\s*:\s*blur/.test(tail),
+       m ? '34px 胶囊 + 玻璃 ✓' : '没找到 .mob-tallbtn ✗');
+  }
+  /* 2026-10-27 用户："恢复默认那块莫名其妙是更灰色的底" */
+  ok('设置底栏在手机面板里是透明底（不再沿用电脑版的灰板 ✓）',
+     /\.mob-set-foot\s*\{[^}]*background:\s*transparent\s*!important/.test(html),
+     /\.mob-set-foot\s*\{[^}]*background:\s*transparent/.test(html) ? '透明 ✓' : '还是灰底 ✗');
 
   /* 🔴 **手机版教程内容要跟上界面** ✗✗（2026-10-20 ✓ 用户："手机版和电脑版教程重新做一下"）
    *
@@ -111,6 +145,10 @@ function readScript(htmlPath) {
          block.length > 100 && block.indexOf('——') < 0,
          block ? (block.indexOf('——') < 0 ? `${block.length} 字符 · 干净 ✓` : '仍有破折号 ✗')
                : '没找到 introHTML ✗');
+      /* 2026-10-27 用户："涂错了就点「文件 → 撤销」改成点「撤销」" */
+      ok('教程撤销文案不再写「文件 → 撤销」',
+         block.indexOf('文件 → 撤销') < 0 && block.indexOf('点「撤销」') >= 0,
+         block.indexOf('文件 → 撤销') < 0 ? '改成「点撤销」✓' : '还是旧的「文件 → 撤销」✗');
     }
   }
 
@@ -173,8 +211,19 @@ function readScript(htmlPath) {
   ok('boot 跑到就绪（补丁没把启动弄崩）', /就绪/.test(step), step || '（没走到）');
   ok('渲染器建起来了', !!ex.renderer);
   ok('标签层建起来了', !!ex.labels);
+  ok('手机版国名层也没有缩放门槛（0 = 一直画 ✓）',
+     !!(ex.labels && ex.state.meta && ex.state.meta.labelZoom)
+     && ex.labels.zoom[0] === 0 && ex.state.meta.labelZoom[0] === 0,
+     ex.labels ? `zoom[0]=${ex.labels.zoom[0]}` : '没有标签层 ✗');
   ok('meta / 头衔表都装上了', !!(ex.state.meta && ex.state.titles),
      ex.state.meta ? `${ex.state.meta.numProvinces} 地块 / ${ex.GAME.name}` : '');
+  /* 2026-10-27 用户："开局颜色的标记应该不能留空，改成真正的「请输入文本」五个字" */
+  {
+    const bl = env.get('brush-label');
+    ok('开局「标记」不是空的（写着「请输入文本」五个字 ✓）',
+       ex.state.brushLabel === '请输入文本' && (!bl || bl.value === '请输入文本'),
+       `state="${ex.state.brushLabel}" · input="${bl ? bl.value : '(没有)'}"`);
+  }
 
   // 报错日志：手机版跟电脑版共用同一套源码 ✓ —— 补丁只碰界面，
   // 日志该在也得在（漏拼了 log.js 的话手机版玩家出事就没现场可发 ✗）
@@ -387,6 +436,128 @@ function readScript(htmlPath) {
     const dock = env.get('mob-dock');
     ok('底部四个入口都在（设置 / 颜色 / 工具 / 视图）',
        !!dock && dock.children.length === 4, dock ? `${dock.children.length} 个` : '没有 ✗');
+  }
+
+  /* ================================================================== */
+  /* 🎨 颜色页：取消二级菜单，调色板 / 最近使用搬到底部 ✓（2026-10-27 用户） */
+  {
+    const ui2 = env.get('mob-ui');
+    const colorGrp = ui2 && ui2.querySelector('.mob-group[data-group="color"]');
+    const kit = colorGrp && colorGrp.querySelector('.mob-color-kit');
+    const inKit = (id) => {
+      let n = env.get(id);
+      while (n) { if (n === kit) return true; n = n.parentNode; }
+      return false;
+    };
+    ok('颜色页底部搬出了「调色板 / 最近使用」',
+       !!kit && inKit('palette-fav') && inKit('palette'),
+       kit ? '有 .mob-color-kit ✓' : '没有（还藏在二级菜单里 ✗）');
+    ok('色块的二级菜单在手机上收起了', !!(env.get('brush-menu') && env.get('brush-menu').hidden));
+    /* 点大色块 = 改颜色（系统取色器），不是再弹二级菜单 ✓ */
+    {
+      const sw = env.get('brush-swatch');
+      const bc = env.get('brush-color');
+      let fired = false;
+      if (bc && typeof bc.addEventListener === 'function') bc.addEventListener('click', () => { fired = true; });
+      if (sw && typeof sw.onclick === 'function') sw.onclick();
+      ok('点大色块 = 打开系统取色器（改颜色 ✓）', fired,
+         fired ? '取色器被点开了 ✓' : '还是没走改颜色 ✗');
+    }
+    ok('长按删色的手势接上了（手机没有右键 ✓）',
+       /bindLongDelete/.test(js) && /paletteRemoveAt/.test(js),
+       /bindLongDelete/.test(js) ? '有长按逻辑 ✓' : '没有长按 ✗');
+  }
+
+  /* 🛠 「全部恢复默认」：2026-10-27 用户："手机和电脑的恢复默认都没用" */
+  {
+    const sr = env.get('set-reset');
+    /* ⚠ 用 range 控件验"界面也回填了" ✗ —— `set-labelap` 是步进/分段控件，
+     *   测试桩的设置骨架里没造它（`_steps` 空），验不到界面那半 ✓
+     *   `set-pa` 是 range，桩里有真 value ✓ 正好能验 `_fill()` 有没有跑 ✓ */
+    const pa = env.get('set-pa');
+    if (sr && typeof sr.onclick === 'function') {
+      ex.state.set.pa = 12;
+      if (pa) pa.value = '12';
+      let err = null;
+      try { sr.onclick(); } catch (e) { err = e; }
+      ok('「全部恢复默认」不再抛错（旧 `_open()` 已换成 `_fill()` ✓）',
+         !err, err ? String(err.message || err) : '跑通 ✓');
+      ok('恢复默认后 state 和控件都回出厂值',
+         ex.state.set.pa === 50 && (!pa || Number(pa.value) === 50),
+         `state=${ex.state.set.pa} · ui=${pa ? pa.value : '(没有控件)'}`);
+    } else {
+      ok('「全部恢复默认」按钮接了点击处理', false, '找不到 onclick ✗');
+    }
+  }
+
+  /* 剧本 + 下级层级：**两颗都得挂上对应的 class** ✓（2026-10-27 用户：
+   *   "同时选中剧本和某个下级层级（比如省份）时，省份按钮仅仅是颜色变了一点点"）
+   *
+   * ⚠ 这里只验**行为**：选剧本 → 再点省份，省份按钮要挂 `.grain` ✓
+   *   视觉（手机专属蓝底 + 蓝圈）在 `check_mobile_parity.js` 和上面的产物断言里验 ✓
+   *   两条合起来才完整：class 对但样式被盖掉 = 用户看到的"没选中" ✗ */
+  {
+    const nEra = ex.eraTierCount();
+    const nTier = (ex.state.meta.tiers || []).length;
+    const tierBox = env.documentStub.querySelector('[data-role="tier"]');
+    const tierBtns = (tierBox && tierBox.children || [])
+      .filter((b) => String(b.tagName || '').toLowerCase() === 'button');
+    const eraBtn = env.documentStub.querySelector('[data-role="era-btn"]');
+    if (nEra > 0 && nTier > nEra && tierBtns.length) {
+      const prevTier = ex.state.tier, prevGrain = ex.state.grain;
+      /* 先回到"第一级地理层、没有粒度"的状态，再按剧本 → 省份 ✓
+       * ⚠ 别直接从省份起步 ✗ —— 从省份按剧本会把省份顺手设成 grain ✓
+       *   再按省份就变成"拆开"了（pressTier 的开关语义 ✓） */
+      ex.setGrain(null);
+      ex.setTier(nEra);
+      ex.pressTier(0);                 // 选一个剧本
+      ex.pressTier(nTier - 1);         // 再点最细那一级（省份）
+      const prov = tierBtns.find((b) => Number(b.dataset && b.dataset.tier) === nTier - 1);
+      ok('剧本 + 省份：省份按钮挂上 grain（不是只换字色 ✓）',
+         !!prov && prov.classList.contains('grain') && !prov.classList.contains('on'),
+         prov ? `class="${prov.className}"` : '找不到省份按钮 ✗');
+      ok('剧本 + 省份：剧本按钮还是金色 on ✓',
+         !!eraBtn && eraBtn.classList.contains('on'),
+         eraBtn ? `class="${eraBtn.className}"` : '找不到剧本按钮 ✗');
+      ex.setGrain(prevGrain);          // 复原，别影响别处 ✓
+      ex.setTier(prevTier);
+    } else {
+      console.log('  （这张图没有剧本层，跳过「剧本 + 省份」行为检查）');
+    }
+  }
+
+  /* 🔴 **手机宽度下整图导出也要带国名** ✗✗（2026-10-27 用户：
+   *   "手机版导出地图好像没有附赠名字"）
+   *
+   *   根因：`paintLabelsForExport()` 原来按 `labels.cssW`（**当前屏幕宽**）算门槛 ✓
+   *   手机 ~390px → gate 6.9% → 国名层门槛（按 1600px 视口算）~20% → 一个都不画 ✓
+   *   电脑 ~1600px → gate 28% → 正常 ✓（所以只有手机版报）
+   *
+   *   这条把屏幕宽**故意设成 390**，再走真实导出路径量名字数 ✓
+   *   ⚠ 测试末尾恢复层级 / 开关，别影响别的断言 ✓ */
+  {
+    const prevTier = ex.state.tier;
+    const prevPaint = ex.state.showLabelsPaint;
+    const prevTitle = ex.state.showLabelsTitle;
+    const prevCssW = ex.labels ? ex.labels.cssW : null;
+    const cv = env.sandbox.document.createElement('canvas');
+    const ctx = cv.getContext('2d');
+    let n = 0, err = null;
+    try {
+      ex.state.showLabelsPaint = true;
+      ex.state.showLabelsTitle = true;
+      ex.setTier(0);                       // 剧本层：国名最全 ✓
+      ex.rebuildPaintBlocks(true);
+      if (ex.labels) ex.labels.cssW = 390; // 模拟手机屏宽 ✓
+      n = ex.paintLabelsForExport(ctx, 1) | 0;
+    } catch (e) { err = e; }
+    if (ex.labels && prevCssW != null) ex.labels.cssW = prevCssW;
+    ex.state.showLabelsPaint = prevPaint;
+    ex.state.showLabelsTitle = prevTitle;
+    ex.setTier(prevTier);
+    ex.rebuildPaintBlocks(!!ex.state._blocksAll);
+    ok('手机宽度下整图导出也带国名（不再按屏幕宽砍掉 ✓）',
+       !err && n > 0, err ? String(err.message || err) : `${n} 个名字`);
   }
 
   console.log('\n==========================================================');
