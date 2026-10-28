@@ -6997,33 +6997,10 @@ function appBuild() {
   } catch (e) { return 'dev'; }
 }
 
-/** 缩略图：各省按质心铺一小块颜色，压成 320 宽的 JPEG dataURL ✓
- *  （不整图 putImageData —— 42M 像素的临时 ImageData 会顶爆低端机 ✗） */
-function saveMapThumb() {
-  try {
-    const m = state.meta, pd = renderer && renderer.paintData, pos = state.provPos;
-    if (!m || !pd || !pos) return '';
-    const W = 320, H = Math.max(80, Math.round(W * m.mapHeight / m.mapWidth));
-    const cv = document.createElement('canvas');
-    cv.width = W; cv.height = H;
-    const ctx = cv.getContext('2d');
-    if (!ctx) return '';
-    ctx.fillStyle = '#0d1116';
-    ctx.fillRect(0, 0, W, H);
-    const s = W / m.mapWidth;
-    const n = m.numProvinces | 0;
-    for (let q = 1; q < n; q++) {
-      if (pd[q * 4 + 3] === 0) continue;
-      const x = pos[q * 3], y = pos[q * 3 + 1], px = pos[q * 3 + 2] || 1;
-      ctx.fillStyle = 'rgb(' + (pd[q * 4] | 0) + ',' + (pd[q * 4 + 1] | 0) + ',' + (pd[q * 4 + 2] | 0) + ')';
-      const r = Math.max(1.2, Math.sqrt(px) * s * 0.5);
-      ctx.fillRect(x * s - r, y * s - r, r * 2, r * 2);
-    }
-    return cv.toDataURL('image/jpeg', 0.75);
-  } catch (e) { return ''; }
-}
-
-/** 仓库记录（project = projectData() 那份 ✓） */
+/** 仓库记录（project = projectData() 那份 ✓）
+ *  ⚠ **不再存缩略图** ✗（2026-10-27）—— 曾经的 `preview`（320 宽 JPEG dataURL）
+ *     在卡片上根本不显示（2026-10-25 用户定了"不摆缩略图"），
+ *     每份存档却白占十几 KB ✓ 删掉生成那一行，记录里也不再带这个字段 ✓ */
 function mapStoreRec(name) {
   const m = state.meta;
   return {
@@ -7037,7 +7014,6 @@ function mapStoreRec(name) {
     game: String((m && m.game) || ''),
     mapKey: mapKeyOf(m),
     build: appBuild(),
-    preview: saveMapThumb(),
     project: projectData(),
   };
 }
@@ -7197,20 +7173,6 @@ function fmtStoreDate(t) {
   } catch (e) { return ''; }
 }
 
-/** 载入：把工程挂到匹配的选单条目上 → 走正常的选图流程，就绪后自动套 ✓ */
-function storeLoad(rec) {
-  const m = MAP_CHOICES.find((x) => x.emb === rec.emb || x.key === rec.emb);
-  if (!m) {
-    toast('底图「' + (rec.base || rec.emb || '?') + '」不在选单里（先把对应的地图包导进来）。', true);
-    return;
-  }
-  m.__project = { project: rec.project, mapKey: rec.mapKey || '', name: rec.name || '' };
-  const r = state._pickResolve;
-  if (!r) { toast('选图流程没在等输入，载不进去（刷新一下再试）。', true); return; }
-  state._pickResolve = null;
-  r(m);
-}
-
 /** 点仓库卡片：回「开始创作」页挑底图 ✓（2026-10-25 用户定的：
  *  不限定死必须选哪张 —— 存档的涂色跟着走，选完图就绪后自动套 ✓）
  * ⚠ 底图跟存档对不上时（mapKey 不一致）boot 那边会拦住不套 ✓（原有逻辑 ✓）*/
@@ -7219,17 +7181,6 @@ function storePickMapFor(rec) {
   const tab = $('pick-tab-maps');
   if (tab) tab.click();
   toast('已选中「' + (rec.name || '') + '」的涂色 —— 挑一张底图载入。');
-}
-
-async function storeDuplicate(rec) {
-  const copy = Object.assign({}, rec, {
-    id: 'sm_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
-    name: (rec.name || '未命名') + ' 副本',
-    created: Date.now(), updated: Date.now(),
-  });
-  await putMap(copy);
-  renderStoreList();
-  toast('已复制为「' + copy.name + '」。');
 }
 
 async function storeRename(rec) {
@@ -9066,24 +9017,14 @@ function onExportFail(e) {
        绑定在 pickMap 里（跟 map-import 同一处 ✓ 见那边 ✓）*/
   renderPaletteFav();
   // 收色入口 = 收藏行行尾那个「＋」块（见 renderPaletteFav ✓ 2026-10-24 简化 ✓）
-  // 「导入涂色」：跟拖文件进来是同一个入口（importJSON），只是一个选文件、一个拖
-  $('btn-import').onclick = _wrap(() => {
-    const inp = document.createElement('input');
-    inp.type = 'file';
-    inp.accept = '.json,application/json';
-    inp.onchange = () => {
-      const f = inp.files && inp.files[0];
-      if (!f) return;
-      importJSON(f);          // 直接把文件交给 importJSON，别再自己读一遍
-    };
-    inp.click();
-  });
   /* ⚠ **地图包不在这里导入** ✗（2026-10-20 ✓ 用户："地图包不要在进入里面的时候导入，
    *   我没这么说啊"）
    *
    *   `.pdxmap` 只有一个入口：**选图页**（主菜单 → 选地图 → 底部那个按钮 / 直接拖进去）✓
    *   我上一版在文件菜单里加过一项「导入地图包」，是自作主张 ✓ 已经拆干净了 ✓
-   *   这条注释留着，免得以后又有人往这儿加第二遍 ✗ */
+   *   这条注释留着，免得以后又有人往这儿加第二遍 ✗
+   *   ⚠ 这个按钮本身 = **涂色方案 .json** 的导入入口（走 importJSON ✓
+   *     跟拖文件进来同一条路 ✓）*/
   $('btn-import').onclick = _wrap(() => {
     const inp = document.createElement('input');
     inp.type = 'file';
@@ -11089,7 +11030,13 @@ function drawLabels(view, capture = false) {
    *   → 连门槛都还没到，直接跳过这一层 ✓ 门槛值跟 drawPoints 用同一份 `labels.zoom` ✓ */
   const _zoomNeed = (labels && labels.zoom) ? labels.zoom[nameTier] : null;
   const _zoomPct = (labels ? labels.scale : 1) * 100;
-  const _tierOpen = (_zoomNeed == null) || (_zoomPct >= _zoomNeed);
+  /* 🔴 **导出抓名单时不按屏幕缩放过闸** ✗✗（2026-10-27）
+   *   导出自己的门槛按 **1600px 参考视口**算（见 `paintLabelsForExport` ✓）——
+   *   可这里要是先按**手上这台设备**的缩放把整层剔掉，第二道闸想放行也没东西可放 ✗
+   *   → 同一张图在手机（竖屏 390 出头）和电脑（1600）上导出来的名字会不一样 ✓
+   *   `capture` = 只抓名单、不画（整图导出那条路 ✓）→ 一律放行，
+   *   交给 `paintExport` 按导出口径筛 ✓ */
+  const _tierOpen = capture || (_zoomNeed == null) || (_zoomPct >= _zoomNeed);
   if (_tierOpen && (state.showLabelsTitle || state.showWaterName || state.showWasteName)
       && (nameTier >= nEra || state.showWaterName || state.showWasteName)) {
     const K = state.titles.keys || [];
@@ -12725,11 +12672,31 @@ function pickMap(maps) {
       if (ev && ev.preventDefault) ev.preventDefault();
       const dt = ev && ev.dataTransfer;
       if (!dt || !dt.files || !dt.files.length) return;
-      if (currentView === 'maps') {
-        await importMany(dt.files);
-      } else {
-        for (const f of dt.files) await storeImportFile(f);
+      /* 🔴 **按文件类型分派，不看当前是哪个页签** ✗✗（2026-10-27）
+       *   以前按页签一刀切：地图页拖进 .json 会被当成 zip 解 →
+       *   "这不是一个完整的 zip 包" ✗；仓库页拖进 .pdxmap 会被 JSON.parse →
+       *   "导入失败：Unexpected token" ✗ —— 文件本身是认得的，拖错一次骂一句 ✓
+       *   现在：.json 进地图仓库、.pdxmap/.zip 进地图库，各走各的 ✓
+       *   ⚠ 导入按钮那边不用改 ✗ —— 它的文字和目标本来就跟着页签切（见 onImportClick ✓）*/
+      const list = Array.from(dt.files);
+      const isJson = (f) => /\.json$/i.test(String((f && f.name) || ''))
+        || !!(f && f.type === 'application/json');
+      const isPack = (f) => /\.(pdxmap|zip)$/i.test(String((f && f.name) || ''));
+      const packs = list.filter(isPack);
+      const jsons = list.filter(isJson);
+      const other = list.filter((f) => !isPack(f) && !isJson(f));
+      if (packs.length) await importMany(packs);      // 导完自动切回「开始创作」✓
+      for (const f of jsons) await storeImportFile(f);
+      /* 扩展名认不出来的（没名字的 Blob / 别的后缀）：按**当前页签**的老规矩走 ✓
+       * 地图页交给地图包校验器 —— 它会给一句可读的拒绝原因（"不是完整的 zip"✓）；
+       * 仓库页按涂色存档试 ✓ 别在这儿自己抢一句"认不出"把真正的原因盖掉 ✗ */
+      if (other.length) {
+        if (currentView === 'maps') await importMany(other);
+        else for (const f of other) await storeImportFile(f);
       }
+      /* 只要收了 .json 就切到「读取地图」看结果 ✓（混着拖也一样 ——
+       *  storeImportFile 会往同一个列表里写，停在「开始创作」页会看成错页 ✓）*/
+      if (jsons.length) showPickView('store');
     };
     const dropOff = () => {
       const boot = $('boot');
@@ -13417,7 +13384,7 @@ async function boot() {
     }
 
     const chosen = await pickMap(maps);
-    /* 🗺 仓库载入的存档挂在这条选单上（见 storeLoad ✓）—— 记下来，就绪后套 ✓ */
+    /* 🗺 仓库载入的存档挂在这条选单上（见 storePickMapFor ✓）—— 记下来，就绪后套 ✓ */
     if (chosen.__project) state._pendingProject = chosen.__project;
     state.mapEmb = String(chosen.emb || chosen.key || '');
     LOG.event('选图', String(chosen.label || '')
