@@ -87,7 +87,12 @@ function hover(ex, env, pid) {
   const X = rect.left + ((mx - vx) / w) * rect.width;
   const Y = rect.top + ((my - vy) / h) * rect.height;
   ex.state.hover.inside = false; ex.state.hover.pid = 0;
-  env.dispatchWindow('mousemove', { clientX: X, clientY: Y });
+  /* ⚠ **事件要带上 target** ✗✗（2026-10-27）
+   *   app 里新增了"光标在侧栏 / 浮层上不算悬停"的守门：`e.target.closest('#stage')`
+   *   —— 桩里 closest 只认元素自己（不建父子链），派发又不带 target 的话
+   *   整条 hover 都会被它清掉：卡片永远是空的 ✓
+   *   真浏览器里 mousemove 的 target 必然在 #stage 里 → 传 stage 就等价 ✓ */
+  env.dispatchWindow('mousemove', { clientX: X, clientY: Y, target: env.get('stage') });
   return env.get('hover-card').innerHTML;
 }
 

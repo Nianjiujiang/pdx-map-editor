@@ -225,22 +225,34 @@ function findTestPack() {
      !!(ex.labels && ex.state.meta && ex.state.meta.labelZoom)
      && ex.labels.zoom[0] === 0 && ex.state.meta.labelZoom[0] === 0,
      ex.labels ? `labels.zoom[0]=${ex.labels.zoom[0]} · meta=${ex.state.meta && ex.state.meta.labelZoom && ex.state.meta.labelZoom[0]}` : '标签层没建起来');
-  /* 真在 5% 缩放下画一帧：以前 `20% 门槛` 会让 `draw()` 整层直接 return ✓
-   * 现在 `zoom[0]=0`，加上国名字号底线降到 2px → 最大那几个国家应该画得出来 ✓ */
+  /* 真画一帧：以前 `20% 门槛` 会让 `draw()` 整层直接 return ✓
+   * 现在 `zoom[0]=0`，字号底线 2px —— 只要缩放到"最大的国家刚好够 2px"就该画得出来 ✓
+   * ⚠ **5% 不是对哪张图都成立** ✗（2026-10-27）：夹具图只有 96×48，
+   *   最大的块也才三四十像素宽，5% 时字号不到 1px —— 再怎么修也画不出来 ✓
+   *   → 按"最大地块在屏幕上够 2px"反推缩放；真实大地图反推出来就是 5% 上下 ✓ */
   {
     const W = ex.state.meta ? ex.state.meta.mapWidth : 5632;
     const H = ex.state.meta ? ex.state.meta.mapHeight : 2048;
     const cv = ex.labels && ex.labels.canvas;
     const oldCW = cv ? cv.clientWidth : 0;
+    const areas = (ex.state.titles && (ex.state.titles.blockArea || ex.state.titles.area)) || [];
+    let side = 0;
+    for (const a of areas) if (a > 0) side = Math.max(side, Math.sqrt(a));
+    /* 字号 = √面积 × 缩放 × 0.18；要它 ≥ 2px → 缩放 ≥ 2 / (0.18 × 边长) ✓ */
+    const needScale = side > 0 ? 2 / (0.18 * side) : 0.05;
+    const useScale = Math.max(0.05, needScale * 1.05);
+    const viewW = 1000 / useScale;
     if (ex.labels && cv && W > 0) {
-      cv.clientWidth = 1000;                 // 让 resize() 算出 scale = 1000 / 20000 = 5%
-      ex.labels.draw({ x: 0, y: 0, w: 20000, h: 20000 * H / W }, 0, null);
-      ok('国名在 5% 缩放也真的画出来了（不是只把门槛改成 0 ✓）',
-         ex.labels.drawn > 0, `${ex.labels.drawn} 个 · scale=${(ex.labels.scale * 100).toFixed(1)}%`);
+      cv.clientWidth = 1000;
+      ex.labels.draw({ x: 0, y: 0, w: viewW, h: viewW * H / W }, 0, null);
+      ok('国名门槛为 0 时画得出来（缩到"最大国刚好够 2px"也画 ✓）',
+         ex.labels.drawn > 0,
+         `${ex.labels.drawn} 个 · scale=${(ex.labels.scale * 100).toFixed(1)}%`
+         + `（最大块 ${side.toFixed(0)}px）`);
       cv.clientWidth = oldCW;
       try { ex.labels.resize(); } catch (e) { /* ✓ */ }
     } else {
-      ok('国名在 5% 缩放也真的画出来了（不是只把门槛改成 0 ✓）', false, '没有标签层 ✗');
+      ok('国名门槛为 0 时画得出来（缩到"最大国刚好够 2px"也画 ✓）', false, '没有标签层 ✗');
     }
   }
   /* 🔴 **空色块也必须换代** ✗✗（2026-10-27 用户：
@@ -732,37 +744,46 @@ function findTestPack() {
     }
     /* 桩不解析 #export-map 的子树 ✗ 按钮点不到 —— 直接验状态机本身 ✓
        （HTML 里四档按钮 / 两种范围另有静态断言 ✓） */
+    /* ⚠ 期望尺寸按**这张图自己的宽高**算 ✗（以前写死 5632×2048 的 EU4 数，
+     *   夹具图上必红 ✓ 2026-10-27）*/
+    const MW = (ex.state.meta && ex.state.meta.mapWidth) || 5632;
+    const MH = (ex.state.meta && ex.state.meta.mapHeight) || 2048;
     ex._exportDlg.scale = 3;
     ex._exportDlg.range = 'full';
     ex._exportDlg.rect = null;
     ex._exportRefresh();
     const m3 = ex._exportMetrics ? ex._exportMetrics() : null;
     ok('桌面 3× 整张不会被误拦（手机预算另算 ✓）',
-       !!m3 && m3.scale === 3 && m3.OW === 16896 && m3.OH === 6144 && !m3.why,
+       !!m3 && m3.scale === 3 && m3.OW === MW * 3 && m3.OH === MH * 3 && !m3.why,
        m3 ? `${m3.OW}×${m3.OH} · ${m3.needMB} MB / ${m3.capMB} MB` : '没有 metrics');
+    const pw = Math.max(1, Math.floor(MW * 0.6));
+    const ph = Math.max(1, Math.floor(MH * 0.6));
     ex._exportDlg.scale = 2;
-    ex._exportDlg.rect = { x: 100, y: 80, w: 1000, h: 500 };
+    ex._exportDlg.rect = { x: 0, y: 0, w: pw, h: ph };
     ex._exportDlg.range = 'part';
     ex._exportRefresh();
     const m2 = ex._exportMetrics ? ex._exportMetrics() : null;
     ok('2× + 框选后输出尺寸真的按倍率 / 矩形算（不是只换样式）',
-       !!m2 && m2.scale === 2 && m2.OW === 2000 && m2.OH === 1000
+       !!m2 && m2.scale === 2 && m2.OW === pw * 2 && m2.OH === ph * 2
        && /预计 \d+ MB 内存/.test(env.get('export-info').textContent || '')
        && !/输出|(?:^|\D)2×/.test(env.get('export-info').textContent || ''),
        m2 ? `${m2.OW}×${m2.OH} · ${env.get('export-info').textContent}` : '没有 metrics');
-    /* 2026-10-27：宽 / 高可以直接填，另一边按比例自动跟 ✓ */
+    /* 2026-10-27：宽 / 高可以直接填，另一边按比例自动跟 ✓
+       ⚠ 填的数按地图尺寸封顶（≤ 8×）✗ —— 夹具图填 8000 会直接超上限（2026-10-27）*/
+    const tw = Math.max(1, Math.min(8000, Math.floor(MW * 7.2)));
+    const eh = Math.max(1, Math.round(MH * tw / MW));
     ex._exportDlg.range = 'full';
     ex._exportDlg.rect = null;
     ex._exportDlg.scale = 1;
     ex._exportDlg.sizeBad = false;
-    ex._exportSizeInput('w', '8000');
+    ex._exportSizeInput('w', String(tw));
     const mw = ex._exportMetrics ? ex._exportMetrics() : null;
-    ok('宽/高能直接填：写宽 8000，高按地图比例自动算 ✓',
-       !!mw && mw.OW === 8000 && mw.OH === 2909
-       && env.get('export-w').value === '8000'
-       && env.get('export-h').value === '2909'
+    ok('宽/高能直接填：写宽，高按地图比例自动算 ✓',
+       !!mw && mw.OW === tw && mw.OH === eh
+       && env.get('export-w').value === String(tw)
+       && env.get('export-h').value === String(eh)
        && /预计 \d+ MB 内存/.test(env.get('export-info').textContent || '')
-       && !/8000 × 2909|输出/.test(env.get('export-info').textContent || ''),
+       && !new RegExp(tw + ' × ' + eh + '|输出').test(env.get('export-info').textContent || ''),
        mw ? `${mw.OW}×${mw.OH} · ${mw.scale} · ${env.get('export-info').textContent}` : '没有 metrics');
     ex._exportSizeInput('w', '999999');
     const mBad = ex._exportMetrics ? ex._exportMetrics() : null;
@@ -770,12 +791,14 @@ function findTestPack() {
        !!mBad && !!mBad.why && ex._exportDlg.sizeBad === true
        && env.get('export-start').disabled === true,
        mBad ? mBad.why : '没有 metrics');
+    const th = Math.max(1, Math.min(3000, Math.floor(MH * 7.2)));
+    const ew2 = Math.max(1, Math.round(MW * th / MH));
     ex._exportSizeCommit();
-    ex._exportSizeInput('h', '3000');
+    ex._exportSizeInput('h', String(th));
     const mh = ex._exportMetrics ? ex._exportMetrics() : null;
-    ok('改高也行：写高 3000，宽自动跟 ✓',
-       !!mh && mh.OH === 3000 && mh.OW === 8250
-       && env.get('export-w').value === '8250',
+    ok('改高也行：写高，宽自动跟 ✓',
+       !!mh && mh.OH === th && mh.OW === ew2
+       && env.get('export-w').value === String(ew2),
        mh ? `${mh.OW}×${mh.OH}` : '没有 metrics');
     ex._exportDlg.scale = 1;
     ex._exportDlg.sizeBad = false;
@@ -786,25 +809,37 @@ function findTestPack() {
     const handles = (html.match(/data-handle="(?:nw|n|ne|e|se|s|sw|w)"/g) || []).length;
     ok('框选层有八个把手（四角 + 四边，能像绘图软件那样调 ✓）',
        handles === 8, `${handles} 个`);
-    const nr = ex._exportPickNorm({ x: 100, y: 100 }, { x: 500, y: 400 });
+    /* ⚠ 框选矩形按地图比例取 ✗ —— 写死 100~500 的话，96×48 的夹具图会被
+     *   clamp 成 0×0（2026-10-27）*/
+    const ax = Math.max(1, Math.round(MW * 0.1));
+    const ay = Math.max(1, Math.round(MH * 0.1));
+    const bx2 = Math.max(ax + 4, Math.round(MW * 0.6));
+    const by2 = Math.max(ay + 4, Math.round(MH * 0.6));
+    const ew = bx2 - ax, eh3 = by2 - ay;
+    const nr = ex._exportPickNorm({ x: ax, y: ay }, { x: bx2, y: by2 });
     ex._exportPickState.rect = nr;
     ex._exportPickRender();
     ok('框选会显示尺寸角标，确认键也能点 ✓',
        env.get('export-pick-box').hidden === false
-       && env.get('export-pick-size').textContent === '400 × 300 px'
+       && env.get('export-pick-size').textContent === `${ew} × ${eh3} px`
        && env.get('export-pick-ok').disabled === false,
        `${env.get('export-pick-size').textContent} · ok=${!env.get('export-pick-ok').disabled}`);
+    const sx = Math.max(2, Math.round(MW * 0.1));
+    const sy = Math.max(2, Math.round(MH * 0.1));
+    const sw = Math.max(20, Math.floor(MW * 0.4));
+    const sh = Math.max(16, Math.floor(MH * 0.4));
     const rr = ex._exportPickResizeRect(
-      { x: 100, y: 100, w: 400, h: 300 }, 'nw',
-      { x: 150, y: 120 }, { w: 10, h: 10 });
+      { x: sx, y: sy, w: sw, h: sh }, 'nw',
+      { x: sx + 7, y: sy + 5 }, { w: 10, h: 10 });
     ok('拖左上把手会改 x / y / 宽 / 高（不是只重画边框 ✓）',
-       !!rr && rr.x === 150 && rr.y === 120 && rr.w === 350 && rr.h === 280,
+       !!rr && rr.x === sx + 7 && rr.y === sy + 5
+       && rr.w === sw - 7 && rr.h === sh - 5,
        rr ? `${rr.x},${rr.y} · ${rr.w}×${rr.h}` : '没有返回');
     ex._exportPickConfirm();
     ok('确认框选后回到弹窗，并把范围写回导出参数 ✓',
        modal.hidden === false && env.get('export-pick-layer').hidden === true
-       && !!ex._exportDlg.rect && ex._exportDlg.rect.x === 100
-       && ex._exportDlg.rect.w === 400 && ex._exportDlg.rect.h === 300
+       && !!ex._exportDlg.rect && ex._exportDlg.rect.x === ax
+       && ex._exportDlg.rect.w === ew && ex._exportDlg.rect.h === eh3
        && ex._exportDlg.range === 'part',
        ex._exportDlg.rect ? JSON.stringify(ex._exportDlg.rect) : '没有 rect');
     /* 收尾：别把 picking / 框选状态留给后面的断言 ✓ */
@@ -838,11 +873,15 @@ function findTestPack() {
     });
     ok('停止导出会返回 canceled，并且不下载半张图',
        !!rc && rc.canceled === true && rc.ok === false);
+    const MW2 = (ex.state.meta && ex.state.meta.mapWidth) || 5632;
+    const MH2 = (ex.state.meta && ex.state.meta.mapHeight) || 2048;
+    const cw = Math.min(80, MW2), chh = Math.min(60, MH2);
     const r125 = await ex.exportFullPNG(1.25, {
-      rect: { x: 0, y: 0, w: 80, h: 60 },
+      rect: { x: 0, y: 0, w: cw, h: chh },
     });
     ok('自定义倍率也能真的导出（不是只认四档 ✓）',
-       !!r125 && r125.ok === true && r125.OW === 100 && r125.OH === 75,
+       !!r125 && r125.ok === true
+       && r125.OW === Math.round(cw * 1.25) && r125.OH === Math.round(chh * 1.25),
        r125 ? `${r125.OW}×${r125.OH}` : '没有返回');
     /* 3× 整图直接过一遍名字绘制：记录每一条真正下笔的字号，确认没有 3px 蚂蚁字 ✓
        （走 `paintLabelsForExport`，跟导出时同一条路径 ✓） */
