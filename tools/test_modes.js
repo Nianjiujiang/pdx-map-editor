@@ -3996,13 +3996,19 @@ const factory = new Function(
         const li = st.meta.tierNames.indexOf('地点');
         provTier = li >= 0 ? li : pi;          // EU5 是「地点」，其余是「省份」
       }
-      for (let t = Math.max(0, provTier); t <= Math.max(0, provTier); t++) {
-        const arr = buckets[t].sort((x, y) => x - y);
-        if (!arr.length) continue;
-        checked++;
-        const screen = arr[arr.length >> 1] * L.zoom[t] / 100;
-        if (!(screen >= want * 0.7 && screen <= want * 1.4)) {
-          bad.push(`${st.meta.tierNames[t]} ${screen.toFixed(0)}px`);
+      /* ⚠ 夹具的层级名叫帝国/王国/……，没有「省份 / 地点」这一层 ✗
+       *   （2026-10-27）以前会退回 0 号层去量 —— 而国名层现在门槛 = 0，
+       *   量出来必是 0px ✗ 没有那一层就整条跳过 ✓ */
+      if (provTier < 0) {
+        console.log('  （这张图的层级里没有「省份 / 地点」—— 细层门槛那条跳过 ✓）');
+      } else {
+        const arr = buckets[provTier].sort((x, y) => x - y);
+        if (arr.length) {
+          checked++;
+          const screen = arr[arr.length >> 1] * L.zoom[provTier] / 100;
+          if (!(screen >= want * 0.7 && screen <= want * 1.4)) {
+            bad.push(`${st.meta.tierNames[provTier]} ${screen.toFixed(0)}px`);
+          }
         }
       }
       /* 新加的一条：**地理层门槛单调不减**（越细的层越晚出现 ✓）
@@ -4049,8 +4055,12 @@ const factory = new Function(
      *     纯浪费），所以允许极少量现场画：≤ max(4, drawn×1%) ✓
      *   （"热帧一次都别现场栅格化"这条精神仍然在：数量级从"每帧 N 次"变成"个位数"✓）*/
     const liveAllow = Math.max(4, Math.ceil(drawn * 0.01));
+    /* ⚠ 画出来的**全是**超大字形时（缩放特别大 / 夹具图），现场画就是正确的 ✓
+     *   2026-10-27：以前要求 image >= drawn，那种情况下必红 ✗
+     *   真正的约定没变：现场画的数量不许超过 liveAllow，其余必须走贴图 ✓ */
     ok('热帧基本不再现场栅格化文字（超大字形除外）',
-       warm.stroke <= liveAllow && warm.fill <= liveAllow && warm.image >= drawn,
+       warm.stroke <= liveAllow && warm.fill <= liveAllow
+       && warm.image + liveAllow >= drawn,
        `stroke ${warm.stroke} / fill ${warm.fill} / drawImage ${warm.image} `
        + `（旧写法每帧 stroke+fill 各 ${drawn} 次 · 允许 ≤${liveAllow}）`);
     /* ⚠ P社式排版走的是**逐字贴图** ✓（2026-10-23 起地名也不再按字号退回整段贴图 ✗）
@@ -4078,7 +4088,10 @@ const factory = new Function(
      *   `state.tier < nEra` 时才把**没涂过的省**也算进来 ✓ */
     const _savedTier0 = st.tier;
     st.tier = 0;
-    ex.rebuildPaintBlocks(true);
+    /* ⚠ 第二个参数 = 连**没涂过的省**也收 ✓（2026-10-27）
+     *   2026-10-25 起 all=true 只在"有剧本层且停在剧本层"时才顺带收没涂的省 ——
+     *   夹具没有剧本层，光 true 会得到 0 个块 ✗ 这条要的是原版色块名，必须给 true,true ✓ */
+    ex.rebuildPaintBlocks(true, true);
     const pts = ex.paintedPoints(true) || [];
     st.tier = _savedTier0;
     const p = pts.find((q) => q && q.name && q.tid >= 0 && q.singleTid
@@ -4262,14 +4275,15 @@ const factory = new Function(
         const _old = st.titleName.get(tid0);
         st.titleName.set(tid0, '测试势力名');
         st.tier = 0;
-        ex.rebuildPaintBlocks(true);
+        /* ⚠ 同上：夹具没有剧本层，必须显式把没涂过的省也收进来 ✗（2026-10-27）*/
+        ex.rebuildPaintBlocks(true, true);
         const hit = (ex.paintedPoints(true) || []).find((b) => b.name === '测试势力名');
         st.tier = _savedTier0;
         ok('改名后没涂的色块也按新名字分组（当前剧本的 A 色 A 名）',
            !!hit, hit ? `${hit.area}px` : '没找到');
         if (_old == null) st.titleName.delete(tid0);
         else st.titleName.set(tid0, _old);
-        ex.rebuildPaintBlocks(true);
+        ex.rebuildPaintBlocks(true, true);
       }
     }
   }
@@ -4911,11 +4925,14 @@ const factory = new Function(
      * ⚠ 两个容器 id 必须留着：`author-row`（手机版搬它）、`export-row` + `export-menu`
      *   （手机版搬前者、并把后者的子项摊平 ✓）—— 所以电脑版怎么排都不许改这两个名字 ✗ */
     ok('顶栏布局：工具 → 教程 → 署名 → … → 文件（最右，收着导入/导出）✓',
-       /id="tool-group"[\s\S]*?id="help-row"[\s\S]*?id="btn-tutorial"[\s\S]*?id="author-row"[\s\S]*?id="btn-author"[\s\S]*?id="export-row"[\s\S]*?id="btn-export"[\s\S]*?id="btn-import"[\s\S]*?<\/header>/.test(htmlSrc)
+       /id="tool-group"[\s\S]*?id="help-row"[\s\S]*?id="btn-tutorial"[\s\S]*?id="author-row"[\s\S]*?id="btn-author"[\s\S]*?id="export-row"[\s\S]*?id="btn-export"[\s\S]*?<\/header>/.test(htmlSrc)
        && htmlSrc.indexOf('id="btn-tutorial"') < htmlSrc.indexOf('id="btn-author"')
        && htmlSrc.indexOf('id="btn-author"') < htmlSrc.indexOf('id="export-row"')
-       // 「文件」那个菜单里得同时有导入 / 导出 ✓（清除已经搬走 ✗）
-       && /id="export-menu"[\s\S]*?id="btn-import"[\s\S]*?id="btn-png"[\s\S]*?id="btn-project"[\s\S]*?id="btn-log"/.test(htmlSrc)
+       /* 「文件」菜单的内容按 v1.10.1 之后的按钮集合验 ✓（2026-10-27）：
+       *   保存地图 / 导入涂色方案 / 导出涂色方案 / 导出窗口 / 导出整图 / 导出日志
+       *   ⚠ 顺序也一起盯：保存在上、日志垫底、中间是各种导出 ✓
+       *   （旧断言还在找「导出高清地图」那个已经并进弹窗的按钮 ✗）*/
+       && /id="export-menu"[\s\S]*?id="btn-project"[\s\S]*?id="btn-import"[\s\S]*?id="btn-export-project"[\s\S]*?id="btn-png"[\s\S]*?id="btn-png-full"[\s\S]*?id="btn-log"/.test(htmlSrc)
        // 「显示」区里得同时有「清除全部」和「清除荒地」✓
        && /id="display-panel"[\s\S]*?id="btn-reset"[\s\S]*?id="btn-clear-waste"/.test(htmlSrc),
        '教程在署名左边、文件收在 header 最后、清除在显示区 ✓');

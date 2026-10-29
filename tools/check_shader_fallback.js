@@ -22,7 +22,30 @@ const H = require('./lib/browser_stub.js');
 const force = Math.max(1, Math.min(4, Number(process.argv[2] || 1) | 0));
 const expect = ['', 'mid', 'border', 'title', 'lite'][force];
 const HTML = path.join(H.ROOT, 'pdx-map-editor.html');
-const pack = path.join(H.ROOT, 'packs', 'pdx-eu4-vanilla.pdxmap');
+
+/** 找一张测试图 ✓（2026-10-27）
+ *  ⚠ 别写死 `packs/pdx-eu4-vanilla.pdxmap` ✗ —— 那个文件只有作者本机才有，
+ *     别人跑这一条就是 ENOENT 直接崩（不是"红"）✗
+ *  仓库里跟着 `_local/packs/*.pdxmap` 的自测包也认 ✓ 一张都没有就明说跳过 ✓ */
+function findPack() {
+  const want = ['pdx-eu4-vanilla.pdxmap', 'eu4-vanilla.pdxmap', 'eu4-vanilla-test.pdxmap'];
+  for (const d of [path.join(H.ROOT, 'packs'), path.join(H.ROOT, '_local', 'packs')]) {
+    for (const n of want) {
+      const p = path.join(d, n);
+      if (fs.existsSync(p)) return p;
+    }
+    if (fs.existsSync(d)) {
+      const any = fs.readdirSync(d).find((n) => n.endsWith('.pdxmap'));
+      if (any) return path.join(d, any);
+    }
+  }
+  return null;
+}
+const pack = findPack();
+if (!pack) {
+  console.log('（没有可用的测试地图包 —— 先跑 pack_map.py 打一个，或放一个进 _local/packs/ ✓ 本条跳过）');
+  process.exit(0);
+}
 
 (async () => {
   const { embedded, js } = H.readStandalone(HTML);

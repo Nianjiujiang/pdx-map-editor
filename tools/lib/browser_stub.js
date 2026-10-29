@@ -980,7 +980,18 @@ function makeEnv(opt = {}) {
     performance: { now: () => Date.now() },
     requestAnimationFrame: (fn) => { rafs.push(fn); return rafs.length; },
     cancelAnimationFrame: () => {},
-    setTimeout, clearTimeout, setInterval, clearInterval,
+    setTimeout, clearTimeout,
+    /* 🔴 **interval 一律 unref** ✗✗（2026-10-27）
+     *   页面里的 setInterval 活到标签页关掉为止 —— 桩里不 unref 的话，
+     *   log.js 那个启动看门狗（每 2 秒一次）会把 Node 进程**永远钉住** ✗
+     *   check_renderer_error 这种"跑完不显式 exit"的自检就再也退不出去（实测 ✓）
+     *   语义照样对：定时器照常触发，只是"没有别的活了"时允许进程退出 ✓ */
+    setInterval: (fn, ms, ...a) => {
+      const t = setInterval(fn, ms, ...a);
+      try { if (t && t.unref) t.unref(); } catch (e) { /* ✓ */ }
+      return t;
+    },
+    clearInterval,
     TextEncoder, TextDecoder, Blob, Response, Request, Headers, DecompressionStream,
     fetch: async (url) => {
       const rel = String(url).replace(/^https?:\/\/[^/]+/, '').replace(/^\//, '');
@@ -1042,89 +1053,162 @@ function instantiate(js, env) {
   src += `
 var _C = {};
 function _p(k, v) { if (v !== undefined) _C[k] = v; }
-_p('boot', boot); _p('state', state); _p('MAP_CHOICES', MAP_CHOICES);
-_p('GAMES', GAMES); _p('frame', frame);
-_p('titleAt', titleAt); _p('renderHoverCard', renderHoverCard); _p('actAt', actAt);
-_p('pickTitle', pickTitle); _p('paintTitle', paintTitle); _p('restoreTitle', restoreTitle);
-_p('undo', undo); _p('redo', redo); _p('recomputePainted', recomputePainted);
-/* 2026-10-27 v1.10.1：清除全部要能撤销 / 保存地图默认名 ✓ */
-_p('resetAll', resetAll); _p('defaultSaveName', defaultSaveName); _p('openSaveMapDialog', openSaveMapDialog);
-/* 2026-10-27：导出整图弹窗（规格 / 范围 / 进度）✓
-   框选按绘图软件那套：八个把手 / 移动 / 确认，导出纯函数给自测用 ✓ */
-_p('openExportDialog', openExportDialog); _p('_exportDlg', _exportDlg); _p('_exportMetrics', _exportMetrics);
-_p('_exportRefresh', _exportRefresh); _p('_exportPickStart', _exportPickStart);
-_p('_exportTileSize', _exportTileSize);
-_p('_exportPickState', _exportPickState); _p('_exportPickNorm', _exportPickNorm);
-_p('_exportPickResizeRect', _exportPickResizeRect); _p('_exportPickConfirm', _exportPickConfirm);
-_p('_exportPickCancel', _exportPickCancel); _p('_exportPickRender', _exportPickRender);
-_p('_exportSizeInput', _exportSizeInput); _p('_exportSizeCommit', _exportSizeCommit);
-_p('exportFullPNG', exportFullPNG);
-_p('provInfoAt', provInfoAt); _p('paintTargetsAt', paintTargetsAt);
-_p('labelMaxValue', labelMaxValue); _p('buildBorderEdges'); _p('buildBorderDepth', buildBorderDepth); _p('refreshBorderField', refreshBorderField); _p('editTier', editTier);
-_p('saveMapPrefs', saveMapPrefs); _p('loadMapPrefs', loadMapPrefs);
-_p('paintPids', paintPids); _p('paintPidsAsOne', paintPidsAsOne);
-_p('pickAt', pickAt); _p('setBrush', setBrush); _p('setTier', setTier); _p('setTool', setTool);
-_p('needsRestore', needsRestore); _p('isLocked', isLocked); _p('updateCursor', updateCursor); _p('provinceAt', provinceAt); _p('isPaintable', isPaintable); _p('pickMarkerName', pickMarkerName); _p('waterKindByPid', waterKindByPid); _p('buildSeaLabelPoints', buildSeaLabelPoints); _p('kindOfTid', kindOfTid); _p('kindTidMap', kindTidMap); _p('NO_TITLE', NO_TITLE); _p('syncLayerSwitches', syncLayerSwitches); _p('isWastelandTile', isWastelandTile); _p('isSpecialTid', isSpecialTid);
-_p('runSearch', runSearch); _p('jumpToResult', jumpToResult); _p('searchJumpScale', searchJumpScale);
-/* 荒地自动上色（2026-10-17 重做 ✓）—— 周长 / 重算 / 帧循环那三句导出来给自测用 ✓ */
-_p('buildWastePidIndex', buildWastePidIndex); _p('setupWastePerimeter', setupWastePerimeter);
-_p('refreshWasteAuto', refreshWasteAuto); _p('wasteWatch', wasteWatch);
-_p('displayedColor', displayedColor); _p('displayedLabel', displayedLabel);
-_p('syncParentBorder', syncParentBorder); _p('syncLayerSwitches', syncLayerSwitches);
-_p('retintCountryLabels', retintCountryLabels);
-_p('syncAllPaintLabels', syncAllPaintLabels);
-_p('editTier', editTier); _p('setGrain', setGrain); _p('gotoLevel', gotoLevel);
-/* **层级 / 显示那几个纯函数也导出来** ✓（2026-10-14 ✓ 为了能实测）
- *   「applyEditTier」—— "层级/粒度一变就跑"的那个 ✓（setTier/setGrain 都调它 ✓）
- *   「labelTier」    —— 显示那一层（高亮 / 名字 / 水域内部边界 ✓）
- *   「viewTierFor」  —— 按这一格挑层（有主→视图层 / 无主→最低层 ✓）
- *   「isWaterPid」   —— 查 waterMask 那个"小标签" ✓
- *   ⚠ 之前没导 → 探针里 ex.applyEditTier 是 undefined ✗
- *     于是"实测"静默跳过、结果全是旧值 ✓（我差点又被它骗一次 ✓）
- *   ⚠⚠ **这段整体在模板字符串里** ✗ —— 注释里**不许出现反引号** ✓
- *     （我在 gl.js 那边已经栽过一次了 ✓ 见 docs 里那条教训 ✓）*/
-_p('applyEditTier', applyEditTier); _p('labelTier', labelTier);
-_p('viewTierFor', viewTierFor); _p('isWaterPid', isWaterPid);
-_p('pressTier', pressTier); _p('eraTierCount', eraTierCount);
-_p('refreshTierButtons', refreshTierButtons);
-_p('projectData', projectData); _p('saveProject', saveProject); _p('applyProject', applyProject);
-/* 🗺 地图仓库 + 🎨 收藏调色板（2026-10-24 ✓）—— 自测要实测存取往返 ✓ */
-_p('listMaps', listMaps); _p('putMap', putMap); _p('getMap', getMap); _p('deleteMap', deleteMap);
-_p('paletteList', paletteList); _p('paletteAdd', paletteAdd); _p('paletteRemoveAt', paletteRemoveAt); _p('paletteReset', paletteReset);
-_p('labelForColor', labelForColor);
-_p('isDegradedBaron', isDegradedBaron); _p('screenToMap', screenToMap);
-_p('updateHover', updateHover); _p('rebuildPaintBlocks', rebuildPaintBlocks);
-_p('paintedPoints', paintedPoints); _p('playerGroupTidsAt', playerGroupTidsAt);
-_p('paintAt', paintAt); _p('hoverGroupRgb', hoverGroupRgb); _p('stableColor', stableColor);
-_p('hoverTargetTid', hoverTargetTid); _p('applyHoverHighlight', applyHoverHighlight);
-_p('readablePlaceName', readablePlaceName); _p('manualWaterName', manualWaterName);
-_p('drawLabels', drawLabels); _p('legendEntries', legendEntries);
-_p('legendOpts', legendOpts); _p('refreshLegendFonts', refreshLegendFonts);
-/* 整图导出的名字（2026-10-27 用户："手机版导出地图没有附赠名字"）
- * 自检要量：手机宽度下 export 也该按 1600px 参考视口放行国名 ✓ */
-_p('paintLabelsForExport', paintLabelsForExport);
-/* 2026-10-27 用户："导出的时候只有字体大于 15px 的才扔进去" —— 自检要直接量阈值 ✓ */
-_p('exportFontPx', exportFontPx);
-/* 色块名单（blockLabelPoints）—— 2026-10-27 自检要用：
- *   清除 / 切无剧本之后，这份缓存必须立刻变空 ✓ 不是等下一次涂色才更新 ✓
- *   ⚠ 这段在模板字符串里 ✗ 注释里不许出现反引号 ✓ */
-_p('blockLabelPoints', blockLabelPoints);
-/* **地名的连通域取点** ✓（2026-10-16 ✓ 探针 / test_modes 要能量它 ✓） */
-_p('buildPlaceComponents', buildPlaceComponents); _p('placePointsFor', placePointsFor);
-_p('groupComponents', groupComponents); _p('labelPlaceMaxValue', labelPlaceMaxValue);
-_p('drawLegend', drawLegend); _p('legendLayout', legendLayout);
-_p('renderLegendOverlay', renderLegendOverlay); _p('rebuildLegendPanel', rebuildLegendPanel);
-_p('syncLegendControls', syncLegendControls); _p('bindLegendControls', bindLegendControls);
-_p('_legendCustomFromBox', _legendCustomFromBox);
-_p('impassLabel', impassLabel); _p('specialTileLabel', specialTileLabel);
-_p('categoryNameOf', categoryNameOf); _p('nameIsMeaningful', nameIsMeaningful);
-_p('realNameAtTier', realNameAtTier); _p('isWaterKey', isWaterKey);
-_p('hoverSubName', hoverSubName); _p('kindOfPid', kindOfPid);
-_p('computeLabelZoom', computeLabelZoom); _p('applySettings', applySettings);
-_p('fitView', fitView); _p('minScale', minScale);
-_p('lutColorOf', lutColorOf);
-_p('hexToRgb', hexToRgb); _p('renameAt', renameAt); _p('openRename', openRename);
-_p('exportLog', exportLog); _p('showFatal', showFatal);
+/* ⚠ **逐个导出，缺哪个跳哪个** ✗✗（2026-10-27）
+ *   以前这里是一行行写死的 _p('x', x) —— app.js 里删掉 / 改名任何一个
+ *   导出符号，整段求值就 ReferenceError：自检不是"红"而是"直接崩" ✗
+ *   （手机版那份旧产物就是这么炸的：新加的 defaultSaveName 它没有 ✓）
+ *   → 名字先收成清单，每个单独 try ✓ 少一个只少一个探针 ✓
+ * ⚠ 这段在模板字符串里 ✗ 注释里不许出现反引号 ✓ */
+var _PLIST = [
+  'boot',
+  'state',
+  'MAP_CHOICES',
+  'GAMES',
+  'frame',
+  'titleAt',
+  'renderHoverCard',
+  'actAt',
+  'pickTitle',
+  'paintTitle',
+  'restoreTitle',
+  'undo',
+  'redo',
+  'recomputePainted',
+  'resetAll',
+  'defaultSaveName',
+  'openSaveMapDialog',
+  'openExportDialog',
+  '_exportDlg',
+  '_exportMetrics',
+  '_exportRefresh',
+  '_exportPickStart',
+  '_exportTileSize',
+  '_exportPickState',
+  '_exportPickNorm',
+  '_exportPickResizeRect',
+  '_exportPickConfirm',
+  '_exportPickCancel',
+  '_exportPickRender',
+  '_exportSizeInput',
+  '_exportSizeCommit',
+  'exportFullPNG',
+  'provInfoAt',
+  'paintTargetsAt',
+  'labelMaxValue',
+  'buildBorderEdges',
+  'buildBorderDepth',
+  'refreshBorderField',
+  'editTier',
+  'saveMapPrefs',
+  'loadMapPrefs',
+  'paintPids',
+  'paintPidsAsOne',
+  'pickAt',
+  'setBrush',
+  'setTier',
+  'setTool',
+  'needsRestore',
+  'isLocked',
+  'updateCursor',
+  'provinceAt',
+  'isPaintable',
+  'pickMarkerName',
+  'waterKindByPid',
+  'buildSeaLabelPoints',
+  'kindOfTid',
+  'kindTidMap',
+  'NO_TITLE',
+  'syncLayerSwitches',
+  'isWastelandTile',
+  'isSpecialTid',
+  'runSearch',
+  'jumpToResult',
+  'searchJumpScale',
+  'buildWastePidIndex',
+  'setupWastePerimeter',
+  'refreshWasteAuto',
+  'wasteWatch',
+  'displayedColor',
+  'displayedLabel',
+  'syncParentBorder',
+  'syncLayerSwitches',
+  'retintCountryLabels',
+  'syncAllPaintLabels',
+  'editTier',
+  'setGrain',
+  'gotoLevel',
+  'applyEditTier',
+  'labelTier',
+  'viewTierFor',
+  'isWaterPid',
+  'pressTier',
+  'eraTierCount',
+  'refreshTierButtons',
+  'projectData',
+  'saveProject',
+  'applyProject',
+  'listMaps',
+  'putMap',
+  'getMap',
+  'deleteMap',
+  'paletteList',
+  'paletteAdd',
+  'paletteRemoveAt',
+  'paletteReset',
+  'labelForColor',
+  'isDegradedBaron',
+  'screenToMap',
+  'updateHover',
+  'rebuildPaintBlocks',
+  'paintedPoints',
+  'playerGroupTidsAt',
+  'paintAt',
+  'hoverGroupRgb',
+  'stableColor',
+  'hoverTargetTid',
+  'applyHoverHighlight',
+  'readablePlaceName',
+  'manualWaterName',
+  'drawLabels',
+  'legendEntries',
+  'legendOpts',
+  'refreshLegendFonts',
+  'paintLabelsForExport',
+  'exportFontPx',
+  'blockLabelPoints',
+  'buildPlaceComponents',
+  'placePointsFor',
+  'groupComponents',
+  'labelPlaceMaxValue',
+  'drawLegend',
+  'legendLayout',
+  'renderLegendOverlay',
+  'rebuildLegendPanel',
+  'syncLegendControls',
+  'bindLegendControls',
+  '_legendCustomFromBox',
+  'impassLabel',
+  'specialTileLabel',
+  'categoryNameOf',
+  'nameIsMeaningful',
+  'realNameAtTier',
+  'isWaterKey',
+  'hoverSubName',
+  'kindOfPid',
+  'computeLabelZoom',
+  'applySettings',
+  'fitView',
+  'minScale',
+  'lutColorOf',
+  'hexToRgb',
+  'renameAt',
+  'openRename',
+  'exportLog',
+  'showFatal'
+];
+for (var _pi = 0; _pi < _PLIST.length; _pi++) {
+  try { _p(_PLIST[_pi], eval(_PLIST[_pi])); } catch (e) { /* 没有这个符号 → 跳过 ✓ */ }
+}
 if (typeof ARRIVE_SPAN !== 'undefined') _C.ARRIVE_SPAN = ARRIVE_SPAN;
 if (typeof playerGroupTids !== 'undefined') _C.playerGroupTids = playerGroupTids;
 if (typeof titleInfo !== 'undefined') _C.titleInfo = titleInfo;
