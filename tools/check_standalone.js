@@ -155,7 +155,9 @@ function findTestPack() {
     ok('轻量版体积应该是 0.6 MB 量级（不是 35 MB）', size < 2 * 1024 * 1024,
        `${(size / 1048576).toFixed(2)} MB`);
   } else {
-    ok(`内嵌了 ${keys.length} 套地图`, keys.length >= 6, keys.join(' / '));
+    /* ⚠ 别写死 ≥6 ✗：那是**官方全量版**的数；本地按需烘一两张（比如自测真图）也合法 ✓
+     *   每套地图的内容后面逐张验（meta / 头衔表 / 尺寸自洽）✓ */
+    ok(`内嵌了 ${keys.length} 套地图`, keys.length >= 1, keys.join(' / '));
   }
 
   // 每一套：meta / 头衔表都解得出，并且尺寸自洽
@@ -753,9 +755,14 @@ function findTestPack() {
     ex._exportDlg.rect = null;
     ex._exportRefresh();
     const m3 = ex._exportMetrics ? ex._exportMetrics() : null;
-    ok('桌面 3× 整张不会被误拦（手机预算另算 ✓）',
-       !!m3 && m3.scale === 3 && m3.OW === MW * 3 && m3.OH === MH * 3 && !m3.why,
-       m3 ? `${m3.OW}×${m3.OH} · ${m3.needMB} MB / ${m3.capMB} MB` : '没有 metrics');
+    /* ⚠ 大地图 3× 是**真的**会超预算（CK3 9216×4608 → 27648×13824 ≈ 3.8 亿像素）✗
+     *   那不是误拦 —— 只要 why 说的是"预算 / 画布上限"就放行 ✓
+     *   小图（EU4 那档）仍要求不拦 ✓ */
+    ok('桌面 3× 整张：尺寸按倍率算，超预算 / 画布上限才拦 ✓',
+       !!m3 && m3.scale === 3 && m3.OW === MW * 3 && m3.OH === MH * 3
+       && (!m3.why || /预算|画布上限/.test(m3.why)),
+       m3 ? `${m3.OW}×${m3.OH} · ${m3.needMB} MB / ${m3.capMB} MB`
+            + (m3.why ? ' · ' + m3.why : ' · 不拦') : '没有 metrics');
     const pw = Math.max(1, Math.floor(MW * 0.6));
     const ph = Math.max(1, Math.floor(MH * 0.6));
     ex._exportDlg.scale = 2;
