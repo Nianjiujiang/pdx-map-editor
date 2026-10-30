@@ -520,7 +520,15 @@ function readScript(htmlPath) {
     const tierBox = env.documentStub.querySelector('[data-role="tier"]');
     const tierBtns = (tierBox && tierBox.children || [])
       .filter((b) => String(b.tagName || '').toLowerCase() === 'button');
-    const eraBtn = env.documentStub.querySelector('[data-role="era-btn"]');
+    /* ⚠ 剧本 <4 个时走的是**回退模式**（剧本层就是 tier 那一排的按钮）✗
+     *   这时根本没有下拉按钮 —— 老断言只认 `[data-role="era-btn"]`，
+     *   在真 CK3（1066 + 空白 = 2 个剧本块）上必红 ✓（2026-10-30）
+     *   → 按 app 自己的判据（eraBlockCount ≥ 4）挑按钮 ✓ */
+    const blankIdx = (ex.state.meta.tiers || []).indexOf('blank');
+    const eraBlocks = (nEra > 0 && blankIdx === nEra) ? nEra + 1 : nEra;
+    const eraBtn = eraBlocks >= 4
+      ? env.documentStub.querySelector('[data-role="era-btn"]')
+      : tierBtns.find((b) => Number(b.dataset && b.dataset.tier) === 0);
     if (nEra > 0 && nTier > nEra && tierBtns.length) {
       const prevTier = ex.state.tier, prevGrain = ex.state.grain;
       /* 先回到"第一级地理层、没有粒度"的状态，再按剧本 → 省份 ✓

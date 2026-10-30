@@ -2881,10 +2881,19 @@ function invalidate() {
 let _labelIdleTimer = 0;
 function noteViewMotion() {
   if (labels && labels.frameBudgetMs !== undefined) labels.frameBudgetMs = 12;
+  /* 🧊 皮肤是液态玻璃：大面板的 backdrop blur 每帧重算很贵 ——
+   *   拖动/缩放期间先给 body 挂个标记，CSS 把模糊半径收窄，手停下再恢复 ✓
+   *   （只影响皮肤样式；不加皮肤时这个 class 没有任何规则 ✓）*/
+  try {
+    if (typeof document !== 'undefined' && document.body) document.body.classList.add('vz-moving');
+  } catch (e) { /* ✓ */ }
   if (_labelIdleTimer) clearTimeout(_labelIdleTimer);
   _labelIdleTimer = setTimeout(() => {
     _labelIdleTimer = 0;
     if (labels && labels.frameBudgetMs !== undefined) labels.frameBudgetMs = Infinity;
+    try {
+      if (typeof document !== 'undefined' && document.body) document.body.classList.remove('vz-moving');
+    } catch (e) { /* ✓ */ }
     labelDirty = true;          // 补一帧"全量"的名字 ✓
     invalidate();
   }, 250);
@@ -12460,6 +12469,27 @@ function pickMap(maps) {
   return new Promise((resolve) => {
     /* 🗺 仓库的「载入」要从外面 resolve 这条流程 ✓（存档记下要哪张底图 ✓）*/
     state._pickResolve = resolve;
+
+    /* 🔴 **本地测试 / 深链：打开就直接进图** ✗✗（2026-10-30）
+     *   `?map=ck3` / `?map=eu4` / `?auto=1` → 跳过选图页，直接拿这张图进编辑器 ✓
+     *   `?pick=1` → 强制回选图页（配合上面的深链用 ✓）
+     *   不带任何参数时**行为一个字不变**：照旧停在选图页 ✓
+     *   ⚠ 只在"有图可选"时生效；一张图都没有就照旧走选图页（导入入口还在）✓ */
+    try {
+      const q = new URLSearchParams((typeof location !== 'undefined' && location.search) || '');
+      if (q.get('pick') == null) {
+        const want = String(q.get('map') || '').toLowerCase();
+        const auto = q.get('auto') != null;
+        if (maps.length && (want || auto)) {
+          const hit = maps.find((m) => want && (
+            String(m.emb || '').toLowerCase() === want
+            || String(m.key || '').toLowerCase() === want
+            || String((m.pack && m.pack.id) || '').toLowerCase() === want
+            || String(m.label || '').toLowerCase().includes(want))) || maps[0];
+          if (hit) { resolve(hit); return; }
+        }
+      }
+    } catch (e) { /* 参数读不出来 → 照旧走选图页 ✓ */ }
     const box = $('map-pick');
     const list = $('map-pick-list');
     const fileInput = $('pack-file');
