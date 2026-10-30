@@ -1,9 +1,14 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-skin="vz">
 <head>
 <meta charset="utf-8">
   <!-- 主题先定，免得白底闪一下（2026-10-20 ✓） -->
-  <script>try{if(localStorage.getItem('pdx-theme')==='light')document.documentElement.setAttribute('data-theme','light');}catch(e){}</script>
+  <script>try{
+  /* 皮肤：默认走新皮（data-skin="vz"）；`?skin=classic` 当场退回原来那套 ✓
+     （只是摘掉属性 —— 老样式本来就一直在文件里 ✓ 方便两版对照看）*/
+  if(!/[?&]skin=classic\b/.test(location.search||'')){}else{document.documentElement.removeAttribute('data-skin');}
+  if(localStorage.getItem('pdx-theme')==='light')document.documentElement.setAttribute('data-theme','light');
+}catch(e){}</script>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <!-- 构建戳：单文件版由 build_standalone.py 改写成打包时间；
      开发版固定 dev（启动页显示「开发版」）✓
