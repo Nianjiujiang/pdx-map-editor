@@ -194,6 +194,13 @@ function ok(name, cond, extra = '') {
     const html = fs.readFileSync('web/index.html', 'utf8');
     const have = new Set((html.match(/id="[A-Za-z0-9_-]+"/g) || [])
       .map((s) => s.slice(4, -1)));
+    /* ⚠ **JS 现造的节点也算"在页面上"** ✗✗（2026-11-03 修）
+     *   `flag-file` 是 `flagFileInput()` 里 `createElement` 出来的，
+     *   `fp-name` / `flag-pick-hint` / `flag-note` 是拼在 innerHTML 字符串里的 ✓
+     *   静态 HTML 里当然找不到 —— 那不是"删了 UI 忘删引用"，是这个检查只看 HTML 太死 ✗
+     *  （真正该盯的是"$() 取了个哪儿都不存在的 id"✓ 下面这条仍然盯得住 ✓）*/
+    for (const m of js.matchAll(/id="([A-Za-z0-9_-]+)"/g)) have.add(m[1]);
+    for (const m of js.matchAll(/\.id\s*=\s*'([A-Za-z0-9_-]+)'/g)) have.add(m[1]);
     const want = new Set((js.match(/\$\('[A-Za-z0-9_-]+'\)/g) || [])
       .map((s) => s.slice(3, -2)));
     for (const m of js.matchAll(/for \(const _?id of \[([^\]]+)\]/g)) {
@@ -419,7 +426,7 @@ function ok(name, cond, extra = '') {
     const m = i < 0 ? null : /^}/m.exec(src.slice(i));
     const body = (i >= 0 && m) ? src.slice(i, i + m.index) : '';
     ok('主菜单接完存档要写回 localStorage（且不能调用不存在的函数）',
-       body.includes('localStorage.setItem(STASH_KEY')
+       (body.includes('localStorage.setItem(STASH_KEY') || body.includes('writeJSONBox(STASH_KEY'))
        && body.includes('delete box[k];')
        && !body.includes('stashWrite('), body.length + ' 字节');
   }
@@ -929,21 +936,20 @@ sandbox.URL = class extends RealURL {
 
 // ---------------------------------------------------------------- 拍平源码
 
-function stripModule(src) {
-  return src.split('\n').map((line) => {
-    const s = line.trim();
-    if (s.startsWith('import ')) return '';
-    if (s.startsWith('export ')) return line.replace('export ', '');
-    return line;
-  }).join('\n');
-}
-
-/* ⚠ 这份清单**必须和 build_standalone.py 的 MODULES 一致**（顺序也要对）——
-   少一个模块的表现是"某个功能悄悄没了"，不是报错隔壁那行，特别难查 ✗
-   pack.js / packstore.js 是导入式地图那套（见 docs/导入式地图-策划.md）；
-   它们要排在 data.js 前面：data.js 的第三数据源会调 packstore 的 getFile ✓ */
-const MODULES = ['pack.js', 'zip.js', 'packstore.js', 'fonts.js', 'bitmapfont.js', 'data.js', 'bmp.js', 'gl.js', 'maplabels.js', 'labels.js', 'tilemap.js', 'app.js'];
-let js = MODULES.map((n) => `// ==== ${n} ====\n` + stripModule(fs.readFileSync(path.join(ROOT, 'web', 'js', n), 'utf8'))).join('\n\n');
+/* 🔴 **不再自带清单** ✗（2026-11-03）
+ *
+ *  以前这里抄了一份、桩里抄一份、构建脚本一份 —— 三份"必须一致"的清单谁也不查谁 ✗
+ *  2026-11-02 加 `brewer.js` 时只改了构建脚本，这里没跟上 →
+ *  所有自测一启动就 `ReferenceError: BREWER is not defined` ✓
+ *
+ *  现在唯一事实源是 `build_standalone.py` 的 `MODULES`，桩解析后给出：
+ *    · `H.MODULES`       完整清单（bench / check_* 用）
+ *    · `H.testModules()` 完整清单去掉 log.js / tutorial.js（**本文件用这个**）
+ *  为什么去掉那两个、以及"把 log.js 拍进来会让进程永不退出"那个坑，
+ *  写在 `tools/lib/browser_stub.js` 的 `testModules()` 注释里 ✓（只写一处）
+ */
+const MODULES = H.testModules();
+let js = H.flattenModules(MODULES, ROOT);
 
 // 把结尾那次 boot() 摘掉，改由测试自己触发，并开几个探针出去
 js = js.replace(/\nboot\(\);\n/, '\n');   // 只摘 boot(); 这一行（结尾还有注释和 initTutorial 挂钩，\s*$ 永远配不上）
@@ -3544,7 +3550,13 @@ const factory = new Function(
       }
     }
   }
-  ok(`界面文案换成"${want.entity}"`, get('status-meta').textContent.includes(want.entity), get('status-meta').textContent);
+  /* ⚠ **状态栏现在只说尺寸** ✗（2026-11-02 用户文案审计定的 ✓ 见 `web/js/app.js:14339` 那段注释 ✓）
+   *   头衔数 / 地块数属于排障信息，只在诊断报告里 ✓
+   *   → 这条以前盯的是"状态栏里有没有『省份』这个字" ✓ 那个口径已经被用户改掉了 ✗ */
+  ok('状态栏只说地图尺寸（文案 2026-11-02 定的口径 ✓）',
+     /^\d+\s*×\s*\d+$/.test(get('status-meta').textContent.trim()),
+     get('status-meta').textContent);
+  void want.entity;
   ok(`品牌换成 ${want.brand}`, get('brand-mark').innerHTML.includes(want.brand), get('brand-mark').innerHTML);
   ok('存档键分开', ex.GAME.saveKey === want.key, ex.GAME.saveKey);
 
@@ -4940,43 +4952,95 @@ const factory = new Function(
     const buildSrc = fs.readFileSync('build_standalone.py', 'utf8');
     ok('打包清单里有 tutorial.js（单文件版才带得上 ✓）',
        /MODULES\s*=\s*\([^)]*"tutorial\.js"/.test(buildSrc), 'MODULES');
+
+    /* 🔴 **手机版「旗帜」只在真机上坏** ✗✗（2026-11-03 ✓ 用户："真手机上点旗帜没反应"）
+     *   机理：桌面那条链路挂在 `stage` 的 `mousedown` 上 ✓
+     *   而手机补丁的 `touchstart` 为了防"涂两遍"调了 `preventDefault()` ✗
+     *   → 规范里**取消掉 touch 之后浏览器不再补发** mousedown / mouseup / click ✓
+     *   → 真机上永远进不了 `flagClickAt` ✓；电脑浏览器有真鼠标 → 看着一切正常 ✓
+     *   ⚠ 这种"只有真机会暴露"的错桩里跑不出来（桩不会模拟 touch→mouse 的抑制 ✓），
+     *     所以只能静态钉住这三条 —— 每一条都是"改回去就会悄悄坏"的地方 ✓
+     */
+    {
+      const appSrcF = fs.readFileSync('web/js/app.js', 'utf8');
+      /* 1) 旗帜必须有一条**触摸**入口 ✓（不是只有 mousedown ✗）*/
+      const flagTouch = /'touchstart'[\s\S]{0,1200}?flagTap[\s\S]{0,900}?flagClickAt\(/.test(appSrcF);
+      ok('旗帜有一条触摸入口（手机上 mousedown 永远不来，只挂 mousedown 就点不动 ✗）',
+         flagTouch, flagTouch ? 'touchstart/touchend → flagClickAt ✓' : '又只剩 mousedown 了 ✗');
+      /* 2) 选图那个 `<input type=file>` **不许 `display:none`** ✓
+       *    iOS Safari 对它调 `.click()` 不弹系统选图（桌面 Chrome 不挑 ✓ 所以只有真机疼）*/
+      const fiAt = appSrcF.indexOf('function flagFileInput()');
+      const fiSeg = fiAt < 0 ? '' : appSrcF.slice(fiAt, fiAt + 1600);
+      const fiNone = /style\.display\s*=\s*'none'/.test(fiSeg);
+      const fiOff = /style\.left\s*=\s*'-9999px'/.test(fiSeg);
+      ok('贴旗的 file input 不是 display:none（iOS 上点了不弹选图 ✗）',
+         !!fiSeg && !fiNone && fiOff,
+         !fiSeg ? '找不到 flagFileInput ✗'
+           : (fiNone ? '又写成 display:none 了 ✗' : (fiOff ? '离屏 1px ✓' : '没挪出屏幕 ✗')));
+      /* 3) 读图**不许只靠 `createImageBitmap`** ✓
+       *    iOS 15 之前没这个函数 ✗ 而失败只 toast（全项目关着 ✓）= 用户眼里什么都没发生 */
+      const rdAt = appSrcF.indexOf('function flagReadImage(');
+      const rdSeg = rdAt < 0 ? '' : appSrcF.slice(rdAt, rdAt + 1400);
+      ok('读图有 <img> + createObjectURL 兜底（老 iOS 没有 createImageBitmap ✗）',
+         !!rdSeg && /typeof createImageBitmap === 'function'/.test(rdSeg)
+         && /createObjectURL/.test(rdSeg),
+         !rdSeg ? '找不到 flagReadImage ✗' : 'createImageBitmap → <img> 双路 ✓');
+    }
   }
 
-  /* 三份"要拍平的模块清单"必须对得上 ------------------------------------------
-   * 它们是：build_standalone.py（烤单文件）· tools/lib/browser_stub.js（桩）
-   *         · 本文件（自己搭的沙箱）。
-   * **漏一个的表现是"某个功能悄悄没了"**，不是隔壁那行报错 ✗ ——
-   * 加"导入式地图"那回就踩了两遍：
-   *   ① 本文件这份漏了 packstore.js → 一启动就 `packStoreMode is not defined`
-   *   ② perf_compare 拿旧快照按新清单拍 → ENOENT
-   * 所以这条盯着"清单"本身，而不是盯着某个功能 ✓ */
+  /* 「要拍平的模块清单」现在**只有一份事实源** ---------------------------------
+   * = build_standalone.py 的 MODULES ✓（2026-11-03）
+   * 桩（tools/lib/browser_stub.js）解析它，本文件直接问桩要 `H.testModules()`，
+   * **不再自带数组** ✗ —— 以前三份各抄一遍，加 brewer.js 那次只改了一处，
+   * 另外两处全错：`ReferenceError: BREWER is not defined` ✗
+   *
+   * 更阴的一种：把 log.js 拍进来的话，它顶部那个 `setInterval(_watchdog, 2000)`
+   * 在 Node 里是真定时器 → 测试跑完进程**永不退出**，看起来像"卡死"，
+   * 其实是清单写错了 ✓（所以 testModules() 固定在桩里去掉 log/tutorial，只写一处 ✓）
+   */
   {
     const fs2 = require('fs');
     const pickJs = (s) => [...s.matchAll(/'([A-Za-z0-9_]+\.js)'|"([A-Za-z0-9_]+\.js)"/g)]
       .map((m) => m[1] || m[2]);
     const grab = (src, re) => { const m = src.match(re); return m ? m[0] : ''; };
-    const stubList = pickJs(grab(fs2.readFileSync('tools/lib/browser_stub.js', 'utf8'),
-      /MODULES = \[[^\]]*\]/));
     const buildList = pickJs(grab(fs2.readFileSync('build_standalone.py', 'utf8'),
       /MODULES = \([\s\S]*?\)/));
-    /* ⚠ 自引用要用 `__filename` ✗ —— 裸 `'test_modes.js'` 是按**工作目录**解析的，
-     *   而这个脚本搬进 tools/ 之后工作目录是仓库根 → 会去找根目录那份 ✗
-     *   （我就是这么炸的：ENOENT …\test_modes.js ✓）*/
-    const selfList = pickJs(grab(fs2.readFileSync(__filename, 'utf8'),
-      /const MODULES = \[[^\]]*\]/));
+    /* 自引用要用 `__filename` ✗ —— 裸 `'test_modes.js'` 是按**工作目录**解析的 ✓ */
+    const selfSrc = fs2.readFileSync(__filename, 'utf8');
+    const stubSrc = fs2.readFileSync(path.join(ROOT, 'tools', 'lib', 'browser_stub.js'), 'utf8');
+    const want = buildList.filter((n) => n !== 'log.js' && n !== 'tutorial.js');
     const show = (a) => a.join(' ');
 
     ok('烤单文件的清单和桩的清单完全一样（含顺序 ✓）',
-       buildList.length > 0 && JSON.stringify(buildList) === JSON.stringify(stubList),
-       `build_standalone ${buildList.length} 个 / 桩 ${stubList.length} 个`);
-    /* 本文件这份**故意**少 log.js（报错日志是普通脚本，由桩自己处理）和 tutorial.js
-       （引导是另一个 <script>）—— 除此之外必须一个不差、顺序也一样 ✓ */
-    const want = buildList.filter((n) => n !== 'log.js' && n !== 'tutorial.js');
-    ok('自测这份清单 = 单文件版清单去掉 log / tutorial（少一个都会"功能悄悄没了" ✗）',
-       selfList.length > 0 && JSON.stringify(selfList) === JSON.stringify(want),
-       JSON.stringify(selfList) === JSON.stringify(want)
-         ? `一致（${show(selfList)}）`
-         : `自测 ${selfList.length} 个：${show(selfList)} ｜ 应该是：${show(want)}`);
+       buildList.length > 0 && JSON.stringify(H.MODULES) === JSON.stringify(buildList),
+       `build_standalone ${buildList.length} 个 / 桩 ${H.MODULES.length} 个`);
+    /* 「本文件这份少 log / tutorial」不再是**另抄一份**，而是同一个函数算出来的 ✓
+     *   所以这条其实在验"桩没把去掉的那一刻写错"✓ */
+    ok('自测清单 = 完整清单去掉 log / tutorial（少一个都会"功能悄悄没了"✗）',
+       JSON.stringify(MODULES) === JSON.stringify(want),
+       JSON.stringify(MODULES) === JSON.stringify(want)
+         ? `一致（${show(MODULES)}）`
+         : `自测 ${MODULES.length} 个：${show(MODULES)} ｜ 应该是：${show(want)}`);
+    /* 正面盯"单一事实源"：两边都必须是**读**出来的，不是写死的数组 ✓
+     * 别用"源码里不许出现 const MODULES = ["这种反查 —— 断言自己那行就会被匹配到 ✗ */
+    ok('桩从构建脚本读清单、自测从桩读清单（两边都没写死数组 ✓）',
+       /const MODULES = readBuildModules\(\)/.test(stubSrc)
+       && /const MODULES = H\.testModules\(\)/.test(selfSrc),
+       'readBuildModules / H.testModules');
+    ok('清单里每个文件都真实存在 ✓',
+       buildList.length > 0 && buildList.every((n) => fs2.existsSync(path.join(ROOT, 'web', 'js', n))),
+       buildList.filter((n) => !fs2.existsSync(path.join(ROOT, 'web', 'js', n))).join(' ') || '全部存在');
+    ok('web/js 下的 .js 全都登记在清单里（新增文件不许漏 ✓）',
+       (() => {
+         const onDisk = fs2.readdirSync(path.join(ROOT, 'web', 'js')).filter((f) => f.endsWith('.js'));
+         const missing = onDisk.filter((f) => !buildList.includes(f));
+         return missing.length === 0;
+       })(),
+       (() => {
+         const onDisk = fs2.readdirSync(path.join(ROOT, 'web', 'js')).filter((f) => f.endsWith('.js'));
+         const missing = onDisk.filter((f) => !buildList.includes(f));
+         return missing.length ? '漏登记：' + missing.join(' ') : '全部登记';
+       })());
   }
 
   // 剧本层的国名 = 「填色 · 名称」那份全图重分组 ✓
@@ -5060,8 +5124,24 @@ const factory = new Function(
         const _gather = () => {
           const got = [];
           const orig = ex.labels.drawPoints;
-          ex.labels.drawPoints = (list) => { for (const p of list) got.push(p); };
-          try { ex.drawLabels(view); } finally { ex.labels.drawPoints = orig; }
+          /* 🔴 **这一路得先把"缩放闸"钉住** ✗✗（2026-11-03 ✓ 现场红过一次 ✓）
+           *   这一段量的是「关水名会不会把陆地名一起带走」，跟缩放一毛钱关系没有 ✓
+           *   可 `drawLabels` 现在按**传进来的那个 view 现算**缩放档 ✓
+           *   （治"跳档后地名永久消失"那个坑 ✓ 见 app.js `drawLabels` 开头那段注释 ✓）
+           *   而这一路为了别被 `_cull` 筛掉，拿的是**视口拉满**的 view ✗
+           *   → 缩放档 = 整图 → 地名门槛本来就该关 → 收 0 个点 → 报"陆地 0 → 0"的**假红** ✗
+           *   → 跟钉 `tier` / `grain` 一个道理：把每层门槛临时清零（= 不按缩放过闸），
+           *     跑完原样还回去 ✓（不是糊测试：这一条本来就不该受缩放影响 ✓）
+           *   ⚠ **别把这段删了** ✗ 删了以后只要有人再动"缩放档从哪来"，这条就又开始晃 ✓ */
+          const _zSave = ex.labels.zoom;
+          if (Array.isArray(_zSave)) ex.labels.zoom = _zSave.map(() => 0);
+          try {
+            ex.labels.drawPoints = (list) => { for (const p of list) got.push(p); };
+            ex.drawLabels(view);
+          } finally {
+            ex.labels.drawPoints = orig;
+            if (Array.isArray(_zSave)) ex.labels.zoom = _zSave;
+          }
           return got;
         };
         /* 那些**没有头衔**的点（老包水名 / 荒地名 ✓ `tid: null` ✓）单独算一类 ✓
@@ -5220,6 +5300,74 @@ const factory = new Function(
         st.showLabelsTitle = _keep.showLabelsTitle;
         st.showWaterName = _keep.showWaterName;
         st.showLabelsPaint = _keep.showLabelsPaint;
+      }
+
+      /* 🔴🔴 **防回归：缩放"跳档"之后地名还得回来** ✗✗（2026-11-03 实测出来的真坑 ✓）
+       *   那个坑的正脸（不是这次改出来的，是老代码本来就有的）：
+       *     `labels.scale` 只在 `drawPoints → _begin` 里更新 —— 而"这一层该不该画"偏偏是
+       *     拿它算的 ⇒ 一帧从 100% 直接跳到 20%（整图按钮 / 触控板一把捏到底 / 面板缩放档）
+       *     · 那一帧闸开着（scale 还是 1.0）→ 画完 scale 变 0.2
+       *     · 之后每帧都拿 0.2 比门槛 → **闸永远关着** → 再拉回来地名也不出现 ✗
+       *   → 就是 2026-10-23 那个"停手后地名缺失"最容易翻车的形态 ✓
+       *   这里按那个顺序走一遍：100% → 20%（这一帧该关）→ 100%（**必须回来** ✓）✓
+       *   ⚠ 只断言"回来之后跟走之前**一样多**" ✗ 不写死个数（各局地图大小差太多 ✓） */
+      {
+        const _cvW = ex.labels.cssW | 0, _cvH = ex.labels.cssH | 0;
+        const _mw = (st.meta && st.meta.mapWidth) || 0;
+        const _mh = (st.meta && st.meta.mapHeight) || 0;
+        if (_cvW <= 1 || _cvH <= 1 || !_mw || !_mh) {
+          console.log('  （量不出画布尺寸 / 地图尺寸，跳过"缩放跳档"回归）');
+        } else {
+          const _keepZ = {
+            tier: st.tier, grain: st.grain, showLabelsTitle: st.showLabelsTitle,
+            showWaterName: st.showWaterName, showWasteName: st.showWasteName,
+            showLabelsPaint: st.showLabelsPaint,
+          };
+          const _saveScale = ex.labels.scale;
+          st.tier = st.meta.tierNames.length - 1;   // 最细层（门槛最高那层，最容易被焊死 ✓）
+          st.grain = null;
+          st.showLabelsTitle = true;
+          st.showWaterName = true;
+          st.showWasteName = true;
+          st.showLabelsPaint = false;
+          const _count = (v) => {
+            const got = [];
+            const orig = ex.labels.drawPoints;
+            ex.labels.drawPoints = (list) => { for (const p of list) got.push(p); };
+            try { ex.drawLabels(v); } finally { ex.labels.drawPoints = orig; }
+            return got.length;
+          };
+          /* 视口挑地图正中那块（各局都有名字 ✓）；"整图"那一步就是同一中心放大 5 倍视口 ✓ */
+          const _v100 = { x: _mw / 2 - _cvW / 2, y: _mh / 2 - _cvH / 2, w: _cvW, h: _cvH };
+          const _v20 = { x: _mw / 2 - _cvW * 2.5, y: _mh / 2 - _cvH * 2.5, w: _cvW * 5, h: _cvH * 5 };
+          /* ⚠ 起点得先钉成 100% 那一档 ✗ 不然"被前面几条测试弄脏的 scale"会让这一步天然跳过 ✓
+           *   （老代码里这时候 scale 早就是别的测试留下的 0.0x 了 → n1 就是 0 → 正例跳空 ✗
+           *     跳过就抓不到那个坑了 —— 这条存在的意义就是抓它 ✓） */
+          ex.labels.scale = _cvW / _v100.w;
+          const _n1 = _count(_v100);
+          /* ⚠ **中间那一帧必须让真的 `drawPoints` 跑** ✗✗ 不能打桩 ✓
+           *   坑的本体就是"`drawPoints` 顺手把 scale 改小了"——
+           *   打桩的话 `_begin` 根本不跑 → 复现不出来 ✓（我第一版就是打桩的：
+           *   把 app.js 那个修复关掉再跑，这条照样绿 ✗ 假测试 ✓）*/
+          const _sc0 = ex.labels.scale;
+          ex.drawLabels(_v20);
+          const _sc1 = ex.labels.scale;
+          const _n3 = _count(_v100);
+          if (_n1 === 0) {
+            console.log('  （这个视口本来就没名字，跳过"缩放跳档"回归的正例）');
+          } else {
+            ok('缩放到整图再拉回来，地名**还在** ✓（跳档不许把闸焊死 ✗）',
+               _n3 === _n1,
+               `100% ${_n1} 个 → 整图那一帧 scale ${_sc0.toFixed(2)}→${_sc1.toFixed(2)}`
+               + ` → 回 100% ${_n3} 个（该是 ${_n1} ✓）`);
+          }
+          ex.labels.scale = _saveScale;
+          st.tier = _keepZ.tier; st.grain = _keepZ.grain;
+          st.showLabelsTitle = _keepZ.showLabelsTitle;
+          st.showWaterName = _keepZ.showWaterName;
+          st.showWasteName = _keepZ.showWasteName;
+          st.showLabelsPaint = _keepZ.showLabelsPaint;
+        }
       }
 
       // ---- 回归：细层里挑「最后一层年份才有的 tag」的颜色+标签，只涂一小块 ----      // 以前细层里"没涂的邻居"按 cTier = 最后一层年份（EU4 是 1789）算身份 ✗
@@ -6654,8 +6802,10 @@ const factory = new Function(
   const probePainted = ex.renderer.paintData[probe * 4 + 3] > 0;
   st.showTitles = false;
   ex.renderer.setShowTitles(false);
+  /* ⚠ **底色灰是 180** ✓（2026-10-13 用户定的：220 → 200 → **180** ✓）
+   *   这条以前写的是 150 —— 那时候还没改到 180 ✓ 现在是它跟代码脱节了 ✗ */
   ok('原版配色关着时，取色取到的是底色灰',
-     probePainted || JSON.stringify(ex.displayedColor(probe, tid)) === JSON.stringify([150, 150, 150]),
+     probePainted || JSON.stringify(ex.displayedColor(probe, tid)) === JSON.stringify([180, 180, 180]),
      probePainted ? '这块涂过，跳过' : JSON.stringify(ex.displayedColor(probe, tid)));
   st.showTitles = true;
   ex.renderer.setShowTitles(true);

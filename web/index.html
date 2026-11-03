@@ -14,6 +14,9 @@
      开发版固定 dev（启动页显示「开发版」）✓
      ⚠ **别用 document.lastModified 当版本戳** ✗ —— 单文件 / 某些浏览器里它会是当前时间 ✓ -->
 <meta name="pdx-build" content="dev">
+<!-- 版本号（2026-11-01 加）：启动页那颗「检查更新」拿它跟 GitHub 最新 release 的 tag 比 ✓
+     涨版本**只改这一行** ✓ —— 构建戳是时间，比不了大小 ✓ -->
+<meta name="pdx-version" content="1.11.0">
 <title>悖论制图</title>
 <script>
 // 双击 index.html 打开时浏览器是 file:// 协议，ES module 会被 CORS 拦掉，
@@ -353,6 +356,11 @@ if (location.protocol === 'file:') {
             <div class="palette palette-fav" id="palette-fav"></div>
             <div class="brush-menu-cap brush-menu-cap-row"><span>最近使用</span><button type="button" class="btn ghost" id="btn-clear-recent">清空</button></div>
             <div class="palette" id="palette"></div>
+            <!-- 🎨 **色标（ColorBrewer，2026-11-02）**
+                 就一排排颜色，**一行八个** ✓ 点一下 = 当前颜色；右键 = 收进调色板 ✓
+                 数值来自 Cynthia Brewer 的 ColorBrewer 2.0，版权与许可见 THIRD-PARTY-NOTICES.md -->
+            <div class="brush-menu-cap">色标</div>
+            <div class="brw-strip" id="brewer-strip"></div>
           </div>
         </div>
         <div class="label-pick" id="label-pick" hidden>
@@ -427,7 +435,6 @@ if (location.protocol === 'file:') {
           <span class="export-pick-handle h-w" data-handle="w"></span>
           <span class="export-pick-size" id="export-pick-size">—</span>
         </div>
-        <div class="export-pick-tip" id="export-pick-tip">按住拖动，框出要导出的范围 · Esc 取消</div>
         <div class="export-pick-bar" id="export-pick-bar">
           <button class="btn ghost" id="export-pick-cancel" type="button">取消</button>
           <button class="btn ghost" id="export-pick-redo" type="button">重选</button>
@@ -443,6 +450,13 @@ if (location.protocol === 'file:') {
       <div class="toast" id="toast" hidden></div>
 
       <div class="boot" id="boot">
+        <!-- 拖拽提示层（2026-11-03）：拖文件进窗口时整页压暗 + 一句话 ✓
+             平时 hidden（选图页平时必须干干净净 ✓），dragover 期间由 app.js 打开 ✓
+             ⚠ 这里只写"松手会发生什么"，不放任何要玩家点的按钮 ✓ -->
+        <div class="drop-mask" id="drop-mask" hidden>
+          <div class="drop-tip">松手就开始导入</div>
+          <div class="drop-sub">地图包 .pdxmap / .zip，涂色方案 .json</div>
+        </div>
         <div class="boot-inner" id="boot-inner">
           <div class="boot-title" id="boot-title">悖论制图</div>
 
@@ -466,8 +480,14 @@ if (location.protocol === 'file:') {
             <div class="map-pick-list" id="map-pick-list"></div>
             <div class="map-actions" id="map-actions">
               <button class="map-import" id="map-import">＋ 导入地图包…</button>
+              <!-- 「下载地图包」（2026-11-01 用户要的：跟导入**一分为二**、各占原来一半宽 ✓）
+                   点它去 GitHub 最新 release 抓 .pdxmap 的下载链接 ✓
+                   ⚠ 仓库页（读取地图）里**藏起来** ✗ —— 那边导入的是涂色方案，不是地图包 ✓ -->
+              <button class="map-import map-fetch" id="map-fetch" type="button">⤓ 下载地图包</button>
               <input type="file" id="map-store-import" accept=".json,application/json" hidden>
             </div>
+            <!-- 下载面板：平时 hidden 且**里面是空的** ✓ 点「下载地图包」才填 ✓
+                 （自检里那条"入口下面平时不摆说明文字"盯的就是这个位置 ✓） -->
             <!-- 这行平时**是空的** ✗ —— 只有"这台浏览器存不下东西"的时候才跳出来警示
                  （"刷新就没了"那句必须让玩家看见，所以位置留着 ✓） -->
             <div class="map-import-hint" id="map-import-hint" hidden></div>
@@ -500,7 +520,13 @@ if (location.protocol === 'file:') {
               <!-- 版本戳在**左**、导出按钮在**右**（2026-10-17 用户定的 ✓）
                    ⚠ 接线在 log.js 里，**不在 app.js** ✗ —— 编辑器自己没起来时，
                      app.js 里的入口根本挂不上，而那时正是最需要日志的场合 ✓ -->
-              <span class="boot-ver" id="boot-ver"></span>
+              <!-- 版本戳 + 「检查更新」（2026-11-01 用户点名要的：就摆在版本号旁边，
+                   发现新版**直接抓 release 的下载链接**，不跳网页 ✓）
+                   接线在 app.js 的 bindAuthorLinks() 里 ✓ -->
+              <span class="boot-ver-wrap">
+                <span class="boot-ver" id="boot-ver"></span>
+                <button class="boot-update-btn" id="btn-check-update" type="button">检查更新</button>
+              </span>
               <button class="boot-author-link boot-log-btn" id="btn-boot-log" type="button"
                      >导出诊断报告</button>
             </div>
@@ -734,8 +760,8 @@ if (location.protocol === 'file:') {
 
           <div class="set-sub">条目</div>
           <div class="legend-tools">
-            <button class="btn tiny" id="legend-sort" type="button" title="按图例里现在的名字排序">按名称 A→Z</button>
-            <button class="btn tiny" id="legend-reset-names" type="button" title="把自定义名全部清掉，恢复地图上的名字">恢复自动名</button>
+            <button class="btn tiny" id="legend-sort" type="button">按名称 A→Z</button>
+            <button class="btn tiny" id="legend-reset-names" type="button">恢复自动名</button>
           </div>
           <div class="legend-count" id="legend-count" role="status" aria-live="polite"></div>
           <div class="legend-list" id="legend-list" role="list" aria-label="图例条目"></div>
@@ -743,7 +769,7 @@ if (location.protocol === 'file:') {
           <div class="set-sub">版式</div>
           <div class="legend-grid">
             <label class="legend-cell legend-cell-wide"><span class="legend-cell-l">字体</span>
-              <select id="set-legend-font" title="使用字体库里导入的字体">
+              <select id="set-legend-font">
                 <option value="">默认（系统黑体）</option>
               </select>
             </label>
@@ -790,21 +816,21 @@ if (location.protocol === 'file:') {
           <div class="legend-colors" id="legend-colors">
             <div class="legend-color-card">
               <span class="legend-color-l">背景</span>
-              <label class="legend-swatch" title="图例背景色">
+              <label class="legend-swatch">
                 <input type="color" id="set-legend-bg" aria-label="图例背景色">
               </label>
               <span class="legend-hex" id="v-set-legend-bg">#FFFFFF</span>
             </div>
             <div class="legend-color-card">
               <span class="legend-color-l">边框</span>
-              <label class="legend-swatch" title="图例边框色">
+              <label class="legend-swatch">
                 <input type="color" id="set-legend-border" aria-label="图例边框色">
               </label>
               <span class="legend-hex" id="v-set-legend-border">#000000</span>
             </div>
             <div class="legend-color-card">
               <span class="legend-color-l">字色</span>
-              <label class="legend-swatch" title="图例文字颜色">
+              <label class="legend-swatch">
                 <input type="color" id="set-legend-fg" aria-label="图例字色">
               </label>
               <span class="legend-hex" id="v-set-legend-fg">#111111</span>

@@ -322,11 +322,11 @@ html[data-theme="light"] .mob-theme-bar .theme-btn {
 .mob-tabs { gap: 6px; padding-bottom: 8px; margin-bottom: 8px; }
 .mob-tab { min-height: 32px; padding: 0 12px; font-size: 13px; border-radius: 16px; }
 #mob-sheet .switch { min-height: 34px; font-size: 14px; }
-#mob-sheet .switch input[type="checkbox"] { width: 18px; height: 18px; }
+#mob-sheet .switch input[type="checkbox"] { width: 30px; height: 18px; border-radius: 999px; }
 #mob-sheet .segmented { flex-wrap: wrap; gap: 6px; }
 #mob-sheet .segmented button { min-height: 32px; padding: 0 11px; font-size: 13px; }
-#mob-sheet .chip { width: 32px; height: 32px; }
-#mob-sheet .palette { gap: 8px; flex-wrap: wrap; }
+#mob-sheet .chip { width: 26px; height: 26px; border-radius: 4px; }
+#mob-sheet .palette { display: grid; grid-template-columns: repeat(8, 26px); grid-auto-rows: 26px; gap: 4px; justify-content: start; }
 
 /* ===========================================================================
    🎨 手机版：色块二级菜单退役 → 调色板 / 最近使用直接摆在「颜色」页底部
@@ -335,17 +335,56 @@ html[data-theme="light"] .mob-theme-bar .theme-btn {
    ⚠ 标题（调色板 / 最近使用）和色块是一起从 `#brush-menu` 搬出来的 ✓
      别只搬色块 ✗ 那样面板底下会冒出两排没名字的方块 ✓
    =========================================================================== */
+/* 🎨 **调色板 / 最近使用 / 色标 单独一窗，自己滚** ✓
+ *  （用户 2026-11-03："把调色板-最近取色-色标改成一个单独的窗口，滚动条针对这个窗口而不是色彩窗口"）
+ *  原来这三块直接摊在「颜色」页里，跟着整个面板一起滚 ✗
+ *  现在它们有自己的边框、底色和 `max-height`，滚动条只出现在这个小窗里 ✓ */
 .mob-color-kit {
-  margin-top: 14px; padding-top: 10px;
-  border-top: 1px dashed #26313d;
+  margin-top: 14px; padding: 8px 10px 10px;
+  /* 兜底值，真正的上限由 `mobile_js.txt` 的 `_lockH()` 现量（面板剩多少给多少 ✓）
+     ⚠ 只用 vh 不够 ✗ —— vh 算的是整屏，而面板本身只占屏幕一部分 ✓
+       小窗比面板还高，最后一排就切在面板外面（用户 2026-11-03 报的"拉不到底"）*/
+  max-height: 46vh; overflow-y: auto; overflow-x: hidden;
+  /* ⚠ 不许 `contain` ✗（2026-11-03）
+   *   `contain` 会掐断滚动链：小窗滑到头之后，手指再滑，外面那层一动不动 ✓
+   *   小窗万一还是比面板高（老版本 / JS 没跑起来），就再也够不到最后一排 ✓
+   *   改成 `auto`：小窗到底之后**接力**给 `.mob-panes` ✓ 兜住这一手 ✓
+   *   平时不影响体感 —— 小窗自己还能滑的时候轮不到外面动 ✓ */
+  overscroll-behavior: auto;
+  border: 1px solid rgba(255, 255, 255, .08);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, .035);
+  scrollbar-color: #2b3542 transparent;
+  /* 别在这儿再叠一层模糊 ✗ 父面板本来就带 backdrop-filter，滚动时叠两次最费 ✓ */
+  -webkit-backdrop-filter: none; backdrop-filter: none;
+}
+html[data-theme="light"] .mob-color-kit {
+  border-color: rgba(0, 0, 0, .09);
+  background: rgba(0, 0, 0, .028);
+  scrollbar-color: #b9c2cc transparent;
 }
 .mob-color-kit .brush-menu-cap {
   margin: 8px 2px 6px; font-size: 11.5px; color: #8b9aab;
 }
-.mob-color-kit .palette { gap: 8px; }
+.mob-color-kit .palette { gap: 4px; }
 /* 手指点得到：26px 太小，长按也容易滑 ✗
    ⚠ 必须带 `#mob-sheet` ✗ —— 上面 `#mob-sheet .chip { 32px }` 是 id 权重 ✓ */
-#mob-sheet .mob-color-kit .palette .chip { width: 34px; height: 34px; border-radius: 8px; }
+/* 颜色页的色块**铺满宽度** ✓（用户 2026-11-03："把颜色的小方块尺寸放在以占满几乎宽度"）
+ *   一行八个、每格按 `1fr` 均分，正方形 ✓ */
+#mob-sheet .mob-color-kit .palette {
+  grid-template-columns: repeat(8, 1fr) !important;
+  /* ⚠ 行高必须交回 auto ✗ —— 桌面那条 `.palette { grid-auto-rows: 26px }` 还在，
+   *   格子改成 1fr 正方形后比 26px 高得多 → 溢出到下一行、看着全压在一起 ✓（用户截图）*/
+  grid-auto-rows: auto !important;
+  gap: 6px !important;
+}
+#mob-sheet .mob-color-kit .palette .chip {
+  width: auto !important; height: auto !important;
+  aspect-ratio: 1 / 1; border-radius: 6px;
+  transition: none;
+  box-shadow: none;
+}
+#mob-sheet .mob-color-kit .palette .chip:hover { transform: none; box-shadow: none; }
 #mob-sheet .mob-color-kit .brush-menu-cap .btn {
   min-height: 30px; padding: 0 10px; font-size: 12px;
 }
@@ -400,7 +439,7 @@ html[data-theme="light"] .mob-color-hint { color: #6b7887; }
 /* 小标题（陆地 / 水域 / 省份…）那一条细线上下也收一点 ✓ */
 .mob-pane .set-sub { padding-top: 3px; margin-top: 4px; }
 /* 色块 / 色板 / 结果行 / 链条行：跟着行高一齐收 ✓（**只动尺寸，不动颜色** ✓）*/
-.mob-pane .chip { width: 29px; height: 29px; }
+.mob-pane .chip { width: 26px; height: 26px; border-radius: 4px; }
 .mob-pane .result { min-height: 30px; }
 .mob-pane .chain-row { min-height: 30px; }
 .mob-pane input[type="text"], .mob-pane input[type="number"] { padding: 5px 7px; }
@@ -695,7 +734,30 @@ html[data-theme="light"] .mob-set-foot .set-dirty { color: #5b6877; }
 .mob-pane .switch, .mob-group .switch { min-width: 0 !important; margin-right: 2px !important; }
 .mob-pane .switch span, .mob-group .switch span { font-size: 13px !important; white-space: nowrap; }
 .mob-pane .switch input[type="checkbox"], .mob-group .switch input[type="checkbox"] {
-  width: 16px !important; height: 16px !important;
+  width: 30px !important; height: 18px !important; border-radius: 999px !important;
+}
+/* 🔴 2026-10-31：vz 皮肤那个假开关**缩到 16px 后圆心全跑偏** ✓
+   用户："手机版的水域小按钮的灰色边界和白色内心没有贴合"
+   真凶：`web/style.css` 里 vz 的开关是 `background: radial-gradient(...)` 画的 ✗
+   ——**圆心写死 9px / 21px、半径 6px**，那是按 30×18 的轨道量的 ✓
+   上面那条 `!important` 把轨道压成 16×16 之后：
+     · 未选中：白心圆心 9px + 半径 6 → 贴到右边缘（左边留一道灰边）✗
+     · 选中：圆心 21px **跑出框外** → 白心整个看不见，只剩一块实心 ✓
+   → 手机尺寸单独给一套圆心/半径（16px 的框：白心半径 4.5 ✓
+     未选中圆心 5.5、选中 10.5，两边各留 1px 边框 ✓）
+   ⚠ 必须写 `html[data-skin="vz"]` 前缀提权 ✗ —— 光靠 `.mob-pane` 压不过
+     `html[data-skin="vz"] input[type=checkbox]` 那一条 ✓ */
+html[data-skin="vz"] .mob-pane .switch input[type="checkbox"],
+html[data-skin="vz"] .mob-group .switch input[type="checkbox"] {
+  background:
+    radial-gradient(circle at 9px 50%, var(--vz-knob) 0 5px, transparent 5.6px),
+    var(--vz-track);
+}
+html[data-skin="vz"] .mob-pane .switch input[type="checkbox"]:checked,
+html[data-skin="vz"] .mob-group .switch input[type="checkbox"]:checked {
+  background:
+    radial-gradient(circle at 21px 50%, var(--vz-primary-fg) 0 5px, transparent 5.6px),
+    var(--vz-primary);
 }
 .mob-pane .group-label, .mob-group .group-label { min-width: 30px !important; font-size: 12.5px !important; }
 .mob-pane .set-row > span:first-child { min-width: 54px !important; font-size: 13px !important; }
@@ -918,15 +980,35 @@ html[data-theme="light"] .mob-set-foot .set-dirty { color: #5b6877; }
 #export-map {
   display: flex !important;
   align-items: center !important; justify-content: center !important;
-  padding: 16px !important;
+  /* 底部给安全区留位 ✓（原来 fixed 铺满整屏、卡片贴到最下面 ✗） */
+  padding: 12px 12px calc(12px + env(safe-area-inset-bottom, 0px)) !important;
 }
 #export-map[hidden] { display: none !important; }
 #export-map .modal-box {
   width: 100% !important; max-width: 410px !important;
-  height: auto !important; max-height: 88vh !important;
+  height: auto !important;
+  /* 🔴 2026-11-02 用户："整图导出的按钮太下面，被 UI 遮住了"
+   *   根因：卡片被 max-height 卡住之后，底部那排按钮**跟着内容沉到滚动区外面** ✗
+   *   （横屏 / 矮窗口最明显：只能看见半截「导出」✓ 中心点还落在遮罩上、点不动 ✓）
+   *   三件事一起修：
+   *     ① 高度扣掉上下留白和安全区，卡片再矮也不会顶到屏幕边 ✓
+   *     ② 底部按钮 sticky 钉在卡片底边，内容再多也露着脸 ✓
+   *     ③ 卡片自己不留底内边距，底边由 .export-foot 填满（滚上去的内容压不到按钮下面）✓ */
+  max-height: calc(100vh - 24px - env(safe-area-inset-bottom, 0px)) !important;
+  max-height: calc(100dvh - 24px - env(safe-area-inset-bottom, 0px)) !important;
   border-radius: 16px !important; border: 1px solid #2b3743 !important;
-  padding: 14px 16px 16px !important;
+  padding: 14px 16px 0 !important;
   overflow-y: auto; scrollbar-width: none;
+}
+#export-map .export-foot {
+  position: sticky !important; bottom: 0 !important; z-index: 4 !important;
+  margin: 12px -16px 0 !important;
+  padding: 10px 16px 14px !important;
+  /* 用卡片那层玻璃底色，别自己另起一块颜色 ✓ */
+  background: rgba(13, 19, 26, .96) !important;
+}
+html[data-theme="light"] #export-map .export-foot {
+  background: rgba(250, 252, 254, .95) !important;
 }
 #export-map .modal-box::-webkit-scrollbar { width: 0; height: 0; display: none; }
 #export-map .modal-head { position: static !important; padding: 4px 0 8px !important; }
@@ -956,7 +1038,6 @@ html[data-theme="light"] .mob-set-foot .set-dirty { color: #5b6877; }
 .export-pick-handle.h-sw { left: -9px !important; bottom: -9px !important; }
 .export-pick-handle.h-w  { left: -9px !important; margin-top: -9px !important; }
 .export-pick-size { left: 8px !important; top: 8px !important; font-size: 11.5px !important; }
-.export-pick-tip { top: 10px !important; max-width: calc(100% - 20px) !important; font-size: 11.5px !important; }
 .export-pick-bar {
   bottom: 12px !important; gap: 8px !important;
   max-width: calc(100% - 16px) !important; padding: 8px !important;
@@ -980,7 +1061,16 @@ html[data-theme="light"] .mob-set-foot .set-dirty { color: #5b6877; }
 /* 图例二次精简：版式小格 + 三张同规格色卡（2026-10-27）
    手机上只放触摸尺寸，结构跟桌面完全一致 ✓ */
 #mob-sheet .legend-grid { gap: 8px !important; }
-#mob-sheet .legend-cell select { height: 32px !important; font-size: 12.5px !important; }
+#mob-sheet .legend-cell select {
+  height: 32px !important; font-size: 12.5px !important;
+  /* 跟色卡同灰 ✓（原来是 rgba(255,255,255,.09)，叠在玻璃面板上发蓝）*/
+  background-color: rgba(8, 12, 17, .38);
+  border-color: rgba(255, 255, 255, .10);
+}
+html[data-theme="light"] #mob-sheet .legend-cell select {
+  background-color: rgba(0, 0, 0, .04);
+  border-color: rgba(24, 36, 50, .16);
+}
 #mob-sheet .legend-color-card {
   grid-template-columns: 34px minmax(0, 1fr) !important;
   grid-template-rows: auto 30px !important;
@@ -1182,7 +1272,11 @@ html[data-theme="light"] #mob-sheet .mob-tallbtn.on {
   overflow-y: auto !important;
 }
 /* 面板头里那个「▾」按钮：贴右边 ✓ */
-#mob-sheet .panel-head .mob-tallbtn { margin-left: auto; flex: none; }
+#mob-sheet .panel-head .mob-tallbtn {
+  margin-left: auto; flex: none;
+  /* 别被面板头/三角之类的盖住 ✗（2026-11-03：「右上角的小按钮也点不了」）*/
+  position: relative; z-index: 9; pointer-events: auto;
+}
 
 /* ===========================================================================
    滚动条统一成**暗色** ✓
@@ -1406,6 +1500,12 @@ html[data-theme="light"] #mob-sheet .mob-tallbtn.on {
   border-color: rgba(255, 255, 255, .12);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, .08);
 }
+/* ⚠ 上面这层是「白 7%」的玻璃片，不是白色实心主按钮 ✓
+ *   默认 vz 皮肤下 `.btn` 的字色是 `--vz-primary-fg`（暗色 = #09090b）✗
+ *   不补 color 就是**深底 + 近黑字**（用户截图：按名称 A→Z / 全部恢复默认）✓
+ *   只修 vz：经典皮肤的金字本来就对；ghost 保持它自己的暗灰 ✓ */
+html[data-skin="vz"] #mob-sheet .btn:not(.ghost),
+html[data-skin="vz"] .mob-io .btn:not(.ghost) { color: var(--vz-fg); }
 /* 选中的那几个：金色玻璃 ✓（跟顶栏/桌面的选中态一个口径 ✓）*/
 #mob-sheet .segmented button.on,
 .mob-pane .segmented button.on,
@@ -1886,4 +1986,66 @@ html[data-theme="light"] #export-map .modal-box {
     linear-gradient(160deg, rgba(255, 255, 255, .85), transparent 42%),
     rgba(250, 252, 254, .90);
   box-shadow: 0 18px 48px rgba(24, 36, 50, .2);
+}
+
+/* ============ 框选导出那三个按钮（取消 / 重选 / 确定）2026-11-02 ============
+ *  用户："手机版整图导出框选时的三个按钮还是在最底下"
+ *  原来 `bottom: 16px` —— 手机底下有 #mob-dock（约 66px 高）压着，
+ *  三个按钮正好沉在底栏后面，点不到 ✓ 现在抬到底栏上方，并压住底栏的层级 ✓
+ */
+/* 层级：框选这一层要压在手机面板（#mob-sheet z=61）和它那层遮罩上面，
+   否则点按钮命中的是遮罩 ✗（实测 elementFromPoint 返回 #mob-backdrop）*/
+.export-pick-layer { z-index: 80 !important; }
+.export-pick-bar {
+  bottom: calc(92px + env(safe-area-inset-bottom, 0px)) !important;
+  z-index: 81 !important;
+}
+.export-pick-bar .btn { height: 36px !important; padding: 0 16px !important; font-size: 12.5px !important; }
+
+/* 手机颜色页里的色标 ✓ 一行八个 26px（跟桌面同款）*/
+.mob-brw { display: block; }
+/* 一行一套 → 每行自己是 grid（不再是 display:contents），这样行可以懒渲染 ✓
+ * （216 个色块一次性全画、滚动时每个都带 inset 阴影 → 掉帧 ✓）*/
+.mob-brw .brw-row {
+  display: grid; grid-template-columns: repeat(8, 1fr); gap: 6px;
+  margin-bottom: 6px;
+  content-visibility: auto; contain-intrinsic-size: auto 40px;
+}
+.mob-brw i { width: auto; height: auto; aspect-ratio: 1 / 1; border-radius: 6px; cursor: pointer;
+  /* 滚动性能：色块上不挂阴影/过渡 ✗（一屏几十个、滚动时每帧都要重绘）*/
+  box-shadow: none; transition: none; }
+.mob-brw i:active { opacity: .8; }
+
+/* ================================================================ 日间模式：补给
+ *  🔴 2026-11-03 用户："手机版…不少 UI 组件都没有切换白昼或黑夜"
+ *  —— 下面全是只写了暗色、浅底上会糊 / 会脏 / 会变成黑块的几处 ✓
+ *  只改颜色，尺寸 / 布局 / 字号一律没动 ✓ */
+
+/* 面板指向按钮的小尖角：外层是面板边框色、内层是面板底色 ✓
+   暗色写死了 #2b3743 / #0d131a，浅色不换就是浅面板下面挂一颗黑三角 ✗ */
+html[data-theme="light"] #mob-sheet::after { border-top-color: #bcc8d4; }
+html[data-theme="light"] #mob-sheet::before { border-top-color: #eef3f8; }
+html[data-theme="light"] #mob-sheet.below::after { border-bottom-color: #bcc8d4; }
+html[data-theme="light"] #mob-sheet.below::before { border-bottom-color: #eef3f8; }
+
+/* 设置里的标签栏底线 / 作者栏虚线：暗色那两条 #1d2833、#26313d 在浅底上太重 ✓ */
+html[data-theme="light"] .mob-tabs { border-bottom-color: rgba(24, 36, 50, .16); }
+html[data-theme="light"] .mob-author-row { border-top-color: rgba(24, 36, 50, .18); }
+
+/* 分段按钮里的小图标：暗色 #7d8b9c 提到浅底上太淡 ✓ */
+html[data-theme="light"] .mob-group .segmented button i,
+html[data-theme="light"] .mob-pane .segmented button i { color: #5b6877; }
+
+/* 「当前颜色」小方块：白边 + 内黑圈，浅底上像糊了一圈脏边 ✓ */
+html[data-theme="light"] #mob-now .mn-sw {
+  border-color: rgba(24, 36, 50, .45);
+  box-shadow: 0 0 0 1px rgba(24, 36, 50, .28) inset;
+}
+
+/* 手机颜色页的色标：白内描边在浅底上等于没有 ✓ */
+html[data-theme="light"] .mob-brw i {
+  box-shadow: inset 0 0 0 1px rgba(24, 36, 50, .16);
+}
+html[data-theme="light"] .mob-pane .chip {
+  box-shadow: inset 0 0 0 1px rgba(24, 36, 50, .16);
 }

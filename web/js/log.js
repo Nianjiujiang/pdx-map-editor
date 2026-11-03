@@ -720,8 +720,8 @@
       wrap.appendChild(p1);
 
       var hints = [];
-      if (isNoModule) hints.push('这台浏览器**不支持 ES 模块**：请用新版 Chrome / Edge / Firefox / Safari。');
-      if (isNoGL2) hints.push('这台浏览器**没有 WebGL2**：多半是关了硬件加速，或显卡/驱动太旧。');
+      if (isNoModule) hints.push('这台浏览器不支持 ES 模块：请用新版 Chrome / Edge / Firefox / Safari。');
+      if (isNoGL2) hints.push('这台浏览器没有 WebGL2：多半是关了硬件加速，或显卡/驱动太旧。');
       hints.push('如果是双击单文件打开的：确认文件完整（1 MB 出头），复制到本机磁盘再打开，别在压缩包里双击。');
       hints.push('浏览器扩展（广告拦截 / 脚本管理）可能挡掉了脚本：用无痕窗口再试一次。');
       hints.push('手机 / 平板：内存紧张时会被系统杀掉，先关掉别的标签页再重开。');

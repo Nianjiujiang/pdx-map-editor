@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>WebGL2 兼容性检查 · 悖论制图</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 18px;
+    background: #0f141b; color: #dfe6ef;
+    font: 15px/1.75 "Microsoft YaHei", "PingFang SC", "Segoe UI", sans-serif;
+  }
+  h1 { margin: 0 0 4px; font-size: 20px; }
+  .sub { color: #8b98a8; font-size: 13px; margin-bottom: 16px; }
+  .card {
+    max-width: 760px; margin: 0 auto 12px; padding: 14px 16px;
+    background: #171e27; border: 1px solid #2b3542; border-radius: 12px;
+  }
+  .ok { color: #6ee7a8; }
+  .bad { color: #ff8d8d; }
+  .warn { color: #ffd166; }
+  .row { display: flex; gap: 10px; padding: 3px 0; }
+  .k { flex: 0 0 132px; color: #8b98a8; }
+  .v { flex: 1; word-break: break-all; }
+  pre { margin: 0; white-space: pre-wrap; word-break: break-all; font: 12px/1.6 Consolas, monospace; }
+  button {
+    appearance: none; border: 1px solid #3a4757; border-radius: 9px;
+    background: #202a36; color: #dfe6ef; padding: 8px 14px; font: inherit;
+    cursor: pointer;
+  }
+  button:active { transform: translateY(1px); }
+  .hint { color: #8b98a8; font-size: 13px; margin-top: 8px; }
+</style>
+</head>
+<body>
+<h1>WebGL2 兼容性检查</h1>
+<div class="sub">给「悖论制图」排查用：只测浏览器给不给 WebGL2，不读任何地图文件。</div>
+
+<div class="card" id="summary">正在检查…</div>
+
+<div class="card">
+  <div class="row"><div class="k">User-Agent</div><div class="v" id="ua">—</div></div>
+  <div class="row"><div class="k">屏幕 / 窗口</div><div class="v" id="screen">—</div></div>
+  <div class="row"><div class="k">CPU 线程</div><div class="v" id="cores">—</div></div>
+  <div class="row"><div class="k">设备内存</div><div class="v" id="mem">—</div></div>
+</div>
+
+<div class="card">
+  <div class="row"><div class="k">WebGL2 默认</div><div class="v" id="gl2-default">—</div></div>
+  <div class="row"><div class="k">WebGL2 精简属性</div><div class="v" id="gl2-lite">—</div></div>
+  <div class="row"><div class="k">WebGL1 对照</div><div class="v" id="gl1">—</div></div>
+</div>
+
+<div class="card">
+  <div class="k" style="margin-bottom:6px">详细信息</div>
+  <pre id="detail">—</pre>
+  <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap">
+    <button id="copy">复制结果</button>
+    <button id="retry">重新检查</button>
+  </div>
+  <div class="hint">把「复制结果」贴给作者即可；里面不包含地图、涂色或任何本地文件。</div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+  const $ = (id) => document.getElementById(id);
+  const lines = [];
+
+  function put(k, v) {
+    lines.push(k + ': ' + v);
+  }
+
+  /** 在**一块全新 canvas** 上试一种上下文；失败时收集 creationerror 的文字 */
+  function tryCtx(kind, attrs) {
+    const cv = document.createElement('canvas');
+    cv.width = 64; cv.height = 64;
+    let creationError = '';
+    const onErr = (e) => {
+      creationError = String((e && e.statusMessage) || '');
+      if (e && e.preventDefault) e.preventDefault();
+    };
+    if (cv.addEventListener) cv.addEventListener('webglcontextcreationerror', onErr, false);
+    let gl = null;
+    let thrown = '';
+    try {
+      gl = attrs === undefined ? cv.getContext(kind) : cv.getContext(kind, attrs);
+    } catch (e) {
+      thrown = String((e && e.message) || e);
+      gl = null;
+    }
+    if (cv.removeEventListener) cv.removeEventListener('webglcontextcreationerror', onErr, false);
+    return { gl, creationError, thrown };
+  }
+
+  function glInfo(gl) {
+    if (!gl) return null;
+    const out = {};
+    try { out.version = gl.getParameter(gl.VERSION); } catch (e) { out.version = '?'; }
+    try { out.shading = gl.getParameter(gl.SHADING_LANGUAGE_VERSION); } catch (e) { out.shading = '?'; }
+    try {
+      const ext = gl.getExtension('WEBGL_debug_renderer_info');
+      out.vendor = ext ? gl.getParameter(ext.UNMASKED_VENDOR_WEBGL) : gl.getParameter(gl.VENDOR);
+      out.renderer = ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
+    } catch (e) {
+      out.vendor = '?'; out.renderer = '?';
+    }
+    try { out.maxTex = gl.getParameter(gl.MAX_TEXTURE_SIZE); } catch (e) { out.maxTex = '?'; }
+    try { out.vendor2 = gl.getParameter(gl.VENDOR); } catch (e) { out.vendor2 = '?'; }
+    return out;
+  }
+
+  function fmtTry(res) {
+    if (res.gl) {
+      const g = glInfo(res.gl);
+      return '<span class="ok">可用</span> · ' + escapeHtml(g.renderer || '')
+        + ' · ' + escapeHtml(g.version || '')
+        + (g.maxTex !== '?' ? ' · 贴图上限 ' + g.maxTex + 'px' : '');
+    }
+    const why = res.creationError || res.thrown || '浏览器没有返回上下文（没有给出原因）';
+    return '<span class="bad">不可用</span> · ' + escapeHtml(why);
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, (c) => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+    }[c]));
+  }
+
+  function check() {
+    lines.length = 0;
+    $('detail').textContent = '正在检查…';
+
+    const ua = navigator.userAgent || '';
+    $('ua').textContent = ua;
+    put('User-Agent', ua);
+    const scr = (screen && screen.width) + '×' + (screen && screen.height)
+      + ' @' + (window.devicePixelRatio || 1) + 'x'
+      + ' · 窗口 ' + window.innerWidth + '×' + window.innerHeight;
+    $('screen').textContent = scr;
+    put('屏幕 / 窗口', scr);
+    const cores = navigator.hardwareConcurrency || '未提供';
+    $('cores').textContent = cores;
+    put('CPU 线程', cores);
+    const mem = navigator.deviceMemory ? navigator.deviceMemory + ' GB' : '未提供';
+    $('mem').textContent = mem;
+    put('设备内存', mem);
+
+    // WebGL2：默认属性
+    const d = tryCtx('webgl2');
+    $('gl2-default').innerHTML = fmtTry(d);
+    put('WebGL2 默认', d.gl ? '可用' : (d.creationError || d.thrown || '失败'));
+    if (d.gl) {
+      const g = glInfo(d.gl);
+      put('WebGL2 渲染器', g.renderer + ' / ' + g.vendor);
+      put('WebGL2 版本', g.version + ' · GLSL ' + g.shading);
+      put('WebGL2 贴图上限', g.maxTex + 'px');
+      try {
+        const exts = d.gl.getSupportedExtensions() || [];
+        put('WebGL2 扩展数', exts.length);
+        put('关键扩展', ['EXT_color_buffer_float', 'OES_texture_float_linear',
+          'WEBGL_compressed_texture_astc'].filter((n) => exts.indexOf(n) >= 0).join(', ') || '无');
+      } catch (e) { put('WebGL2 扩展', '读不出来'); }
+    }
+
+    // WebGL2：精简属性（跟编辑器里同样的组合）
+    const lite = tryCtx('webgl2', {
+      alpha: false, antialias: false, depth: false, stencil: false,
+      premultipliedAlpha: false, preserveDrawingBuffer: false,
+      powerPreference: 'default',
+    });
+    $('gl2-lite').innerHTML = fmtTry(lite);
+    put('WebGL2 精简属性', lite.gl ? '可用' : (lite.creationError || lite.thrown || '失败'));
+
+    // WebGL1：对照（单独一块 canvas，避免和 WebGL2 抢同一个画布）
+    const one = tryCtx('webgl');
+    $('gl1').innerHTML = fmtTry(one);
+    put('WebGL1', one.gl ? '可用' : (one.creationError || one.thrown || '失败'));
+    if (one.gl) {
+      const g = glInfo(one.gl);
+      put('WebGL1 渲染器', g.renderer + ' / ' + g.vendor);
+      put('WebGL1 版本', g.version);
+    }
+
+    const ok2 = !!d.gl || !!lite.gl;
+    const ok1 = !!one.gl;
+    $('summary').innerHTML = ok2
+      ? '<span class="ok">这个浏览器支持 WebGL2 ✓</span> —— 编辑器应该能开；如果还是打不开，把这份结果和编辑器诊断报告一起发。'
+      : (ok1
+        ? '<span class="warn">只支持 WebGL1，没有 WebGL2 ✗</span> —— 编辑器需要 WebGL2，请换用最新版 Chrome / Edge 再试。'
+        : '<span class="bad">WebGL1 和 WebGL2 都不可用 ✗</span> —— 浏览器把 WebGL 整个关掉了（硬件加速 / 浏览器策略），请换浏览器。');
+
+    $('detail').textContent = lines.join('\n');
+  }
+
+  $('copy').onclick = async function () {
+    const text = lines.join('\n');
+    try {
+      await navigator.clipboard.writeText(text);
+      $('copy').textContent = '已复制 ✓';
+      setTimeout(() => { $('copy').textContent = '复制结果'; }, 1400);
+    } catch (e) {
+      // 老浏览器 / 非安全上下文没有 clipboard：退回选中文本
+      const pre = $('detail');
+      const range = document.createRange();
+      range.selectNodeContents(pre);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+      $('copy').textContent = '已选中，手动复制';
+    }
+  };
+  $('retry').onclick = check;
+  check();
+})();
+</script>
+</body>
+</html>

@@ -68,10 +68,21 @@ def apply():
         did.append("app.js")
 
     s = read("web/index.html")
+    changed = False
+    # `<html data-mobile="1">`（2026-11-01 加）：给「检查更新」认脸用的 ✓
+    # 两边发的是**不同的文件**（电脑版 / 手机版），所以得知道自己是哪一份 ✓
+    if 'data-mobile="1"' not in s:
+        anchor0 = '<html lang="zh-CN"'
+        assert s.count(anchor0) == 1, "index.html 里找不到 <html lang=，锚点变了"
+        s = s.replace(anchor0, '<html lang="zh-CN" data-mobile="1"')
+        changed = True
     if MARK_HTML not in s:
         anchor = '<footer class="statusbar">'
         assert s.count(anchor) == 1, "index.html 里找不到 statusbar，锚点变了"
-        write("web/index.html", s.replace(anchor, html))
+        s = s.replace(anchor, html)
+        changed = True
+    if changed:
+        write("web/index.html", s)
         did.append("index.html")
 
     print("  ✓ 手机端补丁：" + ("、".join(did) + " 已打上" if did else "本来就已经打过了"))

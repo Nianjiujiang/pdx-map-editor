@@ -1,0 +1,392 @@
+{
+  "version": 1,
+  "savedAt": "2026-11-03T07:10:57.019Z",
+  "node": "v24.18.0",
+  "platform": "win32-x64",
+  "tol": {
+    "default": {
+      "factor": 1.25,
+      "floor": 1.5
+    },
+    "overrides": {
+      "boot": {
+        "factor": 1.6,
+        "floor": 80
+      }
+    }
+  },
+  "maps": {
+    "EU4": {
+      "card": "EU4 原版",
+      "meta": {
+        "provinces": 4942,
+        "titles": 13328,
+        "tiers": 18
+      },
+      "metrics": {
+        "blocksAll": {
+          "label": "rebuildPaintBlocks(all=true)",
+          "med": 2.2502,
+          "max": 2.9631,
+          "n": 5
+        },
+        "blocksPaint": {
+          "label": "rebuildPaintBlocks(all=false)",
+          "med": 0.647,
+          "max": 0.9406,
+          "n": 5
+        },
+        "groupPids": {
+          "label": "playerGroupPidsAt(探针格)",
+          "med": 0.1203,
+          "max": 0.4214,
+          "n": 5
+        },
+        "groupTids": {
+          "label": "playerGroupTidsAt(探针格)",
+          "med": 0.1297,
+          "max": 0.2064,
+          "n": 5
+        },
+        "targets": {
+          "label": "paintTargetsAt(探针格)",
+          "med": 0.1055,
+          "max": 0.1554,
+          "n": 5
+        },
+        "provInfo": {
+          "label": "provInfoAt(探针格) ×1000",
+          "med": 0.1074,
+          "max": 0.1435,
+          "n": 5
+        },
+        "paintOne": {
+          "label": "paintPidsAsOne(1 格)",
+          "med": 0.1385,
+          "max": 0.1617,
+          "n": 5
+        },
+        "recompute": {
+          "label": "recomputePainted()",
+          "med": 0.0453,
+          "max": 0.0489,
+          "n": 5
+        },
+        "labels": {
+          "label": "drawLabels(视口 800×600)",
+          "med": 0.7688,
+          "max": 2.5989,
+          "n": 5
+        },
+        "labelsWide": {
+          "label": "drawLabels(整图)",
+          "med": 0.0373,
+          "max": 0.0565,
+          "n": 3
+        },
+        "hoverSame": {
+          "label": "updateHover(同一格，只挪鼠标)",
+          "med": 0.0193,
+          "max": 0.0429,
+          "n": 21
+        },
+        "hoverMove": {
+          "label": "updateHover(每次都换一格)",
+          "med": 0.0899,
+          "max": 0.1341,
+          "n": 11
+        },
+        "card": {
+          "label": "renderHoverCard(pid)",
+          "med": 0.0358,
+          "max": 0.051,
+          "n": 11
+        },
+        "highlight": {
+          "label": "applyHoverHighlight(pid)",
+          "med": 0.0005,
+          "max": 0.0011,
+          "n": 11
+        },
+        "legendPanel": {
+          "label": "rebuildLegendPanel()",
+          "med": 0.0785,
+          "max": 0.1308,
+          "n": 5
+        },
+        "legendEntries": {
+          "label": "legendEntries()",
+          "med": 0.0043,
+          "max": 0.0119,
+          "n": 5
+        },
+        "syncFrame": {
+          "label": "syncLayerSwitches+Parent+waste",
+          "med": 0.0028,
+          "max": 0.023,
+          "n": 21
+        },
+        "paintLabels": {
+          "label": "syncAllPaintLabels()",
+          "med": 0.1423,
+          "max": 0.1708,
+          "n": 5
+        },
+        "boot": {
+          "label": "boot()",
+          "med": 351,
+          "max": 351,
+          "n": 1
+        }
+      }
+    },
+    "EU5": {
+      "card": "EU5 原版",
+      "meta": {
+        "provinces": 28574,
+        "titles": 35531,
+        "tiers": 8
+      },
+      "metrics": {
+        "blocksAll": {
+          "label": "rebuildPaintBlocks(all=true)",
+          "med": 6.4088,
+          "max": 7.4498,
+          "n": 5
+        },
+        "blocksPaint": {
+          "label": "rebuildPaintBlocks(all=false)",
+          "med": 1.197,
+          "max": 1.6392,
+          "n": 5
+        },
+        "groupPids": {
+          "label": "playerGroupPidsAt(探针格)",
+          "med": 0.8315,
+          "max": 1.3532,
+          "n": 5
+        },
+        "groupTids": {
+          "label": "playerGroupTidsAt(探针格)",
+          "med": 0.8068,
+          "max": 1.0424,
+          "n": 5
+        },
+        "targets": {
+          "label": "paintTargetsAt(探针格)",
+          "med": 0.4911,
+          "max": 0.57,
+          "n": 5
+        },
+        "provInfo": {
+          "label": "provInfoAt(探针格) ×1000",
+          "med": 0.0716,
+          "max": 0.1018,
+          "n": 5
+        },
+        "paintOne": {
+          "label": "paintPidsAsOne(1 格)",
+          "med": 0.1336,
+          "max": 0.2128,
+          "n": 5
+        },
+        "recompute": {
+          "label": "recomputePainted()",
+          "med": 0.1187,
+          "max": 0.1289,
+          "n": 5
+        },
+        "labels": {
+          "label": "drawLabels(视口 800×600)",
+          "med": 0.9581,
+          "max": 1.6427,
+          "n": 5
+        },
+        "labelsWide": {
+          "label": "drawLabels(整图)",
+          "med": 0.1952,
+          "max": 0.2418,
+          "n": 3
+        },
+        "hoverSame": {
+          "label": "updateHover(同一格，只挪鼠标)",
+          "med": 0.0187,
+          "max": 0.0413,
+          "n": 21
+        },
+        "hoverMove": {
+          "label": "updateHover(每次都换一格)",
+          "med": 0.0927,
+          "max": 0.1736,
+          "n": 11
+        },
+        "card": {
+          "label": "renderHoverCard(pid)",
+          "med": 0.0648,
+          "max": 0.0797,
+          "n": 11
+        },
+        "highlight": {
+          "label": "applyHoverHighlight(pid)",
+          "med": 0.0006,
+          "max": 0.0008,
+          "n": 11
+        },
+        "legendPanel": {
+          "label": "rebuildLegendPanel()",
+          "med": 0.0656,
+          "max": 0.1001,
+          "n": 5
+        },
+        "legendEntries": {
+          "label": "legendEntries()",
+          "med": 0.0069,
+          "max": 0.0084,
+          "n": 5
+        },
+        "syncFrame": {
+          "label": "syncLayerSwitches+Parent+waste",
+          "med": 0.0028,
+          "max": 0.0164,
+          "n": 21
+        },
+        "paintLabels": {
+          "label": "syncAllPaintLabels()",
+          "med": 1.5005,
+          "max": 1.7432,
+          "n": 5
+        },
+        "boot": {
+          "label": "boot()",
+          "med": 1509,
+          "max": 1509,
+          "n": 1
+        }
+      }
+    },
+    "VIC3": {
+      "card": "VIC3 原版",
+      "meta": {
+        "provinces": 40876,
+        "titles": 42343,
+        "tiers": 5
+      },
+      "metrics": {
+        "blocksAll": {
+          "label": "rebuildPaintBlocks(all=true)",
+          "med": 7.1215,
+          "max": 9.1617,
+          "n": 5
+        },
+        "blocksPaint": {
+          "label": "rebuildPaintBlocks(all=false)",
+          "med": 1.3313,
+          "max": 1.76,
+          "n": 5
+        },
+        "groupPids": {
+          "label": "playerGroupPidsAt(探针格)",
+          "med": 0.9533,
+          "max": 1.47,
+          "n": 5
+        },
+        "groupTids": {
+          "label": "playerGroupTidsAt(探针格)",
+          "med": 0.9958,
+          "max": 1.1087,
+          "n": 5
+        },
+        "targets": {
+          "label": "paintTargetsAt(探针格)",
+          "med": 0.6344,
+          "max": 0.6796,
+          "n": 5
+        },
+        "provInfo": {
+          "label": "provInfoAt(探针格) ×1000",
+          "med": 0.0565,
+          "max": 0.159,
+          "n": 5
+        },
+        "paintOne": {
+          "label": "paintPidsAsOne(1 格)",
+          "med": 0.1789,
+          "max": 0.2202,
+          "n": 5
+        },
+        "recompute": {
+          "label": "recomputePainted()",
+          "med": 0.1606,
+          "max": 0.1789,
+          "n": 5
+        },
+        "labels": {
+          "label": "drawLabels(视口 800×600)",
+          "med": 0.3501,
+          "max": 0.4015,
+          "n": 5
+        },
+        "labelsWide": {
+          "label": "drawLabels(整图)",
+          "med": 0.0154,
+          "max": 0.0174,
+          "n": 3
+        },
+        "hoverSame": {
+          "label": "updateHover(同一格，只挪鼠标)",
+          "med": 0.009,
+          "max": 0.0225,
+          "n": 21
+        },
+        "hoverMove": {
+          "label": "updateHover(每次都换一格)",
+          "med": 0.0449,
+          "max": 0.0623,
+          "n": 11
+        },
+        "card": {
+          "label": "renderHoverCard(pid)",
+          "med": 0.0313,
+          "max": 0.0843,
+          "n": 11
+        },
+        "highlight": {
+          "label": "applyHoverHighlight(pid)",
+          "med": 0.0005,
+          "max": 0.0006,
+          "n": 11
+        },
+        "legendPanel": {
+          "label": "rebuildLegendPanel()",
+          "med": 0.0453,
+          "max": 0.0598,
+          "n": 5
+        },
+        "legendEntries": {
+          "label": "legendEntries()",
+          "med": 0.0038,
+          "max": 0.0041,
+          "n": 5
+        },
+        "syncFrame": {
+          "label": "syncLayerSwitches+Parent+waste",
+          "med": 0.0018,
+          "max": 0.0022,
+          "n": 21
+        },
+        "paintLabels": {
+          "label": "syncAllPaintLabels()",
+          "med": 1.3161,
+          "max": 1.4441,
+          "n": 5
+        },
+        "boot": {
+          "label": "boot()",
+          "med": 1887,
+          "max": 1887,
+          "n": 1
+        }
+      }
+    }
+  }
+}

@@ -99,6 +99,22 @@ function detectSoftwareGL(gl) {
   } catch (e) { return false; }
 }
 
+/**
+ * 地址栏上的 `?shader=border` 之类的调试开关 ✓（2026-11-01 加，量性能用的）
+ *
+ *   为什么要它 ✗：软件渲染下**链接完整着色器要 39 秒**（SwiftShader 现场编译），
+ *   想量"退一档到底省多少"就得能直接指定档位 ✓
+ *   玩家不用管它；支持时让人加一句 `?shader=border` 就能先跑起来 ✓
+ *   ⚠ 认不出来的值一律当"没指定" ✗，绝不因此改变默认行为 ✓
+ */
+function _shaderTierFromUrl() {
+  try {
+    if (typeof location === 'undefined') return '';
+    const m = /[?&]shader=(mid|border|title|lite|full)\b/.exec(String(location.search || ''));
+    return m ? m[1] : '';
+  } catch (e) { return ''; }
+}
+
 /** 把 GL 的"现场"收集成一组普通字段 ✓（导出日志 / 错误屏都要用） */
 function _glFacts(gl) {
   const out = { contextLost: false, glError: 0 };
@@ -343,6 +359,24 @@ uniform float uWaterBorderA;    // 浓度（0~1 ✓）
 uniform sampler2D uWaterKind;   // R8    每 pid 一格：0 = 不是水 / 2..5 = 那四类 ✓
 uniform int   uWaterKindW;      // 拍平宽度（跟 kindTex 同一套 ✓）
 
+/* **国旗（剪贴蒙版）那一路**（2026-11-02 ✓ 用户要的「国旗地图」）
+ *
+ *   思路：**每个省份记一个"旗号"**（0 = 没旗 ✓），渲染时按旗号去图集里取色 ✓
+ *   → 旗子天然被国土形状裁掉（不在这个旗号里的省根本不会走到这张表 ✓）
+ *   → 头衔线 / 国名照旧压在上面 ✓ 因为它们画在颜色之后 ✓
+ *
+ *   ⚠ 旗子按「色块」分组，不是按头衔 ✗ —— 一个色块能跨好几个头衔
+ *     （涂色层 A 色 A 名 ✓ 见 app.js 的 rebuildPaintBlocks）→ 只能按 pid 记 ✓
+ */
+uniform sampler2D uFlagIdx;     // R8      pid → 旗号（0 = 没旗，1.. = 第几面）
+uniform int   uFlagIdxW;        // 拍平宽度（跟 kindTex 同一套 ✓）
+uniform sampler2D uFlagSlots;   // RGBA32F 每面旗两格：矩形(x0,y0,x1,y1) / 图集uv(u0,v0,u1,v1)
+uniform int   uFlagSlotW;
+uniform sampler2DArray uFlagTex; // **一层一面旗**的数组纹理（2026-11-02 改成不封顶 ✓）
+                                  //   以前是 2048² 里 16 个格子 → 贴到第 17 面就没地方了 ✗
+                                  //   现在每面旗自己一层，层数按需长 ✓
+uniform int   uFlagOn;          // 0 = 整条让开（没贴任何旗时开销为零 ✓）
+
 /* **「荒地 · 边界」那条线**（2026-10-17 ✓ 用户点名要的 ✓）
  *   原话："给荒地加上边界开关，这个负责的是**荒地与荒地之间**的边界，
  *          你之前做了水域-水域的边界，这个应该轻车熟路了吧"✓
@@ -543,9 +577,44 @@ uint provAt(ivec2 ip) {
   return u16AtArr(uProvArr, ivec3(l, t.y * uProvCols + t.x));
 }
 
-vec4 colorAt(ivec2 ip) {
+/** 这一格如果是国旗地盘，取旗面颜色 ✓（不是 → alpha = 0）
+ *
+ *  ⚠ 必须在 colorOfPid **之后**定义（它要用 provAt / colorOfPid）✗
+ *  ⚠ 矩形用**地图像素**写，不做归一化 —— 归一化在 16384 的图上精度不够 ✓ */
+vec4 flagAt(uint pid, vec2 pos) {
+  int i = int(pid);
+  float fv = texelFetch(uFlagIdx, ivec2(i % uFlagIdxW, i / uFlagIdxW), 0).r;
+  int f = int(fv * 255.0 + 0.5);
+  if (f <= 0) return vec4(0.0);
+  /* 每面旗**三格**：矩形 / uv / 层号 ✓（以前是两格：矩形 + uv，图集里按格子算 ✓）*/
+  int b = (f - 1) * 3;
+  vec4 rc = texelFetch(uFlagSlots, ivec2(b % uFlagSlotW, b / uFlagSlotW), 0);
+  vec4 uv = texelFetch(uFlagSlots, ivec2((b + 1) % uFlagSlotW, (b + 1) / uFlagSlotW), 0);
+  float lay = texelFetch(uFlagSlots, ivec2((b + 2) % uFlagSlotW, (b + 2) / uFlagSlotW), 0).r;
+  vec2 sz = rc.zw - rc.xy;
+  if (sz.x <= 0.5 || sz.y <= 0.5) return vec4(0.0);
+  /* 🔴 **uv 必须用连续坐标 pos**，不是格心（ip + 0.5）✗✗（2026-11-02 用户：
+   *   "国旗的分辨率被地图局限住了，我希望的是看到的国旗就是清晰的"）
+   *   用格心 → 每个地图像素里旗面是**一块纯色** ✓ 放大以后就是马赛克 ✓
+   *   用连续坐标 → 一个地图像素内部旗面照样渐变 ✓ 屏幕分辨率有多高、旗就有多细 ✓
+   *   （遮罩仍然按地图像素算 ✓ 旗子还是被国土形状裁掉 ✓）*/
+  vec2 t = (pos - rc.xy) / sz;
+  if (t.x < 0.0 || t.y < 0.0 || t.x > 1.0 || t.y > 1.0) return vec4(0.0);
+  return vec4(texture(uFlagTex, vec3(mix(uv.xy, uv.zw, t), lay)).rgb, 1.0);
+}
+
+vec4 colorAt(ivec2 ip, vec2 pos) {
   ip = clamp(ip, ivec2(0), uMapSize - 1);
-  return colorOfPid(provAt(ip));
+  uint pid = provAt(ip);
+  vec4 c = colorOfPid(pid);
+  /* 国旗**盖住颜色**（用户 2026-11-02 定的：旗面完全盖住 ✓）——
+   * 但只盖填色，不盖边界线和名字 ✓ 那些在这之后画 ✓
+   * ⚠ pos 是**连续**坐标 ✗（不是格心 ✓）—— 旗面的清晰度全靠它 ✓ */
+  if (uFlagOn == 1) {
+    vec4 f = flagAt(pid, pos);
+    if (f.a > 0.5) c = f;
+  }
+  return c;
 }
 
 uint pidAt(ivec2 ip) {
@@ -1005,21 +1074,25 @@ void main() {
    *    → 出来的值跟原来**逐位相同** ✓（不是"看起来差不多"✓）
    *    → 边界上那几圈还是会走四采样的老路 ✓ 抗锯齿效果一点没丢 ✓ */
   float pu = uNoAA == 1 ? 0.0 : uMapPerPx;
-  ivec2 q0 = ivec2(floor(vMap + vec2( 0.5,      0.16667) * pu));
-  ivec2 q1 = ivec2(floor(vMap + vec2(-0.16667,  0.5    ) * pu));
-  ivec2 q2 = ivec2(floor(vMap + vec2( 0.16667, -0.5    ) * pu));
-  ivec2 q3 = ivec2(floor(vMap + vec2(-0.5,     -0.16667) * pu));
+  vec2 f0 = vMap + vec2( 0.5,      0.16667) * pu;
+  vec2 f1 = vMap + vec2(-0.16667,  0.5    ) * pu;
+  vec2 f2 = vMap + vec2( 0.16667, -0.5    ) * pu;
+  vec2 f3 = vMap + vec2(-0.5,     -0.16667) * pu;
+  ivec2 q0 = ivec2(floor(f0));
+  ivec2 q1 = ivec2(floor(f1));
+  ivec2 q2 = ivec2(floor(f2));
+  ivec2 q3 = ivec2(floor(f3));
   vec4 c0, c1, c2, c3;
   if (q0 == q1 && q1 == q2 && q2 == q3) {
-    c0 = colorAt(q0);
+    c0 = colorAt(q0, f0);
     c1 = c0;
     c2 = c0;
     c3 = c0;
   } else {
-    c0 = colorAt(q0);
-    c1 = colorAt(q1);
-    c2 = colorAt(q2);
-    c3 = colorAt(q3);
+    c0 = colorAt(q0, f0);
+    c1 = colorAt(q1, f1);
+    c2 = colorAt(q2, f2);
+    c3 = colorAt(q3, f3);
   }
 
   vec3  acc = c0.rgb * c0.a + c1.rgb * c1.a + c2.rgb * c2.a + c3.rgb * c3.a;
@@ -1058,8 +1131,7 @@ void main() {
    *  ⚠ 切掉的是**一个完整的 if 块**（连同它的大括号 ✓），所以切完语法还是整的 ✓
    *     切完会少掉 R / dTitle / ramp 这些只在块里用的变量 —— 它们本来就没出过块 ✓ */
   /* @@LITE_CUT_BEGIN@@ */
-  if (pidAt(ip) != 0u) {
-    /* 🔴 精简版把**整个 if 块**切掉 ✓（从 @@LITE_CUT_BEGIN@@ 到 @@LITE_CUT_END@@）
+  if (pidAt(ip) != 0u) {    /* 🔴 精简版把**整个 if 块**切掉 ✓（从 @@LITE_CUT_BEGIN@@ 到 @@LITE_CUT_END@@）
      *  块里那几个变量（R / dTitle / dPaint / ramp）全没出过块 ✓ 切完不留孤儿 ✓ */
     // 只要这个半径以内看得见线；半径之外算出来也是 0，不用白找
     // ⚠ 半径按**最粗的那条**算（线宽大于此半径的线会被裁掉 ✓）
@@ -1456,9 +1528,29 @@ function compile(gl, type, src) {
   return sh;
 }
 
+/* **纹理绑定的"代号"** ✓（2026-11-03）
+ *
+ *  render() 现在会记「第 N 号单元绑着哪张纹理」，下次一样就不重复绑 ✓
+ *  可**绑纹理的不止 render()** ✗ —— 传块、换图、传国旗、探测纹理这些都在别处绑，
+ *  而且都绑在"当前那个单元"上 → render 记的那本账就过期了 ✓
+ *
+ *  所以：凡是 render() 之外的绑定，一律把代号 +1 ✓
+ *  render() 每帧比一次代号，变了就把整本账撕掉重记 ✓（一次比较而已，可以忽略 ✓）
+ *  ⚠ 不这么做的话，传块时顺手绑的那张块纹理会被当成"第 12 号单元还是那张占位纹理"
+ *    → 下一帧跳过重绑 → 国旗那一路采到块纹理上 ✗（画面不会黑，但会错 ✓ 而且极难查 ✓）
+ */
+let GL_TEX_EPOCH = 0;
+
+/** 「没有分块数据」时那三个数的替身 ✓（做成常量 → 每帧不用再 new 一个对象 ✓）*/
+const NO_TILES = Object.freeze({ tileW: 1, tileH: 1, cols: 1 });
+
+/** 别处动过纹理绑定 → 代号 +1，让 render() 记的那本账作废 ✓（见上面那段）*/
+function glTexTouched() { GL_TEX_EPOCH++; }
+
 function makeTexture(gl, w, h, internal, format, type, data, filter) {
   const tex = gl.createTexture();
   gl.bindTexture(gl.TEXTURE_2D, tex);
+  glTexTouched();      // 绑在"当前单元"上 → render 的账过期 ✓
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
@@ -1499,7 +1591,10 @@ function pickTileLayout(mapW, mapH, maxTex) {
 }
 
 export class MapRenderer {
-  constructor(canvas, meta) {
+  constructor(canvas, meta, opts) {
+    /* `opts.fastBoot` = "先拿低一档把图打出来，着色器后台再升级" ✓（2026-11-01）
+       启动路径传它；自检 / 导出用的临时渲染器不传，行为跟以前一模一样 ✓ */
+    this._fastBoot = !!(opts && opts.fastBoot);
     this.canvas = canvas;
     this.meta = meta;
     this.mapW = meta.mapWidth;
@@ -1703,6 +1798,18 @@ export class MapRenderer {
      *   ⚠ 这张占位纹理要**在 render 之前**就建好 ✗（这里最省事 ✓）*/
     this.dummyTex = makeTexture(gl, 1, 1, gl.R8, gl.RED, gl.UNSIGNED_BYTE,
       new Uint8Array([0]), gl.NEAREST);
+    /* 国旗那张是**数组纹理**，关掉的时候也得绑一张完整的占位 ✓
+       （不绑 = 纹理不完整 → 整个画面黑 ✓ 这个坑 2026-10-17 踩过 ✓）*/
+    try {
+      const dA = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D_ARRAY, dA);
+      gl.texStorage3D(gl.TEXTURE_2D_ARRAY, 1, gl.RGBA8, 1, 1, 1);
+      gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, 0, 1, 1, 1,
+        gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 0]));
+      gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      this.dummyArrTex = dA;
+    } catch (e) { this.dummyArrTex = null; }
 
     const maxTex = gl.getParameter(gl.MAX_TEXTURE_SIZE);
     /* ⚠ 上下文丢着的时候 **getParameter 给 null** ✓
@@ -1759,75 +1866,144 @@ export class MapRenderer {
       return { prog: null, info, linkMs: ms };
     };
 
-    let _r = _linkTry(FRAG);
-    let linkMs = _r.linkMs;
-    let linkLog = _r.info;
+    /* 🔴 **软件渲染不要先撞完整版** ✗✗（2026-11-01 实测）
+     *
+     *   没开硬件加速的机器上，「完整着色器链接」单这一项 **39 秒** ✓
+     *   （SwiftShader 现场编译；第二次打开只 43 ms，因为浏览器缓存了编译结果 ✓）
+     *   而它最后是**成功**的 —— 用户干等 40 秒才看到地图，还以为软件坏了 ✓
+     *
+     *   软件渲染本来也画不快，完整版那块"逐像素边界射线"在它身上毫无收益 ✓
+     *   所以：认出来是软件渲染，就**直接从「最简边界」起步**（本层头衔的边界还在 ✓），
+     *   完整版留给真显卡 ✓
+     *   ⚠ 真显卡一个字都不变 ✗ —— 只有 detectSoftwareGL 说"是"才走这条 ✓
+     *   ⚠ `?shader=border` 这种地址参数可以手动指定档位（量性能 / 支持用 ✓）
+     */
+    const _forcedTier = _shaderTierFromUrl();
+    const _skipFull = _forcedTier ? (_forcedTier !== 'full') : (!!this.softwareGL || this._fastBoot);
+    let linkMs = 0;
+    let linkLog = '';
     this.liteShader = false;
     this.shaderTier = 'full';
     this.liteWhy = '';
-    if (!_r.prog) {
-      /* ⚠ **先问上下文再说着色器** ✗ —— 上下文被收走时 LINK_STATUS 也是 false ✓
-       *   这种"失败"等上下文回来重来一次就好了，报成链接失败会把人带偏 ✓ */
-      if (ctxLost(gl)) {
-        throw shaderErr('CTX_LOST', '着色器还没链接完，显卡上下文就被收走了'
-          + '（切后台 / 显存紧张 / 驱动重置都会这样）');
-      }
-      const ge0 = (gl.getError && gl.getError()) || 0;
-      if (ge0 === 0x9242) {
-        _setupFail('context-lost', '着色器链接时 WebGL 上下文丢失', gl,
-          { stageAt: 'link', log: linkLog, glError: ge0, linkMs });
-      }
-      if (ge0 !== 0x0505) {
-        /* 🔴 **完整版不行 → 逐档减负，不要一步退到"没有边界"** ✗✗（2026-10-27）
-         *
-         *   Adreno 613 + vivo 浏览器：完整版链接失败（报告里就是这么写的 ✓）
-         *   旧代码只试「精简版」→ 边界线整块没了 → 用户怎么调开关都看不见地区边界 ✓
-         *   现在按画质从高到低试：
-         *     ① mid    —— 保留本层 + 填色 + 多级链，只砍水域 / 荒地两条独立通道
-         *     ② border —— 再砍多级链，保留本层头衔 + 填色（地区线就在这条）
-         *     ③ lite   —— 最后保底，没有边界线
-         *   ⚠ 只有"像个真着色器问题"时才试 ✗（显存不足再试只是白等 92 秒 ✓）
-         */
-        const _why = linkLog || '（驱动没给日志）';
-        const _variants = [
-          ['mid', makeMidFragment(FRAG), '中等着色器（保留本层 + 多级边界）'],
-          ['border', makeBorderOnlyFragment(FRAG), '边界着色器（仅本层头衔/填色）'],
-          ['title', makeTitleOnlyFragment(FRAG), '最简边界（仅本层头衔）'],
-          ['lite', makeLiteFragment(FRAG), '精简着色器（无边界线）'],
-        ];
-        for (const [tier, src, label] of _variants) {
-          if (!src) continue;
-          const lr = _linkTry(src);
-          if (lr.prog) {
-            _r = lr;
-            this.shaderTier = tier;
-            this.liteShader = (tier === 'lite');
-            this.liteWhy = _why;
-            this.liteLinkMs = lr.linkMs;
-            linkMs = lr.linkMs;
-            linkLog = '';
-            try {
-              console.warn('[gl] 完整着色器链接失败，已退到' + label + '：' + _why);
-            } catch (e) { /* ✓ */ }
-            break;
-          }
+    this.skippedFull = _skipFull;
+
+    /* 画质从高到低：mid（本层 + 填色 + 多级链）→ border（本层 + 填色）→ title（本层头衔）→ lite（没有边界线）*/
+    const _variants = [
+      ['mid', makeMidFragment(FRAG), '中等着色器（保留本层 + 多级边界）'],
+      ['border', makeBorderOnlyFragment(FRAG), '边界着色器（仅本层头衔/填色）'],
+      ['title', makeTitleOnlyFragment(FRAG), '最简边界（仅本层头衔）'],
+      ['lite', makeLiteFragment(FRAG), '精简着色器（无边界线）'],
+    ];
+    const _order = ['mid', 'border', 'title', 'lite'];
+    const _chainStart = () => {
+      if (_forcedTier) return Math.max(0, _order.indexOf(_forcedTier));
+      if (this.softwareGL || this._fastBoot) return 2;   /* title：边界还在，2.4 s ✓ */
+      return 0;     // 软件渲染直接落 title（border 那档 8.5 s，纯烧时间）
+    };
+    /* 从第 startIdx 档起顺着往下试，谁先链成功就用谁 ✓ */
+    const _tryChain = (startIdx, why) => {
+      for (let i = startIdx; i < _variants.length; i++) {
+        const [tier, src, label] = _variants[i];
+        if (!src) continue;
+        const lr = _linkTry(src);
+        if (lr.prog) {
+          this.shaderTier = tier;
+          this.liteShader = (tier === 'lite');
+          this.liteWhy = why || '';
+          this.liteLinkMs = lr.linkMs;
+          try {
+            console.warn('[gl] 用' + label + (why ? '（' + why + '）' : '')
+              + '，链接 ' + lr.linkMs + ' ms ✓');
+          } catch (e) { /* ✓ */ }
+          return lr;
         }
       }
+      return { prog: null, info: '', linkMs: 0 };
+    };
+
+    let _r = { prog: null, info: '', linkMs: 0 };
+    if (_skipFull) {
+      try {
+        console.warn('[gl] ' + (_forcedTier ? '按地址参数跳过完整着色器'
+          : (this.softwareGL ? '软件渲染' : '快速启动'))
+          + '：先用「' + (_forcedTier || 'title') + '」把图打出来'
+          + (this._fastBoot && !this.softwareGL && !_forcedTier ? '，完整版后台再升 ✓' : ' ✓'));
+      } catch (e) { /* ✓ */ }
+      _r = _tryChain(_chainStart(), this.softwareGL ? '软件渲染（没用上显卡）' : '');
+      linkMs = _r.linkMs || 0;
+    } else {
+      _r = _linkTry(FRAG);
+      linkMs = _r.linkMs;
+      linkLog = _r.info;
       if (!_r.prog) {
-        /* ⚠ 日志**可能是空的** ✗（驱动内部报错时只给个 LINK_STATUS = false ✓）
-            那就把渲染器和版本一起带上 —— 否则报上来只有"链接失败"四个字，
-            根因（指令数超限 / 寄存器不够 / ANGLE 翻译不过）一点都看不出来 ✓ */
-        _setupFail('shader-link',
-          linkLog ? '着色器链接失败：' + linkLog : '着色器链接失败（驱动没给日志）', gl,
-          { stageAt: 'link', log: linkLog, glError: ge0, linkMs,
-            liteTried: !!makeMidFragment(FRAG),
-            liteLog: (this.liteWhy || ''), softwareGL: this.softwareGL });
+        /* ⚠ **先问上下文再说着色器** ✗ —— 上下文被收走时 LINK_STATUS 也是 false ✓
+         *   这种"失败"等上下文回来重来一次就好了，报成链接失败会把人带偏 ✓ */
+        if (ctxLost(gl)) {
+          throw shaderErr('CTX_LOST', '着色器还没链接完，显卡上下文就被收走了'
+            + '（切后台 / 显存紧张 / 驱动重置都会这样）');
+        }
+        const ge0 = (gl.getError && gl.getError()) || 0;
+        if (ge0 === 0x9242) {
+          _setupFail('context-lost', '着色器链接时 WebGL 上下文丢失', gl,
+            { stageAt: 'link', log: linkLog, glError: ge0, linkMs });
+        }
+        /* 只有"像个真着色器问题"时才降档 ✗（显存不足再试只是白等 ✓） */
+        if (ge0 !== 0x0505) {
+          const _why = linkLog || '（驱动没给日志）';
+          const lr = _tryChain(0, _why);
+          if (lr.prog) { _r = lr; linkMs = lr.linkMs; linkLog = ''; }
+        }
       }
     }
+    if (!_r.prog) {
+      /* ⚠ 日志**可能是空的** ✗（驱动内部报错时只给个 LINK_STATUS = false ✓）
+          那就把渲染器和版本一起带上 —— 否则报上来只有"链接失败"四个字，
+          根因（指令数超限 / 寄存器不够 / ANGLE 翻译不过）一点都看不出来 ✓ */
+      _setupFail('shader-link',
+        linkLog ? '着色器链接失败：' + linkLog : '着色器链接失败（驱动没给日志）', gl,
+        { stageAt: 'link', log: linkLog, glError: (gl.getError && gl.getError()) || 0, linkMs,
+          liteTried: !!makeMidFragment(FRAG),
+          liteLog: (this.liteWhy || ''), softwareGL: this.softwareGL });
+    }
     const prog = _r.prog;
-    this.prog = prog;
+    this._installProgram(prog);
+    this._linkMs = linkMs;
+    this._linkLog = linkLog;
+    /* 数组纹理能不能采（真数据试一遍 ✓ 见 _probeArrTex）——
+     *   ⚠ 只在这里跑一次 ✗：上下文重建会再走一遍 _build ✓ 正好重测 ✓ */
+    const _arr = this._probeArrTex();
+    this.arrOk = _arr.ok;
+    this.arrWhy = _arr.why || '';
 
+
+    gl.disable(gl.DEPTH_TEST);
+    gl.disable(gl.BLEND);
+    // 用**现在**的背景色，不是出厂色 —— 重建时别把用户改过的背景抹回默认 ✓
+    gl.clearColor(this.backdrop[0], this.backdrop[1], this.backdrop[2], 1);
+  }
+
+  /**
+   * 把一套 program 装到渲染器上：uniform 位置 + 顶点数组 ✓
+   *
+   *  原来这一坨是直接写在 `_build()` 里的 ✗ —— 后台升级着色器时要能**再装一遍**，
+   *  所以抽出来 ✓（2026-11-01）
+   */
+  _installProgram(prog) {
+    const gl = this.gl;
+    this.prog = prog;
     this.uni = {};
+    /* **换了程序 → 每帧那本"上次发过什么"的账全作废** ✗✗
+     *   新程序的 uniform 全是默认值（0）✓ 旧账里记的"已经发过 1 了"是**别的程序**的 ✓
+     *   不清就会整帧沿用旧值 → 后台升级着色器之后画面全白/全黑 ✓（这条极难对出来 ✓）*/
+    this._uCache = new Map();
+    /* **类色那一组要重发** ✗✗（2026-11-03）
+     *   `uNature[5]` 是**数组** uniform，新程序的默认值同样是全 0 ✓
+     *   它不走 `_uCache`（那本账一个 location 只记 4 个数 ✗ 装不下 15 个 float），
+     *   由 `natureDirty` 单独管 → 换程序必须置脏，否则后台升级完着色器
+     *   海/湖/河那几类立刻变黑（跟刚修的那个 bug 一模一样 ✓）*/
+    this.natureDirty = true;
+    this._texBound = null;      // 纹理那本账：交给 render() 第一次用时重建 ✓
+    this._texEpoch = -1;
     for (const n of ['uView', 'uProv', 'uProvArr', 'uProvTiles', 'uProvCols', 'uUseTiles', 'uProvScale', 'uNoAA', 'uTitleMap', 'uColorLut', 'uPaint', 'uPaintLabel', 'uBorderDepth', 'uBorderDepthOn',
                      'uMapSize', 'uTitleMapW', 'uNumProvinces', 'uPaintW', 'uTier', 'uEditTier', 'uFineTier',
                      'uShowTitles', 'uShowPaint', 'uMix',
@@ -1839,20 +2015,13 @@ export class MapRenderer {
                      'uKindTex', 'uKindOn', 'uKindW', 'uNature',
                      'uWaterBorderOn', 'uWaterBorderW', 'uWaterBorderA',
                      'uWaterKind', 'uWaterKindW',
+                     'uFlagIdx', 'uFlagIdxW', 'uFlagSlots', 'uFlagSlotW', 'uFlagTex', 'uFlagOn',
                      /* 🔴 **荒地边界那三根**（2026-10-17 ✓）——
                       *   ⚠ 它**没有自己的纹理 uniform** ✗（读的是 uKindTex ✓ 见着色器那段 ✓）*/
                      'uWasteBorderOn', 'uWasteBorderW', 'uWasteBorderA',
                      'uBackdrop']) {
       this.uni[n] = gl.getUniformLocation(prog, n);
     }
-    this._linkMs = linkMs;
-    this._linkLog = linkLog;
-    /* 数组纹理能不能采（真数据试一遍 ✓ 见 _probeArrTex）——
-     *   ⚠ 只在这里跑一次 ✗：上下文重建会再走一遍 _build ✓ 正好重测 ✓ */
-    const _arr = this._probeArrTex();
-    this.arrOk = _arr.ok;
-    this.arrWhy = _arr.why || '';
-
     const vao = gl.createVertexArray();
     gl.bindVertexArray(vao);
     const vbo = gl.createBuffer();
@@ -1863,11 +2032,143 @@ export class MapRenderer {
     gl.enableVertexAttribArray(loc);
     gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
     this.vao = vao;
+    return prog;
+  }
 
-    gl.disable(gl.DEPTH_TEST);
-    gl.disable(gl.BLEND);
-    // 用**现在**的背景色，不是出厂色 —— 重建时别把用户改过的背景抹回默认 ✓
-    gl.clearColor(this.backdrop[0], this.backdrop[1], this.backdrop[2], 1);
+  /**
+   * 后台把着色器升级到完整版 ✓（2026-11-01）
+   *
+   *  为什么 ✗：完整版在入门独显/集显上**首次链接要 39 秒**（实测 AMD 610M + ANGLE；
+   *  浏览器缓存命中后只 43 ms）—— 让玩家干等 39 秒，等于"这软件坏了" ✓
+   *  现在先用低一档把图打出来（2 秒），再在后台编完整版，编好了**无缝换掉** ✓
+   *
+   *  两个要点：
+   *   · 有 `KHR_parallel_shader_compile` 就用它轮询 —— 编译在 GPU 进程里跑，
+   *     主线程 `await` 等，**界面不冻** ✓（没这个扩展就退回同步链接 ✓）
+   *   · 换 program 只在**画完一帧之后**（dirty 置真即可），旧纹理/数据一个不动 ✓
+   *
+   *  @returns {Promise<boolean>} 真的换上了没有
+   */
+  async upgradeShader() {
+    if (this.upgrading || this.ctxLost) return false;
+    if (this.shaderTier === 'full') return false;
+    /* 软件渲染就别升了 ✓ —— SwiftShader 编一遍要 45 秒，纯烧 CPU 换一点画质不值 ✓
+       （它本来也画不快，多级边界对它只是负担 ✓）*/
+    if (this.softwareGL) return false;
+    if (_shaderTierFromUrl()) return false;      // 手动指定档位时就别自作主张 ✓
+    this.upgrading = true;
+    const gl = this.gl;
+    /* 🔴 **缺扩展时不许静默退出** ✗✗（2026-11-03 用户实测报告）
+     *
+     *   原来这里：没有 `KHR_parallel_shader_compile` → 直接 return false，**一行日志都不打** ✓
+     *   Firefox 上正好命中 → 一直停在「最简边界（仅本层头衔）」，
+     *   国家之间的粗边界整片消失，诊断报告里却干干净净，查了很久 ✓
+     *
+     *   现在：缺扩展就**同步**升（先打一条警告说明可能卡一下 ✓）。
+     *   真显卡缓存命中时是毫秒级，只有极冷的首次编译才会卡 ✓
+     *
+     *   ⚠ 这个检查必须在 `gl` 拿到**之后** ✗（我第一版写在了前面，直接 ReferenceError ✓）*/
+    let parExt = null;
+    try {
+      parExt = (gl.getExtension && gl.getExtension('KHR_parallel_shader_compile')) || null;
+    } catch (e) { parExt = null; }
+    if (!parExt) {
+      try {
+        console.warn('[gl] 没有 KHR_parallel_shader_compile，改用同步升级（可能卡一下）✓');
+      } catch (e) { /* ✓ */ }
+      try { LOG.event('渲染升级', '无并行编译扩展，同步升一档'); } catch (e) { /* ✓ */ }
+    }
+    const t0 = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+    try {
+      /* 依次试完整 → 中等 → 边界，取第一个链成功的；都不行就维持现状 ✓ */
+      const _rank = { lite: 0, title: 1, border: 2, mid: 3, full: 4 };
+      const _now = _rank[this.shaderTier] == null ? 0 : _rank[this.shaderTier];
+      let prog = null;
+      let tier = '';
+      for (const [t, src] of [['full', FRAG], ['mid', makeMidFragment(FRAG)], ['border', makeBorderOnlyFragment(FRAG)]]) {
+        if (!src) continue;
+        if (_rank[t] <= _now) break;            // 不比现在好就别试了 ✓
+        prog = await this._linkFullAsync(src, parExt);
+        if (prog) { tier = t; break; }
+      }
+      const ms = Math.round(((typeof performance !== 'undefined' ? performance.now() : Date.now())) - t0);
+      /* 一档都没升上去也要留痕 ✗（2026-11-03：静默失败让用户以为是"地图坏了"）*/
+      if (!prog) {
+        this.upgrading = false;
+        try {
+          console.warn('[gl] 后台升级没有更优档位可用，维持「' + this.shaderTier + '」✗');
+        } catch (e) { /* ✓ */ }
+        try { LOG.event('渲染升级', '没有更优档位，维持「' + this.shaderTier + '」'); } catch (e) { /* ✓ */ }
+        return false;
+      }
+      if (this.ctxLost) { try { gl.deleteProgram(prog); } catch (e) { /* ✓ */ } this.upgrading = false; return false; }
+      const old = this.prog;
+      const oldVao = this.vao;
+      this._installProgram(prog);
+      try { if (old) gl.deleteProgram(old); } catch (e) { /* ✓ */ }
+      try { if (oldVao) gl.deleteVertexArray(oldVao); } catch (e) { /* ✓ */ }
+      this.shaderTier = tier;
+      this.liteShader = (tier === 'lite');
+      this.liteWhy = '';
+      this._linkMs = ms;
+      this.dirty = true;
+      this.upgrading = false;
+      try { console.log('[gl] 已后台升级着色器到「' + tier + '」（' + ms + ' ms）✓'); } catch (e) { /* ✓ */ }
+      return true;
+    } catch (e) {
+      this.upgrading = false;
+      try { console.warn('[gl] 后台升级着色器失败（继续用当前档 ✓）：' + ((e && e.message) || e)); } catch (e2) { /* ✓ */ }
+      return false;
+    }
+  }
+
+  /** 链接完整版；能并行就并行（轮询期间主线程是自由的 ✓），不能就同步 ✓
+   *  @param {any} parExt 上层已经取过的 KHR_parallel_shader_compile（null = 没有，走同步 ✓）*/
+  _linkFullAsync(fragSrc, parExt) {
+    const gl = this.gl;
+    const prog = gl.createProgram();
+    if (!prog) return Promise.resolve(null);
+    gl.attachShader(prog, compile(gl, gl.VERTEX_SHADER, VERT));
+    gl.attachShader(prog, compile(gl, gl.FRAGMENT_SHADER, fragSrc));
+    gl.linkProgram(prog);
+    const ext = parExt !== undefined
+      ? parExt
+      : ((gl.getExtension && gl.getExtension('KHR_parallel_shader_compile')) || null);
+    if (!ext) {
+      const ok = gl.getProgramParameter(prog, gl.LINK_STATUS);
+      if (!ok) { try { gl.deleteProgram(prog); } catch (e) { /* ✓ */ } return Promise.resolve(null); }
+      return Promise.resolve(prog);
+    }
+    return new Promise((resolve) => {
+      /* 🔴 **轮询必须有个尽头** ✗✗（2026-11-03 用户报告）
+       *   有的驱动/浏览器 `COMPLETION_STATUS_KHR` 永远不置真 →
+       *   这个 Promise 永不 resolve，`upgrading` 一直是 true → 后续每次升级都直接返回 ✗
+       *   表现就是"停在最简边界、且一个字日志都没有" ✓
+       *   现在：20 秒还没好就放弃这一档（并留一条警告 ✓）*/
+      const t0 = (typeof performance !== 'undefined' && performance.now)
+        ? performance.now() : Date.now();
+      const poll = () => {
+        const el = ((typeof performance !== 'undefined' && performance.now)
+          ? performance.now() : Date.now()) - t0;
+        let done = true;
+        try { done = !!gl.getProgramParameter(prog, ext.COMPLETION_STATUS_KHR); } catch (e) { done = true; }
+        if (!done) {
+          if (el > 20000) {
+            try { console.warn('[gl] 并行编译 20 秒没完成，放弃这一档 ✓'); } catch (e) { /* ✓ */ }
+            try { gl.deleteProgram(prog); } catch (e) { /* ✓ */ }
+            resolve(null);
+            return;
+          }
+          setTimeout(poll, 40);
+          return;
+        }
+        let ok = false;
+        try { ok = !!gl.getProgramParameter(prog, gl.LINK_STATUS); } catch (e) { ok = false; }
+        if (!ok) { try { gl.deleteProgram(prog); } catch (e) { /* ✓ */ } resolve(null); return; }
+        resolve(prog);
+      };
+      setTimeout(poll, 40);
+    });
   }
 
   lutXY(tid) {
@@ -1892,6 +2193,7 @@ export class MapRenderer {
    */
   _probeArrTex() {
     const gl = this.gl;
+    glTexTouched();      // 下面这一串会用 0 号单元传测试纹理 → render 的账过期 ✓
     /* ⚠ **三态** ✗：'ok' 实测通过 / 'bad' 实测读回不对 / 'unknown' 这次探测做不了
      *   —— 只有 'bad' 才改道（见 setData ✓）
      *   探测本身做不成时**不许判坏** ✗：宁可维持老行为（分块照走 ✓），
@@ -2043,6 +2345,7 @@ void main() {
     const gl = this.gl;
     const tex = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D_ARRAY, tex);
+    glTexTouched();      // 绑在"当前单元"上 → render 的账过期 ✓
     gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
@@ -2098,6 +2401,7 @@ void main() {
     const _t0 = performance.now();
     const n = this.tileInfo.tileW * this.tileInfo.tileH;
     gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.provArrTex);
+    glTexTouched();      // ⚠ 传块每帧都可能来一次 → 这条**必须**有 ✓（否则第 12 号单元那本账会错 ✓）
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
     gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, layer,
       this.tileInfo.tileW, this.tileInfo.tileH, 1,
@@ -2136,6 +2440,125 @@ void main() {
       }
     }
     console.log(`就地切块：已上传 ${layout.cols * layout.rows} 块 ✓`);
+  }
+
+  /* ===================== 国旗（剪贴蒙版）=========================
+   *  2026-11-02 用户要的「国旗地图」：给一个色块贴一张旗，旗面拉满它的外接框，
+   *  被国土形状裁掉 —— 就是 PS 的剪贴蒙版 ✓
+   *
+   *  三张纹理：
+   *    · flagIdxTex   R8      pid → 旗号（0 = 没旗）✓ 换贴旗时重建
+   *    · flagSlotTex  RGBA32F 每面旗两格：矩形 / 图集 uv ✓ 拖拽时只重传这一张
+   *    · flagTexArr   RGBA8 数组纹理，**一层一面旗**（1024²/层）✓ 不封顶
+   *
+   *  ⚠ 数据存在渲染器上（`this._flagMask` 等）✗ —— 上下文丢失重建后要**原样重传** ✓
+   *     不然用户切个后台回来旗子就没了 ✓
+   */
+
+  /** 每省一个旗号（Uint8Array(numProvinces)，0 = 没旗）✓ 换旗才重传 */
+  setFlagMask(mask) {
+    this._flagMask = mask || null;
+    this._uploadFlagMask();
+    this.dirty = true;
+  }
+
+  /** 每面旗的 矩形 / uv / 层号（Float32Array(4*N*3)）✓ 拖拽时每帧都可能重传 */
+  setFlagSlots(slots) {
+    this._flagSlots = slots || null;
+    this._uploadFlagSlots();
+    this.flagOn = (this._flagSlots && this._flagSlots.length >= 12 && this.flagTexArr) ? 1 : 0;
+    this.dirty = true;
+  }
+
+  /** 每面旗一层（canvas 数组，1024²）✓ 加减旗 / 换图时重传 */
+  setFlagLayers(layers) {
+    this._flagLayers = layers || null;
+    this._uploadFlagLayers();
+    this.flagOn = (this._flagSlots && this._flagSlots.length >= 12 && this.flagTexArr) ? 1 : 0;
+    this.dirty = true;
+  }
+
+  clearFlags() {
+    this._flagMask = null;
+    this._flagSlots = null;
+    this.flagOn = 0;
+    this.dirty = true;
+  }
+
+  _uploadFlagMask() {
+    const gl = this.gl;
+    if (this.flagIdxTex) { try { gl.deleteTexture(this.flagIdxTex); } catch (e) { /* ✓ */ } this.flagIdxTex = null; }
+    if (!this._flagMask) return;
+    const n = this._flagMask.length;
+    const lim = this.maxTex || gl.getParameter(gl.MAX_TEXTURE_SIZE);
+    const W = Math.max(1, Math.min(n, Math.min(lim, 4096)));
+    const H = Math.max(1, Math.ceil(n / W));
+    const buf = new Uint8Array(W * H);
+    buf.set(this._flagMask);
+    this.flagIdxW = W;
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    glTexTouched();      // 绑在"当前单元"上 → render 的账过期 ✓
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, W, H, 0, gl.RED, gl.UNSIGNED_BYTE, buf);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+    this.flagIdxTex = tex;
+  }
+
+  _uploadFlagSlots() {
+    const gl = this.gl;
+    if (this.flagSlotTex) { try { gl.deleteTexture(this.flagSlotTex); } catch (e) { /* ✓ */ } this.flagSlotTex = null; }
+    if (!this._flagSlots) return;
+    const n = this._flagSlots.length / 4;      // 每格 4 个数
+    const W = Math.max(1, Math.min(n, 64));
+    const H = Math.max(1, Math.ceil(n / W));
+    const buf = new Float32Array(W * H * 4);
+    buf.set(this._flagSlots.slice(0, W * H * 4));
+    this.flagSlotW = W;
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    glTexTouched();      // 绑在"当前单元"上 → render 的账过期 ✓
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, W, H, 0, gl.RGBA, gl.FLOAT, buf);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    this.flagSlotTex = tex;
+  }
+
+  /** 一层一面旗的数组纹理 ✓（不封顶：贴多少面就多少层）
+   *
+   *  ⚠ 每层固定 1024²（RGBA8，约 4 MB + 三分之一 mipmap）——
+   *    小旗也占一层，图省事；层数由 app 侧的旗子数量决定 ✓
+   *  ⚠ 重传是"整张重建"✓：加减旗 / 换图都不频繁，重建一次几百毫秒，换来代码简单 ✓
+   */
+  _uploadFlagLayers() {
+    const gl = this.gl;
+    if (this.flagTexArr) { try { gl.deleteTexture(this.flagTexArr); } catch (e) { /* ✓ */ } this.flagTexArr = null; }
+    const L = this._flagLayers;
+    if (!L || !L.length) return;
+    const S = L[0].width || 1024;
+    const levels = Math.floor(Math.log2(S)) + 1;
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, tex);
+    glTexTouched();      // 绑在"当前单元"上 → render 的账过期 ✓
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+    gl.texStorage3D(gl.TEXTURE_2D_ARRAY, levels, gl.RGBA8, S, S, L.length);
+    for (let i = 0; i < L.length; i++) {
+      gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, i, S, S, 1,
+        gl.RGBA, gl.UNSIGNED_BYTE, L[i]);
+    }
+    gl.generateMipmap(gl.TEXTURE_2D_ARRAY);
+    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    this.flagTexArr = tex;
   }
 
   async setData({ provinceIds, titlemap, colors, tiles }) {
@@ -2394,6 +2817,8 @@ void main() {
       26 / 255, 46 / 255, 71 / 255,        // 5 不可通行海域 ✓
       94 / 255, 94 / 255, 94 / 255,        // 6 不可通行区域 ✓
     ]);
+    /* 换图 / 第一次上传：这一组得整段重发 ✓（见 render() 里 uNature 那段 ✓）*/
+    this.natureDirty = true;
 
     /* 🔴 **上传完再看一眼上下文** ✗（2026-10-17）
      *   低端机 / 手机在 `texImage2D` 那一批调用里把显存吃爆时，上下文会**悄悄丢**：
@@ -2442,6 +2867,7 @@ void main() {
       this.natureFlat[i * 3 + 1] = (c[1] || 0) / 255;
       this.natureFlat[i * 3 + 2] = (c[2] || 0) / 255;
     }
+    this.natureDirty = true;
     this.dirty = true;
   }
 
@@ -2487,6 +2913,7 @@ void main() {
     if (!this.lutDirty) return;
     const gl = this.gl;
     gl.bindTexture(gl.TEXTURE_2D, this.colorTex);
+    glTexTouched();      // 绑在"当前单元"上 → render 的账过期 ✓
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
     gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, this.lutW, this.lutH,
       gl.RGBA, gl.UNSIGNED_BYTE, this.lutData);
@@ -2520,15 +2947,19 @@ void main() {
   /** 整张重传（53 KB，比逐个 texSubImage2D 快得多） */
   flushPaint() {
     const gl = this.gl;
+    /* ⚠ 这里每绑一次都得跟上面说一声 ✓ —— 五段上传都绑在"当前单元"上 ✓
+     *   漏一处就会让下一帧沿用"这张单元还绑着原来那张"的假账 ✓（见 GL_TEX_EPOCH ✓）*/
     if (this.paintDirty) {
       // 上传前拍平（按省份的连续内存 → 宽度受限的二维）
       this.paintFlat.set(this.paintData);
       this.paintLabelFlat.set(this.paintLabelData);
       gl.bindTexture(gl.TEXTURE_2D, this.paintTex);
+      glTexTouched();
       gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
       gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, this.paintW, this.paintRows,
         gl.RGBA, gl.UNSIGNED_BYTE, this.paintFlat);
       gl.bindTexture(gl.TEXTURE_2D, this.paintLabelTex);
+      glTexTouched();
       gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
       gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, this.paintW, this.paintRows,
         gl.RG, gl.UNSIGNED_BYTE,
@@ -2541,6 +2972,7 @@ void main() {
       if (this.kindData) this.kindFlat.set(this.kindData);
       else this.kindFlat.fill(0);
       gl.bindTexture(gl.TEXTURE_2D, this.kindTex);
+      glTexTouched();
       gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
       gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, this.paintW, this.paintRows,
         gl.RED, gl.UNSIGNED_BYTE, this.kindFlat);
@@ -2552,6 +2984,7 @@ void main() {
       if (this.waterKindData) this.waterKindFlat.set(this.waterKindData);
       else this.waterKindFlat.fill(0);
       gl.bindTexture(gl.TEXTURE_2D, this.waterKindTex);
+      glTexTouched();
       gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
       gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, this.paintW, this.paintRows,
         gl.RED, gl.UNSIGNED_BYTE, this.waterKindFlat);
@@ -2561,6 +2994,7 @@ void main() {
     if (this.hoverGroupDirty && this.hoverGroupData) {
       this.hoverGroupFlat.set(this.hoverGroupData);
       gl.bindTexture(gl.TEXTURE_2D, this.hoverGroupTex);
+      glTexTouched();
       gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
       gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, this.paintW, this.paintRows,
         gl.RG, gl.UNSIGNED_BYTE,
@@ -2876,6 +3310,91 @@ void main() {
     }
   }
 
+  /* ============ **每帧那九十多条 GL 调用：没变就别发** ✓（2026-11-03）============
+   *
+   *  一帧 render() 固定要发多少条？`node tools/_bench_render.js EU4` 数过：
+   *    43 条 uniform1i + 13 条 activeTexture + 13 条 bindTexture + 10 条 uniform1f
+   *    + 其余向量几条 = **97 条** ✓
+   *  而拖动 / 缩放时**真正变的只有 uView 那 4 个数** ✗ 其余九十多条每次都一模一样 ✓
+   *
+   *  每条 JS→WebGL 的调用都要过一遍参数校验、再抄进命令缓冲 ✗
+   *  桌面上一条约 0.2~0.5 µs、手机（尤其 Adreno 那批）1~3 µs ✓
+   *  → 97 条 ≈ 桌面 0.02 ms / 手机 0.3 ms 左右，**每帧白烧** ✓
+   *    60 帧就是手机 18 ms —— "一拖就掉帧"里有一部分就是它 ✓
+   *
+   *  做法：**上次发过的值存着，这次一样就整条跳过** ✓
+   *  ⚠ 只跳过"发同一个值"的调用 → 渲染结果**一个字节都不变** ✓（这点必须守住 ✓）
+   *  ⚠ 账本按 **location 对象**记 ✓ —— 换程序时 `_installProgram` 会整个清掉 ✓
+   *    （不清的话新程序会沿用旧程序"已经发过"的假账 → 整帧错色 ✓ 极难查 ✓）
+   *  ⚠ 纹理那本账另有代号兜底 ✓ 见 `GL_TEX_EPOCH` 那段 ✓
+   */
+
+  /** 一个分量：跟上次一样就跳过 ✓（kind: 0=uniform1i · 1=uniform1f · 2=uniform1ui）*/
+  _u1(loc, v, kind) {
+    if (loc == null) return;
+    const cache = this._uCache;
+    if (cache.get(loc) === v) return;
+    cache.set(loc, v);
+    const gl = this.gl;
+    if (kind === 0) gl.uniform1i(loc, v);
+    else if (kind === 1) gl.uniform1f(loc, v);
+    else gl.uniform1ui(loc, v);
+  }
+
+  /** 二 / 三 / 四个分量：先逐个比、再决定发不发 ✓（kind: 0=2i · 1=3f · 2=4f）
+   *  ⚠ 值存在一个定长小数组里**就地改** ✗ 不是每帧 new 一个 ✓（不然 GC 抖回来 ✓）*/
+  _uN(loc, kind, a, b, c, d) {
+    if (loc == null) return;
+    const cache = this._uCache;
+    let p = cache.get(loc);
+    if (p === undefined) { p = [a, b, c, d]; cache.set(loc, p); }
+    else {
+      const same = kind === 0 ? (p[0] === a && p[1] === b)
+        : kind === 1 ? (p[0] === a && p[1] === b && p[2] === c)
+          : (p[0] === a && p[1] === b && p[2] === c && p[3] === d);
+      if (same) return;
+      p[0] = a; p[1] = b; p[2] = c; p[3] = d;
+    }
+    const gl = this.gl;
+    if (kind === 0) gl.uniform2i(loc, a, b);
+    else if (kind === 1) gl.uniform3f(loc, a, b, c);
+    else gl.uniform4f(loc, a, b, c, d);
+  }
+
+  /** 定长数组（`uExtraTier` 那四根，8 个）：逐元素比完再决定发不发 ✓
+   *  ⚠ 比的是**当前值**不是引用 ✗ —— app 那边是拿同一个数组就地改的 ✓ */
+  _uArr(loc, arr, n, isInt) {
+    if (loc == null || !arr) return;
+    const len = n | 0;
+    const cache = this._uCache;
+    let p = cache.get(loc);
+    if (p === undefined || p.length !== len) { p = new Array(len); cache.set(loc, p); }
+    let same = true;
+    for (let i = 0; i < len; i++) { if (p[i] !== arr[i]) { same = false; break; } }
+    if (same) return;
+    for (let i = 0; i < len; i++) p[i] = arr[i];
+    const gl = this.gl;
+    if (isInt) gl.uniform1iv(loc, arr); else gl.uniform1fv(loc, arr);
+  }
+
+  /** 绑一个纹理单元：**同一单元已经绑着同一张** → activeTexture + bindTexture 全跳 ✓
+   *  ⚠ 代号变了（别处绑过）就把整本账撕掉重记 ✓ 见 `GL_TEX_EPOCH` 那段 ✓ */
+  _tex(unit, target, tex) {
+    if (this._texEpoch !== GL_TEX_EPOCH || !this._texBound) {
+      this._texEpoch = GL_TEX_EPOCH;
+      this._texBound = new Array(13).fill(null);
+      this._texUnit = -1;          // 别处可能 activeTexture 过 → 当前单元也不可信 ✓
+    }
+    const gl = this.gl;
+    /* ⚠ **先看"这张是不是还绑着"，再决定要不要切单元** ✗✗
+     *   反过来写（先 activeTexture 再判）等于每帧把 13 个单元全切一遍 ✓
+     *   而"每次都要切"其实只因为上一次停在 12 号 ✓ 顺序一变就白切 13 条 ✓ */
+    if (this._texBound[unit] === tex) return;
+    if (this._texUnit !== unit) { gl.activeTexture(gl.TEXTURE0 + unit); this._texUnit = unit; }
+    gl.bindTexture(target, tex);
+    this._texBound[unit] = tex;
+  }
+
   render() {
     /* 🔴 **逐帧体检**（只在手机上）✗ —— 用户报：手机版黑屏、中心像素 [0,0,0]、
      *   出错码 **1282（GL_INVALID_OPERATION）** ✓
@@ -2910,117 +3429,157 @@ void main() {
     gl.useProgram(this.prog);
     gl.bindVertexArray(this.vao);
 
-    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this.provTex);
-    gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, this.titleTex);
-    gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, this.colorTex);
-    gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, this.paintTex);
-    gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, this.paintLabelTex);
-    gl.uniform1i(u.uProv, 0);
-    gl.uniform1i(u.uTitleMap, 1);
-    gl.uniform1i(u.uColorLut, 2);
-    gl.uniform1i(u.uPaint, 3);
-    gl.uniform1i(u.uPaintLabel, 4);
+    /* **0~4 号单元**（顺序 / 单元号一个都不能动 ✓ 见文件头那几条着色器规矩 ✓）
+     *   ⚠ 这里不再直接 activeTexture + bindTexture ✗ —— `_tex()` 会先看
+     *     "这个单元上次绑的是不是同一张"，是就整条跳过 ✓（省下的正是每帧的固定开销 ✓）*/
+    this._tex(0, gl.TEXTURE_2D, this.provTex);
+    this._tex(1, gl.TEXTURE_2D, this.titleTex);
+    this._tex(2, gl.TEXTURE_2D, this.colorTex);
+    this._tex(3, gl.TEXTURE_2D, this.paintTex);
+    this._tex(4, gl.TEXTURE_2D, this.paintLabelTex);
+    this._u1(u.uProv, 0, 0);
+    this._u1(u.uTitleMap, 1, 0);
+    this._u1(u.uColorLut, 2, 0);
+    this._u1(u.uPaint, 3, 0);
+    this._u1(u.uPaintLabel, 4, 0);
     // 分块那条路：纹理单元 5（0~4 已经被上面占满）
-    gl.activeTexture(gl.TEXTURE5);
-    gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.provArrTex);
-    gl.uniform1i(u.uProvArr, 5);
+    this._tex(5, gl.TEXTURE_2D_ARRAY, this.provArrTex);
+    this._u1(u.uProvArr, 5, 0);
 
     // **悬停编组表：单元 6** ✓（"同一片海"那条路要用 ✓ 任何一层都绑着 —— 那张表一直存在 ✓）
-    gl.activeTexture(gl.TEXTURE6);
-    gl.bindTexture(gl.TEXTURE_2D, this.hoverGroupTex);
-    gl.uniform1i(u.uHoverGroup, 6);
-    gl.uniform1i(u.uHoverGroupW, this.paintW);
+    this._tex(6, gl.TEXTURE_2D, this.hoverGroupTex);
+    this._u1(u.uHoverGroup, 6, 0);
+    this._u1(u.uHoverGroupW, this.paintW, 0);
 
     /* **底层身份标：单元 7** ✓（"每格按底层身份上色"那条要用 ✓）
      *   ⚠ 老包 / 没灌过 → kindData 为空 → `uKindOn = 0`，着色器整条让开 ✓ */
-    gl.activeTexture(gl.TEXTURE7);
-    gl.bindTexture(gl.TEXTURE_2D, this.kindTex);
-    gl.uniform1i(u.uKindTex, 7);
-    gl.uniform1i(u.uKindOn, this.kindData ? 1 : 0);
-    gl.uniform1i(u.uKindW, this.paintW);
-    gl.uniform3fv(u.uNature, this.natureFlat);
+    this._tex(7, gl.TEXTURE_2D, this.kindTex);
+    this._u1(u.uKindTex, 7, 0);
+    this._u1(u.uKindOn, this.kindData ? 1 : 0, 0);
+    this._u1(u.uKindW, this.paintW, 0);
+    /* ⚠ 没灌过自然色（老包 / 还没跑到）→ 这个 uniform 本来就没值可发 ✗
+     *   以前直接把 undefined 丢给 uniform3fv（会抛 TypeError）✓ 现在干脆跳过 ✓
+     *
+     * 🔴 **这里原来只发了一个元素 —— 湖 / 河 / 不可通行海域 / 不可通行全黑** ✗✗
+     *   旧代码：`_uN(u.uNature, 1, natureFlat[0], natureFlat[1], natureFlat[2], 0)`
+     *   `_uN` 走的是 `gl.uniform3f` → **只写 uNature[0]** ✓
+     *   而 WebGL 规范里数组 uniform 没写到的元素**初值就是 0** ✗✗
+     *   → 着色器 `natureColor(k) = uNature[k-2]`（见 GLSL 那段 ✓）：
+     *     海(2)=uNature[0] 有值 ✓
+     *     湖(3)=uNature[1] / 河(4)=uNature[2] / 不可通行海域(5)=uNature[3] / 不可通行(6)=uNature[4]
+     *     全是 (0,0,0) → `vec4(0,0,0,1)` = 纯黑 ✓（用户报的"湖泊/河流/锁定海域一片黑"）
+     *   改法：**一次 `uniform3fv` 把 15 个 float 全发过去** ✓
+     *   ⚠ 别塞进 `_uCache` ✗ —— 那本账一个 location 只存 4 个数 ✓ 用单独的 `natureDirty` ✓
+     *   ⚠ 只在脏了才发 ✓ 平时那几个值一个字节都不变 ✓ */
+    if (this.natureFlat && this.natureDirty) {
+      if (u.uNature) gl.uniform3fv(u.uNature, this.natureFlat);
+      this.natureDirty = false;
+    }
 
     /* **「认得出是水吗」那张表：单元 8** ✓（「水域 · 边界」那条通道要用 ✓）
      *   ⚠ 它跟 kindTex 一样**一直绑着** ✓ —— 表本身一直存在（内容可以是全 0 ✓）
      *     `uWaterKindOn` 那个闸由 app 侧跟"这个勾"AND 好之后写进 waterBorderOn ✓
      *     （着色器里只留一个闸，省得两个地方各判一遍 ✗ 见 handover §3.4 第 2 步 ✓）*/
-    gl.activeTexture(gl.TEXTURE8);
-    gl.bindTexture(gl.TEXTURE_2D, this.waterKindTex);
-    gl.uniform1i(u.uWaterKind, 8);
-    gl.uniform1i(u.uWaterKindW, this.paintW);
+    this._tex(8, gl.TEXTURE_2D, this.waterKindTex);
+    this._u1(u.uWaterKind, 8, 0);
+    this._u1(u.uWaterKindW, this.paintW, 0);
 
     // **深度图：单元 9** ✓（纹理单元编号保持不变 ✓）
     if (this.borderDepthTex && this.borderDepthOn) {
-      gl.activeTexture(gl.TEXTURE9);
-      gl.bindTexture(gl.TEXTURE_2D, this.borderDepthTex);
-      gl.uniform1i(u.uBorderDepth, 9);
-      gl.uniform1i(u.uBorderDepthOn, 1);
+      this._tex(9, gl.TEXTURE_2D, this.borderDepthTex);
+      this._u1(u.uBorderDepth, 9, 0);
+      this._u1(u.uBorderDepthOn, 1, 0);
     } else {
       /* ⚠ **关掉也得绑** ✗ —— 光设 uBorderDepthOn=0 不够 ✓
        *   着色器里那个 sampler 仍然存在 ✓ WebGL 会检查它指向的纹理完不完整 ✓
        *   （这条就是手机黑屏的根 ✓ 踩过一次别再踩 ✓）*/
-      gl.activeTexture(gl.TEXTURE9);
-      gl.bindTexture(gl.TEXTURE_2D, this.dummyTex);
-      gl.uniform1i(u.uBorderDepth, 9);
-      gl.uniform1i(u.uBorderDepthOn, 0);
+      this._tex(9, gl.TEXTURE_2D, this.dummyTex);
+      this._u1(u.uBorderDepth, 9, 0);
+      this._u1(u.uBorderDepthOn, 0, 0);
     }
 
-    gl.uniform4f(u.uView, this.view.x, this.view.y, this.view.w, this.view.h);
-    gl.uniform2i(u.uMapSize, this.mapW, this.mapH);
-    gl.uniform1i(u.uTitleMapW, this.titleMapW);
-    gl.uniform1i(u.uNumProvinces, this.numProvinces);
-    gl.uniform1i(u.uPaintW, this.paintW);
-    gl.uniform1i(u.uTier, this.tier);
-    gl.uniform1i(u.uEditTier, this.editTier);
-    gl.uniform1i(u.uFineTier, this.fineTier);
-    gl.uniform1i(u.uShowTitles, this.showTitles ? 1 : 0);
-    gl.uniform1i(u.uShowPaint, this.showPaint ? 1 : 0);
+    /* **国旗三张表：单元 10 / 11 / 12** ✓（关着也得绑一张 1×1 ✓ 否则纹理不完整 → 画面黑 ✓）*/
+    if (this.flagOn && this.flagIdxTex && this.flagSlotTex && this.flagTexArr) {
+      this._tex(10, gl.TEXTURE_2D, this.flagIdxTex);
+      this._u1(u.uFlagIdx, 10, 0);
+      this._tex(11, gl.TEXTURE_2D, this.flagSlotTex);
+      this._u1(u.uFlagSlots, 11, 0);
+      this._tex(12, gl.TEXTURE_2D_ARRAY, this.flagTexArr);
+      this._u1(u.uFlagTex, 12, 0);
+      this._u1(u.uFlagOn, 1, 0);
+      this._u1(u.uFlagIdxW, this.flagIdxW || 1, 0);
+      this._u1(u.uFlagSlotW, this.flagSlotW || 1, 0);
+    } else {
+      this._tex(10, gl.TEXTURE_2D, this.dummyTex);
+      this._u1(u.uFlagIdx, 10, 0);
+      this._tex(11, gl.TEXTURE_2D, this.dummyTex);
+      this._u1(u.uFlagSlots, 11, 0);
+      this._tex(12, gl.TEXTURE_2D_ARRAY, this.dummyArrTex);
+      this._u1(u.uFlagTex, 12, 0);
+      this._u1(u.uFlagOn, 0, 0);
+      this._u1(u.uFlagIdxW, 1, 0);
+      this._u1(u.uFlagSlotW, 1, 0);
+    }
+
+    this._uN(u.uView, 2, this.view.x, this.view.y, this.view.w, this.view.h);
+    this._uN(u.uMapSize, 0, this.mapW, this.mapH, 0, 0);
+    this._u1(u.uTitleMapW, this.titleMapW, 0);
+    this._u1(u.uNumProvinces, this.numProvinces, 0);
+    this._u1(u.uPaintW, this.paintW, 0);
+    this._u1(u.uTier, this.tier, 0);
+    this._u1(u.uEditTier, this.editTier, 0);
+    this._u1(u.uFineTier, this.fineTier, 0);
+    this._u1(u.uShowTitles, this.showTitles ? 1 : 0, 0);
+    this._u1(u.uShowPaint, this.showPaint ? 1 : 0, 0);
     // 分块参数（没有分块数据时 useTiles=0 → 着色器走老路，跟以前等价 ✓）
-    const _ti = this.tileInfo || { tileW: 1, tileH: 1, cols: 1 };
-    gl.uniform2i(u.uProvTiles, _ti.tileW, _ti.tileH);
-    gl.uniform1i(u.uProvCols, _ti.cols);
-    gl.uniform1i(u.uUseTiles, this.useTiles || 0);
+    /* ⚠ 以前这里每帧 new 一个 `{tileW:1,...}` ✗（没分块数据时）→ 白喂 GC ✓
+     *   改成模块级的一个常量对象（只读，谁也别改它 ✓）*/
+    const _ti = this.tileInfo || NO_TILES;
+    this._uN(u.uProvTiles, 0, _ti.tileW, _ti.tileH, 0, 0);
+    this._u1(u.uProvCols, _ti.cols, 0);
+    this._u1(u.uUseTiles, this.useTiles || 0, 0);
     // id 图缩着传时 >1（见 setData 里 arrOk 那段 ✓）；正常情况下恒 1 ✓
-    gl.uniform1i(u.uProvScale, this._smallIds ? (this.provScale || 1) : 1);
-    gl.uniform1f(u.uMix, this.mix);
-    gl.uniform1i(u.uBorderTitle, this.borderTitle ? 1 : 0);
-    gl.uniform1i(u.uBorderPaint, this.borderPaint ? 1 : 0);
-    gl.uniform1i(u.uPaintOnly, this.paintOnly ? 1 : 0);
+    this._u1(u.uProvScale, this._smallIds ? (this.provScale || 1) : 1, 0);
+    this._u1(u.uMix, this.mix, 1);
+    this._u1(u.uBorderTitle, this.borderTitle ? 1 : 0, 0);
+    this._u1(u.uBorderPaint, this.borderPaint ? 1 : 0, 0);
+    this._u1(u.uPaintOnly, this.paintOnly ? 1 : 0, 0);
     // 「未上色区域」的颜色：无归属地块在开着剧本时的显示色 ✓
-    gl.uniform3f(u.uUnpainted, this.unpainted[0], this.unpainted[1], this.unpainted[2]);
-    gl.uniform1f(u.uBorderW, this.borderWidth);
-    gl.uniform1f(u.uPaintBorderW, this.paintWidth);
-    gl.uniform1f(u.uPaintBorderA, this.paintAlpha);
+    this._uN(u.uUnpainted, 1, this.unpainted[0], this.unpainted[1], this.unpainted[2], 0);
+    this._u1(u.uBorderW, this.borderWidth, 1);
+    this._u1(u.uPaintBorderW, this.paintWidth, 1);
+    this._u1(u.uPaintBorderA, this.paintAlpha, 1);
     /* **水域边界**（2026-10-16 ✓）—— 自己一套宽浓 ✓ 独立于那三个开关 ✓
      *   ⚠ `waterBorderOn` 是布尔 → app 每帧给 ✓（它已经把"那个勾 + 算得出水陆"AND 好 ✓）*/
-    gl.uniform1i(u.uWaterBorderOn, this.waterBorderOn ? 1 : 0);
-    gl.uniform1f(u.uWaterBorderW, this.waterBorderW);
-    gl.uniform1f(u.uWaterBorderA, this.waterBorderA);
+    this._u1(u.uWaterBorderOn, this.waterBorderOn ? 1 : 0, 0);
+    this._u1(u.uWaterBorderW, this.waterBorderW, 1);
+    this._u1(u.uWaterBorderA, this.waterBorderA, 1);
     /* 🔴 **荒地边界那三根**（2026-10-17 ✓ 跟水域一模一样的三行 ✓）*/
-    gl.uniform1i(u.uWasteBorderOn, this.wasteBorderOn ? 1 : 0);
-    gl.uniform1f(u.uWasteBorderW, this.wasteBorderW);
-    gl.uniform1f(u.uWasteBorderA, this.wasteBorderA);
-    gl.uniform1i(u.uExtraCount, this.extraCount | 0);
-    gl.uniform1iv(u.uExtraTier, this.extraTiers);
-    gl.uniform1fv(u.uExtraW, this.extraWs);
-    gl.uniform1iv(u.uExtraShow, this.extraShows);
-    gl.uniform1fv(u.uExtraA, this.extraAs);
-    gl.uniform1f(u.uBorderA, this.borderStrength);
-    gl.uniform1i(u.uLutW, this.lutW);
-    gl.uniform1i(u.uRealTitles, this.realTitles);
-    gl.uniform1ui(u.uHoverTid, this.hoverTid);
-    gl.uniform1i(u.uHoverPaintOn, this.hoverPaintOn ? 1 : 0);
-    gl.uniform3f(u.uHoverPaint, this.hoverPaint[0], this.hoverPaint[1], this.hoverPaint[2]);
-    gl.uniform1i(u.uHoverPid, this.hoverPid || 0);
-    gl.uniform1ui(u.uHoverGroupId, this.hoverGroupId || 0);
-    gl.uniform1ui(u.uHoverLabel, this.hoverLabel || 0);
-    gl.uniform3fv(u.uBackdrop, this.backdrop);
+    this._u1(u.uWasteBorderOn, this.wasteBorderOn ? 1 : 0, 0);
+    this._u1(u.uWasteBorderW, this.wasteBorderW, 1);
+    this._u1(u.uWasteBorderA, this.wasteBorderA, 1);
+    const _exN = this.extraTiers.length;
+    this._u1(u.uExtraCount, this.extraCount | 0, 0);
+    this._uArr(u.uExtraTier, this.extraTiers, _exN, true);
+    this._uArr(u.uExtraW, this.extraWs, _exN, false);
+    this._uArr(u.uExtraShow, this.extraShows, _exN, true);
+    this._uArr(u.uExtraA, this.extraAs, _exN, false);
+    this._u1(u.uBorderA, this.borderStrength, 1);
+    this._u1(u.uLutW, this.lutW, 0);
+    this._u1(u.uRealTitles, this.realTitles, 0);
+    this._u1(u.uHoverTid, this.hoverTid, 2);
+    this._u1(u.uHoverPaintOn, this.hoverPaintOn ? 1 : 0, 0);
+    this._uN(u.uHoverPaint, 1, this.hoverPaint[0], this.hoverPaint[1], this.hoverPaint[2], 0);
+    this._u1(u.uHoverPid, this.hoverPid || 0, 0);
+    this._u1(u.uHoverGroupId, this.hoverGroupId || 0, 2);
+    this._u1(u.uHoverLabel, this.hoverLabel || 0, 2);
+    this._uN(u.uBackdrop, 1, this.backdrop[0], this.backdrop[1], this.backdrop[2], 0);
 
     // 一个屏幕像素折算成多少个地图像素 —— 采样和画边界都要用它。
     // 用 canvas.width（设备像素）而不是 clientWidth，固定尺寸渲染时才对得上。
     const scale = this.canvas.width / this.view.w;
-    gl.uniform1f(u.uMapPerPx, 1 / Math.max(scale, 1e-6));
-    gl.uniform1i(u.uNoAA, (this.noAA || this.lowRes) ? 1 : 0);
+    this._u1(u.uMapPerPx, 1 / Math.max(scale, 1e-6), 1);
+    this._u1(u.uNoAA, (this.noAA || this.lowRes) ? 1 : 0, 0);
 
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     /* 🔴 **逐帧体检**（只在手机上）✗ —— 用户报：手机版黑屏、中心像素 [0,0,0]、

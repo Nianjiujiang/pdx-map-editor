@@ -31,10 +31,13 @@ const PACK_ID = 'eu4-vanilla-test';
 
 const blobOf = (b) => new Blob([b]);
 
-/** 开一整套假环境 + 拍平的源码（= 单文件版那一段） */
+/** 开一整套假环境 + 拍平的源码（= 单文件版那一段）
+ *  ⚠ `fetch` 这类函数是 `instantiate` **当场取走**的（见 browser_stub 尾部），
+ *    想换掉必须在实例化**之前**动手 → 走 `opt.beforeInstantiate(env)` ✓ */
 function freshEnv(opt = {}) {
   const env = H.makeEnv(opt);
   const js = H.flattenModules();
+  if (typeof opt.beforeInstantiate === 'function') opt.beforeInstantiate(env);
   const ex = H.instantiate(js, env);
   return { env, ex };
 }
@@ -336,6 +339,17 @@ async function waitCards(env, n = 1) {
   return env.get('map-pick-list').children;
 }
 
+/** 等一件真的花时间的事（拖拽导入要走完整条索引库流程 ✓）
+ *  ⚠ `waitFor` 只推微任务，压不动索引库桩里的 setTimeout ✗ —— 拖拽这条得真等时间 ✓ */
+async function waitForSlow(fn, ms = 8000) {
+  const t0 = Date.now();
+  while (Date.now() - t0 < ms) {
+    if (fn()) return true;
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  return fn();
+}
+
 /** 按显示名找一张卡片 */
 function findCard(list, text) {
   return (list.children || []).find((c) => c.flat().includes(text));
@@ -393,6 +407,68 @@ async function testUi() {
   ok('坏包没进库（一个字节都没留）', fileKeys(env).length === keysBefore,
     `${keysBefore} → ${fileKeys(env).length}`);
   ok('报错旁边有「复制详情」', findAll(env.get('map-msg'), (el) => el.textContent === '复制详情').length === 1);
+
+  // ---- ②b 拖拽导入（2026-11-03）：不点任何按钮、整页高亮、松手就进列表
+  /* 真浏览器里 File 是带 name 的 Blob；桩里没有 File 类，所以**给 Blob 补一个 name** ✓
+     （只补属性，不改桩的语义 ✓ 我们测的是 app.js 的分派逻辑，不是浏览器的 File ✓） */
+  const named = (b, name, type) => {
+    const f = blobOf(b);
+    Object.defineProperty(f, 'name', { value: name, configurable: true });
+    if (type) Object.defineProperty(f, 'type', { value: type, configurable: true });
+    return f;
+  };
+  const dropMask = env.get('drop-mask');
+  env.get('boot').dispatchEvent({ type: 'dragenter' });
+  ok('拖着文件悬在窗口上时，整页高亮亮起来', dropMask.hidden === false);
+  env.get('boot').dispatchEvent({ type: 'dragleave', relatedTarget: null });
+  ok('拖出窗口，高亮自己收起', dropMask.hidden === true);
+
+  const beforeDrag = listEl.children.length;
+  env.get('boot').dispatchEvent({ type: 'drop', dataTransfer: { files: [named(raw, 'drag-in.pdxmap')] } });
+  await waitForSlow(() => listEl.children.length === beforeDrag + 1);
+  ok('拖一个 .pdxmap 进来，不点按钮就多了一张卡',
+    listEl.children.length === beforeDrag + 1, `${beforeDrag} → ${listEl.children.length}`);
+  ok('拖拽导入也走同一句成功提示', /成功导入地图/.test(env.get('map-msg').textContent || ''),
+    env.get('map-msg').textContent);
+  ok('松手后整页高亮收起（drop-mask 又藏起来）', dropMask.hidden === true);
+
+  /* 同一张图再拖一次：**不许合并成一张、也不许说"这是第 2 份"** ✓
+     两份并列靠卡片左上角的小序号区分（2026-10-12 用户定的 ✓） */
+  const beforeDup = listEl.children.length;
+  env.get('boot').dispatchEvent({ type: 'drop', dataTransfer: { files: [named(raw, 'drag-in-again.pdxmap')] } });
+  await waitForSlow(() => listEl.children.length === beforeDup + 1);
+  ok('同一张图再拖一次 → 又一张卡（不覆盖旧的）',
+    listEl.children.length === beforeDup + 1, `${beforeDup} → ${listEl.children.length}`);
+  ok('重份提示里没有"第 N 份"这种话（那是删掉的，别加回来）',
+    !/第\s*\d+\s*份/.test(env.get('map-msg').textContent || ''), env.get('map-msg').textContent);
+  const nos = findAll(listEl, (el) => typeof el.className === 'string' && /(^| )map-card-no( |$)/.test(el.className));
+  ok('两份靠卡片左上角的小序号区分', nos.length >= 2, `${nos.length} 个序号`);
+
+  /* 拖一个一眼不是包的东西（.png）：不许滚进 zip 解析器换一句天书 ✗ */
+  const keysBeforeJunk = fileKeys(env).length;
+  const beforeJunk = listEl.children.length;
+  env.get('boot').dispatchEvent({ type: 'drop', dataTransfer: { files: [named(Buffer.from([137, 80, 78, 71]), 'screenshot.png', 'image/png')] } });
+  await waitFor(() => /不是地图包/.test(env.get('map-msg').textContent || ''));
+  ok('拖一张 .png 进来说的是"不是地图包"，并说明该给什么文件',
+    /不是地图包/.test(env.get('map-msg').textContent || '') &&
+    /\.pdxmap/.test(env.get('map-msg').textContent || ''), env.get('map-msg').textContent);
+  ok('提示里点了文件名（玩家知道自己拖错了哪个）',
+    /screenshot\.png/.test(env.get('map-msg').textContent || ''), env.get('map-msg').textContent);
+  ok('这种文件既不进列表也不进库',
+    listEl.children.length === beforeJunk && fileKeys(env).length === keysBeforeJunk,
+    `${beforeJunk}→${listEl.children.length} / ${keysBeforeJunk}→${fileKeys(env).length}`);
+
+  /* 收尾：把拖拽多进来的那两份删掉 ✓ 后面的"删除"用例要的是**只有一张图**的干净状态，
+     留着重复份会让它删完还剩一张、把断言带偏 ✗（删的就是卡片上那个「删除」✓） */
+  const dupCards = (listEl.children || []).filter((c) => c.flat().includes('EU4 原版（测试包）'));
+  for (const c of dupCards.slice(1)) {
+    const del = findAll(c, (el) => typeof el.className === 'string' && /(^| )map-act( |$)/.test(el.className))
+      .find((x) => x.textContent === '删除');
+    if (del) await del.onclick({ stopPropagation() {}, preventDefault() {} });
+  }
+  ok('拖拽多进来的重复份能删干净（回到一张）',
+    (listEl.children || []).filter((c) => c.flat().includes('EU4 原版（测试包）')).length === 1,
+    `${dupCards.length} → ${(listEl.children || []).filter((c) => c.flat().includes('EU4 原版（测试包）')).length}`);
 
   // ---- ③ 两个动作**直接在卡片上**（2026-10-12 从「⋯」小面板提上来的 ✓）
   const card = findCard(listEl, 'EU4 原版（测试包）');
@@ -725,8 +801,13 @@ async function testDuplicateCopiesIndependent() {
   ok('第一份的键和记录都还在', packs.some((p) => p.id === PACK_ID));
   const secondKey = packs.find((p) => p.id !== PACK_ID).id;
   ok('第二份的键带后缀（跟第一份分开）', /~2$/.test(secondKey), secondKey);
-  ok('提示里说明了这是第 2 份、之前的都留着',
-    /第 2 份/.test(env.get('map-msg').textContent || '') && /都留着/.test(env.get('map-msg').textContent || ''),
+  /* ⚠ 这条 2026-11-03 翻过来了 ✗
+   *   原来查的是「提示里说明了这是第 2 份」—— 那句文案 2026-10-12 就按用户要求删了
+   *   （界面只说"成功导入地图：XXX"，第几份靠卡片左上角的小序号区分 ✓）
+   *   于是它一直红着没人看，等于没有 ✓ 现在改成正向钉住新规矩 */
+  ok('提示只说导进来了，不再提"第 2 份"（删掉的别加回来）',
+    /成功导入地图/.test(env.get('map-msg').textContent || '')
+    && !/第\s*\d+\s*份/.test(env.get('map-msg').textContent || ''),
     env.get('map-msg').textContent);
   ok('第一份的涂色**一点没动**', (stashOf(env)[key1] || {}).probe === 'paint-1',
     JSON.stringify(stashOf(env)[key1]));
@@ -856,6 +937,134 @@ async function testMultiImport() {
 }
 
 /* ============================================================================
+ * ⑦ 「⤓ 下载地图包」点一下就进包列表（2026-11-03）
+ *
+ * 现实条件：GitHub release 附件挂在 release-assets.githubusercontent.com 上，
+ * **响应里没有 access-control-allow-origin**，浏览器跨域读不到字节。
+ * 所以这条链必须两条腿都能走：
+ *   ① 读得到字节（将来换带 CORS 的镜像 / 加一层代理）→ 直接进列表，
+ *      玩家不用再点一次「导入」✓
+ *   ② 读不到（今天就这样）→ 退回 `<a download>` 老路 + 一句明确的
+ *      "下好以后把文件直接拖进这个窗口" ✓（拖拽那条在 ②b 已经验过）
+ * 这里把 fetch 换掉来模拟这两种世界 ✓（真的 CORS 行为只有浏览器里能验 ✗）
+ * ========================================================================== */
+async function testDownloadAutoImport() {
+  console.log('\n【下载完自动进列表】');
+  const raw = fs.readFileSync(PACK_FILE);
+  const assetUrl = 'https://github.com/Nianjiujiang/pdx-map-editor/releases/download/v9.9.9/pdx-eu4-vanilla.pdxmap';
+  const mockApi = () => new Response(JSON.stringify({
+    html_url: 'https://github.com/Nianjiujiang/pdx-map-editor/releases/latest',
+    assets: [
+      { name: 'pdx-eu4-vanilla.pdxmap', browser_download_url: assetUrl },
+      { name: 'readme.txt', browser_download_url: 'https://example.invalid/readme.txt' },
+    ],
+  }), { status: 200, headers: { 'content-type': 'application/json' } });
+
+  // ---- ① 字节拿不到（今天的真实情况）：退老路 + 明确引导
+  {
+    const { env, ex } = await freshEnv({
+      beforeInstantiate: (e) => {
+        e.sandbox.fetch = async (url) => {
+          if (/api\.github\.com/.test(String(url))) return mockApi();
+          throw new TypeError('Failed to fetch');      // 浏览器里的跨域拒绝就长这样 ✓
+        };
+      },
+    });
+    const booting = ex.boot();
+    const listEl = env.get('map-pick-list');
+    await waitCards(env, 1);
+    /* 老路是 `<a download>` + click：桩里不导航，所以把 click 拦下来记账 ✓ */
+    const seen = [];
+    const realCreate = env.sandbox.document.createElement.bind(env.sandbox.document);
+    env.sandbox.document.createElement = (tag) => {
+      const el = realCreate(tag);
+      if (String(tag).toLowerCase() === 'a') el.click = () => { seen.push({ href: el.href, download: el.download }); };
+      return el;
+    };
+    env.get('map-fetch').onclick();
+    await waitForSlow(() => !!listEl.querySelector('.dl-card'));
+    ok('点「下载地图包」列出可下载的包（只列 .pdxmap ✓）',
+      listEl.children.length === 1 && /EU4 原版/.test(listEl.children[0].flat()),
+      listEl.children.length + ' 张 / ' + listEl.children.map((c) => c.flat()).join(' | '));
+    await listEl.children[0].onclick();
+    ok('拿不到字节时退回浏览器下载（老路还在 ✓）',
+      seen.length === 1 && /\.pdxmap$/.test(String(seen[0].download)),
+      seen.length ? String(seen[0].download) : '没发出下载 ✗');
+    const msg = env.get('map-msg').textContent || '';
+    ok('并且明说"下好以后拖进这个窗口就会自动导入"', /拖进这个窗口/.test(msg), msg);
+    ok('下完自动退出下载面板（按钮变回原来那句）',
+      !listEl.querySelector('.dl-card') && /下载地图包/.test(env.get('map-fetch').textContent || ''),
+      env.get('map-fetch').textContent);
+    if (booting) { /* boot 的 Promise 挂着没关系，桩里不靠它退出 ✓ */ }
+  }
+
+  // ---- ② 字节拿得到（将来换镜像）：点一下就进列表，不用再点「导入」
+  {
+    const { env, ex } = await freshEnv({
+      beforeInstantiate: (e) => {
+        e.sandbox.fetch = async (url) => {
+          if (/api\.github\.com/.test(String(url))) return mockApi();
+          return new Response(raw, { status: 200, headers: { 'content-type': 'application/octet-stream' } });
+        };
+      },
+    });
+    const booting = ex.boot();
+    const listEl = env.get('map-pick-list');
+    await waitCards(env, 1);
+    env.get('map-fetch').onclick();
+    await waitForSlow(() => !!listEl.querySelector('.dl-card'));
+    await listEl.querySelector('.dl-card').onclick();
+    await waitForSlow(() => !!findCard(listEl, 'EU4 原版（测试包）'));
+    ok('读得到字节时，点一下卡就自己导进列表了（不用再点「导入」✓）',
+      !!findCard(listEl, 'EU4 原版（测试包）'), listEl.children.map((c) => c.textContent).join(' | ').slice(0, 120));
+    ok('自己导进来的那份，提示里说的是"成功下载地图：XXX"',
+      /^成功下载地图：EU4 原版（测试包）$/.test((env.get('map-msg').textContent || '').trim()), env.get('map-msg').textContent);
+    ok('真的落进包里了（刷新也不丢 ✓）', (await ex.listPacks()).length === 1,
+      String((await ex.listPacks()).length));
+    ok('下载面板自动收起（不用玩家再按一次"退出下载"✓）',
+      !listEl.querySelector('.dl-card'), env.get('map-fetch').textContent);
+    if (booting) { /* 同上，不靠它退出 ✓ */ }
+  }
+}
+
+/* ---- ⑦ 代理那一跳的静态护栏（2026-11-03）
+   CORS 挡着的时候，「点一下就自动进列表」全看 `PACK_MIRROR` 这条链还在不在。
+   这里只读源码、不跑网络：哪天被谁顺手删掉，要在尺子里就红，而不是等玩家点下载才发现 ✗ */
+function testMirrorChain() {
+  const src = fs.readFileSync(path.join(H.ROOT, 'web', 'js', 'app.js'), 'utf8');
+  const grab = (from, to) => {
+    const a = src.indexOf(from);
+    if (a < 0) return '';
+    const b = to ? src.indexOf(to, a) : -1;
+    return src.slice(a, b < 0 ? src.length : b);
+  };
+  ok('有 PACK_MIRROR 这个开关（空着 = 只直连，老行为 ✓）',
+    /const PACK_MIRROR = '[^']*';/.test(src));
+  ok('拼代理地址时把附件地址编码过（不编码会把 ? 和 & 拼坏 ✓）',
+    /const packMirrorURL = [\s\S]{0,200}?encodeURIComponent\(url\)/.test(src));
+  const fn = grab('const fetchPackBlob = async', '\n    };');
+  ok('取字节走的是「跳板链」，Worker 那一跳排在直连前面',
+    /name: 'worker'[\s\S]{0,400}?name: 'direct'/.test(src));
+  ok('国内对象存储排在 Worker 前面（国内能直连的只有它 ✓）',
+    /name: 'oss'[\s\S]{0,120}?name: 'worker'/.test(src));
+  ok('对象存储只用附件的文件名去取（拿整条 GitHub 路径会 404 ✗）',
+    /const packOSSUrl = [\s\S]{0,220}?packBaseName\(url\)/.test(src));
+  ok('对象存储没配时这一跳自己跳过，不许拼出空地址去 fetch ✗',
+    /if \(!src\) continue;/.test(fn));
+  ok('代理跳超时短于直连（Worker 没生效时别让点卡片卡满 20 秒 ✓）',
+    /const PACK_HOP_TIMEOUT = \d+;/.test(src) &&
+    /hop\.kind === 'direct' \? PACK_FETCH_TIMEOUT : PACK_HOP_TIMEOUT/.test(fn));
+  ok('失败过的跳板记 5 分钟，后面几次不再白等它',
+    /_hopDead\[hop\.name\] = Date\.now\(\)/.test(fn) && /HOP_TTL/.test(fn));
+  ok('跳板通了就把它从"死名单"里划掉（不然换网络后永远跳过它 ✗）',
+    /delete _hopDead\[hop\.name\]/.test(fn));
+  ok('每一级各自 try —— 代理挂了不许把直连一起带走（反之亦然 ✓）',
+    (fn.match(/try\s*\{/g) || []).length >= 2, String((fn.match(/try\s*\{/g) || []).length));
+  ok('全挂时抛的是最后那个错（没有就新造一个，不许返回 undefined ✓）',
+    /throw lastErr \|\| new Error/.test(fn));
+}
+
+/* ============================================================================
  * 主流程
  * ========================================================================== */
 (async () => {
@@ -875,6 +1084,8 @@ async function testMultiImport() {
   await testUi();
   await testTilesPack();
   await testMultiImport();
+  await testDownloadAutoImport();
+  testMirrorChain();
 
   console.log(`\n${fails.length ? '✗' : '✓'} 通过 ${oks.length} 条，失败 ${fails.length} 条`);
   if (fails.length) {

@@ -64,6 +64,32 @@ _LOC_LINE = re.compile(
     rb"(?m)^\s*([A-Za-z0-9_.'\-]+)\s*:\s*\d*\s*\"((?:[^\"\\]|\\.)*)\""
 )
 
+#: 汉字（含扩展 A）。判"这文件解出来是不是中文"就看它占多少。
+_CJK = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
+
+# ------------------------------------------------------------------ 认汉化
+
+#: 快路：前这么多字节里标记字节够密，就不必整个文件解一遍
+_PROBE_BYTES = 4096
+_PROBE_MIN = 40
+
+#: 慢路：整个文件里的标记字节数、解出来汉字占非 ASCII 字符的比例
+#:
+#: 🔴 **2026-10-28 为什么非要慢路** ✗✗（风云世纪两千年国名乱码）
+#:   光看开头那 4 KB 会把**小文件**判错 —— FY 的 2145 个 yml 里有 77 个
+#:   标记字节只有 3–39 个（`QF_lujiang_l_english.yml` 75 字节 6 个、
+#:   `replace/liangyu_prov_names_l_english.yml` 147 字节 13 个），
+#:   一个都过不了 `> 40` 这条线 → 被当成**普通 UTF-8 文件**读
+#:   → `0x10 xx yy` 解成 `\x10` + cp1252 垃圾 ✓
+#:   实测这 77 个全解成汉字（比例 0.82–1.00），而 3 个"英文里碰巧有
+#:   0x10–0x1F 字节"的大文件（`mf_missions` 等）比例是 0 ✓
+#:   → 用"解出来的汉字占非 ASCII 的比例"当判据，两边都分得开 ✓
+#:
+#: ⚠ 原版 EU4 的 578 个 yml **一个标记字节都没有**（实测）→ 全部走快路返回 False，
+#:   一个都不进慢路，构建时间不受影响 ✓
+_MIN_MARKS = 3          # 标记字节比这还少，不值得解（1–2 个是文本里的噪音）
+_MIN_CJK_RATIO = 0.30   # 解出来非 ASCII 字符里汉字不足三成，就不是汉化
+
 
 def marker_offset(mark: int) -> int:
     """标记字节 → 码位修正量。低两位是标志位。"""
@@ -98,6 +124,60 @@ def decode(raw: bytes) -> str:
             out.append(chr(c))
             i += 1
     return "".join(out)
+
+
+def cjk_ratio(path: Path) -> tuple[float, int]:
+    """把文件里带标记字节的值都解一遍 → (汉字占非 ASCII 的比例, 标记字节总数)。
+
+    只给 ``looks_hanhua`` 的慢路用；返回值也拿来打日志，说明"凭什么认成汉化"。
+    """
+    try:
+        data = Path(path).read_bytes()
+    except OSError:
+        return 0.0, 0
+    if data[:3] == b"\xef\xbb\xbf":
+        data = data[3:]
+    marks = sum(1 for b in data if _MARK_LO <= b <= _MARK_HI)
+    if not marks:
+        return 0.0, 0
+    cjk = other = 0
+    for m in _LOC_LINE.finditer(data):
+        raw = m.group(2)
+        if not any(_MARK_LO <= b <= _MARK_HI for b in raw):
+            continue
+        for ch in decode(to_raw_bytes(raw.decode("utf-8", "replace"))):
+            o = ord(ch)
+            if o < 0x80:
+                continue
+            if _CJK.match(ch):
+                cjk += 1
+            else:
+                other += 1
+    tot = cjk + other
+    return ((cjk / tot) if tot else 0.0), marks
+
+
+def looks_hanhua(path: Path) -> bool:
+    """这个 yml 是不是"双字节汉化"。
+
+    先看开头 4 KB（覆盖 95% 的文件，一个 read 就够）；
+    过不了再整个文件解一遍数汉字比例 —— 小文件全靠这一条捞回来。
+
+    ⚠ 这里**不能**简单放宽阈值了事：FY 里真有英文大文件在正文中间
+      碰巧带着 0x10–0x1F（`Saladin\\x12\\x19\\x17s` 这种转义残留），
+      按字节数放宽就会把它们当汉化解出一堆垃圾 ✗ 汉字比例才分得开 ✓
+    """
+    try:
+        with open(path, "rb") as fp:
+            head = fp.read(_PROBE_BYTES)
+    except OSError:
+        return False
+    if sum(1 for b in head if _MARK_LO <= b <= _MARK_HI) > _PROBE_MIN:
+        return True
+    ratio, marks = cjk_ratio(path)
+    if marks < _MIN_MARKS:
+        return False
+    return ratio >= _MIN_CJK_RATIO
 
 
 def load_file(path: Path) -> dict[str, str]:
@@ -154,19 +234,15 @@ def load_dir(loc_dir: Path, keys=None) -> dict[str, str]:
 # ------------------------------------------------------------------ 找汉化
 
 def is_hanhua(path: Path) -> bool:
-    """粗判一个 workshop 条目是不是"顶替 english 槽的中文汉化"。"""
+    """粗判一个 workshop 条目是不是"顶替 english 槽的中文汉化"。
+
+    ⚠ 只看文件名带 ``_l_english`` 的那批，**不看**子目录 —— 这里问的是
+      "这个 workshop 条目整体是不是汉化包"，有一个像样的中文文件就够了 ✓
+    """
     loc = Path(path) / "localisation"
     if not loc.is_dir():
         return False
-    for fp in loc.glob("*_l_english.yml"):
-        try:
-            head = fp.read_bytes()[:4096]
-        except OSError:
-            continue
-        # 双字节标记字节出现得够多，就是汉化
-        if sum(1 for b in head if _MARK_LO <= b <= _MARK_HI) > 40:
-            return True
-    return False
+    return any(looks_hanhua(fp) for fp in loc.glob("*_l_english.yml"))
 
 
 def find_hanhua(workshop_content: Path, appid: int = 236850) -> list[Path]:

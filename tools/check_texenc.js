@@ -162,7 +162,7 @@ console.log('\n=== D. 链接失败要逐档退，不许一步退到没边界 ===
   ok('精简版仍然有 liteShader 标记（保底那条报告要看得见）',
     /this\.liteShader = \(tier === 'lite'\)/.test(GL) && /if \(renderer\.liteShader\)/.test(APP));
   ok('降级原因也留着（下次排查不用再猜）',
-    /this\.liteWhy = _why/.test(GL));
+    /this\.liteWhy = (why|_why)\s*(\|\||;)/.test(GL));
   /* ⚠ 显存不足（0x0505）时不许再试 ✗ —— 再试一次只是白等 92 秒 ✓ */
   ok('显存不足时不白试降级着色器（白等 92 秒的事不许再来）',
     /ge0 !== 0x0505/.test(GL));
@@ -178,14 +178,23 @@ console.log('\n=== E. 数组纹理采不出来时改走「缩图」===');
   ok('改道时把 id 图按整数倍缩小（ceil(最大边/上限)）',
     /Math\.ceil\(Math\.max\(m\.mapWidth, m\.mapHeight\) \/ lim\)/.test(GL));
   ok('着色器按 uProvScale 除回去', /if \(uProvScale > 1\) ip = ip \/ uProvScale;/.test(CODE));
-  ok('render() 每帧传了 uProvScale', /uniform1i\(u\.uProvScale/.test(GL));
+  ok('render() 每帧传了 uProvScale', /(?:uniform1i\(u\.uProvScale|this\._u1\(u\.uProvScale)/.test(GL));
   ok('自检收摊时的循环有上界（假 GL 上会死循环 ✗ 踩过）',
     /for \(let i = 0; i < 8; i\+\+\) \{\s*if \(gl\.getError\(\) === gl\.NO_ERROR\) break;/.test(GL));
 }
 
+console.log('\n=== E2. 旗面底下照常画省界（2026-11-03 收回）===');
+{
+  /* 2026-11-03 我第一版把它做成了「被旗盖住的格子一律不画边界」，用户纠正：
+   *   「我没让你隐藏旗帜下的省份边界吧？」✓ 省界要照常画 ✗ 于是整段撤回 ✓
+   *   这里反过来钉住：**不许**再出现按旗面屏蔽边界的那两个判断 ✓（防我哪天又顺手加回去）*/
+  ok('边界块没有按旗面屏蔽（_flagNoBorder 不该存在）', !/_flagNoBorder/.test(GL));
+  ok('边界块的 if 仍是原来那句', /if \(pidAt\(ip\) != 0u\) \{/.test(GL));
+}
+
 console.log('\n=== F. 报告里写清楚走了哪条降级路 ===');
 {
-  ok('报告有「渲染降级」和「纹理编码」两条', /LOG\.env\('渲染降级'/.test(APP) && /LOG\.env\('纹理编码'/.test(APP));
+  ok('报告有「渲染降级」和「纹理编码」两条', /LOG\.env\('启动渲染档位'/.test(APP) && /LOG\.env\('纹理编码'/.test(APP));
 }
 
 console.log('\n=== G. 采样器精度（ANGLE 上不写就是编译不过）===');

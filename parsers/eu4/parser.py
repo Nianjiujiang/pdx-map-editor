@@ -371,7 +371,8 @@ WATER_LISTS = ("sea_starts", "lakes")
 EU4_APPID = 236850
 
 #: 汉化文件把 CJK 塞进 0x10–0x1F 那一段标记字节里。普通 yml 是纯文本，
-#: 不会这么密 —— 拿这个当"这是不是汉化"的判据（跟 hanhua.is_hanhua 同一套）。
+#: 不会这么密 —— 拿这个当"这是不是汉化"的判据。真正的实现在 ``hanhua.looks_hanhua``：
+#: 光看开头 4 KB 会把风云世纪两千年那 77 个小文件判漏（详见那边的注释）。
 _PROBE_BYTES = 4096
 _PROBE_MIN = 40
 
@@ -379,15 +380,32 @@ _PROBE_MIN = 40
 _WATER_CACHE: dict[tuple[str, str], dict[int, str]] = {}
 _NAME_CACHE: dict[tuple[str, str, frozenset[str]], dict[str, str]] = {}
 
+#: 文件 → 是不是汉化。整个构建要问上百次，同一个文件别重复解码（慢路要读全文件）。
+_DOUBLEBYTE_CACHE: dict[str, bool] = {}
+
 
 def is_doublebyte_loc(path: Path) -> bool:
-    """粗判一个 yml 是不是"双字节汉化"（只看开头几 KB）。"""
+    """粗判一个 yml 是不是"双字节汉化"。
+
+    快路看开头几 KB，判不出来再交给 ``hanhua.looks_hanhua`` 数汉字比例。
+    """
+    p = Path(path)
+    key = str(p)
+    hit = _DOUBLEBYTE_CACHE.get(key)
+    if hit is not None:
+        return hit
     try:
-        with open(path, "rb") as fp:
+        with open(p, "rb") as fp:
             head = fp.read(_PROBE_BYTES)
     except OSError:
+        _DOUBLEBYTE_CACHE[key] = False
         return False
-    return sum(1 for b in head if 0x10 <= b <= 0x1F) > _PROBE_MIN
+    if sum(1 for b in head if 0x10 <= b <= 0x1F) > _PROBE_MIN:
+        _DOUBLEBYTE_CACHE[key] = True
+        return True
+    val = hanhua.looks_hanhua(p)
+    _DOUBLEBYTE_CACHE[key] = val
+    return val
 
 
 def read_loc_file(path: Path) -> dict[str, str]:
@@ -763,12 +781,27 @@ def load_water_names(root: Path, *, lang: str = "zh") -> dict[int, str]:
 #   名字里带 sea / bay / ocean 的一大半是陆地（红海沿岸、马萨诸塞湾、普吉特湾…），
 #   拿键名或译名去猜一定会错 —— 这条坑第一轮踩过，这里照旧。
 
-#: 三层水域视图的层名。跟 ``meta.tiers`` 的**尾部**对齐（rg 最粗 → pr 最细）。
-WATER_TIERS = ("rg", "ar", "pr")
+#: 水域视图的层名。跟 ``meta.tiers`` 的**尾部**对齐（sr 最粗 → pr 最细）。
+#:
+#: 🔴 **`sr`（大区）是 2026-11-03 补的** ✗✗ —— 以前只有 rg/ar/pr 三层，
+#: 于是「大区」「大洲」两个视图拿不到海域名字 → `build_tier_pieces` 对每块海省
+#: 退回「一块一片 + 名字是地块号」→ 粗层整片海被切成一格格、每格印个数字 ✗
+#: EU4 的 ``map/superregion.txt`` 里海省归属**是真的有**（原版 8 片洋），
+#: 只是从来没往外输出过而已 ✓
+WATER_TIERS = ("sr", "rg", "ar", "pr")
 
-#: ``definition.csv`` 里的占位名 —— ``Unused`` / ``Unused976`` 这种是随机新世界
-#: 的预留位，不是地名 ✗ 宁可不给名字，也别把 "Unused42" 发到地图上。
-_UNUSED_NAME = re.compile(r"^\s*unused\s*\d*\s*$", re.I)
+#: ``definition.csv`` 里的占位名 —— 这些**不是地名** ✗
+#:
+#: 原来只认 ``Unused`` / ``Unused976``（随机新世界的预留位）✓
+#: 2026-10-28 伏尔泰的噩梦一次冒出四类漏网的（用户在图上会真看见）：
+#:   · ``x``       —— 645 个"这块地没名字"的标记，全角地图上直接印一个字母 ✗
+#:   · ``Waste``   —— 20 个，是类型名不是地名（跟 ``#wasteland`` 的类名撞）✗
+#:   · ``Blocked`` —— 4 个，制图软件导出的"堵住"标记 ✗
+#:   · ``RNW`` / ``UnusedLand12`` —— 随机新世界 + 预留陆地的老写法（原版也有 600 个）✗
+#:   · ``Placeholder3`` —— 制图软件留的占位，跟上面几类同性质 ✗
+#: 宁可不给名字（退回类名「不可通行荒地」/「海洋」），也别把这串字母印到图上 ✓
+_UNUSED_NAME = re.compile(
+    r"^\s*(?:unused(?:\s*land)?\s*\d*|placeholder\s*\d*|x|waste|blocked|rnw)\s*$", re.I)
 
 #: 同一份 root + lang 的分层结果只算一次（构建器会反复问）。
 _TIER_CACHE: dict[tuple[str, str], dict] = {}
@@ -883,6 +916,7 @@ def _water_names_by_tier(root: Path, lang: str) -> dict[str, dict[int, str]]:
         # 退到"省自己的名字"是最后一步。用户要的是**每块都有名字**，
         # 不是"尽量齐全"：湖一个都不在任何 area 里，不退它就整层是空的 ✗
         for tier, chain in (
+            ("sr", (s_nm, r_nm, a_nm, me)),      # 大区级：整片洋共用大区名（2026-11-03 补）
             ("rg", (r_nm, a_nm, s_nm, me)),      # 区域级：整片海共用区域名
             ("ar", (a_nm, r_nm, s_nm, me)),      # 地区级：一个 area 一个名
             ("pr", (me, a_nm, r_nm, s_nm)),      # 省级：每块地自己的名
@@ -898,8 +932,8 @@ def _water_names_by_tier(root: Path, lang: str) -> dict[str, dict[int, str]]:
         if nm:
             waste[pid] = nm
 
-    return {"rg": layers["rg"], "ar": layers["ar"], "pr": layers["pr"],
-            "wasteland": waste}
+    return {"sr": layers["sr"], "rg": layers["rg"], "ar": layers["ar"],
+            "pr": layers["pr"], "wasteland": waste}
 
 
 def load_water_names_by_tier(root: Path, *, lang: str = "zh") -> dict[str, dict[int, str]]:
@@ -908,20 +942,25 @@ def load_water_names_by_tier(root: Path, *, lang: str = "zh") -> dict[str, dict[
     返回::
 
         {
+          "sr": {省号: 大区名},      # map/superregion.txt —— 大区级（北大西洋 / 地中海 …）✓
           "rg": {省号: 区域名},      # map/region.txt —— 区域级，整片海共用一个名
           "ar": {省号: 地区名},      # map/area.txt   —— 地区级
           "pr": {省号: 省自己的名},  # PROV<id> / definition.csv 第 5 列 —— 逐块
           "wasteland": {省号: 荒地名},  # 不可通行荒地，跟水域判据分开
         }
 
-    三层的**省号集合是同一个**：``default.map`` 的 ``sea_starts ∪ lakes``
+    四层的**省号集合是同一个**：``default.map`` 的 ``sea_starts ∪ lakes``
     （判水陆的唯一依据 ✓ 名字里带 sea 的陆地不会混进来）。
-    变的只是每层取哪个粒度的名字：rg 优先区域名、ar 优先地区名、
-    pr 优先这一块自己的名字；首选缺了就顺着往下退（区域 → 地区 → 大区 → 省自己），
+    变的只是每层取哪个粒度的名字：sr 优先大区名、rg 优先区域名、ar 优先地区名、
+    pr 优先这一块自己的名字；首选缺了就顺着往下退（大区 → 区域 → 地区 → 省自己），
     所以**每一层都是满的** —— 湖不在任何 area 里也照样有名字 ✓
 
+    ⚠ **随机新世界预留的海省**（``only_used_for_random ∩ sea_starts``，原版 186 块）
+    是个例外：``definition.csv`` 里只有 ``Unused*`` 占位名（已被 ``_UNUSED_NAME``
+    滤掉），四层都查不到名字 → **不在返回的字典里**，由构建器统一退回类名「海洋」✓
+
     键是**编辑器地块 id**，就是省份号，跟 ``data_<游戏>/provinces_id.bin``
-    里那套编号一致。认不出来返回四个空 dict（不抛异常、不返回 None）。
+    里那套编号一致。认不出来返回五个空 dict（不抛异常、不返回 None）。
 
     ``wasteland`` 的判据是：``definition.csv`` 里有、不是水、又不在 ``area.txt``
     任何 area 里的那些省（再扣掉 ``default.map`` 的 ``only_used_for_random``）。

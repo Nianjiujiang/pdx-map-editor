@@ -63,7 +63,7 @@ function psFail(msg) {
 function psReq(r) {
   return new Promise((resolve, reject) => {
     r.onsuccess = () => resolve(r.result);
-    r.onerror = () => reject(r.error || psFail('IndexedDB 报错了'));
+    r.onerror = () => reject(r.error || psFail('浏览器本地存储出错'));
   });
 }
 
@@ -75,7 +75,7 @@ export async function packStoreMode() {
   if (PS_MODE) return PS_MODE;
   if (typeof indexedDB === 'undefined' || !indexedDB) {
     PS_MODE = 'memory';
-    psLog('地图包', '这台浏览器/这个模式没有 IndexedDB → 导入的图只在本次会话里 ✓');
+    psLog('地图包', '这台浏览器无法长期保存数据，导入的地图只在本次打开期间有效');
     return PS_MODE;
   }
   try {
@@ -103,7 +103,7 @@ export async function packStoreMode() {
 }
 
 function psDb() {
-  if (!PS_DB_HANDLE) throw psFail('数据库还没打开（先 await packStoreMode()）');
+  if (!PS_DB_HANDLE) throw psFail('本地数据库尚未就绪，请刷新页面后重试');
   return PS_DB_HANDLE;
 }
 
@@ -222,7 +222,7 @@ async function freePackKey(base) {
     const k = base + '~' + i;
     if (!(await getPack(k))) return k;
   }
-  throw psFail('同一张图已经导了 200 份了，先在「⋯」里删掉几份吧');
+  throw psFail('同一张图已达到 200 份上限，请先在「⋯」菜单中删除部分记录');
 }
 
 /**

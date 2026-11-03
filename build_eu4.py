@@ -521,6 +521,15 @@ def broken_name(nm: str) -> bool:
     return (not nm) or "\ufffd" in nm or _FFFD_BYTES in nm
 
 
+#: 汉字（含扩展 A）。判"这条名字是不是已经是中文"用。
+_HAS_ZH = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
+
+
+def nametools_has_zh(s: str) -> bool:
+    """字符串里有没有汉字（只看形状，不做任何推断）。"""
+    return bool(s) and bool(_HAS_ZH.search(s))
+
+
 class MapFiles:
     """按"覆盖目录优先、本体兜底"取地图文件。"""
 
@@ -1076,7 +1085,7 @@ def main() -> int:
     #: **地理层** = 剧本层右边那几层（rg / ar / pr ✓）；`--no-history` 时全层都是地理层 ✓
     _geo = list(TIER_ORDER[ERA_TIERS:]) if use_eras else list(TIER_ORDER)
     # **各层的水名表**（用现成的分层解析 ✓ 别另编一套 ✗）
-    #   `load_water_names_by_tier` 的键**就是层名**（rg / ar / pr ✓）＋ "wasteland" ✓
+    #   `load_water_names_by_tier` 的键**就是层名**（sr / rg / ar / pr ✓）＋ "wasteland" ✓
     #   某一层一条都取不到 → 给 {} → 那一层整片算一片（名字用类别名"海洋"✓）
     #   这就是"每层的片 = 该层同名地块的集合" ✓（用户点名的口径 ✓）
     _wtier: dict[str, dict[int, str]] = {t: {} for t in _geo}
@@ -1086,18 +1095,32 @@ def main() -> int:
         for _t in _geo:
             _wtier[_t] = dict(_raw.get(_t) or {})
         _waste_names = dict(_raw.get("wasteland") or {})
+        # 🔴 **大区（sr）这一层是 2026-11-03 补的** ✗✗
+        #   以前 parser 只输出 rg / ar / pr 三层水名 → 编辑器「大区」视图（sr）
+        #   的水名表是空的 → `build_tier_pieces` 对每块海省退回
+        #   「一块一片 + 片名 = `#<地块号>`」→ 海上被切成一格格、每格印个数字 ✗
+        #   （用户 2026-11-03 报的：大区 / 大洲视图满屏地块号 ✓）
+        #   现在 parser 从 `map/superregion.txt` 输出这一层（北大西洋 / 地中海 / 印度洋 …）✓
+        # ⚠ **大洲（ct）在 EU4 里没有对应的海域数据** ✗（`continent.txt` 只有陆地，
+        #   海省没有大洲归属）→ 沿用大区口径：宁可粗一点，也**不能退化成地块号** ✗
+        if "ct" in _wtier and not _wtier["ct"]:
+            _wtier["ct"] = dict(_wtier.get("sr") or _wtier.get("rg") or {})
+        # ⚠ **随机新世界预留的海省**（`default.map` 的 `only_used_for_random`
+        #   ∩ `sea_starts`，原版 186 块）四层都查不到名字 —— `definition.csv` 里
+        #   只有 `Unused*` 占位名，已经被 `_UNUSED_NAME` 滤掉 ✓
+        #   → 统一退回**类名**「海洋」✓ 不退就又是一片地块号 ✗
+        #   （它们在地图上没有像素 ✓ 合并成一片既看不见、也不影响别处 ✓）
+        _sea_cls = next((c[1] for c in SPECIAL_CATEGORIES if c[0] == "#sea"), "海洋")
+        for _t in _geo:
+            for _p in np.nonzero(np.asarray(is_sea, dtype=bool))[0]:
+                _wtier[_t].setdefault(int(_p), _sea_cls)
         log("水名表（分层）：" + "、".join(f"{t} {len(_wtier[t])} 条" for t in _geo)
             + f" · 荒地 {len(_waste_names)} 条")
     except Exception as _e:            # 解析不出来不该拖垮整个构建 ✓
         log(f"水名表跳过：{_e}")
-    # 🔴 **EU4 不需要补任何东西** ✗（2026-10-14 ✓ 用户澄清 ✓）
-    #   用户："**EU4 和 EU5 都一样每个层面都有海域**"✓
-    #   → `rg` / `ar` / `pr` 三层**各自都有海名表**（各 607 条 ✓）——
-    #     那是游戏数据里**真有**的 ✓ 直接用 ✓
-    #   ⚠ "没名字的海省"**就是真的没有** ✗（游戏里那一层没给它名字 ✓）
-    #     → 归"无名组"✓ 名字用类名 ✓ **不该补地块号** ✗
-    #   ⚠ 只有 **HOI4** 要补 ✗ —— 它"**单独的 state 和 province 共用**"✓
-    #     （海省不落在任何州里 ✓ 见 `build_hoi4.py` 那段 ✓）
+    # ⚠ **只有 HOI4 要"补地块号"** ✗ —— 它"**单独的 state 和 province 共用**"✓
+    #   （海省不落在任何州里 ✓ 见 `build_hoi4.py` 那段 ✓）
+    #   EU4 / EU5 的每个地理层在游戏数据里都**真有**归属 ✓（见上面那两段注释 ✓）
     special, _sp_rows, stats, waste_pids, waste_tids = build_special_titles(
         # 🔴 **`skip_fine_tier=True`** ✗（2026-10-14 ✓ 用户要求 ✓）
         #   水域**最细层不造片** ✓（它就是它自己那个 province ✓）而**粗层照造** ✓
@@ -1241,6 +1264,13 @@ def main() -> int:
     #   荒地节点的 key 就是 `wl_<省号>` ✓ 顺手把它们也加进来 ✓
     want |= {f"PROV{t.key[3:]}" for t in ordered_all
              if t.key.startswith("wl_") and t.key[3:].isdigit()}
+    # 🔴 **`provinceNames` 用到的每一个省都要进 want** ✗✗（2026-10-28）
+    #   上面那两条只盖到"节点用到的省"✓ 可 `provinceNames` 是**按地块号整张表** ✓
+    #   （导出 definition.csv / 悬停提示都要它 ✓）
+    #   → 落在湖里、又没被任何头衔用到的省（兴凯湖 `PROV3153`）被裁掉了 ✗
+    #     它 definition.csv 里是 `興凱\ufffd?`（被 mod 工具链损过 ✓）
+    #     → 全表就剩这一条 `U+FFFD` ✓
+    want |= {f"PROV{pid}" for pid in defs}
     if use_eras:
         want |= {tag for arr in owners for tag in arr.values()}
     else:
@@ -1255,6 +1285,38 @@ def main() -> int:
     en = E.read_loc_dir(LOC)
     en = {k: v for k, v in en.items() if k in want}
     zh, zh_from = load_hanhua(args.hanhua, args.workshop)
+    # 🔴 **mod 自己带的汉化要跟外部汉化包合并** ✗✗（2026-10-28 风云世纪两千年）
+    #
+    #   以前只拿 `load_hanhua()` 那一份（默认是项目里的 `eu4_names_zh.json`，
+    #   只有 5913 条、而且**按原版 EU4 的省份键过滤过**）。
+    #   可 FY 这种 mod 的地名根本不在原版键里 —— `PROV5224`（咸兴）、
+    #   `JBG`（罽宾）、`HDS`（邯郸商军）这些一个都查不到 ✗
+    #   → 省名只能退回 `definition.csv`，那里被 mod 工具链损成了 `U+FFFD` ✗
+    #
+    #   mod 自己的 `localisation/` 里其实全都有（现在判据也修对了，能解出来 ✓），
+    #   只是它被读进 `en` 那份"英文表"里当英文用了 —— 合并进来，中文优先 ✓
+    #   ⚠ `en` 已经按 `want` 过滤过，范围正好，不会把整份 26 万条塞进 zh ✓
+    _own_zh = {k: v for k, v in en.items() if nametools_has_zh(v)}
+    if _own_zh:
+        # 🔴 **mod 自带的赢，外部汉化退成兜底** ✗✗（2026-10-28 实测定下来的顺序）
+        #
+        #   一开始写反了（外部优先），跑完发现 mod **重用 tag** 的情况全错：
+        #     `BAS`：原版是艾哈迈德讷格尔（Ahmadnagar），FY 拿它装**巴斯塔奈**
+        #            （历史文件就叫 `BAS - Bastarnae.txt`）✓
+        #     `KLU`：原版卡尔马联盟，FY 是**克伦尼**（`KLU - KeLunNi.txt`）✓
+        #     `TRV`：原版特拉汶哥，FY 是**图罗夫**（`TRV - Turov.txt`）✓
+        #   → 外部那份是**原版口径**，对这套改过的图就是张冠李戴 ✗
+        #
+        #   还有一条硬证据：FY 的 `definition.csv` 第 6 列自己就带中文，
+        #   跟 mod 自带那份一致 **73.2%**，跟外部汉化一致只有 **0.8%** ✓
+        #
+        #   ⚠ 但坏条目（`U+FFFD` / 控制字符）**不许夺权** ✗ —— 那正是这次要修的乱码 ✓
+        #     让它继续由外部汉化 / definition.csv / key 兜底 ✓
+        _own_ok = {k: v for k, v in _own_zh.items()
+                   if not broken_name(v)
+                   and not any(0x10 <= ord(c) <= 0x1F for c in v)}
+        zh = {**zh, **_own_ok}
+        zh_from = f"{zh_from} + mod 自带 {len(_own_ok)} 条"
     log(f"名字：汉化 {len(zh)} 条（{zh_from}） / 游戏英文 {len(en)} 条")
 
     special_names = {k: label for k, label, _c, _s in SPECIAL_CATEGORIES}
@@ -1319,19 +1381,32 @@ def main() -> int:
 
     prov_names = [""] * n_prov
     name_fixed = 0
+    name_zh = 0
     for pid, (_r, _g, _b, nm) in defs.items():
         if pid >= n_prov:
             continue
         # 高清 mod 的 definition.csv 把非 ASCII 名字转坏了（Östergötland →
         # \uFFFDsterg\uFFFDtland），拿本体的名字补回来 —— 不然导出时会把这个
         # 坏名字写进 mod 的 definition.csv
+        #
+        # 🔴 **2026-10-28：本体补不回来时，用汉化表的 `PROV<id>`** ✗✗
+        #   风云世纪两千年有 70 个省份在 definition.csv 里就已经是
+        #   ``冰岛(雷克雅维\\ufffd?西部\\ufffd?)`` 这种 —— 原始字节根本不复存在，
+        #   本体（原版 EU4）也没有这些省号 → 原来是**修不掉**的 ✗
+        #   可汉化包里 `PROV370` = 雷克雅未克 是对的 ✓ 直接拿它顶上 ✓
         if broken_name(nm):
             b = base_defs.get(pid)
             if b and not broken_name(b[3]):
                 nm, name_fixed = b[3], name_fixed + 1
+            else:
+                z = zh.get(f"PROV{pid}")
+                if nametools_has_zh(z):
+                    nm, name_zh = z, name_zh + 1
         prov_names[pid] = nm
     if name_fixed:
         log(f"  修好 {name_fixed} 个被弄坏的省份名（用本体的 definition.csv）")
+    if name_zh:
+        log(f"  另有 {name_zh} 个坏省份名用汉化表顶上了")
 
     # 每个省份在 definition.csv 里的原色。导出 provinces.bmp 时要拿它当底 ——
     # 省份层的头衔颜色对不上海/湖/荒地（那些是伪头衔，一整类共用一个颜色），
@@ -1442,7 +1517,12 @@ def main() -> int:
     #   **荒地名字**一并收（用户要求 ✓）：VN 那张图的 wl_* 正是"热那亚""波尔多"那批 ✓
     #   ⚠ 这个函数是 `sea_names_by_tier(tiers, by_tier)` ✗ 参数顺序跟 EU5 的**相反** ✓ 别抄错
     try:
-        _t = E.load_water_names_by_tier(root)
+        #   ⚠ **用上面补过的那份 `_wtier`** ✗ 别在这儿重新问 parser ✓
+        #     parser 只认「游戏里真有」的四层（sr/rg/ar/pr），`ct` 是构建器
+        #     按大区口径补的（EU4 的海没有大陆归属）—— 重新问会把 `ct` 又变回 null ✗
+        #     null 的前端语义是"这层没有海名" → 大洲视图的 hover 编组退回逐块 ✗
+        _t = dict(_wtier)
+        _t["wasteland"] = _waste_names
         _arr = E.sea_names_by_tier(meta["tiers"], _t)
         if any(_arr):
             meta["seaNamesByTier"] = [

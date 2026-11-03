@@ -261,7 +261,7 @@ function wantPosInt(v, field) {
  * 查 manifest.json。返回清好的 manifest（未知字段原样留着，给 v1.x 留余地 ✓）
  */
 export async function readManifest(zip) {
-  if (!zip.has('manifest.json')) fail('包里没有 manifest.json —— 这不像是地图包', 'manifest.json');
+  if (!zip.has('manifest.json')) fail('缺少 manifest.json，不是有效的地图包', 'manifest.json');
   let m;
   try {
     m = await zip.json('manifest.json', CAP['manifest.json']);

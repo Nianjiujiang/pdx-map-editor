@@ -398,7 +398,11 @@ body.sb-folded .sidebar {
    自定义颜色（系统 RGB 拾色器）/ 收藏 / 最近使用，全在一处 ✓ */
 .brush-menu {
   position: absolute; left: 0; top: calc(100% + 6px); z-index: 60;
-  width: max(100%, 250px);
+  /* 250px 装不下「8 格 × 26 + 7 个间隙 + 左右内边距 20」= 256 ✗ → 横向滚动条 + 裁色块
+     （2026-11-03 用户："子窗口太窄了，导致出现了底下的滚动条，而且遮挡了一点点色块"）
+     给到 268，8 格刚好放得下还有余量 ✓ */
+  width: 268px;
+  overflow-x: hidden;
   background: var(--card, #161c24); border: 1px solid var(--line); border-radius: 10px;
   padding: 10px; box-shadow: 0 10px 26px rgba(0, 0, 0, .45);
 }
@@ -516,14 +520,25 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin
 
 /* ------------------------------------------------------------ 调色板 */
 
-.palette { display: flex; flex-wrap: wrap; gap: 6px; }
+/* 🎨 **调色板 / 最近使用 跟色标对齐**（用户 2026-11-03）：
+ *   一行八个、方块、同一套圆角与描边 ✓（跟 `.brush-menu .brw-row` 同款） */
+/* 格子尺寸**钉死 26px** ✓（2026-11-03：用 `1fr` + `aspect-ratio` 时，
+   菜单一宽就被拉成 50×50，用户看到的是一排大色块 ✗）*/
+.palette { display: grid; grid-template-columns: repeat(8, 26px); grid-auto-rows: 26px; gap: 4px; justify-content: start; }
+/* 空状态那行字（「取过的颜色会留在这里」）是网格里的一个子项 ✗
+ * 不跨列的话会被挤进 26px 一格，一行只剩两三个字 ✓（2026-11-03 用户截图）*/
+.palette > .empty { grid-column: 1 / -1; white-space: normal; }
 .palette .chip {
   appearance: none; border: none; padding: 0; font: inherit;
-  width: 26px; height: 26px; border-radius: 6px; cursor: pointer;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .18);
-  transition: transform .1s;
+  width: 26px; height: 26px;
+  border-radius: 4px; cursor: pointer;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .12);
+  transition: transform .1s ease, box-shadow .1s ease;
 }
-.palette .chip:hover { transform: scale(1.12); }
+.palette .chip:hover {
+  transform: scale(1.12);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .3), 0 2px 6px rgba(0, 0, 0, .45);
+}
 
 /* ------------------------------------------------------------ 舞台 */
 
@@ -609,20 +624,6 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   pointer-events: none;
 }
-.export-pick-tip {
-  position: absolute; left: 50%; top: 14px; transform: translateX(-50%);
-  z-index: 3;
-  max-width: calc(100% - 28px);
-  padding: 7px 12px; border-radius: 999px;
-  background: rgba(12, 17, 23, .92);
-  border: 1px solid var(--glass-brd);
-  color: var(--text);
-  font-size: 12px; line-height: 1.45; text-align: center;
-  white-space: normal;
-  pointer-events: none;
-  -webkit-backdrop-filter: blur(10px);
-  backdrop-filter: blur(10px);
-}
 .export-pick-bar {
   position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%);
   z-index: 3;
@@ -707,6 +708,22 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin
 }
 .boot.done { opacity: 0; pointer-events: none; }
 .boot-inner { width: 340px; text-align: center; }
+
+/* ---- 拖拽提示层（2026-11-03） -------------------------------------------
+ * 拖文件进窗口的那几秒：整页压暗 + 一句"松手就导入" ✓
+ * 不挡鼠标（pointer-events:none）✓ 它只是**反馈**，不是要点的按钮 ✓
+ * ⚠ 只在拖拽期间出现；平时 hidden，`#boot` 里不留多余装饰 ✓ */
+.drop-mask {
+  position: absolute; inset: 0; z-index: 60;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 8px;
+  background: rgba(8, 11, 14, .72);
+  border: 2px dashed rgba(201, 162, 39, .55);
+  border-radius: 10px;
+  pointer-events: none;
+}
+.drop-mask .drop-tip { font: 600 17px/1.3 var(--sans); color: var(--gold); letter-spacing: 1px; }
+.drop-mask .drop-sub { font: 11.5px var(--mono); color: var(--text-faint); }
 .boot-title {
   font: 700 22px/1 Georgia, serif; color: var(--gold);
   letter-spacing: 3px; margin-bottom: 18px;
@@ -800,6 +817,10 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin
    ⚠ 那条规则里写了 display，所以文件开头那个"[hidden] 兜底"还是必需 ✗ */
 /* 刚导入进来的那张闪一下边框（"它出现了"）✓ */
 .map-card.flash { border-color: var(--gold); background: #1f2731; }
+/* 下载卡上那行状态小字（"正在读取…" / "没导进去，看下面的提示"）✓
+   平时带 hidden（文件开头那条 `[hidden]{display:none!important}` 兜得住 ✓）*/
+.map-card .dl-note { display: block; margin-top: 3px; color: var(--gold-dim); }
+.map-card.dl-card { padding-bottom: 30px; }
 .map-import {
   appearance: none; cursor: pointer; width: 100%;
   margin-top: 8px; padding: 11px 15px;
@@ -823,6 +844,9 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin
 .map-msg.bad { border-color: #6b2b2b; color: #ff9c9c; }
 .map-msg.done { border-color: #2b5a3a; color: #8fe0a8; }
 .map-msg-bar { height: 3px; margin-top: 7px; background: #1c242e; border-radius: 2px; overflow: hidden; }
+/* 失败提示后面跟一颗「复制详情」：让它自己占一整行、跟文字隔着走 ✓
+   （原来是行内元素，紧跟最后一行字，看着像压在字上 ✗） */
+.map-msg .btn { display: block; margin: 8px auto 0; }
 .map-msg-bar i {
   display: block; height: 100%; width: 0%;
   background: linear-gradient(90deg, var(--gold-dim), var(--gold));
@@ -878,6 +902,22 @@ html[data-theme="light"] .boot-bar { background: #ccd5df; }
   border: 0; border-bottom: 1px solid transparent;
   padding: 0; cursor: pointer;
 }
+/* 「检查更新」（2026-11-01 加）：跟版本号同一格、靠右一点，比版本戳亮半档 ✓
+   ⚠ 别让它撑高那一行 ✗ —— boot-inner 那条线本来就窄，多一行会把署名顶出去 ✓ */
+.boot-ver-wrap {
+  display: inline-flex; align-items: center; gap: 8px;
+}
+.boot-update-btn {
+  font: inherit; font-size: 10.5px; line-height: 1;
+  color: var(--gold-dim); background: none;
+  border: 0; border-bottom: 1px solid transparent;
+  padding: 0; cursor: pointer;
+  font-family: var(--mono);
+}
+.boot-update-btn:hover { color: var(--gold); border-bottom-color: var(--gold-dim); }
+.boot-update-btn:disabled { color: var(--text-faint); cursor: default; border-bottom-color: transparent; }
+/* 有新版本时**亮起来**（跟"已是最新"分得开 ✓）*/
+.boot-update-btn.is-new { color: var(--gold); border-bottom-color: var(--gold-dim); }
 
 /* ------------------------------------------------------------ 状态栏 */
 .statusbar {
@@ -1341,9 +1381,12 @@ body.tb-folded #tool-group { display: none; }
 #set-legend-font,
 #set-legend-cols,
 #set-legend-box {
-  background: #121a22;
-  color: #e8eef6;
-  border: 1px solid #26313d;
+  /* ⚠ 原来是写死的 `#121a22` = rgb(18, 26, 34)，跟旁边色卡不是一个灰 ✗
+     （用户 2026-11-03："这里怎么还是18,26,34的颜色"）
+     → 跟色卡同款半透明中性底 ✓ */
+  background-color: rgba(8, 12, 17, .35);
+  color: var(--text);
+  border: 1px solid var(--line);
   border-radius: 6px;
   padding: 4px 8px;
   font: 12px/1.4 inherit;
@@ -1377,7 +1420,9 @@ body.tb-folded #tool-group { display: none; }
 #set-legend-font:focus,
 #set-legend-cols:focus,
 #set-legend-box:focus { border-color: #f0d98a; }
-#set-legend-title::placeholder { color: #5d6b7c; }
+/* 提示字别再用那个偏蓝又偏暗的 #5d6b7c ✗（用户 2026-11-03："这里的字体颜色……"）
+   跟正文的弱化色一致 ✓ */
+#set-legend-title::placeholder { color: var(--text-faint, #8b98a8); opacity: 1; }
 #set-legend-title { min-width: 132px; max-width: 150px; }
 .legend-color { display: inline-flex; align-items: center; gap: 7px; flex: none; }
 .legend-color input[type=color] { width: 34px !important; height: 20px; flex: none; }
@@ -1409,6 +1454,10 @@ body.tb-folded #tool-group { display: none; }
 .legend-cell select {
   width: 100% !important; min-width: 0 !important; max-width: none !important;
   height: 28px;
+  /* 跟旁边的色卡（背景 / 边框 / 字色）同一个灰 ✗ 不要偏蓝
+     （用户 2026-11-03："字体、位置这些地方的偏蓝色UI能不能改成字色这边的灰色UI颜色"）*/
+  background-color: rgba(8, 12, 17, .35);
+  border-color: var(--line);
 }
 .legend-count {
   min-height: 15px; margin: 2px 0 1px;
@@ -1515,6 +1564,24 @@ html { color-scheme: dark; }          /* 复选框 / range 轨道 / 下拉弹层
 /* 没打开的时候不吃点击 ✓（关的动画那 240ms 里也成立 ✓）*/
 #settings:not(.open) { pointer-events: none; }
 #settings.open { pointer-events: auto; }
+
+/* 🔴 2026-10-31：遮罩必须跟抽屉**一起**淡掉 ✓
+   真凶是 `#settings` 容器**自己**那层 `backdrop-filter`（vz 皮肤 ⑥ 给的 blur(6px)）✗
+   它**不跟着 `.set-box` 平移**（`.set-box` 是它的孩子，translate 只挪孩子）✓
+   → 关的时候抽屉滑走了，容器上还留着 472px 宽的一条模糊带盖着地图，
+     要等 240ms 后 `hidden = true` 才"啪"地硬切消失 ✗（用户："显示隐藏不同步"）
+   → 给容器的 backdrop-filter 也做 240ms 过渡，收起态归零 ✓ 跟抽屉同一条时长 ✓
+   ⚠ 容器底色本来就是 transparent（`#settings.modal` 那条 ✓）不用管 ✓
+   ⚠ 只针对 vz ✓ 经典皮肤没有这层 blur ✓ 别的 `.modal` 走 `hidden` 切换，不受影响 ✓ */
+#settings {
+  transition:
+    -webkit-backdrop-filter .24s ease,
+    backdrop-filter .24s ease;
+}
+html[data-skin="vz"] #settings:not(.open) {
+  -webkit-backdrop-filter: blur(0px);
+  backdrop-filter: blur(0px);
+}
 
 /* 「设置」按钮自己的开合状态：开着的时候按下去一点、底色亮一档 ✓
  * ⚠ 跟「☰ 侧栏」那个 aria 变暗是一个思路 ✓ 一眼看出"面板现在开着的" ✓ */
@@ -2189,6 +2256,7 @@ html[data-theme="light"] .segmented button.grain { background: #dde5ee; }
 html[data-theme="light"] .brush-fields input,
 html[data-theme="light"] #search,
 html[data-theme="light"] .label-pick select { background: #fff; }
+html[data-theme="light"] .legend-cell select { background-color: rgba(0, 0, 0, .035); border-color: rgba(24, 36, 50, .16); }
 html[data-theme="light"] .zoom-box .btn { background: rgba(255, 255, 255, .92); color: var(--text); }
 html[data-theme="light"] .map-card:hover { background: var(--panel); }
 html[data-theme="light"] .chain-row.active { background: #dbe4ee; }
@@ -2700,14 +2768,6 @@ html[data-theme="light"] .segmented button.grain {
   background: rgba(255, 255, 255, .035);
 }
 .chain-row:hover { background: rgba(255, 255, 255, .08); }
-/* 调色板格子是整个玻璃面板里的小色块 ✓ 只要一点高光描边就有"玻璃片"感 ✓ */
-.palette .chip {
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .28), 0 2px 6px rgba(0, 0, 0, .3);
-}
-.palette .chip:hover {
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .38), 0 4px 12px rgba(0, 0, 0, .4);
-}
-
 /* ---- ④ 玻璃的「厚度」：顶边一道高光 ---- */
 /* 第一波只给三个壳加了 ✓ 这里把新入伙的也补上（浮层才有"一片玻璃"的样子 ✓）
  * ⚠⚠ **`.zoom-box::before` 绝对不能加** ✗✗
@@ -2799,10 +2859,6 @@ html[data-theme="light"] .results:has(> .empty) {
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
 }
-html[data-theme="light"] .palette .chip {
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .7), 0 2px 6px rgba(24, 36, 50, .18);
-}
-
 /* ---- 兜底：不支持 backdrop-filter 的浏览器 ---- */
 /* ⚠ 没有模糊时，半透明底会糊成一片 ✗ → 把底子换成实色 ✓ 至少读得清 ✓ */
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
@@ -3079,7 +3135,6 @@ html[data-theme="light"] .export-pick-size {
   border-color: rgba(90, 65, 10, .22);
   color: #6b4f0e;
 }
-html[data-theme="light"] .export-pick-tip,
 html[data-theme="light"] .export-pick-bar {
   background: rgba(247, 250, 253, .96);
   border-color: rgba(24, 36, 50, .14);
@@ -3158,8 +3213,14 @@ html[data-theme="light"] .map-store-list::-webkit-scrollbar-thumb { background: 
 /* 仓库页不显示地图侧的提示 / 消息 ✓（各页各的 ✓）*/
 .map-pick.store-mode .map-import-hint,
 .map-pick.store-mode .map-msg { display: none !important; }
+/* 「下载地图包」只在地图页出现 ✓（仓库页那边导入的是涂色方案，凑什么热闹 ✗）
+   ⚠ 2026-11-03：这条规则被写坏了 —— 选择器列表断成两截，
+      `.map-fetch` 只拿到了 `margin-top: 0`，**根本没被藏掉** ✗（用户截图里两个按钮并排）*/
+.map-pick.store-mode .map-fetch { display: none !important; }
+/* 藏掉以后「＋ 导入涂色方案…」独占一整行 ✓ */
+.map-pick.store-mode .map-actions .map-import { flex: 1 1 100%; }
 
-/* 仓库页的「导入涂色方案」也用 .map-import 同款 ✓ 跟地图包按钮并排 ✓ */
+/* 仓库页的「导入涂色方案」也用 .map-import 同款 ✓ */
 .map-store-foot .map-import { margin-top: 0; }
 
 /* 仓库卡片做大（至少地图卡两倍 ✓ 2026-10-25 用户定的 ✓）
@@ -3463,8 +3524,12 @@ html[data-skin="vz"] .switch input[type=checkbox]:focus-visible {
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--vz-ring) 32%, transparent);
 }
 html[data-skin="vz"] #display-panel .switch input[type=checkbox] { margin: 0; }
+/* 滑杆不用强调蓝 ✗（用户 2026-11-03："白昼淡灰色，黑夜深灰色，这样比蓝色好"）
+ *   暗色（默认）：深灰；浅色：淡灰 ✓ */
 html[data-skin="vz"] .switch input[type=range],
-html[data-skin="vz"] input[type=range] { accent-color: var(--vz-primary); }
+html[data-skin="vz"] input[type=range] { accent-color: #55555c; }
+html[data-skin="vz"][data-theme="light"] .switch input[type=range],
+html[data-skin="vz"][data-theme="light"] input[type=range] { accent-color: #c9c9cf; }
 html[data-skin="vz"] .switch input[type=range] { width: 56px; }
 html[data-skin="vz"] input[type=checkbox] { accent-color: var(--vz-primary); }
 
@@ -3547,8 +3612,6 @@ html[data-skin="vz"] .brush-menu-custom {
 }
 html[data-skin="vz"] .brush-menu-custom:hover { background: var(--vz-hover); border-color: var(--vz-border-strong); }
 html[data-skin="vz"] .brush-menu-cap { color: var(--vz-fg-faint); font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase; }
-html[data-skin="vz"] .palette .chip { border-radius: 7px; transition: transform .12s ease, box-shadow .16s ease; }
-html[data-skin="vz"] .palette .chip:hover { transform: translateY(-1px) scale(1.04); }
 html[data-skin="vz"] .swatch.big { border-radius: 10px; box-shadow: inset 0 0 0 1px var(--vz-border); }
 
 /* ---- ⑪ 悬停小卡 / 浮条 / 缩放钮（玻璃） -------------------------------- */
@@ -3684,6 +3747,17 @@ html[data-skin="vz"] .map-card .map-card-tag { color: var(--vz-fg-faint); }
 html[data-skin="vz"] .map-act { color: var(--vz-fg-dim); border-radius: 6px; padding: 2px 6px; transition: background .12s ease, color .12s ease; }
 html[data-skin="vz"] .map-act:hover { background: var(--vz-hover); color: var(--vz-fg); }
 html[data-skin="vz"] .map-act.danger { color: var(--vz-danger); }
+/* 🔴 2026-10-31：vz 皮肤下**导入包卡片被压扁**了 ✓
+   用户截图："名字和版本号、按钮和分辨率挤一块了，可以分开一点点"
+   真凶是上面那条 `html[data-skin="vz"] .map-card { padding: 14px 16px }` ✗ ——
+   权重 (0,1,1,1)=21（属性 + 类 + 元素）比 `.map-card.imported` 的 (0,2,0)=20 **还高** ✓
+   → 卡片底下那 27px 的额外内边距被整个吃掉 ✗
+   → 左下角的版本号（`.map-card-tag`，bottom:5）和右下角的动作（bottom:5）
+     直接压在名字那行上：实测版本号比标题底部**还高 4px**、按钮压住分辨率 8.8px ✓
+   → 这里用同权重的选择器把内边距还回来，再抬到 32px（比经典皮肤的 27 松一点 ✓
+     vz 那张卡本来就更矮：圆角 12、字号 13.5 ✓）✓
+   实测（456px 宽）：标题底→版本号 14px、分辨率底→按钮 9px、两个下沿各留 6px ✓ */
+html[data-skin="vz"] .map-card.imported { padding-bottom: 32px; }
 html[data-skin="vz"] .map-import {
   background: transparent;
   border: 1px dashed var(--vz-border-strong);
@@ -4034,6 +4108,26 @@ html[data-skin="vz"] .switch > input { flex: 0 0 auto; }
 html[data-skin="vz"] #display-panel .tool-group { flex-wrap: wrap; row-gap: 5px; }
 html[data-skin="vz"] #display-panel .switch { font-size: 10.5px; gap: 5px; }
 
+/* 🔴 2026-10-31：「父级边界」并回「地块」那一行 ✓
+   用户截图问"是塞不下还是为什么" —— 就是塞不下：
+   侧栏 322 - 左右 padding 32 = **290px** 可用 ✓（实测 `.tool-group` 288px）
+   标签 36 + 三个开关（30 轨道 + 5 间距 + 两字标签 55.9）
+   +「父级边界」（30+5+四字 72.7）+ 四个列间隙 6 ≈ **299px** → 换行掉到第二行 ✓
+   → 只压 vz 这套：标签列 36→28、列间隙 6→4、
+     「父级边界」轨道 30→26（旋钮圆心跟着挪）、字号 10.5→10、内部间距 5→3 ✓
+   实测这一行 28 + 55.9×3 + 68.7 + 4×4 ≈ 278px，留 ~10px 余量 ✓
+   经典皮肤是原生 13px 勾选框，四个开关加起来才 ~209px ✓ 不动 ✓ */
+html[data-skin="vz"] #display-panel .group-label { width: 28px; }
+html[data-skin="vz"] #display-panel .tool-group { column-gap: 4px; }
+html[data-skin="vz"] #display-panel #parent-border-row.switch { font-size: 10px; gap: 3px; }
+html[data-skin="vz"] #parent-border-row input[type=checkbox] {
+  width: 26px;
+  background: radial-gradient(circle at 8px 50%, var(--vz-knob) 0 6px, transparent 6.6px), var(--vz-track);
+}
+html[data-skin="vz"] #parent-border-row input[type=checkbox]:checked {
+  background: radial-gradient(circle at 18px 50%, var(--vz-primary-fg) 0 6px, transparent 6.6px), var(--vz-primary);
+}
+
 
 /* ---- ㉘ 液态玻璃：更顺滑的动效 + 更细腻的材质 ---------------------------
  * 目标：切换深浅、开合浮层、拖动地图时都"顺着走"，而不是硬切/掉帧 ✓
@@ -4127,4 +4221,293 @@ html[data-skin="vz"] body.vz-moving .brush-menu {
     animation-iteration-count: 1 !important;
     transition-duration: .001ms !important;
   }
+}
+
+
+
+/* ============ 旗帜（剪贴蒙版）2026-11-02 ============
+ *  两样东西：地图上那个可拖的框 + 框旁边的**悬浮小窗** ✓
+ *  ⚠ 数值不放侧栏（用户 2026-11-02 定的）✗ —— 贴哪个块就在哪个块旁边调 ✓
+ *
+ *  画风照两套既有规矩来（用户点名的）：
+ *    · **Vercel 风**：黑底、1px 细边、无重投影、留白干净 ✓
+ *    · **shadcn/ui 风**：label 在上、input 在下，7~12px 圆角，
+ *      焦点环用 --vz-glow，按钮是 outline/ghost 两种，没有渐变没有发光 ✓
+ *  下面先是**中性那套**（经典皮肤也能用 ✓），再是 vz 皮肤的细化 ✓
+ */
+
+/* ---------- 框：白细虚线 + 四角抓手 ---------- */
+#flag-knobbox {
+  position: absolute; z-index: 30; pointer-events: auto;
+  border: 1px dashed rgba(255, 255, 255, .85);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, .45);
+  cursor: move; touch-action: none;
+  will-change: left, top, width, height;
+}
+#flag-knobbox .fb-h {
+  position: absolute; width: 10px; height: 10px; margin: -5px 0 0 -5px;
+  background: #fff; border: 1px solid rgba(0, 0, 0, .55); border-radius: 3px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, .35);
+  transition: transform .12s ease;
+}
+#flag-knobbox .fb-h:hover { transform: scale(1.15); }
+#flag-knobbox .fb-h[data-h="nw"] { left: 0; top: 0; cursor: nwse-resize; }
+#flag-knobbox .fb-h[data-h="ne"] { left: 100%; top: 0; cursor: nesw-resize; }
+#flag-knobbox .fb-h[data-h="sw"] { left: 0; top: 100%; cursor: nesw-resize; }
+#flag-knobbox .fb-h[data-h="se"] { left: 100%; top: 100%; cursor: nwse-resize; }
+
+/* ---------- 悬浮小窗 ---------- */
+#flag-pop {
+  position: absolute; z-index: 31; width: 210px;
+  padding: 10px; border-radius: 12px;
+  background: var(--panel-2, #111113);
+  border: 1px solid var(--line, rgba(255, 255, 255, .1));
+  box-shadow: 0 14px 38px rgba(0, 0, 0, .48), 0 2px 6px rgba(0, 0, 0, .3);
+  color: var(--text, #fafafa);
+  font-size: 11px; line-height: 1.3;
+  -webkit-backdrop-filter: blur(18px) saturate(160%);
+  backdrop-filter: blur(18px) saturate(160%);
+}
+#flag-pop .fp-head {
+  display: flex; align-items: center; gap: 6px;
+  margin: 0 0 8px; padding: 0 1px;
+}
+#flag-pop .fp-name {
+  font-size: 12px; font-weight: 600; letter-spacing: -.01em;
+  color: var(--text, #fafafa);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  max-width: 150px;
+}
+#flag-pop .fp-close {
+  margin-left: auto; flex: 0 0 auto;
+  width: 20px; height: 20px; padding: 0; line-height: 18px;
+  border-radius: 6px; border: 1px solid transparent;
+  background: transparent; color: var(--text-faint, #71717a);
+  font-size: 13px; cursor: pointer;
+}
+#flag-pop .fp-close:hover {
+  background: var(--vz-hover, rgba(255, 255, 255, .06));
+  color: var(--text, #fafafa);
+}
+
+/* label 在上、input 在下 —— shadcn 那套表单的排法 ✓ */
+#flag-pop .fp-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+#flag-pop .fp-grid label {
+  display: flex; flex-direction: column; gap: 4px;
+  font-size: 10px; letter-spacing: .04em; text-transform: uppercase;
+  color: var(--text-dim, #a1a1aa);
+  font-weight: 500;
+}
+#flag-pop input {
+  width: 100%; min-width: 0; height: 24px; padding: 0 6px;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, .04);
+  border: 1px solid var(--line, rgba(255, 255, 255, .1));
+  color: var(--text, #fafafa);
+  font: 11px/1 var(--mono, ui-monospace, monospace);
+  outline: none;
+  transition: border-color .14s ease, box-shadow .14s ease, background .14s ease;
+}
+#flag-pop input:hover { border-color: var(--vz-border-strong, rgba(255, 255, 255, .22)); }
+#flag-pop input:focus {
+  border-color: var(--vz-border-strong, rgba(255, 255, 255, .35));
+  box-shadow: 0 0 0 3px var(--vz-glow, rgba(255, 255, 255, .07));
+  background: rgba(255, 255, 255, .06);
+}
+
+/* 范围 / 比例 两排小按钮（每排一个标签 + 三个选择）✓ */
+#flag-pop .fp-rows { display: flex; flex-direction: column; gap: 5px; margin-top: 8px; }
+#flag-pop .fp-row { display: flex; align-items: center; gap: 4px; }
+#flag-pop .fp-row > span {
+  width: 28px; flex: 0 0 auto;
+  font-size: 10px; letter-spacing: .04em; text-transform: uppercase;
+  color: var(--text-dim, #a1a1aa); font-weight: 500;
+}
+#flag-pop .fp-row button {
+  flex: 1 1 0; min-width: 0;
+  height: 22px; padding: 0 2px;
+  border-radius: 6px; font-size: 10.5px; cursor: pointer;
+  background: transparent; color: var(--text-dim, #a1a1aa);
+  border: 1px solid var(--line, rgba(255, 255, 255, .1));
+  transition: background .14s ease, color .14s ease, border-color .14s ease;
+}
+#flag-pop .fp-row button:hover { background: var(--vz-hover, rgba(255, 255, 255, .06)); color: var(--text, #fafafa); }
+#flag-pop .fp-row button.on {
+  background: var(--vz-primary, #fafafa);
+  border-color: var(--vz-primary, #fafafa);
+  color: var(--vz-primary-fg, #09090b);
+  font-weight: 600;
+}
+#flag-pop .fp-hint {
+  margin-top: 6px; padding: 5px 6px; border-radius: 6px;
+  font-size: 10.5px; line-height: 1.35;
+  color: var(--vz-accent, #8ab4ff);
+  background: rgba(138, 180, 255, .10);
+  border: 1px solid rgba(138, 180, 255, .28);
+}
+
+#flag-pop .fp-acts {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 8px;
+}
+#flag-pop .fp-acts button {
+  height: 26px; padding: 0 8px;
+  border-radius: 7px;
+  border: 1px solid var(--line, rgba(255, 255, 255, .1));
+  background: transparent;
+  color: var(--text, #fafafa);
+  font-size: 11px; font-weight: 500;
+  cursor: pointer;
+  transition: background .14s ease, border-color .14s ease, color .14s ease;
+}
+#flag-pop .fp-acts button:hover {
+  background: var(--vz-hover, rgba(255, 255, 255, .06));
+  border-color: var(--vz-border-strong, rgba(255, 255, 255, .22));
+}
+#flag-pop .fp-acts button:active { background: var(--vz-hover-2, rgba(255, 255, 255, .1)); }
+/* 「等比」是按下去会亮的那种（shadcn 的 default 变体：实心反色）*/
+#flag-pop .fp-acts button.on {
+  background: var(--vz-primary, #fafafa);
+  border-color: var(--vz-primary, #fafafa);
+  color: var(--vz-primary-fg, #09090b);
+}
+#flag-pop .fp-acts button.on:hover { filter: brightness(.94); }
+/* 「删除」是破坏性动作 —— shadcn 的 destructive 变体：平时不喊，悬停才红 ✓ */
+#flag-pop #flag-del:hover {
+  color: var(--danger, var(--vz-danger, #ff7a7a));
+  border-color: color-mix(in srgb, var(--danger, #ff7a7a) 55%, transparent);
+  background: rgba(255, 122, 122, .10);
+}
+
+/* ---------- vz 皮肤下再细一层（跟地图上那几个浮块同一套观感）---------- */
+html[data-skin="vz"] #flag-pop {
+  background:
+    linear-gradient(180deg, var(--vz-glass-hi), transparent 46%),
+    var(--vz-surface);
+  border-color: var(--vz-border);
+  box-shadow: var(--vz-shadow-2), inset 0 1px 0 var(--vz-glass-hi);
+  -webkit-backdrop-filter: blur(22px) saturate(170%);
+  backdrop-filter: blur(22px) saturate(170%);
+}
+html[data-skin="vz"] #flag-pop input {
+  background: rgba(255, 255, 255, .03);
+  border-color: var(--vz-border);
+  border-radius: 7px;
+}
+html[data-skin="vz"] #flag-pop .fp-acts button { border-radius: 7px; }
+html[data-skin="vz"] #flag-knobbox {
+  border-color: var(--vz-fg);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, .5), 0 0 0 3px rgba(0, 0, 0, .18);
+}
+html[data-skin="vz"] #flag-knobbox .fb-h {
+  background: var(--vz-fg);
+  border-color: var(--vz-primary-fg);
+  border-radius: 3px;
+}
+
+/* ============ 色标（ColorBrewer）2026-11-02 ============
+ *  放在色块二级菜单里 ✓ **单向渐变 / 双向渐变 各一套，一行八个** ✓
+ *  （用户 2026-11-03："按之前那样双向、单向渐变那样"）
+ */
+.brush-menu { max-height: 72vh; overflow-y: auto; }
+.brush-menu .brw-row {
+  /* 跟 .palette 一模一样 ✓（抄的就是调色板那套 26px 网格）*/
+  display: grid; grid-template-columns: repeat(8, 26px); grid-auto-rows: 26px;
+  gap: 4px; justify-content: start; margin-bottom: 4px;
+}
+.brush-menu .brw-row i {
+  width: 26px; height: 26px; border-radius: 4px; cursor: pointer;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .12);
+  transition: transform .1s ease, box-shadow .1s ease;
+}
+.brush-menu .brw-row i:hover {
+  transform: scale(1.12);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .3), 0 2px 6px rgba(0, 0, 0, .45);
+}
+
+/* ================================================================ 日间模式：补给
+ *  🔴 2026-11-03 用户："手机版和电脑版不少 UI 组件都没有切换白昼或黑夜"
+ *  —— 下面这些组件原来只写了暗色的白描边 / 黑影 / 写死深底，浅底上不是糊就是脏 ✓
+ *  全部只改颜色（底 / 边 / 阴影 / 字），尺寸、布局、字号一个都没动 ✓
+ *  取色统一走现有浅色那套：面板 #eaf0f6、边 rgba(24,36,50,.x)、选中 #26598a ✓ */
+
+/* ── 画笔菜单（运行时被 JS 搬到 body 下 ✗ 不能写 .sidebar 前缀 ✓）── */
+html[data-theme="light"] .brush-menu {
+  box-shadow: 0 10px 26px rgba(24, 36, 50, .18);
+}
+
+/* ── 色块：白描边 + 黑影在浅底上等于没有边 / 一圈脏影 ── */
+html[data-theme="light"] .swatch {
+  box-shadow: inset 0 0 0 1px rgba(24, 36, 50, .18), 0 2px 9px rgba(24, 36, 50, .14);
+}
+html[data-theme="light"] .palette .chip {
+  box-shadow: inset 0 0 0 1px rgba(24, 36, 50, .16);
+}
+html[data-theme="light"] .palette .chip:hover {
+  box-shadow: inset 0 0 0 1px rgba(24, 36, 50, .3), 0 2px 6px rgba(24, 36, 50, .18);
+}
+
+/* ── 色标（二级菜单里的那排 26px 小格）── */
+html[data-theme="light"] .brush-menu .brw-row i {
+  box-shadow: inset 0 0 0 1px rgba(24, 36, 50, .16);
+}
+html[data-theme="light"] .brush-menu .brw-row i:hover {
+  box-shadow: inset 0 0 0 1px rgba(24, 36, 50, .3), 0 2px 6px rgba(24, 36, 50, .18);
+}
+
+/* ── 旗帜：拖拽框的白色虚线 / 白色小方块在浅底上直接消失 ── */
+html[data-theme="light"] #flag-knobbox {
+  border-color: rgba(24, 36, 50, .55);
+  box-shadow: 0 0 0 1px rgba(24, 36, 50, .12);
+}
+html[data-theme="light"] #flag-knobbox .fb-h {
+  background: #ffffff;
+  border-color: rgba(24, 36, 50, .55);
+  box-shadow: 0 1px 3px rgba(24, 36, 50, .28);
+}
+
+/* ── 旗帜悬浮小窗 ── */
+html[data-theme="light"] #flag-pop {
+  box-shadow: 0 14px 38px rgba(24, 36, 50, .20), 0 2px 6px rgba(24, 36, 50, .10);
+}
+html[data-theme="light"] #flag-pop input {
+  background: rgba(255, 255, 255, .66);
+  border-color: rgba(24, 36, 50, .18);
+  color: var(--text);
+}
+html[data-theme="light"] #flag-pop input:hover { border-color: rgba(24, 36, 50, .3); }
+html[data-theme="light"] #flag-pop input:focus {
+  border-color: var(--gold);
+  box-shadow: 0 0 0 3px rgba(47, 95, 143, .14);
+  background: #ffffff;
+}
+html[data-theme="light"] #flag-pop .fp-close:hover,
+html[data-theme="light"] #flag-pop .fp-row button:hover,
+html[data-theme="light"] #flag-pop .fp-acts button:hover { background: rgba(24, 36, 50, .06); }
+html[data-theme="light"] #flag-pop .fp-row button.on,
+html[data-theme="light"] #flag-pop .fp-acts button.on {
+  background: rgba(47, 95, 143, .16);
+  border-color: rgba(47, 95, 143, .42);
+  color: #26598a;
+}
+html[data-theme="light"] #flag-pop .fp-hint {
+  color: #26598a;
+  background: rgba(47, 95, 143, .10);
+  border-color: rgba(47, 95, 143, .26);
+}
+html[data-theme="light"] #flag-pop #flag-del:hover {
+  color: #8f2f1d;
+  border-color: rgba(143, 47, 29, .45);
+  background: rgba(143, 47, 29, .08);
+}
+
+/* ── 图例条目左边的色块：白描边 + 内黑圈，浅底上像糊了一圈灰 ── */
+html[data-theme="light"] .legend-row .legend-sw {
+  border-color: rgba(24, 36, 50, .38);
+  box-shadow: 0 0 0 1px rgba(24, 36, 50, .32) inset;
+}
+
+/* ── 设置抽屉：`#settings .modal-box.set-box` 带 id 权重，
+     浅色 `.modal-box` 那条盖不到它的黑影（0 0 0 .28 在浅底上偏重）── */
+html[data-theme="light"] #settings .modal-box.set-box {
+  box-shadow: -12px 0 32px rgba(24, 36, 50, .16);
 }

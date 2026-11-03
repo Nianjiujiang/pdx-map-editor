@@ -21,8 +21,81 @@ const path = require('path');
 
 const ROOT = path.join(__dirname, '..', '..');
 
-//: 单文件版（build_standalone.py）的拼接顺序 —— **必须和那边一致** ✓
-const MODULES = ['log.js', 'pack.js', 'zip.js', 'packstore.js', 'fonts.js', 'bitmapfont.js', 'data.js', 'bmp.js', 'gl.js', 'maplabels.js', 'labels.js', 'tilemap.js', 'tutorial.js', 'app.js'];
+// ---------------------------------------------------------------- 模块清单
+/* 🔴 **拍平顺序的唯一事实源 = `build_standalone.py` 的 `MODULES`** ✗✗（2026-11-03 改）
+ *
+ *  以前这里抄了一份、`test_modes.js` 又抄了一份、`build_standalone.py` 自己一份 ——
+ *  三份"必须一致"的清单，谁也不检查谁 ✗。2026-11-02 加 `brewer.js` 时只改了构建脚本，
+ *  另外两份没跟上 → 所有拍平工具当场 `ReferenceError: BREWER is not defined`，
+ *  连 bench 都跑不起来 ✓（不是什么深奥的 bug，就是抄了三份 ✓）
+ *
+ *  现在：只读构建脚本那一份，顺序、文件名都以它为准 ✓
+ *  **不许**再在这里写死数组 ✗ —— 那等于又抄了一份，迟早再漂一次 ✓
+ *  `tools/check_modules.js` 会盯这件事：清单里每个文件都得在、
+ *  `web/js/` 里每个 .js 都得在清单里、import 得能落到清单上 ✓
+ */
+function readBuildModules(file = path.join(ROOT, 'build_standalone.py')) {
+  let src;
+  try {
+    src = fs.readFileSync(file, 'utf8');
+  } catch (e) {
+    /* 读不到也要说人话：路径 + 原因 + 怎么修 ✓（别让调用方只看到一个 ENOENT 栈 ✗）*/
+    throw new Error(
+      `读不到拍平清单：${file}\n`
+      + `  原因：${e.code || e.message}\n`
+      + `  怎么修：确认仓库根目录下有 build_standalone.py —— 单文件版的模块顺序就写在那里，\n`
+      + `  工具链所有"把 web/js 拍平成一份"的地方都从它的 MODULES 读，不再各自抄一份。`);
+  }
+  /* 形状（构建脚本里就是这个样子，闭合括号跟在最后一个文件名后面）：
+   *   MODULES = ("log.js", "pack.js", …, "app.js")
+   * 括号里没有嵌套括号、字符串里也没有 ")"，所以非贪婪到行尾的 ")" 就够 ✓ */
+  const block = /^MODULES\s*=\s*\(([\s\S]*?)\)\s*$/m.exec(src);
+  if (!block) {
+    throw new Error(
+      `没在 ${file} 里找到 \`MODULES = (...)\`。\n`
+      + `  期望形状（行首开始，括号里一行或几行文件名）：\n`
+      + `    MODULES = ("log.js", "pack.js", …, "app.js")\n`
+      + `  怎么修：照着这个形状把清单写回去。**不要**在别处（本文件 / test_modes.js）\n`
+      + `  再写一份数组来"兜底" —— 三份清单各抄一次，2026-11-02 的 brewer.js 就是这么漂的。`);
+  }
+  const list = [...block[1].matchAll(/["']([^"']+\.js)["']/g)].map((m) => m[1]);
+  if (!list.length) {
+    throw new Error(
+      `解析 ${file} 的 MODULES 得到 0 个文件名。\n`
+      + `  怎么修：清单一栏只放 "xxx.js" 这种带引号的文件名，用逗号分隔；\n`
+      + `  每个文件名都要以 .js 结尾（检查是不是把注释或变量名也写进去了）。`);
+  }
+  const dup = [...new Set(list.filter((n, i) => list.indexOf(n) !== i))];
+  if (dup.length) {
+    throw new Error(
+      `${file} 的 MODULES 里同一个文件出现了两次：${dup.join('、')}\n`
+      + `  怎么修：去重。重复拼接会让同名 const/let 重复声明，报的错还跟清单无关。`);
+  }
+  return list;
+}
+
+//: 单文件版的拼接顺序 —— 从构建脚本读（唯一事实源 ✓）
+const MODULES = readBuildModules();
+
+/**
+ * 自测（`test_modes.js`）拍哪些模块 —— **比单文件版少两个** ✓
+ *
+ * 为什么少：
+ *   · `log.js` —— 诊断报告是个**普通脚本**，挂在 `window.PDXLOG` 上，
+ *     由它自己的最小 window 跑（见 `tools/check_log.js`）。拍进自测沙箱里没必要，
+ *     而且它顶部有 `setInterval(_watchdog, 2000)`：在 Node 里那是个**永不结束**的
+ *     真定时器 → 测试跑完进程也不退（以前就是这么"看着像挂死"的 ✓ 不是死循环 ✗）。
+ *   · `tutorial.js` —— 引导在浏览器里是**另一个 <script>**，`app.js` 只调
+ *     `window.initTutorial`。自测不验引导，拍进来只会把它的 9 秒提示定时器带进来。
+ *   其余（含 2026-11-02 新增的 `brewer.js`）一个都不能少 —— 少一个的表现是
+ *   `ReferenceError: XXX is not defined`（加 brewer 那次就是三处清单各抄一份漏了它），
+ *   或者更糟：**静默挂死**（把 log.js 拍进来时进程永不退出，看起来像死循环 ✓）。
+ *
+ * 这份"去掉谁"只写在这里一处 ✓ —— 别在 test_modes.js 里再抄一份数组。
+ */
+function testModules() {
+  return MODULES.filter((n) => n !== 'log.js' && n !== 'tutorial.js');
+}
 
 /** 开发时 index.html 只加载 app.js（真 ES module），这里按单文件版的顺序拍平 */
 function flattenModules(modules = MODULES, root = ROOT) {
@@ -972,6 +1045,21 @@ function makeEnv(opt = {}) {
     // 以前桩里没有它，于是"拦 console"那条路在自检里**一次都没跑到过** ✗
     console,
   };
+  /* 🔴 **定时器记账**（2026-11-03）
+   *   一个环境 = 一次 boot，里面挂着一堆 `setInterval`（看门狗、自动保存、指针防抖…）。
+   *   量完一张图把它丢给 GC 是丢不掉的 ✗ —— 定时器闭包还攥着整个 sandbox ✓
+   *   于是连量三张图时，后两张会和前一张的"活环境"抢 CPU，数字凭空涨 40%（实测 ✓）
+   *   → 这里把每次 setTimeout / setInterval 的句柄记下来，`dispose()` 时统一清掉 ✓
+   *   ⚠ 只影响**桩**（Node 自检 / 基准），网页里当然还是浏览器自己的调度 ✓ */
+  const timers = new Set();
+  const trackTimeout = (fn, ms, ...a) => {
+    const t = setTimeout(() => { timers.delete(t); if (typeof fn === 'function') fn(...a); }, ms);
+    timers.add(t);
+    return t;
+  };
+  const untrackTimeout = (t) => { timers.delete(t); clearTimeout(t); };
+  const untrackInterval = (t) => { timers.delete(t); clearInterval(t); };
+
   const sandbox = {
     console,
     document: documentStub,
@@ -980,7 +1068,7 @@ function makeEnv(opt = {}) {
     performance: { now: () => Date.now() },
     requestAnimationFrame: (fn) => { rafs.push(fn); return rafs.length; },
     cancelAnimationFrame: () => {},
-    setTimeout, clearTimeout,
+    setTimeout: trackTimeout, clearTimeout: untrackTimeout,
     /* 🔴 **interval 一律 unref** ✗✗（2026-10-27）
      *   页面里的 setInterval 活到标签页关掉为止 —— 桩里不 unref 的话，
      *   log.js 那个启动看门狗（每 2 秒一次）会把 Node 进程**永远钉住** ✗
@@ -989,9 +1077,10 @@ function makeEnv(opt = {}) {
     setInterval: (fn, ms, ...a) => {
       const t = setInterval(fn, ms, ...a);
       try { if (t && t.unref) t.unref(); } catch (e) { /* ✓ */ }
+      timers.add(t);            // 记账：dispose() 时连同这一份一起清掉 ✓
       return t;
     },
-    clearInterval,
+    clearInterval: untrackInterval,
     TextEncoder, TextDecoder, Blob, Response, Request, Headers, DecompressionStream,
     fetch: async (url) => {
       const rel = String(url).replace(/^https?:\/\/[^/]+/, '').replace(/^\//, '');
@@ -1023,6 +1112,12 @@ function makeEnv(opt = {}) {
   };
 
   return { sandbox, get, containers, rafs, store, documentStub,
+           /* 一个环境量完就调一次，把定时器全掐掉（不然它活着占 CPU ✓） */
+           dispose() {
+             for (const t of timers) { try { clearTimeout(t); clearInterval(t); } catch (e) { /* ✓ */ } }
+             timers.clear();
+             try { rafs.length = 0; } catch (e) { /* ✓ */ }
+           },
            /* 自检用：往 window / document 上派发一次事件 ✓
             *   派"回到前台"：dispatchDocument('visibilitychange')（document.hidden 自己先改成 false ✓）*/
            dispatchWindow: fire(listeners.window),
@@ -1299,7 +1394,8 @@ function readStandalone(htmlPath) {
 }
 
 module.exports = {
-  ROOT, MODULES, flattenModules, moduleListFor, makeEnv, instantiate, readStandalone,
+  ROOT, MODULES, testModules, readBuildModules,
+  flattenModules, moduleListFor, makeEnv, instantiate, readStandalone,
   El, ctx2d, fakeGL, stats, resetCanvasStats, setForceLinkFail,
   makeIndexedDBFake,
 };

@@ -78,6 +78,30 @@ function bindMobile() {
   const gDisp = makeGroup('display', '设置');
   const gIO = makeGroup('io', '文件');
 
+  /* 🎨 颜色页那个小窗（调色板 / 最近使用 / 色标）的高度 = **面板还剩多少地方**
+   *   ⚠ 别再用 `46vh` ✗（`mobile_css.txt` 里那条只是 JS 没跑起来时的兜底）
+   *     vh 算的是**整屏**，可这个面板本身只占屏幕的一部分（`place()` 按"按钮到屏边"算）
+   *     → 小窗比面板还高，最后一排就切在面板外面 ✓
+   *     用户 2026-11-03 报的"颜色页下拉拉不到底"就是这个 ✓
+   *   ⚠ 量的是"它在分组里占掉多少"（加回 `scrollTop` ✗ 不然滚过一屏就越量越矮）
+   *   ⚠ 分组藏着 / 还没排好版的时候别量 ✗ 量出来是 0 或者负数 ✓
+   *   ⚠ 留一点余量 ✗ 底部还有 `padding-bottom` + 安全区 ✓ 贴太死照样切一条 ✓ */
+  const fitColorKit = () => {
+    try {
+      const g = group.color && group.color.el;
+      if (!g) return;
+      const kit = g.querySelector('.mob-color-kit');
+      if (!kit) return;
+      if (g.hidden) { kit.style.maxHeight = ''; return; }
+      const gr = g.getBoundingClientRect();
+      if (!(gr.height > 40)) return;               // 面板还没撑开 ✓ 下一帧或下次 place 再量 ✓
+      const kr = kit.getBoundingClientRect();
+      const topIn = kr.top - gr.top + (g.scrollTop || 0);
+      const room = Math.round(gr.height - topIn - 12);
+      kit.style.maxHeight = (room > 150 ? room : 150) + 'px';
+    } catch (e) { /* 量不出来就让 CSS 那条兜底顶着 ✓ */ }
+  };
+
   /** 把那一栏摆到按钮的正上方（按钮在上半屏就往下弹 ✓） */
   const place = (btn, key) => {
     try {
@@ -191,6 +215,11 @@ function bindMobile() {
           sheet.style.height = '';
         }
       } catch (e) { /* ✓ */ }
+      /* 颜色页那个小窗跟着面板高度走 ✓（开了「更高」/ 转屏 / 改窗口大小都会重新走 place ✓）*/
+      if (key === 'color') {
+        fitColorKit();
+        try { requestAnimationFrame(() => { try { fitColorKit(); } catch (e) { /* ✓ */ } }); } catch (e) { /* ✓ */ }
+      }
     } catch (e) { /* 算不出来就按默认位置 ✓ */ }
   };
 
@@ -233,11 +262,20 @@ function bindMobile() {
       backdrop.classList.add('on');
       opened = key;
       openedBtn = btn || null;
+      /* 颜色页的小窗要等面板真正显出来（有高度了 ✓）才有得量 ✗ place() 里那次可能太早 ✓ */
+      if (key === 'color') {
+        try { requestAnimationFrame(() => { try { fitColorKit(); } catch (e) { /* ✓ */ } }); } catch (e) { /* ✓ */ }
+      }
     } else {
       sheet.classList.remove('on');
       backdrop.classList.remove('on');
       opened = null;
       openedBtn = null;
+      /* 收起来就把量出来的高度清掉 ✓ 不然下次开面板会先按上一屏的高度闪一下 ✓ */
+      try {
+        const k = group.color && group.color.el && group.color.el.querySelector('.mob-color-kit');
+        if (k) k.style.maxHeight = '';
+      } catch (e) { /* ✓ */ }
     }
     const bs = ui.querySelectorAll('#mob-dock button');
     for (let i = 0; i < bs.length; i++) bs[i].classList.toggle('on', bs[i].getAttribute('data-sheet') === key);
@@ -310,6 +348,8 @@ function bindMobile() {
     const bmenu = $('brush-menu');
     const fav = $('palette-fav');
     const recent = $('palette');
+    /* 删色后的结果提示（在下面那个 if 里才有着落 ✓ 长按回调在 if 外面 ✗ 先留个空壳 ✓）*/
+    let sayHint = null;
     if (colorPanel && bmenu && fav && recent) {
       /* 把二级菜单里那两段（标题 + 色块）整段搬出来 ✓
          ⚠ 标题节点是 palette 的前一个兄弟 ✗ 别只搬 palette 色块 ✓
@@ -323,11 +363,37 @@ function bindMobile() {
       kit.appendChild(fav);
       if (recentCap) kit.appendChild(recentCap);
       kit.appendChild(recent);
-      /* 手机没有右键，长按是个隐藏手势 ✗ 给一行小字说清楚 ✓ */
+      /* 这行小字平时**不显示** ✓（用户 2026-11-03："长按色块可以删掉这句话删掉"）
+         它只用来报删完的结果（全局浮条 TOAST_OFF 关着，toast() 是空操作 ✗）✓ */
       const hint = document.createElement('div');
       hint.className = 'mob-color-hint';
-      hint.textContent = '长按色块可以删掉';
+      hint.hidden = true;
       kit.appendChild(hint);
+      let hintTimer = 0;
+      sayHint = (msg) => {
+        clearTimeout(hintTimer);
+        hint.textContent = msg || '';
+        hint.hidden = !msg;
+        hintTimer = setTimeout(() => { hint.textContent = ''; hint.hidden = true; }, 2400);
+      };
+      /* 🎨 色标（ColorBrewer）：跟桌面同一套数据，一行八个 26px 格子 ✓ */
+      try {
+        if (window.__PDX_BREWER) {
+          const brwCap = document.createElement('div');
+          brwCap.className = 'brush-menu-cap';   // 跟「调色板 / 最近使用」同一套标题样式 ✓
+          brwCap.textContent = '色标';
+          const brw = document.createElement('div');
+          brw.className = 'mob-brw';
+          window.__PDX_BREWER.buildInto(brw);
+          brw.addEventListener('click', (ev) => {
+            const t = ev.target;
+            const hex = t && t.dataset ? t.dataset.c : null;
+            if (hex) window.__PDX_BREWER.setColor(hex);
+          });
+          kit.appendChild(brwCap);
+          kit.appendChild(brw);
+        }
+      } catch (e) { /* 色标没装上不影响别的 ✓ */ }
       colorPanel.appendChild(kit);
       /* 二级菜单整个退役 ✓（自定义颜色那个按钮还留着，只是不显示 ✓
          大色块的 onclick 会直接调它 ✓）*/
@@ -402,7 +468,12 @@ function bindMobile() {
         if (e && e.stopPropagation) e.stopPropagation();
       }, true);
     };
-    bindLongDelete(fav, (i) => { try { paletteRemoveAt(i); } catch (e) { /* ✓ */ } });
+    bindLongDelete(fav, (i) => {
+      /* 先记下要删的那个颜色（删完节点就重画了 ✓），再回一句结果 ✓ */
+      const hex = (typeof paletteList === 'function' ? paletteList()[i] : '') || '';
+      try { paletteRemoveAt(i); } catch (e) { /* ✓ */ }
+      if (hex && sayHint) sayHint('已从调色板移除 ' + hex);
+    });
     bindLongDelete(recent, (i) => {
       try {
         const e = state.recent && state.recent[i];
@@ -608,10 +679,14 @@ function bindMobile() {
         /* **当场把 class 套上去** ✗ —— 漏了这一步按钮就跟没反应一样 ✓
          * （class 原本只在 setSheet 打开面板时套 ✓ 所以点了要等下次打开才生效 ✗）
          * 只有"正开着这一页"才需要动它 ✓ 免得串到别的页 ✓ */
+        /* ⚠ 2026-11-03：这两行**必须保持原来的 `opened === key` 判断** ✗
+         *   我一度改成无条件（想救颜色页那个按钮）→ 用户回："设置和颜色的小按钮都被你搞坏了"
+         *   ✓ 设置页本来是好的，放开判断反而把它弄坏 → 现在原样恢复 ✓ */
         try { if (opened === key) sheet.classList.toggle('mob-tall', !!TALLS[key]); } catch (e) { /* ✓ */ }
-        // 当前正开着这一页才需要立刻重摆 ✓（place 里会把高度一起收拾好 ✓）
         try { if (opened === key && openedBtn) place(openedBtn, key); } catch (e) { /* ✓ */ }
-        try { if (key === 'display' && gDisp._lockH) gDisp._lockH(); } catch (e) { /* ✓ */ }
+        /* 设置页按完会跑 `_lockH()` 重锁内层高度 ✓（颜色页多跑一次也无害 ✓
+         *   —— 它只读实时 class，`mob-tall` 时清空内层高度、否则按内容锁 ✓）*/
+        try { if (gDisp._lockH) gDisp._lockH(); } catch (e) { /* ✓ */ }
       });
       try { TALLS[key] = localStorage.getItem(tallStorageKey(key)) === '1'; } catch (e) { TALLS[key] = false; }
       paint();
@@ -620,17 +695,11 @@ function bindMobile() {
     gDisp._tallState = TALLS;               // 给 setSheet 用 ✓
     makeTallBtn(tabs, 'display');           // 设置页：按钮放标签那一排的最右边 ✓
 
-    // 颜色页：按钮放进它自己的「当前颜色」标题行里 ✓（那一行本来就是一条 header ✓）
+    /* 颜色页**不放这个小按钮** ✓（用户 2026-11-03："把颜色页面的小按钮去掉吧"）
+     *   设置页的那个照旧（在标签那一排最右边 ✓）*/
     try {
       const head = gColor.querySelector('.panel-head');
-      if (head) {
-        head.style.display = 'flex';
-        head.style.alignItems = 'center';
-        head.style.gap = '8px';
-        makeTallBtn(head, 'color');
-      } else {
-        makeTallBtn(gColor, 'color');
-      }
+      if (head) { head.style.display = 'flex'; head.style.alignItems = 'center'; head.style.gap = '8px'; }
     } catch (e) { /* ✓ */ }
 
     // 颜色页变高时让"搜索结果"那块吃掉空间 ✓ 先给它挂个记号（CSS 靠这个记号找它 ✓）
@@ -911,8 +980,12 @@ function bindMobile() {
   let stroke = false, strokeAt = null, strokePainted = false, holdPicked = false;
   const stopStroke = () => { stroke = false; strokePainted = false; painting = false; };
   // 点在按钮 / 启动页 / 弹窗上时不要抢 ✓（那些地方有它们自己的点击）
+  /* ⚠ 这份清单和 `app.js` 的 `onWidget` **是同一份** ✓（加东西两边一起加 ✓）
+   *   2026-11-03 补了 `#flag-pop` / `#flag-knobbox` —— 旗帜那个浮窗也是控件 ✓
+   *   不挡的话：拖浮窗 = 在地图上涂一笔 / 点到浮窗背后的地块 ✗ */
   const onWidget = (t) => !!(t && t.closest
-    && t.closest('.zoom-box, button, input, a, select, #boot, .modal, #mob-ui, .toast'));
+    && t.closest('.zoom-box, button, input, a, select, #boot, .modal, #mob-ui, .toast,'
+      + ' #flag-pop, #flag-knobbox'));
 
   /* **查看模式下，单指拖动 = 平移地图** ✓
    * 桌面版是靠 mousemove 平移的 ✗ 手机上根本没那东西 ✓
@@ -993,6 +1066,10 @@ function bindMobile() {
   const cancelLp = () => { if (lpTimer) { clearTimeout(lpTimer); lpTimer = null; } };
   stage.addEventListener('touchstart', (e) => {
     if (e.touches.length !== 1) { cancelLp(); return; }
+    /* **旗帜模式下长按不取色** ✓（2026-11-03）
+     *   旗帜的点击走 `app.js` 里那条触摸分支 ✓ 而长按会顺手把当前颜色改掉、
+     *   还要震一下 ✗ —— 用户只是点慢了一点就莫名其妙 ✓ 干脆整条不启用 */
+    if (state.tool === 'flag') { cancelLp(); return; }
     const t = e.touches[0];
     lpTouched = { x: t.clientX, y: t.clientY };
     cancelLp();
@@ -1126,7 +1203,7 @@ function bindMobile() {
     + '<h4>底下五个按钮</h4>'
     + '<p><strong>颜色</strong>：修改当前颜色、填写「标记」、<strong>搜索地名与势力名</strong>、'
     + '查看最近用过的颜色。<br>'
-    + '<strong>工具</strong>：涂抹、填色、橡皮、改名、吸管、查看，一共六个。<br>'
+    + '<strong>工具</strong>：涂抹、填色、橡皮、改名、吸管、查看、旗帜，一共七个。<br>'
     + '　　涂抹是按住拖动一片；<strong>填色</strong>是点一下变化一次（担心手滑就用它）；橡皮则是擦回原样。<br>'
     + '<strong>视图</strong>：分成两级。上面那个<strong>「剧本」折叠栏</strong>，点开之后才是年份'
     + '（1444、1936 这种，整张地图的国界与配色都会跟着更换）；下面那一排是<strong>地理层级</strong>：'
@@ -1152,7 +1229,7 @@ function bindMobile() {
       box.innerHTML =
         '<div class="modal-box mi-box">'
         + '<div class="modal-head"><h2>这是什么？</h2>'
-        +   '<button type="button" class="btn ghost" id="mi-close">知道啦</button></div>'
+        +   '<button type="button" class="btn ghost" id="mi-close">知道了</button></div>'
         + '<div class="mi-body">' + introHTML + '</div>'
         + '</div>';
       app.appendChild(box);

@@ -139,7 +139,7 @@ export function b64ToBytes(b64) {
 
 export async function decompress(bytes, format) {
   if (typeof DecompressionStream === 'undefined') {
-    throw new Error('这个浏览器不支持 DecompressionStream，请用较新的 Chrome / Edge / Firefox。');
+    throw new Error('这个浏览器版本过旧，无法解压地图包，请更新到较新的 Chrome / Edge / Firefox。');
   }
   const ds = new DecompressionStream(format);
   const stream = new Blob([bytes]).stream().pipeThrough(ds);

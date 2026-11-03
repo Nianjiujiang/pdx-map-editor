@@ -323,8 +323,9 @@ function findTestPack() {
   } else {
     ok('崩溃上屏函数拿得到（探针在）', false, 'ex.showFatal 没暴露 ✗');
   }
-  ok('状态栏写上了版本信息',
-     /地块/.test((env.get('status-meta') || {}).textContent || ''),
+  /* 2026-11-02 文案审计：状态栏只留**尺寸**（头衔数 / 地块数属于排障信息，进诊断报告）✓ */
+  ok('状态栏写上了地图尺寸',
+     /\d+\s*×\s*\d+/.test((env.get('status-meta') || {}).textContent || ''),
      (env.get('status-meta') || {}).textContent || '');
 
   /* ---- 导入式地图（见 docs/导入式地图-策划.md）----
@@ -1153,7 +1154,7 @@ function findTestPack() {
       st.legendOn = { '10,20,30': false, '40,50,60': false };
       ex.rebuildLegendPanel();
       ok('条目全关掉时，说明会直说地图上什么都不显示',
-         /全关掉了/.test(env.get('legend-count').textContent),
+         /已全部关闭/.test(env.get('legend-count').textContent),
          env.get('legend-count').textContent);
 
       /* 图例关着时外层 hidden，rect 是 0；这时选「自定义」不许把坐标清到左上角 */

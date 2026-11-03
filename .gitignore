@@ -92,3 +92,28 @@ packs_mod/
 # —— 从模组里捡出来的字体（版权归各模组作者 / 原字体厂商 ✓ 本地自用，不进仓库 ✓）
 字体库/
 docs/开发日志-*.md
+
+# 发布用的密钥（OSS / GitHub token）—— 绝对不要提交
+.publish.env
+
+# —— 跑测试 / 对拍时冒出来的临时物（不进仓库 ✓）
+tmp_old_src/
+tools/_before_src/
+tools/_app_*.js
+tools/__pycache__/
+_crop_*.png
+_ocr_tiles/
+.edge-*/
+tmp_*.json
+tmp_*.log
+
+
+# ── 内部工作文档 / 本机部署脚本：只留在本地，不进仓库 ──
+docs/体检报告-*.md
+docs/文案审计-*.md
+docs/地图包托管-*.md
+docs/版图贴合*.md
+docs/白屏闪退*.md
+docs/更新报告-*.png
+docs/changelog-*.png
+cloudflare/
