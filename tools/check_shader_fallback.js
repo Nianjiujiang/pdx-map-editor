@@ -13,6 +13,12 @@
  *   3 → border 也失败，应该退到 title（仅本层头衔）
  *   4 → title 也失败，应该退到 lite（无边界，最后保底）
  *
+ * ⚠ 必须带 `?shader=full`（2026-11-05 ✗✗ 踩过）：
+ *   编辑器默认 fastBoot —— **跳过完整版直接上 title**，所以第一次 link 是 title，
+ *   这时 force=1 打死的是 title、直接掉到 lite，"退到 mid" 那条根本走不到 ✗。
+ *   带 shader=full 才是这条测试本来的意思：从完整版开始一级一级往下退 ✓
+ *   （2026-10-27 写的时候还没有 fastBoot，所以当年不用带 ✓）
+ *
  * 为什么单独一个进程：同一进程里第二次 boot 会踩全局状态，跑不通（踩过 ✓）。
  */
 const fs = require('fs');
@@ -50,7 +56,10 @@ if (!pack) {
 (async () => {
   const { embedded, js } = H.readStandalone(HTML);
   H.setForceLinkFail(force);
-  const env = H.makeEnv({ embedded, root: H.ROOT });
+  const env = H.makeEnv({ embedded, root: H.ROOT, location: {
+    search: '?shader=full', hash: '', href: 'file:///test/pdx-map-editor.html',
+    protocol: 'file:', pathname: '/pdx-map-editor.html', reload: function () {},
+  } });
   const ex = H.instantiate(js, env);
   const booting = ex.boot();
 

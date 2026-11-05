@@ -12804,6 +12804,14 @@ let _importing = false;
 function packEntry(rec, nth) {
   const m = rec.manifest || {};
   const size = rec.size || 0;
+  /* 卡片右边那行字**优先写分辨率**（2026-11-05 用户："右边应该写分辨率的"）——
+     内置那几张（9216 × 4608 这种）本来就是这么写的，导入的包更要给，
+     两个数字一比就知道这张图是什么体量 ✓
+     拿不到 stats 的老包/半成品才退回作者写的 note ✗ */
+  const st = m.stats || {};
+  const mw = Number(st.mapWidth) || 0;
+  const mh = Number(st.mapHeight) || 0;
+  const dims = (mw > 0 && mh > 0) ? (mw + ' × ' + mh) : '';
   return {
     key: 'pack:' + rec.id,
     pack: rec.id,                     // boot 认这个字段：有它就走导入的包
@@ -12813,7 +12821,8 @@ function packEntry(rec, nth) {
        塞进名字里会把名字撑长，两张卡还是得逐个读字才分得出 ✓）*/
     label: m.label || m.id || rec.id,
     nth: nth || 0,                    // 同一张图的第几份（界面上只用它画那个小序号 ✓）
-    note: m.note || '',
+    note: dims || m.note || '',
+    fullNote: m.note || '',           // 作者写的说明**转到 tooltip**里，别丢 ✓
     author: m.author || '',
     version: m.version || '',
     size,
@@ -13099,6 +13108,9 @@ function pickMap(maps) {
         bName.textContent = m.label;
         const bNote = document.createElement('span');
         bNote.textContent = m.note || '';
+        /* 右边换成分辨率以后，作者原来写的说明只剩 hover 这一条路 ✓
+           （title 只是提示文字，不是 HTML，陌生人写的字符串在这也安全 ✓）*/
+        if (m.fullNote) b.title = m.fullNote;
         /* 同一张图导了好几份时，**左上角标个小序号**（1 / 2 / …）✓
            ⚠ 只有一份时**不标** ✗ —— 每张卡都挂个"1"是噪音 ✓
            （名字里不再塞"（第 2 份）"，就靠它认是哪一份 ✓ 2026-10-12 用户定的）*/

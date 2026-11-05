@@ -1105,6 +1105,14 @@ function makeEnv(opt = {}) {
     sandbox.IDBKeyRange = makeKeyRangeFake();
   }
 
+  /* location：默认什么都不带（等价于原来"没有 location"那条路 ✓）
+     ⚠ 地址参数是真功能（`?shader=full` 强制全画质、`#diag` 开诊断），
+        不给它就没法在沙箱里测这些分支 ✗ —— 2026-11-05 起可传入 */
+  sandbox.location = opt.location || {
+    search: '', hash: '', href: 'file:///test/pdx-map-editor.html',
+    protocol: 'file:', pathname: '/pdx-map-editor.html', reload: function () {},
+  };
+
   const RealURL = URL;
   sandbox.URL = class extends RealURL {
     static createObjectURL(b) { savedBlob = b; return 'blob:fake'; }
@@ -1351,11 +1359,11 @@ Object.defineProperty(_C, 'TIER_HOTKEY', { get: function () { return TIER_HOTKEY
 return _C;`;
   const s = env.sandbox;
   const factory = new Function(
-    'console', 'document', 'window', 'localStorage', 'performance',
+    'console', 'document', 'window', 'localStorage', 'performance', 'location',
     'requestAnimationFrame', 'cancelAnimationFrame', 'setTimeout', 'clearTimeout',
     'setInterval', 'clearInterval', 'fetch', 'URL', 'TextEncoder', 'TextDecoder',
     'Blob', 'Response', 'indexedDB', 'IDBKeyRange', src);
-  return factory(s.console, s.document, s.window, s.localStorage, s.performance,
+  return factory(s.console, s.document, s.window, s.localStorage, s.performance, s.location,
     s.requestAnimationFrame, s.cancelAnimationFrame, s.setTimeout, s.clearTimeout,
     s.setInterval, s.clearInterval, s.fetch, s.URL, s.TextEncoder, s.TextDecoder,
     s.Blob, s.Response, s.indexedDB, s.IDBKeyRange);

@@ -347,7 +347,7 @@ uniform vec3  uNature[5];       // 2..6 → 海 / 湖 / 河 / 不可通行海域
  *   只管**水域之间**（海洋 / 湖泊 / 河流 / 不可通行海域 ✓ 身份码 2..5 ✓）的缝 ✗
  *   海岸线（水 ↔ 陆）照旧归**本层头衔线**那条通道 ✓ 不归它 ✓
  *   于是同一条缝**只有一个出处** ✗（"两条通道不许同处画一遍"那个坑的正面写法 ✓
- *     旧通道那边由 rayDistTitle 让开 ✓ 见它里面那段 ✓）
+ *     旧通道那边由本层线 / 填色 / 多级链让开 ✓ 见 main 里那趟射线 ✓）
  *   ⚠ 它是**独立一条通道**：地区 / 势力 / 填色三个开关**都不管它** ✓
  *     （用户原话："水域边界开关负责且仅负责水域之间的边界的显示或隐藏"✓
  *      所以"边界全关"也不影响它 ✓ —— 只认自己那个勾 ✓）
@@ -704,7 +704,8 @@ bool paintDiffers(ivec2 a, ivec2 b) {
  * ⚠ 这个数**直接决定性能** ✗（用户报"边界很吃性能、缩放时特别卡"✓）：
  *   每个像素是**四个方向各走 R 步**找边界的，而 R 会跟着缩放涨 ——
  *   缩到全图时 uMapPerPx 能有几十，R 就顶到这个上限 ✗
- *   一帧的采样次数 ≈ 像素 × 4 × R × 边界趟数（本层 / 填色 / 多级链最多 4 级）
+ *   一帧的采样次数 ≈ 像素 × 4 × R（**现在只有一趟** ✓ 2026-11-05 之前是
+ *   本层 / 填色 / 多级链最多 4 级 / 水域 / 荒地各跑一趟 ✗ 乘数能到 6 ✓）
  *   48 的时候：144 万像素 × 4 × 48 × 6 ≈ **十六亿次** ✗✗ 那就是卡顿的来源 ✓
  *
  * 12 为什么够：屏幕上一条线的**半宽最多就是这个数（像素）** ✓
@@ -713,17 +714,6 @@ bool paintDiffers(ivec2 a, ivec2 b) {
  */
 const int MAXR = 12;
 
-/*: 射线**跳步预筛**从多大的 R 开始用（见 rayDistTitle / rayDistPaint 里那段说明 ✓）。
- *
- *   ⚠ 这个数是**画质与速度的分界**，动它之前先想清楚 ✗：
- *     · 定太小（原来就是 4 ✗）→ 用户涂一小块时"跳过去看一眼"会漏掉新边界，
- *       表现成"涂了色 / 还原之后边界不更新" ✓（用户报的，踩过 ✓）
- *     · 定太大（比如 12）→ 预筛几乎不生效，缩小时又慢回去 ✓
- *   8 是个平衡点：正常编辑（R ≤ 6）走**精确路径** ✓ 只有缩得比较小才用近似 ✓
- *   想要**绝对精确**：把它改成一个到不了的数（999 ✓ 预筛就永远不生效 ✓）
- */
-const int PRESCREEN_MIN_R = 8;
-
 /** 两点的"原版色"（LUT 里那个头衔的颜色）✓ */
 vec3 lutColour(ivec2 ip) {
   uint tid = titleAt(pidAt(ip), uTier);
@@ -731,127 +721,42 @@ vec3 lutColour(ivec2 ip) {
   return texelFetch(uColorLut, ivec2(int(tid) % uLutW, int(tid) / uLutW), 0).rgb;
 }
 
-/** 沿 dir 方向找到最近的一条分界线，返回它到当前片元的**垂距**（地图像素）。
+/* ============================================================================
+ * **一趟射线：所有边界通道共用一次采样** ✓（2026-11-05 重构）
+ *
+ * 重构前是"每条通道各跑一趟"✗ —— 本层头衔、填色、链上每一级、水域、荒地，
+ * 各有一套 rayDist*，各走 4 方向 × 最多 12 步：同一条缝最多被算五遍，
+ * 同一个邻居格被采十几遍，通道之间还会抢同一条缝，只能靠"让开"补丁维持秩序 ✗
+ *
+ * 用户点破的正确结构（原话 ✓ 别改）：
+ *   · "本质上所有的延伸边界都是最底层边界（例如 province）的子集"✓
+ *   · "同一个边界，分成不同的段，开关只决定段的不透明度和粗细度以及是否显示"✓
+ * → 所以"这条缝归谁"是一张**分类表**，不是五套并列的射线 ✓
+ *
+ * 现在只有一趟：每步只采一次，边采边把这条缝分进它挂着的每一段，
+ * 每段各自记"这个方向上最近的一条" ✓ 四方向取最小 ✓（见 main 里那段 ✓）
+ *
+ * ⚠ 三条**用户定的**让开口径，一个都不能丢 ✗：
+ *   ① 水 ↔ 水那条缝**任何层都归「水域 · 边界」**（2026-10-16 ✓）
+ *      原话："水域边界开关负责且仅负责水域之间（海洋、湖泊、河流、
+ *             不可通行水域）的边界"✓ 以及"剧本层：水↔水的缝任何层都归水域开关"✓
+ *      理由是他给的："不存在一个水域能被涂色成为势力"✓
+ *      → 本层线 / 填色 / 多级链在这一条上**一律让开** ✓
+ *   ② 荒地 ↔ 荒地同理 → 归「荒地 · 边界」（2026-10-17 ✓）
+ *   ③ **只让开"两边同类"那一条** ✗ —— 海岸线（水↔陆）、荒地外缘（荒地↔陆）
+ *      照旧归本层线 ✓（用户点名要的）
+ * ⚠ "让开"是**这一条缝不算、继续往外走** ✓ 不是"这个方向没了" ✗
+ *   （跳过这条之后，外面可能还有一条真正归本段的缝 ✓ 以前踩过 ✓）
+ *
+ * 🔴 两件**故意不做**的事（都踩过，别再捡回来）：
+ *   · 「跳一步预筛」（先只采 ip+dir*R 那一点，头衔相同就说"这一向没缝"✗）
+ *     它是个近似：比 R 格还窄的地块会被整段漏掉 ——
+ *     用户报过的"涂了色 / 还原之后边界不更新"就是它 ✓
+ *     一趟射线之后每步本来就要采样，预筛省下的那两三步不值这个风险 ✓
+ *   · 「每段各截自己的半径」✗ —— 现在按最粗那一段走到底，
+ *     细的各自在混色那步跟自己的半宽比 ✓（超出半宽算出来本来就是 0 ✓）
+ * ========================================================================== */
 
-    必须往外走，不能只看紧邻那一格：缩小时一个屏幕像素盖住好几个地图像素，
-    分界线完全可能落在两个采样点中间，只看紧邻就会整条漏掉（边框时有时无）。
-    走到第一格不一样的邻居就停 —— 那就是这个方向上最近的一条缝。
-
-    四个方向取最小，得到的就是到最近那条像素边的真实垂距：缝本身是横平竖直的，
-    而我们必定落在它那一格的跨度之内，所以不用开方。 */
-float rayDistTitle(ivec2 ip, vec2 f, ivec2 dir, uint t, int R, int tier) {
-  /* **先跳一步探路** ✓（用户报的"缩放太卡"✓）
-   *
-   * 每个像素是**四个方向各走 R 步**，每步 3 次纹理采样 ✗ ——
-   * 而画面里**绝大多数像素不在边界上**：它们要一路走满 R 步、
-   * 才能确认"这个方向附近没有线"✗ 纯白烧 ✓ 缩放时 R 变大，这笔开销成倍涨 ✗✗
-   *
-   * 所以先只采**一个点**：ip + dir*R（正好是"这条射线能看到的尽头"✓）
-   *   同头衔 → 这一向**基本**没有边界 ✓ 直接返回"很远" ✓ 省掉整整 R 步 ✗
-   *
-   * ⚠ 三点分寸：
-   *   · 只在 R >= 8 时才这么干 ✗ —— **门槛原来定在 4，太高了，捅过篓子** ✓
-   *     用户报的"涂了色 / 还原之后边界不更新"就是它 ✗：
-   *     你涂一小块时，新边界就在这一小块的边缘上；只要这块**比 R 格还窄**，
-   *     "跳到 dir*R 看一眼"就会说"这一向没边界" ✓ 那条线**根本不画** ✗
-   *     而 R=4 时就已经能盖住很常见的小地块了 ✓（放大编辑时 R 常常才 1~2 ✓）
-   *     提到 8 之后：**正常编辑（R ≤ 6）走的是精确路径** ✓
-   *     只有缩得比较小（R 到 8~12 ✓）才用近似 —— 那时候比 8 格还窄的细线本来就看不清 ✓
-   *   · 这是**近似**（同头衔不代表中间没有别的 ✗），拿它换掉的是 R 倍的采样量 ✓
-   *   · 想要**绝对精确**就把这两处预筛删掉 ✓ 代价是缩小时慢回 2~3 倍 ✓
-   */
-  if (R >= PRESCREEN_MIN_R) {
-    ivec2 far = ip + ivec2(dir.x * R, dir.y * R);
-    /* ⚠ **两边都是水** → 这一向不做"跳一步"预筛 ✗（2026-10-16 ✓）
-     *   水水缝现在归「水域 · 边界」那条通道 ✓ **本层线 / 多级链一律让开** ✓
-     *   预筛只看头衔：一片水自己内部头衔相同 → 会说"这一向没缝" ✓
-     *   可这一片水的**另一头**就贴着另一片水 ✓ 那条缝正好在中间被跳过去 ✗
-     *   → 两边都是水时不预筛，老老实实走下面的逐格循环 ✓（水面上本来就不多 ✓）*/
-    if (!(waterIs(ip) && waterIs(far))
-        && (tier < 0 ? tidAt(far) : titleAt(pidAt(far), tier)) == t) return 1e9;
-  }
-  /* 🔴 **跳步**（用户报的"缩放超级无敌卡"✓）——
-   *   半径 R 是按**地图格**算的 ✗ 缩到全图时它能有 10 格 ✓
-   *   而"地图上 10 格"在屏幕上**不到 2 个像素** ✗ 为它走 10 步纯属白烧 ✓
-   *   → 每步跨 stride 格：stride ≈ 半个屏幕像素跨的地图格数 ✓
-   *   于是步数 = R / stride ≈ 线宽（**跟缩放到多少无关** ✓✓）
-   *   ⚠ 会漏掉的只有"比 stride 还细"的东西 ✗ 而它在屏幕上不到半像素 ✓ 本来就看不见 ✓
-   *   ⚠ 放大时 uMapPerPx < 2 ⇒ stride = 1 ⇒ **一步不跳** ✓ 精度**完全不变** ✓ */
-  int _st = max(1, int(uMapPerPx * 0.5));
-  for (int k = 1; k <= MAXR; k++) {
-    int _d = k * _st;                       // 这一趟实际跨了多少格 ✓
-    if (_d > R) break;
-    // 写成 ivec2(dir.x * k, dir.y * k) 而不是 dir * k ——
-    // 整数向量乘整数标量在 GLSL ES 3.0 里规不规范我记不准，展开最保险
-    // tier：看哪一层的边界（-1 表示跟 uEditTier 一样）
-    ivec2 q = ip + ivec2(dir.x * _d, dir.y * _d);
-    uint tt = tier < 0 ? tidAt(q) : titleAt(pidAt(q), tier);
-    /* ⚠ **这里一个字都不许动** ✗ —— 用户定的规矩：
-     *
-     *   · **地区边界绝对不要动** ✓ 它根本不看玩家画了什么 ✓
-     *     而 rayDistTitle 是「本层头衔线 + 多级边界」**共用**的 ✓
-     *     在这里加"涂过就跳过"的闸 ✗ 会同时把地区边界一起吃掉 ✗
-     *     （我这么干过一次：地区边界全没了 ✓ 挨了一顿 ✓）
-     *
-     *   · 国家 / 玩家填色的边界规矩，全在那个判据函数里 ✓（名字不带括号写，
-     *     免得被测试当成一次调用 ✗ —— 它连注释一起扫 ✓ 我踩过 ✓）
-     *     填色边界**不开** → 按当前剧本的默认边界 ✓ 玩家怎么画都不影响 ✓
-     *     填色边界**开**   → 一律按色块（颜色 + 标记）划界 ✓
-     *                        且**未上色与未上色之间不划界** ✓
-     *     （那正是手绘层判据的语义 ✓ 别在这儿重复实现 ✗）
-     */
-    if (tt != t) {
-      /* 🔴🔴 **水 ↔ 水那条缝让给「水域 · 边界」** ✗✗（2026-10-16 ✓ 用户定的口径 ✓）
-       *
-       *   用户原话："水域边界开关负责且仅负责**水域之间**（海洋、湖泊、河流、
-       *     不可通行水域）的边界"✓ 而且"**剧本层**：水↔水的缝**任何层都归水域开关**"✓
-       *     （他的理由："不存在一个水域能被涂色成为势力"✓
-       *      所以势力 / 地区 / 填色三个开关都不该管它 ✓）
-       *
-       *   ⚠ **只让开"两边都是水"那条** ✗ —— 海岸线（水 ↔ 陆）**照旧归本通道** ✓
-       *     （用户点名要的："水域边界只管水域之间的边界"✓ 海岸线是陆那边的线 ✓）
-       *   ⚠ 那张表算不出水陆（老包 ✓）时 waterIs 恒 false → 这一句等于不存在 ✓
-       *     行为跟改造前一模一样 ✓
-       *   ⚠ **不能在这儿 return 1e9 走"这一向没了"** ✗——
-       *     得**继续往外走** ✓：跳过这条水水缝之后，外面可能还有一条
-       *     真正归本通道的缝（比如再过去是一片陆地的边 ✓）
-       *     continue 就是"这条不算，接着找" ✓（见 8.3 第 4 条那个坑 ✓）*/
-      if (waterIs(ip) && waterIs(q)) continue;
-      /* 🔴 **荒地 ↔ 荒地那条也让开** ✗✗（2026-10-17 ✓ 跟水域同一句、同一个道理 ✓）
-       *   荒地有自己那条通道了（「荒地 · 边界」✓）→ 这条缝归它 ✓
-       *   ⚠ 同样**只让开两边都是荒地** ✗ —— 荒地的外缘（挨着陆地 / 水）照旧归本通道 ✓
-       *   ⚠ 同样**必须 continue 不是 return** ✗（跳过这条，外面可能还有一条归本通道的 ✓）*/
-      if (wasteIs(ip) && wasteIs(q)) continue;
-      float kf = float(_d);
-      if (dir.x != 0) return dir.x > 0 ? kf - f.x : f.x + kf - 1.0;
-      return dir.y > 0 ? kf - f.y : f.y + kf - 1.0;
-    }
-  }
-  return 1e9;
-}
-
-/** 同上，但看的是手绘层的分界 */
-/** 手绘那条边界线的判据 ✓
- *
- * **用户定的口径（权威 ✓ 别自己发明 ✓）**：
- *
- *   填色边界**开着**时 → 这条线看**颜色 + 标记**，一个不同就划 ✓
- *     颜色取"显示出来的那个" ✓：**玩家涂过的用玩家色 ✓ 没涂的用当前剧本色** ✓
- *
- *     · 两边都**没有颜色**（海 / 无主地）→ **不划** ✓
- *         （用户说的"未上色与未上色之间不划界"就是这个意思 ✓
- *          不是"玩家没涂过"✗ —— 我按后者理解过一次，结果国家之间全没线 ✗ 挨了一顿 ✓）
- *     · 一边有颜色一边没有 → 划 ✓
- *     · **颜色不同 → 划** ✓ ← **国家与国家之间就是靠这条** ✓
- *     · 颜色相同 → **一律比标记** ✓ 三种情况都比 ✓
- *         两边都涂过 → 比手绘层的标记 ✓
- *         两边都没涂 → 比**头衔** ✓（同色不同国也得有线 ✓ 比如 HOI4 同色国家 ✓）
- *         一涂一没涂 → 一边有标记一边没有 → **标记不同 → 划** ✓
- *
- *   填色边界**不开**时 → 这条 pass 根本不跑 ✓（外面有闸 ✓）
- *     国家/地区边界走「头衔线 + 多级边界」那条路 ✓ = 当前剧本的默认边界 ✓
- *     玩家怎么画都不影响 ✓ **那条路一个字都不许动** ✗（地区边界就是它 ✓）
- */
 /** 屏幕上那一格显示的颜色 = LUT 原色（没涂时）✓ */
 vec3 shownColour(ivec2 ip) {
   return lutColour(ip);
@@ -869,7 +774,7 @@ vec3 shownColour(ivec2 ip) {
 struct CellView {
   vec3 col;       // 屏幕上的颜色（x < -0.5 = 这一格没颜色）
   bool painted;   // 玩家涂过没有
-  uint tid;       // **编辑层**的头衔序号（预筛算"两侧头衔同不同"要用 ✓）
+  uint tid;       // **编辑层**的头衔序号（本层线 / 水域 / 荒地都用它 ✓）
   uint label;     // 标记编号
   uint pid;       // 省份号（取 tid 时要用 ✓ 见 cellViewOf）
 };
@@ -885,21 +790,19 @@ CellView cellViewOf(ivec2 ip) {
   return v;
 }
 
+/* @@MID_CUT_PAINTRAY_BEGIN@@ */
 /** 两格在**画面上**算不算"两种东西"（就是原来那个 shownDiffers 的判断 ✓ 一个字没改）*/
 bool viewsDiffer(CellView A, CellView B) {
   /* **年份视图没开 → 未上色的省份之间，一律不划国家级边界** ✓
    *   （用户定的 ✓ **不管颜色** ✗ —— 两个都没涂就是没线 ✓）
    *   ⚠ 这一行必须在**最前面** ✓：
-   *     放到颜色比较后面的话，"颜色不同的两个没涂省份"照样会划一条 ✗
-   *     —— 那是**年份视图里**的规矩 ✓；没开年份视图时不该有这些线 ✓
-   *     （uPaintOnly 的定义就是"当前没停在年份层" ✓ CK3 那种没有年份层的也算 ✓）
-   */
+   *     放到颜色比较后面的话，"颜色不同的两个没涂省份"照样会划一条 ✗ */
   if (uPaintOnly == 1 && !A.painted && !B.painted) return false;
   vec3 ca = A.col, cb = B.col;
   if (ca.x < -0.5 && cb.x < -0.5) return false;  // 两边都没颜色（无主地）→ 不划 ✓
   if (ca.x < -0.5 || cb.x < -0.5) return true;   // 一边有一边没有 → 划 ✓
 
-    if (distance(ca, cb) > 0.02) return true;      // **颜色不同 → 划**（国家之间 ✓）
+  if (distance(ca, cb) > 0.02) return true;      // **颜色不同 → 划**（国家之间 ✓）
   /* 颜色相同 → **一律比标记** ✓ 三种情况一个不落（用户明确要求 ✓）
    *
    * ⚠ 这里**只有一套编号** ✗ —— JS 那边 syncAllPaintLabels 给**每一块地**都写了标记：
@@ -907,130 +810,10 @@ bool viewsDiffer(CellView A, CellView B) {
    *     没涂的地 = **它自己原版的国名** ✓（**不是 0** ✗ —— 用户点醒的：没涂过的地方也有标记 ✓）
    *   所以"原版那块地"和"你涂出来的那块地"**名字一样就是同一个编号** ✓
    *   → 用自己的色 + 自己的名涂自己那块 → 两边同号 → **不划** ✓（本来就该这样 ✓）
-   *   我以前在这里又把没涂的地换成比头衔 ✗ —— 两套编号对不上，比出来永远是"不同" ✓
    */
   return A.label != B.label;
 }
-
-/* **沿 dir 找最近的填色分界线**（到缝的垂距，单位是地图像素 ✓）
- */
-/* @@MID_CUT_PAINTFN_BEGIN@@ */
-float rayDistPaint(ivec2 ip, vec2 f, ivec2 dir, int R) {
-  // **显示出来的颜色边界**：手绘层不同 ✓ 或**显示色**不同 ✓ 都算
-  //（地图本来就有的剧本色也算 ✓ —— 不用"先涂一笔"✗）
-  // 每步比这两样就够（2~4 次取纹理 ✓），不再算 showPaint/showTitles 那一堆分支 ✗
-  /* **起点那一侧算一次** ✓（循环不变量 ✗ 原来每步重算，一趟下来 10 次采样 ✗ 见 cellViewOf ✓）
-   * ⚠ **这里不能写 const** ✗ —— GLSL 的 const 是**编译期常量**，
-   *   接运行时函数（titleAt）会直接编不过：
-   *     ERROR: '=': assigning non-constant to 'const bool'
-   *   （用户报过一次，整个着色器编译失败 → 画面全白 ✓ 我踩的 ✓）*/
-  CellView _A = cellViewOf(ip);
-  /* **先跳一步探路** ✓（见 rayDistTitle 上面那段注释 ✓）
-   *   这一趟每步要跑颜色 / 标记两样判定，是几条射线里最贵的一条 ✗
-   *   所以预筛在这儿收益最大 ✓ */
-  if (R >= PRESCREEN_MIN_R) {
-    ivec2 far = ip + ivec2(dir.x * R, dir.y * R);
-    CellView _F = cellViewOf(far);
-    if (_A.tid == _F.tid && !viewsDiffer(_A, _F)) return 1e9;
-  }
-  /* 🔴 **跳步**（用户报的"缩放超级无敌卡"✓）——
-   *   半径 R 是按**地图格**算的 ✗ 缩到全图时它能有 10 格 ✓
-   *   而"地图上 10 格"在屏幕上**不到 2 个像素** ✗ 为它走 10 步纯属白烧 ✓
-   *   → 每步跨 stride 格：stride ≈ 半个屏幕像素跨的地图格数 ✓
-   *   于是步数 = R / stride ≈ 线宽（**跟缩放到多少无关** ✓✓）
-   *   ⚠ 会漏掉的只有"比 stride 还细"的东西 ✗ 而它在屏幕上不到半像素 ✓ 本来就看不见 ✓
-   *   ⚠ 放大时 uMapPerPx < 2 ⇒ stride = 1 ⇒ **一步不跳** ✓ 精度**完全不变** ✓ */
-  int _st = max(1, int(uMapPerPx * 0.5));
-  for (int k = 1; k <= MAXR; k++) {
-    int _d = k * _st;                       // 这一趟实际跨了多少格 ✓
-    if (_d > R) break;
-    ivec2 q = ip + ivec2(dir.x * _d, dir.y * _d);
-    float kf = float(_d);
-    float dl = dir.x != 0 ? (dir.x > 0 ? kf - f.x : f.x + kf - 1.0)
-                          : (dir.y > 0 ? kf - f.y : f.y + kf - 1.0);
-    CellView _B = cellViewOf(q);       // **每步只算一次** ✓ 两样判定共用它 ✓
-    if (viewsDiffer(_A, _B)) {
-      /* **水 ↔ 水那条缝也让开** ✓（2026-10-16 ✓ 跟 rayDistTitle 里同一条规矩 ✓）
-       *   填色边界管的是"你涂出来的色块"✓ 而水**压根不能涂** ✓
-       *   （用户 2026-10-16 定的第 11 条：水域四类禁止上色 ✓ 判据按 pid ✓）
-       *   → 它上面永远不会有玩家色块 ✓ 这条缝归「水域 · 边界」✓
-       *   ⚠ 同样**只让开两边都是水**那条 ✗ —— 海岸线还得它画 ✓ */
-      if (waterIs(ip) && waterIs(q)) continue;
-      /* 🔴 **荒地 ↔ 荒地那条也让开** ✗✗（2026-10-17 ✓ 跟水域同一句、同一个道理 ✓）
-       *   荒地有自己那条通道了（「荒地 · 边界」✓）→ 这条缝归它 ✓
-       *   ⚠ 同样**只让开两边都是荒地** ✗ —— 荒地的外缘（挨着陆地 / 水）照旧归本通道 ✓
-       *   ⚠ 同样**必须 continue 不是 return** ✗（跳过这条，外面可能还有一条归本通道的 ✓）*/
-      if (wasteIs(ip) && wasteIs(q)) continue;
-      return dl;
-    }
-  }
-  return 1e9;
-}
-/* @@MID_CUT_PAINTFN_END@@ */
-
-/** **沿 dir 找最近的一条"水域 ↔ 水域"的缝** ✓（到缝的垂距，单位是地图像素 ✓）
- *
- *  「水域 · 边界」那条通道专用 ✓（2026-10-16 ✓ 用户定的口径 ✓）
- *
- *  判据两句话：
- *    · **两侧都得是水** ✓（waterIs ✓ 一侧是陆就不归这条通道 ✗
- *      —— 那是海岸线，归本层头衔线 ✓）
- *    · **编辑层那两个 tid 不同** ✓（跟本层头衔线**同一层** ✓ 换层就换粒度 ✓
- *      跟别的边界一条规矩 ✓）
- *
- *  ⚠ 这一条**故意不看**上面那两条通道的让位 ✗ ——
- *    水水缝正是它们让开的那一类 ✓ 让位归让位、画归画，两边判据刚好互补 ✓
- *  ⚠ **先跳一步探路**的预筛在这儿**不能用** ✗（跟 rayDistTitle 里那条同理 ✓）：
- *    预筛比的是**头衔**，而水水缝要的是**头衔不同** ✓
- *    可"一头一尾头衔相同"中间照样可能夹着另一片水 ✗ → 直接走满全程 ✓
- *    （水面上这类像素本来就不多 ✓ 不会拖慢陆地 ✓）
- *  ⚠ 跳步（stride ✓）照旧要用 ✓ —— 缩小时它才是"不卡"的那一半 ✓ */
-/* @@MID_CUT_WATERFN_BEGIN@@ */
-float rayDistWater(ivec2 ip, vec2 f, ivec2 dir, uint t, int R) {
-  int _st = max(1, int(uMapPerPx * 0.5));
-  for (int k = 1; k <= MAXR; k++) {
-    int _d = k * _st;                       // 这一趟实际跨了多少格 ✓
-    if (_d > R) break;
-    ivec2 q = ip + ivec2(dir.x * _d, dir.y * _d);
-    if (!waterIs(q)) continue;              // 对面不是水 → 这条不算（海岸线不归我 ✓）
-    if (titleAt(pidAt(q), uEditTier) != t) {
-      float kf = float(_d);
-      if (dir.x != 0) return dir.x > 0 ? kf - f.x : f.x + kf - 1.0;
-      return dir.y > 0 ? kf - f.y : f.y + kf - 1.0;
-    }
-  }
-  return 1e9;
-}
-/* @@MID_CUT_WATERFN_END@@ */
-
-/** **荒地 ↔ 荒地**那条缝最近在哪个方向、多远 ✓（2026-10-17 ✓ 照 「rayDistWater」 抄的 ✓）
- *
- *  用户原话："给荒地加上边界开关，这个负责的是荒地与荒地之间的边界，
- *            你之前做了水域-水域的边界，这个应该轻车熟路了吧"✓
- *
- *  判据两句话（跟水域那条**一字不差**，只有 「waterIs」 → 「wasteIs」 换了 ✓）：
- *    · **两侧都得是荒地** ✓（一侧是陆地 / 水就不归这条 ✗ —— 那是它的外缘 ✓）
- *    · **编辑层那两个 tid 不同** ✓（跟本层头衔线同一层 ✓ 换层就换粒度 ✓）
- *
- *  ⚠ 跟水域那条一样：**先跳一步探路**的预筛在这儿不能用 ✗（理由同 ✓）
- *  ⚠ 跳步照旧要用 ✓ —— 缩小时它才是"不卡"的那一半 ✓ */
-/* @@MID_CUT_WASTEFN_BEGIN@@ */
-float rayDistWaste(ivec2 ip, vec2 f, ivec2 dir, uint t, int R) {
-  int _st = max(1, int(uMapPerPx * 0.5));
-  for (int k = 1; k <= MAXR; k++) {
-    int _d = k * _st;                       // 这一趟实际跨了多少格 ✓
-    if (_d > R) break;
-    ivec2 q = ip + ivec2(dir.x * _d, dir.y * _d);
-    if (!wasteIs(q)) continue;              // 对面不是荒地 → 这条不算 ✓
-    if (titleAt(pidAt(q), uEditTier) != t) {
-      float kf = float(_d);
-      if (dir.x != 0) return dir.x > 0 ? kf - f.x : f.x + kf - 1.0;
-      return dir.y > 0 ? kf - f.y : f.y + kf - 1.0;
-    }
-  }
-  return 1e9;
-}
-/* @@MID_CUT_WASTEFN_END@@ */
+/* @@MID_CUT_PAINTRAY_END@@ */
 
 /** **一条线在某一格里的距离** ✓（b 是那 4 个边标记位：1 左 · 2 右 · 4 上 · 8 下 ✓）
  *  f 是片元在格内的小数 ✓ 所以 f.x 天然就是"到左边那条边的距离" ✓
@@ -1133,116 +916,179 @@ void main() {
   /* @@LITE_CUT_BEGIN@@ */
   if (pidAt(ip) != 0u) {    /* 🔴 精简版把**整个 if 块**切掉 ✓（从 @@LITE_CUT_BEGIN@@ 到 @@LITE_CUT_END@@）
      *  块里那几个变量（R / dTitle / dPaint / ramp）全没出过块 ✓ 切完不留孤儿 ✓ */
-    // 只要这个半径以内看得见线；半径之外算出来也是 0，不用白找
-    // ⚠ 半径按**最粗的那条**算（线宽大于此半径的线会被裁掉 ✓）
-    float _bMax = max(uBorderW, uPaintBorderW);
+    /* ---- 半径：按**所有通道里最粗的那一条**算 ----
+     *  原来每段各算各的（R / Re / Rw / Rw2 ✓）；一趟射线之后只能有一个半径 ✓
+     *  → 取最粗的那条，保证没有一条线被裁掉；细的各自在混色那步判 ✓
+     *  ⚠ 线宽大于半径的线会被裁掉 ✗（所以必须取 max ✓）*/
+    float _bMax = 0.0;
+    if (uBorderTitle == 1) _bMax = max(_bMax, uBorderW);
+    if (uBorderPaint == 1) _bMax = max(_bMax, uPaintBorderW);
+    if (uWaterBorderOn == 1 && uWaterBorderA > 0.0) _bMax = max(_bMax, uWaterBorderW);
+    if (uWasteBorderOn == 1 && uWasteBorderA > 0.0) _bMax = max(_bMax, uWasteBorderW);
+    for (int i = 0; i < 4; i++) {
+      if (i >= uExtraCount) break;
+      if (uExtraShow[i] == 0 || uExtraTier[i] < 0) continue;
+      _bMax = max(_bMax, uExtraW[i]);
+    }
     int R = int(clamp(ceil(0.5 * uMapPerPx * (_bMax + 1.0)),
                            1.0, float(MAXR)));
+
+    /* 每一段各自记"这个方向上最近的一条缝" ✓ 没找到就是 1e9 ✓ */
     float dTitle = 1e9;
     float dPaint = 1e9;
-    /* **缩小那一档：四路距离直接填进去** ✓（放大走边掩码、射线只当兜底 ✓）
-     *   四路各跟自己的半宽比就行 —— 半宽那步在下面混色处做 ✓ 不用在这儿判 ✓
-     *   ⚠ 头衔那一通道（A）同时供"本层线"和"多级链"✓ 它俩只差线宽 ✓ */
-    /* 多级链也各有自己的宽度 ✗ 新路径一次扫描要扫到"最粗那条"的半径才够 ✓
-     *（距离本身**不按线宽裁剪** ✓ 每条线各自在混色那步判够不够 ✓ 所以取最大就对 ✓）*/
-    /* ============ **逐像素射线：缩小时的兜底路径** ============
-     * 放大时四条主线 + 多级链全走边掩码（一次采样 ✓ 见下面 _useEdges 那段 ✓）
-     * **缩小时只能回这儿** ✗ —— 线宽超过 1 格时，缝可能落在**邻居的边**上，
-     *   而每格只记自己的四条边，量不到 → 线会断 ✓
-     * 好在缩小的时候屏幕像素本来就少，射线不贵 ✓ 加上深度图粗筛挡掉九成，够用 ✓
-     *
-     * 🔴 走过的两条弯路（都删了，别再走一遍）：
-     *   ① **布尔掩码**：把"这一格有没有缝"记在**格**上 ✗
-     *      可"缝"是**格子之间那条边** ✓ 于是"到缝的距离"丢了一维（缝在我哪一侧 ✓）
-     *      靠它凑距离，放大时线断成台阶、一般缩放下又粗得离谱 ✓
-     *      （用户截图里那个"梯子"就是它 ✓ 仿真里 bw=0.15 全空、bw=0.6 却有十格宽 ✓）
-     *   ② **浮点距离场**（RGBA8 + 双线性插值）：方向对了，但真机上线宽乱 ✗
-     *      根因是"多级链还在走射线"跟它叠在同一位置 ✓ 1 粗 1 细压在一起 ✓
-     *   ③ 正解 = **边掩码**：只记"我这一格的四条边里哪几条是缝" ✓
-     *      亚格精度**天然有**（用片元在格内的小数 f ✓）不需要插值、不需要距离 ✓
-     */
+    float dWater = 1e9;
+    float dWaste = 1e9;
+    float dEx[4];
+    for (int i = 0; i < 4; i++) dEx[i] = 1e9;
+
     /* **粗筛：一位定生死** ✓（加载时算好的那张"省界 ±2 格"轮廓位图 ✓）
-     *   bit 1 ⇒ 值得看一眼（跑射线）· bit 0 ⇒ **一辈子画不到线**，直接退出 ✓
+     *   bit 1 ⇒ 值得看一眼（跑射线）· bit 0 ⇒ **一辈子画不到线**，直接跳过 ✓
      *   ⚠ 它跟"当前层 / 涂色"无关 ✗ 所以换层、涂色都**不用重算**这张图 ✓
-     *   ⚠ 没接上图时 _nearSeam 恒真 → 完全退回旧行为 ✓ 不会画错 ✓ */
+     *   ⚠ 没接上图时 _nearSeam 恒真 → 完全退回逐像素射线 ✓ 不会画错 ✓ */
     bool _nearSeam = true;
     if (uBorderDepthOn == 1) {
-      /* ⚠ 这里原来是算 _maxHalf（"最粗那条线的半宽"）再拿它跟位图覆盖范围比 ✗
-       *   现在位图是"省界 ±2 格"，覆盖范围由 CPU 侧膨胀的格数决定 ✓
-       *   → _maxHalf **没人读了**，整段是死代码 ✓ 删掉（顺带少一个常量上界的循环 ✓）*/
       uint _cb = uint(texelFetch(uBorderDepth, ivec2(ip.x >> 3, ip.y), 0).r * 255.0 + 0.5);
       _nearSeam = ((_cb >> uint(ip.x & 7)) & 1u) != 0u;
     }
-    if (_nearSeam && uBorderTitle == 1) {
-      uint t0 = tidAt(ip);
-      // 正常那条：就是本层的普通头衔缝 ✓
-      dTitle = min(dTitle, rayDistTitle(ip, f, ivec2( 1, 0), t0, R, -1));
-      dTitle = min(dTitle, rayDistTitle(ip, f, ivec2(-1, 0), t0, R, -1));
-      dTitle = min(dTitle, rayDistTitle(ip, f, ivec2( 0, 1), t0, R, -1));
-      dTitle = min(dTitle, rayDistTitle(ip, f, ivec2( 0,-1), t0, R, -1));
+
+    if (_nearSeam) {
+      /* 起点那一侧**只算一次** ✓（原来是每步重算，一趟下来十几次采样 ✓）*/
+      CellView _A = cellViewOf(ip);
+      uint tSelf = _A.tid;          // 编辑层的头衔（本层线 / 水域 / 荒地共用 ✓）
+      bool _ipW = waterIs(ip);
+      bool _ipX = wasteIs(ip);
+      /* 链上每一环"我自己这一侧"的头衔 —— 同样只算一次 ✓ */
+      uint tEx[4];
+      for (int i = 0; i < 4; i++) {
+        tEx[i] = 0u;
+        if (i >= uExtraCount) break;
+        if (uExtraShow[i] == 0 || uExtraTier[i] < 0) continue;
+        tEx[i] = titleAt(_A.pid, uExtraTier[i]);
+      }
+      int _st = max(1, int(uMapPerPx * 0.5));
+
+      for (int di = 0; di < 4; di++) {
+        ivec2 dir = di == 0 ? ivec2( 1, 0)
+                  : di == 1 ? ivec2(-1, 0)
+                  : di == 2 ? ivec2( 0, 1)
+                            : ivec2( 0,-1);
+        for (int k = 1; k <= MAXR; k++) {
+          int _d = k * _st;                    // 这一趟实际跨了多少格 ✓
+          if (_d > R) break;
+          ivec2 q = ip + ivec2(dir.x * _d, dir.y * _d);
+          /* 垂距：缝是横平竖直的，我们必定落在它那一格的跨度之内 ✓ 不用开方 ✓ */
+          float dl = dir.x != 0 ? (dir.x > 0 ? float(_d) - f.x : f.x + float(_d) - 1.0)
+                                : (dir.y > 0 ? float(_d) - f.y : f.y + float(_d) - 1.0);
+          /* ---- 这里是**唯一一次采样**，下面每一段都从它取信息 ✓ ---- */
+          uint qpid = pidAt(q);
+          uint qtid = titleAt(qpid, uEditTier);
+          /* ⚠ 这两个 && 是**性能开关**，别为了好读改成先算后判 ✗
+           *   「让开」只在**自己这侧**就是水/荒地时才有意义（pairW = _ipW && qW），
+           *   所以陆地像素（绝大多数）这里**一次采样都不做** ✓
+           *   —— 一趟射线不等于"每个像素都多采四次"，见下面 ④⑤ 各自的闸 ✓ */
+          bool qW = _ipW && waterIs(q);
+          bool qX = _ipX && wasteIs(q);
+          bool pairW = qW;     // 水 ↔ 水：归「水域 · 边界」✓
+          bool pairX = qX;     // 荒地 ↔ 荒地：归「荒地 · 边界」✓
+
+          /* ① **本层头衔线** —— 海岸线、荒地外缘、国界、无主地边界都是它 ✓
+           *   ⚠ 这里一个字都不许加"涂过就跳过"的闸 ✗ ——
+           *     地区边界根本不看玩家画了什么，加了闸会把地区边界一起吃没 ✓ */
+          if (uBorderTitle == 1 && !pairW && !pairX && qtid != tSelf)
+            dTitle = min(dTitle, dl);
+
+          /* @@MID_CUT_PAINTRAY_BEGIN@@ */
+          /* ② **填色边界**：颜色 / 标记有一个不同就划 ✓ 判据全在 viewsDiffer 里 ✓
+           *   ⚠ 别在这儿重复实现 ✗ —— "填色边界不开时这条 pass 根本不跑" ✓ */
+          if (uBorderPaint == 1 && !pairW && !pairX) {
+            vec4 _pp = paintAt(q);
+            CellView _B;
+            _B.pid = qpid;
+            _B.tid = qtid;
+            _B.painted = _pp.a > 0.5;
+            _B.col = _B.painted ? _pp.rgb : shownColour(q);
+            _B.label = paintLabelAt(q);
+            if (viewsDiffer(_A, _B)) dPaint = min(dPaint, dl);
+          }
+          /* @@MID_CUT_PAINTRAY_END@@ */
+
+          /* @@MID_CUT_EXTRA_BEGIN@@ */
+          /* ③ **多级链**：这条缝**同时**挂在哪几级上 ✓（不是二选一 ✓）
+           *   ⚠ 上界必须是常量 4，用 break 收 ✗ —— 见下面混色那段的长注释 ✓ */
+          for (int ex = 0; ex < 4; ex++) {
+            if (ex >= uExtraCount) break;
+            if (uExtraShow[ex] == 0) continue;
+            if (uExtraTier[ex] < 0) continue;
+            if (pairW || pairX) continue;
+            int Re = int(clamp(ceil(0.5 * uMapPerPx * (uExtraW[ex] + 1.0)), 1.0, float(MAXR)));
+            if (dl > float(Re)) continue;      // 超出这一环的半径就不必采了 ✓
+            if (titleAt(qpid, uExtraTier[ex]) != tEx[ex]) dEx[ex] = min(dEx[ex], dl);
+          }
+          /* @@MID_CUT_EXTRA_END@@ */
+
+          /* @@MID_CUT_WATER_BEGIN@@ */
+          /* ④ **水域边界**：老代码（rayDistWater，gl.js:995）判据是
+           *   "**对面是水** 且 编辑层 tid 不同" —— 它**只查对面一侧** ✗
+           *   （函数头注释写的是"两侧都得是水"✓ 两者不一致，这次照代码搬 ✓
+           *    差别只在海岸线上：陆侧那半边也会被它画一条 ✓ 要不要改成
+           *    两侧都判，等用户拍板 —— 见 handover 里记的那条 ✓）
+           *   ⚠ 让开那两句跟它无关：水水缝让开的是 title / paint / extra ✓ */
+          if (uWaterBorderOn == 1 && uWaterBorderA > 0.0 && qtid != tSelf && waterIs(q))
+            dWater = min(dWater, dl);
+          /* @@MID_CUT_WATER_END@@ */
+
+          /* @@MID_CUT_WASTE_BEGIN@@ */
+          /* ⑤ **荒地边界**（跟水域那条一个模子 ✓ 只换了身份判据 ✓
+           *   同样**只查对面** ✓ 见上面那条注释 ✓）*/
+          if (uWasteBorderOn == 1 && uWasteBorderA > 0.0 && qtid != tSelf && wasteIs(q))
+            dWaste = min(dWaste, dl);
+          /* @@MID_CUT_WASTE_END@@ */
+        }
+      }
     }
-    /* @@MID_CUT_PAINTRAY_BEGIN@@ */
-    /* **填色边界的那趟射线**：只在「填色边界」开着时才算（dPaint 只有它用 ✓）*/
-    if (_nearSeam && uBorderPaint == 1) {
-      float _w0 = rayDistPaint(ip, f, ivec2( 1, 0), R);
-      float _w1 = rayDistPaint(ip, f, ivec2(-1, 0), R);
-      float _w2 = rayDistPaint(ip, f, ivec2( 0, 1), R);
-      float _w3 = rayDistPaint(ip, f, ivec2( 0,-1), R);
-      dPaint = min(min(_w0, _w1), min(_w2, _w3));
-    }
-    /* @@MID_CUT_PAINTRAY_END@@ */
-    // 过渡带 ≈ 一个设备像素（**要提到外面**：下面多级边界那圈也要用 ✗）
+
+    // 过渡带 ≈ 一个设备像素（**要提到外面**：下面多级边界那几圈也要用 ✗）
     float ramp = 0.5 * uMapPerPx;
     if (dTitle < 1e8) {
       float bw = 0.5 * uBorderW * uMapPerPx;     // 半宽
       float b  = 1.0 - smoothstep(bw - ramp, bw + ramp, dTitle);
       col = mix(col, vec3(0.035, 0.045, 0.06), b * uBorderA);
     }
-    // **填色边界**：永远用自己那套（链上最粗那条的粗细 + 实心），跟本层互不干扰 ✓
+    /* **多级边界**：粒度那层之上，一层比一层粗（地区 → 国家）——
+     * 中间那些"年份"层跳过（不然 1618 + 省份 会冒出 1789 那条 ✗）。
+     *
+     * 🔴🔴 **上界必须是常量 4，用 break 收** ✗ —— 别改成 uniform ✓
+     *   规范上 GLSL ES 3.0 确实允许运行时上界 ✓ 但**手机驱动不认** ✗
+     *   → 着色器编译失败 → **整屏黑** ✓（用户报的"手机版黑屏"✓）
+     *   💡 取舍：**兼容性 > 编译速度** ✗ */
+    /* @@MID_CUT_EXTRA_BEGIN@@ */
+    for (int ex = 0; ex < 4; ex++) {
+      if (ex >= uExtraCount) break;
+      if (uExtraShow[ex] == 0) continue;
+      if (dEx[ex] >= 1e8) continue;
+      float bwe = 0.5 * uExtraW[ex] * uMapPerPx;
+      float be  = 1.0 - smoothstep(bwe - ramp, bwe + ramp, dEx[ex]);
+      col = mix(col, vec3(0.035, 0.045, 0.06), be * uExtraA[ex]);
+    }
+    /* @@MID_CUT_EXTRA_END@@ */
+    /* @@MID_CUT_PAINTRAY_BEGIN@@ */
+    /* ============ **涂色边界**（手绘色块之间 ✓）============
+     *  🔴 **压在所有政治边界之上**（2026-11-05 廿九定的显示优先级，原话：
+     *    「边界显示的规则是，（涂色+剧本）＞父级＞其他。」
+     *    「在显示有剧本时，涂色与剧本什么的边界最高…如果还开了父级开关，
+     *     那么你选的粒度的上位边界的优先级放中间。」）
+     *  → 底 → 顶：本层头衔（你选的粒度）→ 父级 → 剧本 → **涂色** ✓
+     *  剧本那一圈也在 uExtra* 里（app.js 把父级排在前、剧本排在后 ✓），
+     *  所以这里只要**排在多级链之后**，就是"涂色高过它们全部" ✓
+     *
+     *  ⚠ 永远用自己那套浓度/粗细（uPaintBorderW / uPaintBorderA）✓
+     *    不跟着本层那条走 —— 色块边界是"你画的线"，不是行政区划 ✗ */
     if (dPaint < 1e8) {
       float bwp = 0.5 * uPaintBorderW * uMapPerPx;
       float bp  = 1.0 - smoothstep(bwp - ramp, bwp + ramp, dPaint);
       col = mix(col, vec3(0.035, 0.045, 0.06), bp * uPaintBorderA);
     }
-    // **多级边界**：粒度那层之上，一层比一层粗（地区 → 国家）——
-    // 中间那些"年份"层跳过（不然 1618 + 省份 会冒出 1789 那条 ✗）。
-    /* 🔴🔴 **上界必须是常量 4，用 break 收** ✗ —— 别改成 uniform ✓
-     *   我为了"少让编译器展开、编译快一点"改成过 ex < uExtraCount ✗
-     *   规范上 GLSL ES 3.0 确实允许运行时上界 ✓ 但**手机驱动不认** ✗
-     *   → 着色器编译失败 → **整屏黑** ✓（用户报的"手机版黑屏"✓）
-     *   💡 取舍：**兼容性 > 编译速度** ✗
-     *     编译慢是"第一次打开等一会儿" ✓ 编译不过 = 直接不能用 ✓
-     *   ⚠ 想再提速就从别处省 ✗ 这里不许动 ✓ */
-    /* @@MID_CUT_EXTRA_BEGIN@@ */
-    for (int ex = 0; ex < 4; ex++) {
-      if (ex >= uExtraCount) break;
-      if (uExtraShow[ex] == 0) continue;
-      /* **闸门只能比它守的门框宽** ✗ 宁可给链多留一条路 ✓
-       *   粗筛位图圈的是"省界 ±2 格"✓ 链上那几层必然落在里面 ✓
-       *   （以前的教训：闸门比门框窄 → 链整片消失 ✓）*/
-      if (!_nearSeam) break;
-      int et = uExtraTier[ex];
-      if (et < 0) continue;
-      /* **链上这一环也走边掩码** ✓（用户点破的：多级边界没有新增边界 ✗
-       *   它画的就是"这一层的头衔缝" ✓ 所以 CPU 侧按层各存了一组 4 位 ✓）
-       *   组 4+ex（位 16 + 4*ex ✓）—— 顺序跟 app.js 传的 headTiers[1..4] 对齐 ✗ */
-      float de;
-      {
-        uint te = titleAt(pidAt(ip), et);
-        int Re = int(clamp(ceil(0.5 * uMapPerPx * (uExtraW[ex] + 1.0)), 1.0, float(MAXR)));
-        de = 1e9;
-        de = min(de, rayDistTitle(ip, f, ivec2( 1, 0), te, Re, et));
-        de = min(de, rayDistTitle(ip, f, ivec2(-1, 0), te, Re, et));
-        de = min(de, rayDistTitle(ip, f, ivec2( 0, 1), te, Re, et));
-        de = min(de, rayDistTitle(ip, f, ivec2( 0,-1), te, Re, et));
-      }
-      if (de < 1e8) {
-        float bwe = 0.5 * uExtraW[ex] * uMapPerPx;
-        float be  = 1.0 - smoothstep(bwe - ramp, bwe + ramp, de);
-        col = mix(col, vec3(0.035, 0.045, 0.06), be * uExtraA[ex]);
-      }
-    }
-    /* @@MID_CUT_EXTRA_END@@ */
+    /* @@MID_CUT_PAINTRAY_END@@ */
     /* ============ **水域边界**（水域 ↔ 水域 ✓ 2026-10-16）============
      *  用户口径（原话见 handover §3.1 ✓）：水域边界开关**负责且仅负责**
      *    「水域之间（海洋 / 湖泊 / 河流 / 不可通行海域）的边界」✓
@@ -1253,57 +1099,31 @@ void main() {
      *       它**不看** 地区 / 势力 / 填色 那三个开关 ✓（用户要的就是独立 ✓
      *       所以"边界全关"时水域线**照样在** ✓ —— 想关就关自己那个勾 ✓）
      *    ② uWaterBorderA > 0 —— 浓度拉到 0% = 那条线完全不画 ✓
-     *       （跟别处同一个口径 ✓：浓度 0 不是"线还在但看不见"✗ 是压根不画 ✓）
-     *    ③ 射线要真找得到那条缝（下面 de < 1e8 ✓）
+     *    ③ 射线要真找得到那条缝（下面 dWater < 1e8 ✓）
      *
-     *  ⚠ 判据 = "**两侧都是水** 且 编辑层那两个 tid 不同" ✓（跟本层线**同一层** ✓）
-     *    一侧水一侧陆 → waterIs 有一个 false → 这条通道不管 ✓ 交给本层线 ✓
-     *  ⚠ 旧那两条通道在水水缝上已经被让开了 ✓（rayDistTitle / rayDistPaint ✓）
+     *  ⚠ 旧那两条通道在水水缝上已经被让开了 ✓（见上面一趟射线里 pairW ✓）
      *    → 同一条缝**只有一个出处** ✓ 不会"后画的赢" ✓ */
     /* @@MID_CUT_WATER_BEGIN@@ */
-    if (uWaterBorderOn == 1 && uWaterBorderA > 0.0) {
-      uint tw = titleAt(pidAt(ip), uEditTier);
-      int Rw = int(clamp(ceil(0.5 * uMapPerPx * (uWaterBorderW + 1.0)), 1.0, float(MAXR)));
-      float dw = 1e9;
-      dw = min(dw, rayDistWater(ip, f, ivec2( 1, 0), tw, Rw));
-      dw = min(dw, rayDistWater(ip, f, ivec2(-1, 0), tw, Rw));
-      dw = min(dw, rayDistWater(ip, f, ivec2( 0, 1), tw, Rw));
-      dw = min(dw, rayDistWater(ip, f, ivec2( 0,-1), tw, Rw));
-      if (dw < 1e8) {
-        float bww = 0.5 * uWaterBorderW * uMapPerPx;
-        float bw2 = 1.0 - smoothstep(bww - ramp, bww + ramp, dw);
-        col = mix(col, vec3(0.035, 0.045, 0.06), bw2 * uWaterBorderA);
-      }
+    if (uWaterBorderOn == 1 && uWaterBorderA > 0.0 && dWater < 1e8) {
+      float bww = 0.5 * uWaterBorderW * uMapPerPx;
+      float bw2 = 1.0 - smoothstep(bww - ramp, bww + ramp, dWater);
+      col = mix(col, vec3(0.035, 0.045, 0.06), bw2 * uWaterBorderA);
     }
     /* @@MID_CUT_WATER_END@@ */
     /* ============ **荒地边界**（荒地 ↔ 荒地 ✓ 2026-10-17）============
      *  用户原话："给荒地加上边界开关，这个负责的是**荒地与荒地之间**的边界，
      *            你之前做了水域-水域的边界，这个应该轻车熟路了吧"✓
-     *  → 跟上面水域那段**一个模子** ✗ 只换了三处：
+     *  → 跟上面水域那段**一个模子** ✗ 只有三处不同：
      *    ① uniform 名（uWasteBorder* ✓）
-     *    ② 判据函数（「wasteIs」 ✓ —— 读的是 「uKindTex」 那张本来就绑着的身份标 ✓
+     *    ② 判据（wasteIs ✓ —— 读的是 uKindTex 那张本来就绑着的身份标 ✓
      *       **没有新纹理** ✓ 跟水域那条不同：水域要算过一遍才知道是不是水 ✓ 荒地不用 ✓）
-     *    ③ 让位那两句（两条旧通道在**荒地缝**上让开 ✓ 见 rayDistTitle / rayDistPaint ✓）
-     *
-     *  ⚠ 三级闸照样一个都不能少 ✗（On / A > 0 / 射线真找得到 ✓）
-     *    ① uWasteBorderOn —— 用户那个勾**且**这张图有身份标（app 那边 AND 好 ✓）
-     *       它**不看** 地区 / 势力 / 填色 那三个开关 ✓ 独立 ✓
-     *    ② uWasteBorderA > 0 —— 浓度 0% = 那条线完全不画 ✓（跟别处同口径 ✓）
-     *    ③ 射线找得到 ✓ */
+     *    ③ 让位那一句（一趟射线里 pairX ✓）
+     *  ⚠ 三级闸照样一个都不能少 ✗（On / A > 0 / 射线真找得到 ✓）*/
     /* @@MID_CUT_WASTE_BEGIN@@ */
-    if (uWasteBorderOn == 1 && uWasteBorderA > 0.0) {
-      uint tw2 = titleAt(pidAt(ip), uEditTier);
-      int Rw2 = int(clamp(ceil(0.5 * uMapPerPx * (uWasteBorderW + 1.0)), 1.0, float(MAXR)));
-      float dq = 1e9;
-      dq = min(dq, rayDistWaste(ip, f, ivec2( 1, 0), tw2, Rw2));
-      dq = min(dq, rayDistWaste(ip, f, ivec2(-1, 0), tw2, Rw2));
-      dq = min(dq, rayDistWaste(ip, f, ivec2( 0, 1), tw2, Rw2));
-      dq = min(dq, rayDistWaste(ip, f, ivec2( 0,-1), tw2, Rw2));
-      if (dq < 1e8) {
-        float bwq = 0.5 * uWasteBorderW * uMapPerPx;
-        float bq2 = 1.0 - smoothstep(bwq - ramp, bwq + ramp, dq);
-        col = mix(col, vec3(0.035, 0.045, 0.06), bq2 * uWasteBorderA);
-      }
+    if (uWasteBorderOn == 1 && uWasteBorderA > 0.0 && dWaste < 1e8) {
+      float bwq = 0.5 * uWasteBorderW * uMapPerPx;
+      float bq2 = 1.0 - smoothstep(bwq - ramp, bwq + ramp, dWaste);
+      col = mix(col, vec3(0.035, 0.045, 0.06), bq2 * uWasteBorderA);
     }
     /* @@MID_CUT_WASTE_END@@ */
   }
@@ -1408,25 +1228,33 @@ function makeLiteFragment(src) {
  *  ⚠ 切块靠 @@MID_CUT_*@@ 标记；标记被动了就返回 null，宁可不给 ✓
  * ========================================================================== */
 
-/** 切掉一对 `@@MID_CUT_<name>_BEGIN/END@@` 之间的整段 */
+/** 切掉 `@@MID_CUT_<name>_BEGIN/END@@` 之间的整段（**同名可以有好几对** ✓
+ *  2026-11-05：一趟射线之后，一条通道的代码分成两处（循环里的判据 + 循环后的混色 ✓）
+ *  → 同名标记各写一对，这里把**所有**出现的都切掉 ✓
+ *  ⚠ 一对都找不到就是标记被人动过 → 返回 null，宁可不给这个变体 ✓ */
 function cutAuxBlock(src, name) {
   const bMark = '/* @@MID_CUT_' + name + '_BEGIN@@ */';
   const eMark = '/* @@MID_CUT_' + name + '_END@@ */';
-  const a = src.indexOf(bMark);
-  const b = src.indexOf(eMark, a + bMark.length);
-  if (a < 0 || b <= a) return null;
-  return src.slice(0, a) + src.slice(b + eMark.length);
+  let out = src;
+  let hit = false;
+  for (;;) {
+    const a = out.indexOf(bMark);
+    if (a < 0) break;
+    const b = out.indexOf(eMark, a + bMark.length);
+    if (b <= a) return null;
+    out = out.slice(0, a) + out.slice(b + eMark.length);
+    hit = true;
+  }
+  return hit ? out : null;
 }
 
-/** 中等着色器：多级边界还在，只砍水域 / 荒地两条独立通道（连同它们的射线函数） */
+/** 中等着色器：多级边界还在，只砍水域 / 荒地两条独立通道
+ *  ⚠ 2026-11-05 一趟射线之后，通道不再各有"射线函数"了 ✗ ——
+ *    它们只是同一趟循环里的几个判据块 ✓ 切的就是那几个块 ✓ */
 function makeMidFragment(src) {
   let out = cutAuxBlock(src, 'WATER');
   if (out == null) return null;
   out = cutAuxBlock(out, 'WASTE');
-  if (out == null) return null;
-  out = cutAuxBlock(out, 'WATERFN');
-  if (out == null) return null;
-  out = cutAuxBlock(out, 'WASTEFN');
   return out;
 }
 
@@ -1437,21 +1265,15 @@ function makeBorderOnlyFragment(src) {
   out = cutAuxBlock(out, 'WATER');
   if (out == null) return null;
   out = cutAuxBlock(out, 'WASTE');
-  if (out == null) return null;
-  out = cutAuxBlock(out, 'WATERFN');
-  if (out == null) return null;
-  out = cutAuxBlock(out, 'WASTEFN');
   return out;
 }
 
-/** 最简边界版：只留**本层头衔线**，连填色的 4 条射线也砍掉
+/** 最简边界版：只留**本层头衔线**，连填色那一小段判据也砍掉
  *  —— 万一 border 档还链不上，至少地区 / 省份边界要能看见 ✓ */
 function makeTitleOnlyFragment(src) {
   let out = makeBorderOnlyFragment(src);
   if (out == null) return null;
   out = cutAuxBlock(out, 'PAINTRAY');
-  if (out == null) return null;
-  out = cutAuxBlock(out, 'PAINTFN');
   return out;
 }
 

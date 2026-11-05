@@ -79,8 +79,8 @@ console.log('\n=== C. 精简版着色器（链接失败时的保底）===');
   const a = FRAG.indexOf('/* @@LITE_CUT_BEGIN@@ */');
   const b = FRAG.indexOf('/* @@LITE_CUT_END@@ */');
   ok('两个切割标记都在、且顺序正确', a >= 0 && b > a, `@${a} / @${b}`);
-  ok('切掉的那段就是边界射线（里面有 rayDistTitle 调用）',
-    a >= 0 && b > a && /rayDist(ip|Title)\(/.test(FRAG.slice(a, b)));
+  ok('切掉的那段就是边界射线（一趟射线那整块）',
+    a >= 0 && b > a && /pairW/.test(FRAG.slice(a, b)) && /dEx\[ex\]/.test(FRAG.slice(a, b)));
   ok('切完之后剩下的还在：颜色 / 涂色 / 悬停',
     a >= 0 && b > a && (() => {
       const lite = FRAG.slice(0, a) + FRAG.slice(b);
@@ -113,31 +113,32 @@ console.log('\n=== C2. 中间档着色器（Adreno 613 链接失败的退路）=
 
   ok('mid 生成得出来', !!mid, mid ? `${mid.length} 字符` : 'null ✗');
   ok('mid 还留着本层头衔 / 填色 / 多级链',
-    /rayDistTitle\(/.test(midCode) && /rayDistPaint\(/.test(midCode) && /uExtraCount/.test(midCode));
+    /uBorderTitle == 1/.test(midCode) && /viewsDiffer/.test(midCode)
+    && /uExtraW\[ex\] \* uMapPerPx/.test(midCode));
   ok('mid 砍掉了水域 / 荒地两条独立通道',
-    !/rayDistWater\(/.test(midCode) && !/rayDistWaste\(/.test(midCode));
+    !/qW && qtid/.test(midCode) && !/qX && qtid/.test(midCode));
   ok('mid 大括号 / 小括号配平',
     bal(mid || '', '{', '}') === 0 && bal(mid || '', '(', ')') === 0);
 
   ok('border 生成得出来', !!border, border ? `${border.length} 字符` : 'null ✗');
   ok('border 只留本层头衔 + 填色边界',
-    /rayDistTitle\(/.test(borderCode) && /rayDistPaint\(/.test(borderCode)
-    && !/for \(int ex/.test(borderCode) && !/uExtraShow\[ex\]/.test(borderCode)
-    && !/rayDistWater\(/.test(borderCode) && !/rayDistWaste\(/.test(borderCode));
+    /uBorderTitle == 1/.test(borderCode) && /viewsDiffer/.test(borderCode)
+    && !/uExtraW\[ex\] \* uMapPerPx/.test(borderCode)
+    && !/qW && qtid/.test(borderCode) && !/qX && qtid/.test(borderCode));
   ok('border 大括号 / 小括号配平',
     bal(border || '', '{', '}') === 0 && bal(border || '', '(', ')') === 0);
 
   ok('title 生成得出来', !!title, title ? `${title.length} 字符` : 'null ✗');
   ok('title 只留本层头衔线（填色 / 多级 / 水 / 荒地全砍）',
-    /rayDistTitle\(/.test(titleCode)
-    && !/rayDistPaint\(/.test(titleCode)
-    && !/for \(int ex/.test(titleCode) && !/uExtraShow\[ex\]/.test(titleCode)
-    && !/rayDistWater\(/.test(titleCode) && !/rayDistWaste\(/.test(titleCode));
+    /uBorderTitle == 1/.test(titleCode)
+    && !/viewsDiffer/.test(titleCode)
+    && !/uExtraW\[ex\] \* uMapPerPx/.test(titleCode)
+    && !/qW && qtid/.test(titleCode) && !/qX && qtid/.test(titleCode));
   ok('title 大括号 / 小括号配平',
     bal(title || '', '{', '}') === 0 && bal(title || '', '(', ')') === 0);
 
-  ok('五个切割标记都成对（EXTRA / WATER / WASTE / PAINTRAY / PAINTFN）',
-    ['EXTRA', 'WATER', 'WASTE', 'PAINTRAY', 'PAINTFN'].every((n) => {
+  ok('四个切割标记都成对（EXTRA / WATER / WASTE / PAINTRAY）',
+    ['EXTRA', 'WATER', 'WASTE', 'PAINTRAY'].every((n) => {
       const x = FRAG.indexOf('/* @@MID_CUT_' + n + '_BEGIN@@ */');
       const y = FRAG.indexOf('/* @@MID_CUT_' + n + '_END@@ */');
       return x >= 0 && y > x;
