@@ -49,6 +49,14 @@ const CARD = WHICH === 'EU4HD' ? 'EU4HD'
   : WHICH === 'VIC3' ? 'VIC3 原版'
   : WHICH === 'HOI4' ? 'HOI4 原版'          // ① 原版 ② 修改边界，测试点原版 ✓
   : WHICH === 'EU5' ? 'EU5 原版' : WHICH;
+/* data_eu4 是 96×48 测试夹具时，运行时段的大量断言（剧本 / 层级 / 真实国名）没法验 ✗
+   → 只跑静态检查，运行时段明说跳过 ✓（2026-11-10：新克隆不再永远 43 红）*/
+const EU4_FIXTURE = (() => {
+  try {
+    const m = JSON.parse(fs.readFileSync(path.join(ROOT, 'data_eu4', 'meta.json'), 'utf8'));
+    return (m.mapWidth | 0) > 0 && (m.mapWidth | 0) < 1000;
+  } catch (e) { return false; }
+})();
 const fails = [];
 const oks = [];
 function ok(name, cond, extra = '') {
@@ -697,6 +705,14 @@ function ok(name, cond, extra = '') {
   // 20 倍放大是用户截图那一档，旧写法铺了 8～9 个像素宽的 50% 混色
   ok('放大 18 倍时旧写法确实会糊成一条宽带（这条是复现，不是要求）',
      seamWidth(TAPS_OLD, 18) >= 8, `旧版 ${seamWidth(TAPS_OLD, 18)} px`);
+}
+
+/* 96×48 夹具没有真实剧本 / 海域名 / 层级 → 运行时段必红 ✗
+   静态检查已经跑完；这里明说跳过，别让新克隆看着像功能坏了 ✓（2026-11-10）*/
+if (WHICH === 'EU4' && EU4_FIXTURE) {
+  console.log('\n（data_eu4 是 96×48 测试夹具 —— 跳过 EU4 运行时段）');
+  console.log(`通过 ${oks.length} 条，失败 ${fails.length} 条（运行时段已跳过）`);
+  process.exit(fails.length ? 1 : 0);
 }
 
 // ---------------------------------------------------------------- 假 DOM

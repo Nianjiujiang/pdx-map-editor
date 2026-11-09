@@ -46,6 +46,14 @@ const MAPS = [
   { id: 'EU5', game: 'eu5', data: 'data_eu5', card: 'EU5 原版' },
 ];
 
+/** data_xxx 是不是 96×48 那套测试夹具 ✓（缺真实海域 / 湖泊名，EU4 那几条没法验）*/
+function fixtureDir(dir) {
+  try {
+    const M = JSON.parse(fs.readFileSync(path.join(H.ROOT, dir, 'meta.json'), 'utf8'));
+    return (M.mapWidth | 0) > 0 && (M.mapWidth | 0) < 1000;
+  } catch (e) { return false; }
+}
+
 async function bootMap(m) {
   const js = H.flattenModules();
   const env = H.makeEnv({ root: H.ROOT });
@@ -361,6 +369,11 @@ function pick(ex) {
   for (const m of MAPS) {
     if (ONLY && ONLY !== m.id) continue;
     console.log(`\n=========== ${m.id} ===========`);
+    if (m.id === 'EU4' && fixtureDir(m.data)) {
+      console.log('  ·（跳过 EU4：data_eu4 是 96×48 测试夹具，缺真实海域 / 湖泊名）');
+      skipped.push(m.id);
+      continue;
+    }
     const bm = await bootMap(m);
     if (!bm) {
       console.log(`  ·（跳过 ${m.id}：选图页里没有「${m.card}」这张卡`
