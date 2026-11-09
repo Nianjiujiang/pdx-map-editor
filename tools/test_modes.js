@@ -154,12 +154,12 @@ function ok(name, cond, extra = '') {
   {
     const gsrc = require('fs').readFileSync('web/js/gl.js', 'utf8');
     const dRamp = gsrc.indexOf('float ramp = 0.5 * uMapPerPx;');
-    /* ⚠ 找**多级边界**那个循环要用它的独有特征 ✗ ——
-     *   不能再拿 `for (int ex = 0; ex < 4; ex++)` 去 indexOf ✗：
-     *   算 _wAll / 算 want 也用同一句 for，第一次出现的位置在 ramp **之前** ✓
-     *   于是断言会误判成"ramp 在循环后面" ✗（其实 ramp 好好地在前面 ✓）
-     *   `int et = uExtraTier[ex];` 只有多级边界那圈才有 ✓ */
-    const uRamp = gsrc.indexOf('int et = uExtraTier[ex];');
+    /* ⚠ 找**多级边界混色**那个循环要用它的独有特征 ✗ ——
+     *   不能拿 `for (int ex = 0; ex < 4; ex++)` 去 indexOf ✗：
+     *   射线里还有同一个循环 ✓
+     *   2026-11-09：`int et = uExtraTier[ex];` 没了 → 改用混色循环里的
+     *   `if (dEx[ex] >= 1e8) continue;`（只在 ramp 之后那一圈 ✓）*/
+    const uRamp = gsrc.indexOf('if (dEx[ex] >= 1e8) continue;');
     ok('多级边界循环用到的 ramp 声明在它之前（别再编译失败 ✗）',
        dRamp >= 0 && uRamp >= 0 && dRamp < uRamp,
        'ramp@' + dRamp + ' loop@' + uRamp);
@@ -358,53 +358,48 @@ function ok(name, cond, extra = '') {
     /* 🔴 **2026-10-17 给荒地那条补的判据** ✗（用户："给荒地加上边界开关，
      *   这个负责的是**荒地与荒地之间**的边界，你之前做了水域-水域的边界，
      *   这个应该轻车熟路了吧"✓）
-     *  量三件事（跟水域那条一一对应 ✓）：
-     *    ① 判据函数 `wasteIs` 在，而且**读的是 uKindTex**（不是新开一张表 ✓
-     *       —— 身份标里 6 就是 6，不用算 ✓ 跟水域那条的区别正在这儿 ✓）
-     *    ② 射线 `rayDistWaste` 在 ✓
-     *    ③ **两条旧通道都让开荒地缝**（rayDistTitle / rayDistPaint 各一句 ✓
-     *       跟水域那两句同款 ✓ 少一句就是"同一条缝画两遍"✗）
+     *  2026-11-09 并成一趟射线后，判据仍然是三件事：
+     *    ① `wasteIs` 在，而且**读的是 uKindTex**（身份标里 6 就是 6 ✓）
+     *    ② 荒地通道 = **pairX（两侧都是荒地）+ 编辑层 tid 不同** ✓
+     *    ③ title / paint 都把 pairX 那条缝让开 ✓（extra 也 continue ✓）
      *  ⚠ `uKindOn == 0`（老包）时它恒 false ✓ 整条不生效 ✓ 观感不变 ✓ */
-    ok('「荒地 · 边界」：wasteIs 读身份标 + rayDistWaste + 两处让位 ✓',
+    ok('「荒地 · 边界」：wasteIs 读身份标 + pairX 判据 + 让位 ✓',
        /bool wasteIs\(ivec2 q\)/.test(g3)
        /* ⚠ 2026-10-19：判据从 `texelFetch(uKindTex…)` 换成了 `u8At(uKindTex…)` ✗
         *   —— 整数纹理退役、R8 归一化解码（见 gl.js 的 u8At ✓）
         *   这里钉的是**"读的是身份标那张表"**，不是具体哪个取数写法 ✓ */
        && /u8At\(uKindTex/.test(g3)
-       && /float rayDistWaste\(ivec2 ip, vec2 f, ivec2 dir, uint t, int R\)/.test(g3)
-       && (g3.match(/wasteIs\(ip\) && wasteIs\(q\)/g) || []).length === 2,
+       && /uWasteBorderOn == 1 && uWasteBorderA > 0\.0 && pairX && qtid != tSelf/.test(g3)
+       && (g3.match(/!pairW && !pairX/g) || []).length >= 2,
        `wasteIs=${/bool wasteIs/.test(g3)} 读身份标=${/u8At\(uKindTex/.test(g3)}`
-       + ` 射线=${/rayDistWaste/.test(g3)} 让位=${(g3.match(/wasteIs\(ip\) && wasteIs\(q\)/g) || []).length} 处`);
-    /* **判据必须"两侧都是水 + 编辑层 tid 不同"** ✓（handover §3.4 第 5 步 ✓）
-     *  ⚠ 只有一条出处 ✗：`rayDistWater` 是这条通道**唯一**的射线函数 ✓
-     *    旧通道那边由 `waterIs(ip) && waterIs(q)` 两处 `continue` 让开 ✓ */
+       + ` 判据=${/pairX && qtid != tSelf/.test(g3)}`
+       + ` 让位=${(g3.match(/!pairW && !pairX/g) || []).length} 处`);
+    /* **判据必须"两侧都是水 + 编辑层 tid 不同"** ✓
+     *  ⚠ 2026-11-09：以前只判对面是水（海岸线陆侧也会画 ✗），现在直接复用 pairW ✓ */
     {
-      const _rw = /float rayDistWater\([^)]*\)\s*\{[\s\S]*?\n\}/.exec(g3);
-      const _body = _rw ? _rw[0] : '';
-      ok('水域边界的射线只管"对面也是水"的格子（海岸线不归它 ✓）',
-         /if \(!waterIs\(q\)\) continue;/.test(_body)
-         && /titleAt\(pidAt\(q\), uEditTier\) != t/.test(_body),
-         _body ? '判据齐（对面得是水 + 编辑层 tid 不同）✓' : '(没找到 rayDistWater ✗)');
-      /* **两条旧通道必须都把水水缝让出去** ✗（不然同一条缝画两遍 → 后画的赢 ✓
-       *   那正是 8.3 第 4 条那个坑："水域那一档怎么调都没反应"✓ */
-      const _rt = /float rayDistTitle\([^)]*\)\s*\{[\s\S]*?\n\}/.exec(g3);
-      const _tb = _rt ? _rt[0] : '';
-      const _rp = /float rayDistPaint\([^)]*\)\s*\{[\s\S]*?\n\}/.exec(g3);
-      const _pb = _rp ? _rp[0] : '';
-      ok('本层线 / 填色线都把"两侧都是水"那条缝让给水域通道 ✓（不许同处画两遍 ✗）',
-         /if \(waterIs\(ip\) && waterIs\(q\)\) continue;/.test(_tb)
-         && /if \(waterIs\(ip\) && waterIs\(q\)\) continue;/.test(_pb),
-         `本层让位=${/waterIs\(ip\) && waterIs\(q\)\) continue;/.test(_tb)}`
-         + ` 填色让位=${/waterIs\(ip\) && waterIs\(q\)\) continue;/.test(_pb)}`);
-      /* **让位是 continue、不是 return** ✗✗ ——
-       *  return 会让"这一向整个没了"，跳过水水缝之后的**真边界**也一起丢 ✓ */
+      ok('水域边界只管"两侧都是水"的格子（海岸线不归它 ✓）',
+         /uWaterBorderOn == 1 && uWaterBorderA > 0\.0 && pairW && qtid != tSelf/.test(g3)
+         && /bool qW = _ipW && waterIs\(q\);/.test(g3),
+         /pairW && qtid != tSelf/.test(g3) ? 'pairW 判据 ✓' : '(没找到 pairW 判据 ✗)');
+      /* **本层线 / 填色线必须都把水水/荒地缝让出去** ✗（不然同一条缝画两遍 ✓）*/
+      ok('本层线 / 填色线都把"两侧都是水/荒地"那条缝让开 ✓（不许同处画两遍 ✗）',
+         /if \(uBorderTitle == 1 && !pairW && !pairX && qtid != tSelf\)/.test(g3)
+         && /if \(uBorderPaint == 1 && !pairW && !pairX\)/.test(g3),
+         `本层让位=${/!pairW && !pairX/.test(g3)}`
+         + ` 填色让位=${/uBorderPaint == 1 && !pairW && !pairX/.test(g3)}`);
+      /* **让位是跳过这条缝、接着往外找** ✓（不是"这一向整个没了"✗）*/
       ok('让位用的是 continue（跳过这条缝接着往外找 ✓ 不是 return 1e9 ✗）',
-         !/waterIs\(ip\) && waterIs\(q\)\) return/.test(_tb)
-         && !/waterIs\(ip\) && waterIs\(q\)\) return/.test(_pb));
-      /* **预筛也要让位** ✓：两边都是水时不许走"跳一步"那条近似 ✓
-       *  （水片内部头衔相同 → 预筛会说"这一向没缝" → 另一头贴着的那条缝被跳过 ✗）*/
-      ok('rayDistTitle 的跳步预筛在水面上让路 ✓（否则水水缝会被近似跳过去 ✗）',
-         /if \(!\(waterIs\(ip\) && waterIs\(far\)\)/.test(_tb));
+         /if \(pairW \|\| pairX\) continue;/.test(g3)
+         && !/if \(waterIs\(ip\) && waterIs\(q\)\) return/.test(g3));
+      /* **旧版的"跳一步预筛"已经整段删掉** ✓
+       *  （比 R 格还窄的地块会被它整段漏掉 —— 用户报过"涂色后边界不更新"）*/
+      ok('不再有跳步预筛（一趟射线全采，不再漏窄地块 ✓）',
+         !/PRESCREEN_MIN_R/.test(g3) && !/rayDistTitle/.test(g3));
+      /* **所有通道都关着时，射线一次都不跑** ✓（2026-11-09 补）
+       *   否则 _bMax = 0 时 R 仍 ≥ 1，全关也会 4 方向采 pid / title ✓ */
+      ok('所有边界都关掉时跳过射线（不再白跑一趟 ✓）',
+         /bool _anyBorder = uBorderTitle == 1 \|\| uBorderPaint == 1/.test(g3)
+         && /if \(_nearSeam && _anyBorder\)/.test(g3));
     }
     /* **旧那片"荒地边界"整套**（wasteOnly 那条路 ✓）**仍然不在** ✓
      *  用户 2026-10-16 只把水域请回来了 ✓ 荒地还是"普通地块" ✓
@@ -483,8 +478,10 @@ function ok(name, cond, extra = '') {
            · 无主地既不是水也不是荒地 → 它跟海之间那条**海岸线照画** ✓
          ⚠ 老写法（`t >= uRealTitles && tt >= uRealTitles`）**别回来** ✗ ——
            那一条把无主地也算成"地形"，海岸线会整条消失 ✓（用户报过 ✓）*/
-      const skipWater = /if \(waterIs\(ip\) && waterIs\(q\)\)\s*continue;/.test(frag);
-      const skipWaste = /if \(wasteIs\(ip\) && wasteIs\(q\)\)\s*continue;/.test(frag);
+      const skipWater = /bool qW = _ipW && waterIs\(q\);/.test(frag)
+        && /bool pairW = qW;/.test(frag);
+      const skipWaste = /bool qX = _ipX && wasteIs\(q\);/.test(frag)
+        && /bool pairX = qX;/.test(frag);
       const oldForm = /if \(t >= uint\(uRealTitles\) && tt >= uint\(uRealTitles\)\)/.test(frag);
       ok('「地形伪头衔」那道判据也得把无主地排除（NONE 是地，不是海）✓',
          skipWater && skipWaste && !oldForm,
@@ -4793,43 +4790,29 @@ const factory = new Function(
      *   现在 `rayDistPaint` 一次吐三个距离（.x 填色、.y 水岸线、.z 荒地边 ✓）→ 四趟变两趟 ✓ */
     /* **三条线（填色 / 水岸线 / 荒地边）现在都由掩码一趟给全** ✓
      *   老路径那套（`rayDistPaint` 吐 vec3 + `_w0.._w3`）已经没有调用点了 ✓ */
-    /* **三条线各走各的那一趟** ✓
-     *   老版本这里是"合并成一趟"（`rayDistPaint` 一次吐 vec3 三个距离 ⚠️）——
-     *   2026-10-16/17 又**拆回去了** ✗：用户给水域 / 荒地各要了一条**独立开关**
-     *   （"水域边界负责且仅负责水域之间的边界"✓"给荒地也加一条"✓），
-     *   两条各自有粗细 / 浓度 / 开与关 → 各成一趟才管得清 ✓
-     *   ⚠ 所以这条现在钉的是**新不变量**（别再拿"合并那趟"去要求它 ✗）：
-     *     · 三趟都在，而且**每一趟都有自己的 MAXR 硬上界**
-     *       （防手机驱动把"上界不是常量"的循环判成不合规 → 编译不过 ✓）
-     *     · 水 / 荒地那两趟的判据 = **对面是水（荒地）** ✚ **头衔不同** ✓
-     *       （缺后半句 = 一整片荒地内部每格都画线 → 密密麻麻网格 ✓ 用户报过 ✓）*/
+    /* **一趟射线：4 方向 × MAXR，所有通道共用一次采样** ✓（2026-11-05 重构）
+     *   老版本是 title / paint / extra / water / waste 各跑一趟 ✗
+     *   ⚠ 现在钉的是**新不变量**：
+     *     · 方向循环和 MAXR 循环都只有**一个**；
+     *     · 水 / 荒地各是一条判据（pairW / pairX），不再有独立射线函数；
+     *     · 判据 = **两侧都是水（荒地）** ✚ **编辑层头衔不同** ✓
+     *       （缺后半句 = 一整片水域/荒地内部每格都画线 → 密密麻麻网格 ✓）*/
     {
       const _g = fs.readFileSync('web/js/gl.js', 'utf8');
-      const _fn = (name) => {
-        const s = _g.indexOf('float ' + name + '(ivec2 ip');
-        if (s < 0) return '';
-        let d = 0, out = [], started = false;
-        for (let i = s; i < _g.length; i++) {
-          const ch = _g[i];
-          out.push(ch);
-          if (ch === '{') { d++; started = true; }
-          else if (ch === '}') { d--; if (started && d === 0) break; }
-        }
-        return out.join('');
-      };
-      const rp = _fn('rayDistPaint'), rw = _fn('rayDistWater'), rq = _fn('rayDistWaste');
-      const hasBound = (s) => /for \(int k = 1; k <= MAXR; k\+\+\)/.test(s) && /if \(_d > R\) break;/.test(s);
-      ok('填色 / 水 / 荒地三条线各一趟，且每趟都有 MAXR 硬上界',
-         !!rp && !!rw && !!rq && hasBound(rp) && hasBound(rw) && hasBound(rq),
-         'paint/water/waste=' + [!!rp, !!rw, !!rq].join('/')
-         + ' · 上界=' + [hasBound(rp), hasBound(rw), hasBound(rq)].join('/'));
-      ok('水 / 荒地那两趟的判据 = 对面是它 **且** 两侧头衔不同（少一个就变密密麻麻网格 ✗）',
-         /if \(!waterIs\(q\)\) continue;/.test(rw)
-         && /titleAt\(pidAt\(q\), uEditTier\) != t/.test(rw)
-         && /if \(!wasteIs\(q\)\) continue;/.test(rq)
-         && /titleAt\(pidAt\(q\), uEditTier\) != t/.test(rq),
-         'water=' + /if \(!waterIs\(q\)\) continue;/.test(rw)
-         + ' waste=' + /if \(!wasteIs\(q\)\) continue;/.test(rq));
+      const dirs = (_g.match(/for \(int di = 0; di < 4; di\+\+\)/g) || []).length;
+      const loops = (_g.match(/for \(int k = 1; k <= MAXR; k\+\+\)/g) || []).length;
+      ok('边界射线只有一趟（4 方向 × MAXR 一个循环，所有通道共用采样）',
+         dirs === 1 && loops === 1
+         && /uWaterBorderOn == 1 && uWaterBorderA > 0\.0 && pairW && qtid != tSelf/.test(_g)
+         && /uWasteBorderOn == 1 && uWasteBorderA > 0\.0 && pairX && qtid != tSelf/.test(_g),
+         `方向循环=${dirs} · MAXR 循环=${loops}`);
+      ok('水 / 荒地判据 = 两侧都是它 **且** 两侧头衔不同（少一个就变密密麻麻网格 ✗）',
+         /bool qW = _ipW && waterIs\(q\);/.test(_g)
+         && /pairW && qtid != tSelf/.test(_g)
+         && /bool qX = _ipX && wasteIs\(q\);/.test(_g)
+         && /pairX && qtid != tSelf/.test(_g),
+         'pairW=' + /pairW && qtid != tSelf/.test(_g)
+         + ' pairX=' + /pairX && qtid != tSelf/.test(_g));
     }
     /* **荒地身份必须按"编辑层"取** ✗（用户报的"不可通行区变成密密麻麻网格"就是它 ✓）
      *   `cellViewOf` / 那两趟射线里取的都必须是 `uEditTier` ✓

@@ -6,13 +6,13 @@
  *   node tools/check_border_rules.js
  *
  * 为什么要有这一份：
- *   一条缝归哪条通道，判据散在四套射线里（gl.js:742 rayDistTitle /
- *   gl.js:918 rayDistPaint / gl.js:989 rayDistWater / gl.js:1018 rayDistWaste）✓
+ *   一条缝归哪条通道，判据原来散在四套射线里；2026-11-05 并成**一趟射线**之后，
+ *   它们只是同一趟循环里的几个 if 块 ✓
  *   它们之间还**互相让位** ✗：水↔水归「水域」、荒地↔荒地归「荒地」，
  *   另外三条通道在那种缝上得让开 ✓ 这种"谁让谁"的关系在 GLSL 里根本没法单测 ✗
  *   → 抄成纯函数之后，语义有没有被悄悄改掉，跑一遍断言就知道 ✓
  *
- * ⚠ 抄的范围就这么点：**判据** ✓ 距离怎么算（垂距 / 跳步 stride / 预筛）一条没抄 ✗
+ * ⚠ 抄的范围就这么点：**判据** ✓ 距离怎么算（垂距 / 跳步 stride）一条没抄 ✗
  *   那是射线的事，跟"这条缝属不属于这条通道"无关 ✓
  * ⚠ 输入从"纹理采样"换成了对象字段 ✓ 这是唯一改写的地方
  *   （本来也没法在 node 里跑 GLSL ✓）
@@ -21,18 +21,18 @@
  */
 
 /* ======================= 通道清单 =======================
- * 跟着色器里那五段画线的参数**一一对应** ✓（顺序 = 渲染顺序 ✓）
- *   title → gl.js:1196  uBorderW / uBorderA
- *   paint → gl.js:1202  uPaintBorderW / uPaintBorderA
- *   extra → gl.js:1217  uExtraW[ex] / uExtraA[ex]（多级边界，ex = 第几环）
- *   water → gl.js:1264  uWaterBorderW / uWaterBorderA
- *   waste → gl.js:1294  uWasteBorderW / uWasteBorderA
+ * 跟着色器里那五段画线的参数**一一对应** ✓（顺序 = **实际渲染顺序** ✓）
+ *   title → uBorderW / uBorderA
+ *   extra → uExtraW[ex] / uExtraA[ex]（多级边界：父级在前、剧本在后 ✓）
+ *   paint → uPaintBorderW / uPaintBorderA（2026-11-05 起压在所有政治边界之上 ✓）
+ *   water → uWaterBorderW / uWaterBorderA
+ *   waste → uWasteBorderW / uWasteBorderA
  * ⚠ extra 那两个是**数组**（按 ex 取）✗ 别当标量用 ✓
  */
 const CHANNELS = [
   { id: 'title', widthKey: 'uBorderW', alphaKey: 'uBorderA' },
-  { id: 'paint', widthKey: 'uPaintBorderW', alphaKey: 'uPaintBorderA' },
   { id: 'extra', widthKey: 'uExtraW', alphaKey: 'uExtraA' },
+  { id: 'paint', widthKey: 'uPaintBorderW', alphaKey: 'uPaintBorderA' },
   { id: 'water', widthKey: 'uWaterBorderW', alphaKey: 'uWaterBorderA' },
   { id: 'waste', widthKey: 'uWasteBorderW', alphaKey: 'uWasteBorderA' },
 ];
@@ -121,7 +121,7 @@ function viewsDiffer(A, B, paintOnly) {
  *                         它决定 A.tid / B.tid 是**哪一层**的 ✓ 留作记录 ✓）
  *        · extraTiers   = uExtraTier[ex]（-1 = 这一环没有层 → 跳过 ✓）
  *        · extraShows   = uExtraShow[ex]（0 = 用户没勾这一环 → 跳过 ✓）
- * @returns {Array<{ch:string, ex?:number}>} 按渲染顺序排：title → paint → extra → water → waste
+ * @returns {Array<{ch:string, ex?:number}>} 按渲染顺序排：title → extra → paint → water → waste
  */
 function classifySeam(A, B, ctx) {
   const c = ctx || {};
@@ -129,25 +129,22 @@ function classifySeam(A, B, ctx) {
 
   const bothWater = !!(A.water && B.water);
   const bothWaste = !!(A.waste && B.waste);
-  /* 让位只认"**两边都是**" ✓（gl.js:819 / 824 / 958 / 963 那四句 ✓）*/
+  /* 让位只认"**两边都是**" ✓（gl.js 的 pairW / pairX ✓）*/
   const givenWay = bothWater || bothWaste;
-  /* 这几条通道比的都是**编辑层**那一级的 tid ✓
-   * （rayDistTitle 的 t = tidAt(ip) ✓ rayDistWater 也是 titleAt(pidAt(q), uEditTier) ✓）*/
+  /* 这几条通道比的都是**编辑层**那一级的 tid ✓ */
   const tidDiff = A.tid !== B.tid;
 
-  /* ① 本层头衔线 + 多级边界共用 rayDistTitle ✓ 让开"水↔水 / 荒地↔荒地"
-   *    ⚠ 地区边界在这一条里 ✓ 它根本不看玩家画了什么 ✓（gl.js:789-802 ✓）*/
+  /* ① 本层头衔线 + 多级边界共用一趟射线 ✓ 让开"水↔水 / 荒地↔荒地"
+   *    ⚠ 地区边界在这一条里 ✓ 它根本不看玩家画了什么 ✓ */
   if (!givenWay && tidDiff) out.push({ ch: 'title' });
 
-  /* ② 填色边界：viewsDiffer 为真 ✓ 让开同上（水压根不能涂 ✓ gl.js:952-963 ✓）*/
-  if (!givenWay && viewsDiffer(A, B, c.paintOnly)) out.push({ ch: 'paint' });
-
-  /* ③ 多级边界：一环一环比该层的 tid ✓
-   *    GLSL 那三条闸照抄（gl.js:1218-1225 ✓）：
+  /* ② 多级边界：一环一环比该层的 tid ✓
+   *    GLSL 那三条闸照抄：
    *      ex >= uExtraCount → break（这里 extraTiers 的长度就是 uExtraCount ✓）
    *      uExtraShow[ex] == 0 → continue（用户没勾这一环 ✓）
    *      uExtraTier[ex] < 0  → continue（这一环没有层 ✓）
-   *    ⚠ 第 0、1 环可以**同时**属于 ✓ 不是"取最粗的一条"✗ */
+   *    ⚠ 第 0、1 环可以**同时**属于 ✓ 不是"取最粗的一条"✗
+   *    ⚠ 2026-11-05 起 extra 画在 paint **下面**（用户定的优先级）✓ */
   if (!givenWay) {
     const tiers = c.extraTiers || [];
     const shows = c.extraShows || [];
@@ -160,13 +157,17 @@ function classifySeam(A, B, ctx) {
     }
   }
 
-  /* ④ 水域：**两侧都得是水** ✓ 且编辑层 tid 不同 ✓（gl.js:989-1003 ✓）
+  /* ③ 填色边界：viewsDiffer 为真 ✓ 让开同上（水压根不能涂 ✓）
+   *    ⚠ 画在 extra **上面** ✓（用户定的：（涂色+剧本）＞父级＞其他 ✓）*/
+  if (!givenWay && viewsDiffer(A, B, c.paintOnly)) out.push({ ch: 'paint' });
+
+  /* ④ 水域：**两侧都得是水** ✓ 且编辑层 tid 不同 ✓（2026-11-09 起跟着色器一致 ✓）
    *    ⚠ 海岸线（水↔陆）不归这条 ✗ 一侧不是水 → 不算 ✓
-   *    ⚠ 水↔水但 tid 相同 → 这条也不画 ✓（rayDistWater 要的就是 tid 不同 ✓
-   *      而 title / paint / extra 已经让开了 → 这条缝**没有任何线** ✓ 正对 ✓）*/
+   *    ⚠ 水↔水但 tid 相同 → 这条也不画 ✓
+   *      而 title / paint / extra 已经让开了 → 这条缝**没有任何线** ✓ 正对 ✓ */
   if (bothWater && tidDiff) out.push({ ch: 'water' });
 
-  /* ⑤ 荒地：跟水域那条**一字不差**，只有 waterIs → wasteIs ✓（gl.js:1018-1032 ✓）*/
+  /* ⑤ 荒地：跟水域那条**一字不差**，只有 waterIs → wasteIs ✓*/
   if (bothWaste && tidDiff) out.push({ ch: 'waste' });
 
   return out;

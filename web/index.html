@@ -460,6 +460,16 @@ if (location.protocol === 'file:') {
         <div class="boot-inner" id="boot-inner">
           <div class="boot-title" id="boot-title">悖论制图</div>
 
+          <!-- iOS / iPadOS「文件」App 预览 HTML 时不执行 JS（2026-11-09 用户反馈多起）
+               → 正常打开看不到这段；停在预览里的人至少知道下一步该干什么 ✓ -->
+          <noscript>
+            <div class="boot-noscript">
+              <b>当前页面没有执行 JavaScript。</b><br>
+              iPad / iPhone 的「文件」预览就是这样：请点右上角分享 → 用 Safari 打开；
+              或长按文件 → 共享 → Safari。安卓请在 Chrome 里打开。
+            </div>
+          </noscript>
+
           <div class="map-pick" id="map-pick" hidden>
             <div class="map-pick-hint">选一张地图</div>
             <!-- 🗺 **二分起步页**（2026-10-24 ✓ 用户定的）：两个大块，点谁进谁 ——
