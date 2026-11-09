@@ -202,8 +202,8 @@ async function e2eNoWebGL2() {
     await booting;
     const text = String((env.get('fatal-text') || {}).textContent || '');
     const bootText = String((env.get('boot-step') || {}).textContent || '');
-    ok('端到端：红字说"没能创建 WebGL2"（不再指着色器 ✗）',
-      /WebGL2/.test(text) && /没能创建/.test(text) && !/着色器编译失败/.test(text),
+    ok('端到端：红字说"不支持 WebGL2"（不再指着色器 ✗）',
+      /WebGL2/.test(text) && /不支持|没能创建/.test(text) && !/着色器编译失败/.test(text),
       text.split('\n')[0] || '（空）');
     ok('端到端：红字框里有「刷新重试」', !!env.get('fatal-reload'),
       env.get('fatal-reload') ? '在 ✓' : '没有 ✗');

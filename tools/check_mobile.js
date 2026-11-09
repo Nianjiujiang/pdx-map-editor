@@ -67,6 +67,10 @@ function readScript(htmlPath) {
   ok('JS 补丁的启动挂点也在（bindMobile() 的调用）',
      /bindEvents\(\);\s*\n\s*bindMobile\(\)/.test(js));
   ok('HTML 那段注释也打了（手机版界面说明）', html.includes('手机版的界面'));
+  /* iOS「文件」预览不执行 JS（2026-11-09）→ 静态兜底提示必须还在 ✓ */
+  ok('iOS 文件预览的兜底提示在（noscript → Safari）',
+     /<noscript>[\s\S]{0,600}?Safari/.test(html),
+     /<noscript>/.test(html) ? 'noscript ✓' : '没找到 noscript ✗');
   /* 🔴 **小输入弹窗别铺满全屏** ✗（2026-10-27 用户："保存地图等输入框会占满全屏"）
    *   改名窗早就是居中卡片了 ✓ 保存地图窗漏了 ✓
    *   这里验**烤出来的产物**里三条都在：居中 / 卡片自适应高度 / hidden 压得住 ✓ */

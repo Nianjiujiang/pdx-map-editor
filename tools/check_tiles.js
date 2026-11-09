@@ -138,6 +138,36 @@ function findPack() {
     env2.rafs.length = 0;
   }
 
+  /* ---- 分块图的贴旗外接框（2026-11-09）-------------------------------
+     分块模式下 state.provinceIds 只有一个占位元素 ✗
+     以前 flagBBoxOf 退化成"所有省份质心的平均值"→ 1×1，旗子根本看不见 ✓
+     现在用 provPos 的「质心 + 像素数」估一个方框 ✓ */
+  {
+    ex.state.provinceIds = new Uint16Array(1);      // 分块占位
+    const bb = ex.flagBBoxOf(new Set([1]));
+    const bw = bb ? bb[2] - bb[0] : 0;
+    const bh = bb ? bb[3] - bb[1] : 0;
+    ok('分块图贴旗外接框不是 1×1（用质心 + 面积估）', !!bb && bw > 1 && bh > 1,
+       bb ? `${bw.toFixed(1)} × ${bh.toFixed(1)}` : 'null');
+  }
+
+  /* ---- 旗号表：300 面旗不能回绕（RG8 低字节 + 高字节）----------------
+     以前是 R8：第 256 面写 256 → 0（不显示），第 257 面写 257 → 1（跟第一面串号）✓ */
+  {
+    const n = ex.state.meta.numProvinces;
+    const pid = Math.min(1, n - 1);
+    ex.flagInit();
+    ex.state.flags = Array.from({ length: 300 }, (_, i) => ({
+      pids: new Set([pid]), rect: [0, 0, 1, 1], layer: i,
+    }));
+    ex.flagPushGpu(false);
+    const m = ex.renderer._flagMask;
+    const idx = m ? m[pid * 2] + m[pid * 2 + 1] * 256 : 0;
+    ok('300 面旗的旗号按 RG8 写（第 300 面 = 300，不再回绕）', idx === 300, `idx=${idx}`);
+    ex.state.flags = [];
+    ex.renderer.clearFlags();
+  }
+
   console.log('\n==========================================================');
   console.log(`通过 ${oks.length} 条，失败 ${fails.length} 条`);
   if (fails.length) {
