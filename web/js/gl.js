@@ -1295,6 +1295,21 @@ function makeTitleOnlyFragment(src) {
   return out;
 }
 
+/* 每个降级档**明确省掉了哪几条边界通道** ✓（2026-11-10）
+ *   以前只写在 make*Fragment 的注释里，用户把开关打开却看不到线，界面上没有任何解释 ✗
+ *   → 现在记在 renderer.cutChannels 上，诊断报告会把它列出来 ✓
+ *  ⚠ 通道名跟着 app 那边的显示名走：title / paint / extra / water / waste ✓ */
+const TIER_CUTS = {
+  full: [],
+  mid: ['water', 'waste'],
+  border: ['extra', 'water', 'waste'],
+  title: ['extra', 'water', 'waste', 'paint'],
+  lite: ['title', 'extra', 'paint', 'water', 'waste'],
+};
+function cutsForTier(tier) {
+  return (TIER_CUTS[tier] || []).slice();
+}
+
 /** 上下文是不是**被浏览器收走了**（驱动重置 / 切后台 / 显存紧张 ✓）
  *
  * 🔴 **这条判断必须排在"编译失败"前面** ✗ —— 见过的那一幕（2026-10-16）：
@@ -1724,6 +1739,7 @@ export class MapRenderer {
     let linkLog = '';
     this.liteShader = false;
     this.shaderTier = 'full';
+    this.cutChannels = [];
     this.liteWhy = '';
     this.skippedFull = _skipFull;
 
@@ -1748,6 +1764,7 @@ export class MapRenderer {
         const lr = _linkTry(src);
         if (lr.prog) {
           this.shaderTier = tier;
+          this.cutChannels = cutsForTier(tier);
           this.liteShader = (tier === 'lite');
           this.liteWhy = why || '';
           this.liteLinkMs = lr.linkMs;
@@ -1948,6 +1965,7 @@ export class MapRenderer {
       try { if (old) gl.deleteProgram(old); } catch (e) { /* ✓ */ }
       try { if (oldVao) gl.deleteVertexArray(oldVao); } catch (e) { /* ✓ */ }
       this.shaderTier = tier;
+      this.cutChannels = cutsForTier(tier);
       this.liteShader = (tier === 'lite');
       this.liteWhy = '';
       this._linkMs = ms;
