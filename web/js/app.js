@@ -15098,6 +15098,25 @@ function flagBBoxOf(pids) {
     }
   }
   if (x1 < x0) {
+    /* 分块图：provinceIds 只放了一个占位元素，不能按像素扫 ✗
+       provPos 每组是「质心 x / 质心 y / 像素数」→ 用面积开方估外接框 ✓
+       （单省也能得到一块可见的方形，不再退化成 1×1 的质心点 ✓）*/
+    const pp = state.provPos;
+    if (pp && pp.length >= meta.numProvinces * 3) {
+      for (const p of pids) {
+        if (!(p > 0 && p < meta.numProvinces)) continue;
+        const x = pp[p * 3] || 0;
+        const y = pp[p * 3 + 1] || 0;
+        const a = Math.max(1, pp[p * 3 + 2] || 0);
+        const r = 0.5 * Math.sqrt(a);
+        if (x - r < x0) x0 = x - r;
+        if (x + r > x1) x1 = x + r;
+        if (y - r < y0) y0 = y - r;
+        if (y + r > y1) y1 = y + r;
+      }
+    }
+  }
+  if (x1 < x0) {
     let sx = 0, sy = 0, n = 0;
     for (const p of pids) {
       sx += state.provPos[p * 3] || 0;
@@ -15108,6 +15127,10 @@ function flagBBoxOf(pids) {
     x0 = x1 = sx / n;
     y0 = y1 = sy / n;
   }
+  x0 = Math.max(0, Math.min(W - 1, x0));
+  y0 = Math.max(0, Math.min(H - 1, y0));
+  x1 = Math.max(0, Math.min(W - 1, x1));
+  y1 = Math.max(0, Math.min(H - 1, y1));
   return [x0, y0, x1 + 1, y1 + 1];
 }
 
@@ -15128,11 +15151,16 @@ function flagPushGpu(regenLayers) {
   if (!renderer || !state.meta) return;
   if (!state.flags.length) { renderer.clearFlags(); return; }
   const n = state.meta.numProvinces;
-  const mask = new Uint8Array(n);
+  /* 每省 2 字节：低字节 + 高字节 ✓（RG8，最多 65535 面；R8 时 255 面就回绕 ✗）*/
+  const mask = new Uint8Array(n * 2);
   const slots = new Float32Array(state.flags.length * 12);
   state.flags.forEach((f, i) => {
     f.layer = i;
-    for (const p of f.pids) if (p > 0 && p < n) mask[p] = i + 1;
+    const idx = Math.min(65535, i + 1);
+    for (const p of f.pids) if (p > 0 && p < n) {
+      mask[p * 2] = idx & 255;
+      mask[p * 2 + 1] = (idx >> 8) & 255;
+    }
     const r = f.rect;
     slots[i * 12 + 0] = r[0];
     slots[i * 12 + 1] = r[1];
@@ -15312,6 +15340,11 @@ function flagPickFile(g, forIdx) {
 
 function flagAttach(g, img) {
   flagInit();
+  /* 旗号走 RG8（低字节 + 高字节）→ 最多 65535 面 ✓ 到顶就明说，别静默串号 ✗ */
+  if (state.flags.length >= 65535) {
+    flagTell('旗帜数量已达上限（65535 面）');
+    return;
+  }
   const pids = flagLandOnly(g.pids);
   if (!pids.size) { toast('这块地没有可贴旗的地块', true); return; }
   const bbox = flagBBoxOf(pids);

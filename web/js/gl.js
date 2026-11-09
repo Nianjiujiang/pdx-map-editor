@@ -368,7 +368,7 @@ uniform int   uWaterKindW;      // 拍平宽度（跟 kindTex 同一套 ✓）
  *   ⚠ 旗子按「色块」分组，不是按头衔 ✗ —— 一个色块能跨好几个头衔
  *     （涂色层 A 色 A 名 ✓ 见 app.js 的 rebuildPaintBlocks）→ 只能按 pid 记 ✓
  */
-uniform sampler2D uFlagIdx;     // R8      pid → 旗号（0 = 没旗，1.. = 第几面）
+uniform sampler2D uFlagIdx;     // RG8     pid → 旗号（低字节 + 高字节×256，0 = 没旗）
 uniform int   uFlagIdxW;        // 拍平宽度（跟 kindTex 同一套 ✓）
 uniform sampler2D uFlagSlots;   // RGBA32F 每面旗两格：矩形(x0,y0,x1,y1) / 图集uv(u0,v0,u1,v1)
 uniform int   uFlagSlotW;
@@ -583,8 +583,11 @@ uint provAt(ivec2 ip) {
  *  ⚠ 矩形用**地图像素**写，不做归一化 —— 归一化在 16384 的图上精度不够 ✓ */
 vec4 flagAt(uint pid, vec2 pos) {
   int i = int(pid);
-  float fv = texelFetch(uFlagIdx, ivec2(i % uFlagIdxW, i / uFlagIdxW), 0).r;
-  int f = int(fv * 255.0 + 0.5);
+  /* 🔴 **旗号用 RG8 两个字节**（2026-11-09）—— 以前只有 R8，255 面以上会回绕：
+   *   第 256 面写 256 → 低字节 0（不显示）；第 257 面写 257 → 1，跟第一面串号 ✓
+   *   现在低字节 + 高字节 × 256，最多 65535 面 ✓（app 侧有上限提示 ✓）*/
+  vec2 fv = texelFetch(uFlagIdx, ivec2(i % uFlagIdxW, i / uFlagIdxW), 0).rg;
+  int f = int(fv.r * 255.0 + 0.5) + int(fv.g * 255.0 + 0.5) * 256;
   if (f <= 0) return vec4(0.0);
   /* 每面旗**三格**：矩形 / uv / 层号 ✓（以前是两格：矩形 + uv，图集里按格子算 ✓）*/
   int b = (f - 1) * 3;
@@ -951,7 +954,22 @@ void main() {
       _nearSeam = ((_cb >> uint(ip.x & 7)) & 1u) != 0u;
     }
 
-    if (_nearSeam) {
+    /* 🔴 **所有通道都关着时，这一趟射线一次都不用跑** ✗✗（2026-11-09）
+     *   2026-11-05 的「一趟射线」把五条通道合进来之后，这里漏了总闸：
+     *   五条全关时 _bMax = 0，R 仍会被算成至少 1 → 每格照样 4 方向采 pid / title ✓
+     *   旧版是"每段各一个 if"，全关时一段都不跑 ✓（手机上还没有粗筛位图，
+     *     等于每格都白跑一趟 ✓）。这里补回来，行为跟旧版一致 ✓ */
+    bool _anyBorder = uBorderTitle == 1 || uBorderPaint == 1
+      || (uWaterBorderOn == 1 && uWaterBorderA > 0.0)
+      || (uWasteBorderOn == 1 && uWasteBorderA > 0.0);
+    if (!_anyBorder) {
+      for (int i = 0; i < 4; i++) {
+        if (i >= uExtraCount) break;
+        if (uExtraShow[i] == 1 && uExtraTier[i] >= 0) { _anyBorder = true; break; }
+      }
+    }
+
+    if (_nearSeam && _anyBorder) {
       /* 起点那一侧**只算一次** ✓（原来是每步重算，一趟下来十几次采样 ✓）*/
       CellView _A = cellViewOf(ip);
       uint tSelf = _A.tid;          // 编辑层的头衔（本层线 / 水域 / 荒地共用 ✓）
@@ -1027,20 +1045,20 @@ void main() {
           /* @@MID_CUT_EXTRA_END@@ */
 
           /* @@MID_CUT_WATER_BEGIN@@ */
-          /* ④ **水域边界**：老代码（rayDistWater，gl.js:995）判据是
-           *   "**对面是水** 且 编辑层 tid 不同" —— 它**只查对面一侧** ✗
-           *   （函数头注释写的是"两侧都得是水"✓ 两者不一致，这次照代码搬 ✓
-           *    差别只在海岸线上：陆侧那半边也会被它画一条 ✓ 要不要改成
-           *    两侧都判，等用户拍板 —— 见 handover 里记的那条 ✓）
+          /* ④ **水域边界**：**两侧都得是水** 且 编辑层 tid 不同 ✓
+           *   🔴 2026-11-09：以前这里只判对面（waterIs(q)），陆侧贴水时也会画一条 ✗
+           *   —— 用户口径是「水域边界负责且仅负责水域之间的边界」✓
+           *   现在直接复用 pairW（= 自己这侧是水 且 对面也是水）✓
+           *   ⚠ 水岸线（水 ↔ 陆）仍然归本层头衔线 ✓ 不归这条 ✓
            *   ⚠ 让开那两句跟它无关：水水缝让开的是 title / paint / extra ✓ */
-          if (uWaterBorderOn == 1 && uWaterBorderA > 0.0 && qtid != tSelf && waterIs(q))
+          if (uWaterBorderOn == 1 && uWaterBorderA > 0.0 && pairW && qtid != tSelf)
             dWater = min(dWater, dl);
           /* @@MID_CUT_WATER_END@@ */
 
           /* @@MID_CUT_WASTE_BEGIN@@ */
           /* ⑤ **荒地边界**（跟水域那条一个模子 ✓ 只换了身份判据 ✓
-           *   同样**只查对面** ✓ 见上面那条注释 ✓）*/
-          if (uWasteBorderOn == 1 && uWasteBorderA > 0.0 && qtid != tSelf && wasteIs(q))
+           *   同样要求**两侧都是荒地**（pairX）✓ 荒地外缘归本层头衔线 ✓）*/
+          if (uWasteBorderOn == 1 && uWasteBorderA > 0.0 && pairX && qtid != tSelf)
             dWaste = min(dWaste, dl);
           /* @@MID_CUT_WASTE_END@@ */
         }
@@ -2310,19 +2328,20 @@ void main() {
   _uploadFlagMask() {
     const gl = this.gl;
     if (this.flagIdxTex) { try { gl.deleteTexture(this.flagIdxTex); } catch (e) { /* ✓ */ } this.flagIdxTex = null; }
-    if (!this._flagMask) return;
-    const n = this._flagMask.length;
+    if (!this._flagMask || !this._flagMask.length) return;
+    /* 每格 2 字节：低字节在前 ✓（跟 RG8 的 R / G 通道一一对应 ✓）*/
+    const n = this._flagMask.length >> 1;
     const lim = this.maxTex || gl.getParameter(gl.MAX_TEXTURE_SIZE);
     const W = Math.max(1, Math.min(n, Math.min(lim, 4096)));
     const H = Math.max(1, Math.ceil(n / W));
-    const buf = new Uint8Array(W * H);
+    const buf = new Uint8Array(W * H * 2);
     buf.set(this._flagMask);
     this.flagIdxW = W;
     const tex = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, tex);
     glTexTouched();      // 绑在"当前单元"上 → render 的账过期 ✓
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, W, H, 0, gl.RED, gl.UNSIGNED_BYTE, buf);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG8, W, H, 0, gl.RG, gl.UNSIGNED_BYTE, buf);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);

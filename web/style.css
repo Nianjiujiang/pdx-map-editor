@@ -724,6 +724,28 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin
 }
 .drop-mask .drop-tip { font: 600 17px/1.3 var(--sans); color: var(--gold); letter-spacing: 1px; }
 .drop-mask .drop-sub { font: 11.5px var(--mono); color: var(--text-faint); }
+/* 浅色主题：--gold 在浅色里是近黑（vz #09090b），压在深底上读不出来 ✗
+   → 遮罩换浅底、提示换深字 ✓（2026-11-09）*/
+html[data-theme="light"] .drop-mask {
+  background: rgba(255, 255, 255, .88);
+  border-color: rgba(24, 36, 50, .32);
+}
+html[data-theme="light"] .drop-mask .drop-tip { color: #16202b; }
+html[data-theme="light"] .drop-mask .drop-sub { color: #5b6877; }
+
+/* iOS / iPadOS「文件」App 预览 HTML 时不执行 JS → 静态兜底提示（2026-11-09）
+   ⚠ 只在 <noscript> 里出现：正常打开（JS 在跑）看不到 ✓ */
+.boot-noscript {
+  max-width: 430px; margin: 0 auto 16px; padding: 12px 14px;
+  border: 1px solid rgba(255, 255, 255, .18); border-radius: 10px;
+  background: rgba(20, 26, 33, .92); color: #e8eef5;
+  font: 12.5px/1.7 var(--sans); text-align: left;
+}
+.boot-noscript b { color: #fff; }
+html[data-theme="light"] .boot-noscript {
+  background: #fff; color: #16202b; border-color: rgba(24, 36, 50, .16);
+}
+html[data-theme="light"] .boot-noscript b { color: #09090b; }
 .boot-title {
   font: 700 22px/1 Georgia, serif; color: var(--gold);
   letter-spacing: 3px; margin-bottom: 18px;
