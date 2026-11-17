@@ -22,22 +22,14 @@
 * { box-sizing: border-box; }
 
 /* ============================================================================
- * `hidden` 属性要**真的能藏住** ✗
+ * `hidden` 属性的全局兜底
  *
- * 浏览器只给 `[hidden]` 一条 `display: none`（在 UA 样式表里），
- * 而我们自己的 `.xxx { display: flex }` **权重更高** —— 于是就成了
- * "给元素加了 hidden，它照样杵在屏幕正中间，而且按关闭没反应" ✗
- * （2026-10-11 真发生过：导入地图包那个「⋯」管理面板，一进编辑器就浮在中间，
- *   而关闭按钮做的也是设 hidden，所以按了等于没按 ✓）
+ * 浏览器 UA 样式只给 `[hidden]` 一条 `display: none`，而组件自身的
+ * `.xxx { display: flex }` 权重更高，会把它盖掉：元素带 hidden 仍然显示在屏幕上，
+ * 以 hidden 实现的关闭按钮也随之失效。
  *
- * 底下这条是**兜底**：以后新加的任何浮层，只要有 hidden 就一定藏得住 ✓
- * （原来 `dropdown` / `modal` 各自写过一条 [hidden] —— 那两条留着也无害，
- *   但新东西别再靠"记得写"了，靠这一条 ✓）
- *
- * ⚠ 这不是我第一个踩的人：**手机版那个改名窗踩过一模一样的坑**
- * （见 mobile/mobile_css.txt 里那句注释："一进页面就杵在屏幕中间"，
- *   那边修的办法也是加 `[hidden] { display: none !important; }`）✓
- * 同一个坑踩两次，说明"记得给每个浮层补一条"本来就不该靠人记 —— 所以提到全局来 ✓
+ * 这条规则统一兜底，新加的浮层无需逐个补 `[hidden]`；
+ * 移动端改名窗（见 mobile/mobile_css.txt）同样依赖这一写法。
  * ========================================================================== */
 [hidden] { display: none !important; }
 
@@ -91,20 +83,14 @@ html, body {
   gap: 1px;
 }
 
-/* 🔴 **层级多了别把顶栏顶成好几行** ✗✗（2026-10-19 ✓）
+/* 视图层级较多时，顶栏不能随之增高
  *
- *   EU4 现在 18 层（12 剧本 + 空白 + 5 地理），风云世纪两千年更是 121 层 ✓
- *   `.toolbar` 有 `flex-wrap: wrap`，所以按钮多了**不会坏**，
- *   但会一行行往上堆 —— 顶栏能吃掉小半个屏幕 ✗
- *
- *   → 只给"视图"这一条加**横向滚动** ✓
- *     · 层数少的时候宽度还是自适应，**跟原来一模一样** ✓（不会有滚动条 ✓）
- *     · 太多了就在这一条里滑，顶栏高度恒定 ✓
- *     · 滚动条藏起来（手机上那一小截很难看 ✓ 照样能滑 ✓）
- *
- *  ⚠ 只动 `#tier-group`，工具那一排 / 手机版布局都不受影响 ✓
- *  ⚠ 用户说过"先不做 UI，等剧本多到挤了再说" ✓ —— 这不是改版式，
- *    是**防止溢出** ✓ 版式一点没变 ✓ */
+ * `.toolbar` 有 `flex-wrap: wrap`，层级按钮过多不会破版，但会逐行堆叠，占掉大量屏幕。
+ * → 只给「视图」这一条（`#tier-group`）加横向滚动：
+ *   · 层数少时宽度自适应，不出现滚动条；
+ *   · 层数多时在本条内滑动，顶栏高度恒定；
+ *   · 隐藏滚动条，触屏仍可滑动。
+ * 该规则只作用于 `#tier-group`，工具那一排与移动端布局不受影响。 */
 #tier-group { min-width: 0; flex: 0 1 auto; }
 #tier-group .segmented {
   max-width: min(62vw, 920px);
@@ -115,31 +101,24 @@ html, body {
 #tier-group .segmented::-webkit-scrollbar { height: 0; }
 
 /* ------------------------------------------------------------ 剧本下拉栏
- *  🔴 2026-10-19 ✓ 用户要求："给剧本做一个下拉栏UI" ✓
- *  剧本层能有上百个（风云世纪两千年 116 个 ✓）—— 摆按钮摆不下 ✗
- *  → 一个按钮 + 一个面板，多少个都不怕 ✓
+ *  剧本层可达上百个（风云世纪两千年 116 个），按钮排不下 → 一个按钮 + 一个面板。
  *
- *  ⚠⚠ **类名必须避开 `.dropdown`** ✗✗（2026-10-19 踩过 ✓）
- *     `.dropdown` 是**右上角「导出 ▾」那个菜单**的类 ✓ 它长得完全不一样：
- *        position: absolute; top: calc(100% + 6px); right: 0; flex-direction: column
- *     我一开始图省事也叫 `.dropdown` → **剧本那个按钮整块被绝对定位到别处** ✗
- *     现象：顶栏只剩一个「剧本」标签，按钮**凭空消失** ✓
- *     看着像"没渲染"，其实是飘到 `right: 0` 那边去了 ✓
- *  → 这里一律用 `era-drop`（剧本专用 ✓）不跟别人抢通用名 ✓
+ *  注意：类名必须避开 `.dropdown`。`.dropdown` 是右上角「导出 ▾」菜单的类，
+ *  定位为 position: absolute; top: calc(100% + 6px); right: 0; flex-direction: column。
+ *  沿用同名会把剧本按钮整块绝对定位到别处，顶栏只剩「剧本」标签、按钮消失。
+ *  → 剧本下拉一律使用 `era-drop`，不占用通用名。
  */
 .era-drop { position: relative; }
-/* ⚠ `hidden` 属性会被 `.tool-group { display: flex }` 盖掉 ✗（作者样式的优先级高于
- *   浏览器默认的 `[hidden]{display:none}` ✓）—— 没有剧本层的图本来该把整块藏起来，
- *   不写这条就藏不住 ✓ 2026-10-19 补 ✓ */
+/* 注意：`hidden` 属性会被 `.tool-group { display: flex }` 盖掉（作者样式优先级
+ *   高于浏览器默认的 `[hidden]{display:none}`）；没有剧本层的图需要靠这条把整块藏起来。 */
 #era-group[hidden] { display: none; }
 
 .dd-btn {
   appearance: none;
   display: flex; align-items: center; justify-content: space-between; gap: 6px;
-  /* 🔴 **宽度固定，不跟着字走** ✗✗（2026-10-20 ✓ 用户原话："宽度应该固定而不是自适应"）
-   *   自适应的话「无」「1444」「空白剧本」三种字长会让按钮忽宽忽窄 ✓
-   *   而它右边紧挨着"视图"那一排 —— 按钮一抖**整排跟着挪** ✗ 点着点着就点歪了 ✓
-   *   ⚠ 92px 是按最长那个词定的：`空白剧本`（4 个汉字）+ 箭头 + 内边距 ✓ */
+  /* 宽度固定，不随文字长度变化：自适应时「无」「1444」「空白剧本」三种字长
+   *   会让按钮忽宽忽窄，右侧紧邻的「视图」一排随之位移，容易点错。
+   *   92px 按最长文案「空白剧本」+ 箭头 + 内边距确定。 */
   width: 92px;
   flex: 0 0 auto;
   background: #0f141a;
@@ -162,13 +141,13 @@ html, body {
 }
 .dd-caret { flex: 0 0 auto; }
 .dd-btn:hover { background: #1d252f; color: var(--text); }
-/* 正在看这个剧本 —— 跟地理层那排的"选中"同一个金色 ✓ */
+/* 当前剧本：与地理层一排的选中态同为金色 */
 .dd-btn.on {
   background: linear-gradient(180deg, #3a3016, #2b2410);
   color: #f0d98a;
   border-color: #6b5420;
 }
-/* 没在看，但配色还沿用着它（"粒度"那一档）—— 弱一档的蓝 ✓ */
+/* 非当前剧本，但沿用其配色（「粒度」那一档）：弱一档的蓝 */
 .dd-btn.grain {
   color: #9ec5e8;
   border-color: #2c4a66;
@@ -181,11 +160,9 @@ html, body {
   top: calc(100% + 5px);
   left: 0;
   z-index: 60;
-  /* 🔴 **跟按钮一样宽，不许撑出去** ✗✗（2026-10-20 ✓ 用户："太宽了，甚至超出了下拉按钮"）
-   *   原来写死 `min-width: 190px` ✓ 按钮只有 92px → 面板往外多出 100px ✗
-   *   → `width: 100%`：`.era-drop` 的宽度就是按钮宽度 ✓ 面板正好齐边 ✓
-   *   ⚠ 剧本名最长是「空白剧本」（4 个汉字）✓ 92px 放得下 ✓
-   *     真放不下会走 `.dd-item` 的省略号，不会把面板撑宽 ✓ */
+  /* 面板与按钮同宽，不向外溢出：固定 min-width: 190px 时按钮仅 92px，
+   *   面板会多出约 100px；改为 width: 100%，面板正好与按钮齐边。
+   *   剧本名最长「空白剧本」四字，92px 可容纳；超出部分走 `.dd-item` 省略号，不撑宽面板。 */
   width: 100%;
   min-width: 0;
   max-height: min(62vh, 460px);
@@ -217,20 +194,16 @@ html, body {
 .dd-item:hover { background: #1d252f; color: var(--text); }
 .dd-item.on { background: linear-gradient(180deg, #3a3016, #2b2410); color: #f0d98a; }
 .dd-item.grain { color: #9ec5e8; }
-/* ⚠ `.dd-item-sub`（右边那列日期）2026-10-20 删了 ✓ 用户："纯属画蛇添足" ✓
- *   日期现在只在 `title` 里，鼠标停一下才看 ✓ */
+/* 日期只在 title 属性中提供，悬停可见；条目右侧不设日期列 */
 
-/* ------------------------------------------------------------ 顶栏折叠（手机版用）
- *  🔴 2026-10-19 ✓ 用户要求："手机版的栏加一个收起折叠功能" ✓
- *  手机上顶栏本来就挤，剧本下拉 + 地理层 + 工具，一行根本放不下 ✓
- *  → `#toolbar-fold` 那个按钮把**工具那一排**收起来 ✓
- *    地图本身一点不挡（工具栏是透明的覆盖层 ✓）
- *  ⚠ 默认**不收**（跟原来一样 ✓）—— 玩家点了才收 ✓
- *    变了默认态的话，老用户会以为按钮没了 ✓
+/* ------------------------------------------------------------ 顶栏折叠（移动端）
+ *  移动端顶栏同时放剧本下拉、地理层与工具，一行放不下。
+ *  → `#toolbar-fold` 按钮收起工具那一排；工具栏是透明覆盖层，不遮挡地图。
+ *  默认保持展开，需手动收起，避免改变既有操作预期。
  */
 #toolbar-fold {
   appearance: none;
-  display: none;                 /* 桌面不显示 ✓ 手机版才出来 ✓ */
+  display: none;                 /* 仅移动端显示 */
   align-items: center; gap: 4px;
   background: #0f141a;
   border: 1px solid var(--line);
@@ -307,10 +280,9 @@ html, body {
   color: var(--text-dim);
 }
 .btn.ghost:hover:not(:disabled) { color: var(--text); border-color: #38424f; filter: none; }
-/* 顶栏那个署名是 <a> 不是 <button>：真链接才能中键、右键"在新标签页打开"、复制网址 ✓
-   （之前写成 <button> + window.open，既有弹窗拦截的风险，也没法右键 ✗） */
+/* 顶栏署名是 <a> 而非 <button>：真链接才支持中键、右键"在新标签页打开"与复制网址 */
 a.btn { text-decoration: none; cursor: pointer; display: inline-block; }
-/* 「当前颜色」那个色块：点一下弹系统取色器 ✓ */
+/* 「当前颜色」色块：点击弹出系统取色器 */
 .swatch.big { cursor: pointer; }
 .swatch-input {
   position: absolute; width: 1px; height: 1px;
@@ -334,25 +306,17 @@ a.btn { text-decoration: none; cursor: pointer; display: inline-block; }
 }
 
 /* ===========================================================================
-   🔴🔴 **左侧栏可收起**（2026-10-21 ✓ 用户："电脑版的显示左侧栏改成和
-      设置栏一样可打开可收起的模式"）
+   左侧栏可收起
+   与「设置」抽屉同一口径：同一个按钮开合，方向相反（侧栏向左滑出，设置从右滑入）。
 
-   跟「设置」抽屉一个口径：**同一个按钮开、同一个按钮关** ✓
-   区别只是方向：侧栏往左滑出、设置从右滑入 ✓ 手感一致 ✓
+   注意：用平移而非 `display: none`。`display:none` 会重置侧栏内的滚动位置、
+   搜索框内容与展开状态；平移只把面板移出屏幕，DOM、滚动与输入状态均保留。
 
-   ⚠ 为什么用**平移**而不是 `display: none` ✗：
-     `display:none` 会把侧栏里的**滚动位置、搜索框内容、展开状态**全重置 ✓
-     收一下再开，列表就回到顶上 ✓ 很烦 ✓
-     平移只是把它挪出屏幕 ✓ DOM、滚动、输入**全都留着** ✓
+   注意：宽度必须同时归零。只写 `translateX(-100%)` 时 322px 的占位仍在，
+   地图右侧会长期缺一截；宽屏（>761px）下侧栏为 `position: absolute` 浮在地图上，
+   占位由 `.body` 的 flex 决定，宽度归零同样有效。
 
-   ⚠ **宽度必须一起归零** ✗✗
-     只写 `translateX(-100%)` 的话，那 322px 的位子还占着 ✓
-     → 地图右边永远缺一截，"地图吃满"这个目的就落空了 ✓
-   ⚠ 侧栏在宽屏（>761）是 `position: absolute`、浮在地图上 ✓
-     那时"占位"靠的是 `.body` 的 flex —— 宽度归零照样有效 ✓
-
-   ⚠ **过渡只加一次** ✗ 别给常驻属性挂 transition ✓
-     否则换地图 / 换主题时它也会慢慢动一下 ✓ 看着像卡了 ✓
+   注意：过渡只加一次，不要挂到常驻属性上，否则换地图或换主题时会缓慢位移。
    =========================================================================== */
 body.sb-folded .sidebar {
   width: 0;
@@ -366,7 +330,7 @@ body.sb-folded .sidebar {
               width .22s cubic-bezier(.16, 1, .3, 1),
               opacity .18s ease;
 }
-/* 顶栏那个按钮：收起来时暗一档 ✓ 一眼看出"侧栏现在是关着的" */
+/* 顶栏对应按钮：侧栏收起时压暗一档，表示当前为关闭状态 */
 #btn-sidebar[aria-expanded="false"] { color: var(--text-faint); }
 #btn-sidebar[aria-expanded="false"]:hover { color: var(--text); }
 
@@ -394,13 +358,11 @@ body.sb-folded .sidebar {
 
 .brush { display: flex; gap: 11px; align-items: stretch; position: relative; }
 
-/* 🎨 色块的二级菜单（点大色块弹出 ✓ 2026-10-24 用户定的）：
-   自定义颜色（系统 RGB 拾色器）/ 收藏 / 最近使用，全在一处 ✓ */
+/* 色块二级菜单：自定义颜色（系统 RGB 拾色器）/ 收藏 / 最近使用集中在此 */
 .brush-menu {
   position: absolute; left: 0; top: calc(100% + 6px); z-index: 60;
-  /* 250px 装不下「8 格 × 26 + 7 个间隙 + 左右内边距 20」= 256 ✗ → 横向滚动条 + 裁色块
-     （2026-11-03 用户："子窗口太窄了，导致出现了底下的滚动条，而且遮挡了一点点色块"）
-     给到 268，8 格刚好放得下还有余量 ✓ */
+  /* 250px 容纳不下「8 格 × 26 + 7 个间隙 + 左右内边距 20」= 256，
+   *   会出现横向滚动条并遮挡色块；给到 268 后 8 格刚好放下并留有余量。 */
   width: 268px;
   overflow-x: hidden;
   background: var(--card, #161c24); border: 1px solid var(--line); border-radius: 10px;
@@ -518,15 +480,28 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin
 .result-row .name { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .result-row .cnt { font: 10px/1 var(--mono); color: var(--text-faint); }
 
+/* ------------------------------------------------------------ 搜索 · 跨剧本 */
+/* 跨剧本搜索开关：勾选后才在其他剧本中查找国家 TAG */
+.search-xgame {
+  display: flex; align-items: center; gap: 6px;
+  margin: 6px 0 2px; padding: 0 2px;
+  font: 11px/1.4 var(--mono); color: var(--text-faint);
+  cursor: pointer; user-select: none;
+}
+.search-xgame input { margin: 0; width: 12px; height: 12px; accent-color: var(--gold); }
+.search-xgame:hover span { color: var(--text); }
+/* 其他地图包结果组：上方一条细线分隔，与本图结果区分。
+   该组行格式与本图国家行一致（色块 / TAG / 国家名，行尾不附加内容），
+   因此不为 .tier / .cnt 单独上色 */
+.xg-wrap { margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--line); }
+
 /* ------------------------------------------------------------ 调色板 */
 
-/* 🎨 **调色板 / 最近使用 跟色标对齐**（用户 2026-11-03）：
- *   一行八个、方块、同一套圆角与描边 ✓（跟 `.brush-menu .brw-row` 同款） */
-/* 格子尺寸**钉死 26px** ✓（2026-11-03：用 `1fr` + `aspect-ratio` 时，
-   菜单一宽就被拉成 50×50，用户看到的是一排大色块 ✗）*/
+/* 调色板 / 最近使用与色标对齐：一行八个、方块，共用同一套圆角与描边
+ *   （与 `.brush-menu .brw-row` 同款） */
+/* 格子尺寸固定 26px：用 `1fr` + `aspect-ratio` 时菜单一宽就会被拉成 50×50 的大色块 */
 .palette { display: grid; grid-template-columns: repeat(8, 26px); grid-auto-rows: 26px; gap: 4px; justify-content: start; }
-/* 空状态那行字（「取过的颜色会留在这里」）是网格里的一个子项 ✗
- * 不跨列的话会被挤进 26px 一格，一行只剩两三个字 ✓（2026-11-03 用户截图）*/
+/* 空状态提示行是网格子项，需跨列；否则被挤进 26px 一格，一行只剩两三个字 */
 .palette > .empty { grid-column: 1 / -1; white-space: normal; }
 .palette .chip {
   appearance: none; border: none; padding: 0; font: inherit;
@@ -547,8 +522,8 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin
 #map { cursor: crosshair; }
 #overlay { pointer-events: none; }
 
-/* 地图上的图例：独立的小画布，不铺满舞台 ✓
-   ⚠ 它在 `.stage canvas` 那条通用规则之后，必须把 inset / 宽高收回来 ✗ */
+/* 地图上的图例：独立小画布，不铺满舞台；它在 `.stage canvas` 通用规则之后，
+   需把 inset 与宽高收回来 */
 #legend-overlay {
   position: absolute; inset: auto; z-index: 4;
   width: auto; height: auto; display: block;
@@ -571,8 +546,8 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin
 }
 #legend-overlay:hover #legend-resize, #legend-resize:hover { opacity: 1; }
 
-/* 整图导出的框选层：只盖住舞台，地图怎么拖都不影响相机 ✓
-   画法照绘图软件：框外压暗、虚线框、八个把手、尺寸角标 + 底部操作条 ✓ */
+/* 整图导出框选层：只覆盖舞台，地图拖动不影响相机；
+   画法参照绘图软件——框外压暗、虚线框、八个把手、尺寸角标与底部操作条 */
 .export-pick-layer {
   position: absolute; inset: 0; z-index: 45;
   cursor: crosshair;
@@ -584,11 +559,11 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin
 .export-pick-layer[hidden] { display: none; }
 .export-pick-box {
   position: absolute;
-  /* 框本身接指针：框里显示移动光标，点框里就能挪位置 ✓
-     框外的压暗区仍然由下层图层接（那里是 crosshair）✓ */
+  /* 框本身接收指针事件：框内显示移动光标并可拖动；
+     框外压暗区仍由下层图层接收（那里是 crosshair） */
   pointer-events: auto; cursor: move;
   border: 1px dashed #f6e6b0;
-  /* 框内**不铺色**：选中的地图颜色要原样看得见，只压暗框外 ✓ */
+  /* 框内不铺色：选中的地图颜色需原样可见，只压暗框外 */
   box-shadow:
     0 0 0 9999px rgba(3, 6, 9, .46),
     0 0 0 1px rgba(0, 0, 0, .65),
@@ -651,8 +626,7 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin
   background: rgba(20, 26, 33, .88);
   border-color: var(--line);
   color: var(--text-dim);
-  /* ⚠ **前缀两行都要写** ✗ iOS Safari 只认 `-webkit-` 那个 ✓（2026-10-21 补）
-   *   这条是老代码，当年只写了无前缀的 → 苹果上一点模糊都没有 ✓ */
+  /* iOS Safari 只识别带 `-webkit-` 前缀的版本，两种前缀都要写 */
   -webkit-backdrop-filter: blur(6px);
   backdrop-filter: blur(6px);
   width: 30px;
@@ -668,15 +642,14 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin
   padding: 7px 9px;
   font-size: 12px;
   box-shadow: var(--shadow);
-  -webkit-backdrop-filter: blur(8px);   /* ⚠ iOS 只认前缀版 ✓（2026-10-21 补）*/
+  -webkit-backdrop-filter: blur(8px);   /* iOS 仅识别前缀版本 */
   backdrop-filter: blur(8px);
   max-width: 280px;
   z-index: 20;
 }
 .hover-card .hc-title { font-weight: 600; color: #fff; display: flex; align-items: center; gap: 6px; }
 .hover-card .hc-title .dot { width: 11px; height: 11px; border-radius: 3px; }
-/* 第二行：**具体地名**（2026-10-13 用户要求悬停要看到）
-   缩进 17px = 色点 11 + 间距 6，跟上面那行文字左边缘对齐 ✓ */
+/* 第二行：具体地名，缩进 17px = 色点 11 + 间距 6，与上一行文字左边缘对齐 */
 .hover-card .hc-sub {
   margin-top: 3px;
   padding-left: 17px;
@@ -709,10 +682,10 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin
 .boot.done { opacity: 0; pointer-events: none; }
 .boot-inner { width: 340px; text-align: center; }
 
-/* ---- 拖拽提示层（2026-11-03） -------------------------------------------
- * 拖文件进窗口的那几秒：整页压暗 + 一句"松手就导入" ✓
- * 不挡鼠标（pointer-events:none）✓ 它只是**反馈**，不是要点的按钮 ✓
- * ⚠ 只在拖拽期间出现；平时 hidden，`#boot` 里不留多余装饰 ✓ */
+/* ---- 拖拽提示层 -------------------------------------------
+ * 文件拖入窗口期间：整页压暗并提示"松手就导入"。
+ * 不接收鼠标事件（pointer-events:none），它只做反馈，不是可点按钮。
+ * 仅在拖拽期间显示，平时 hidden，`#boot` 中不保留多余装饰。 */
 .drop-mask {
   position: absolute; inset: 0; z-index: 60;
   display: flex; flex-direction: column; align-items: center; justify-content: center;
@@ -736,16 +709,14 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin
   margin: 0 0 10px; font-size: 11px; letter-spacing: 2px;
   color: var(--text-faint); text-transform: uppercase;
 }
-/* 选图列表：**永远一列** ✓（2026-10-17 用户："统一变成列表形式，
-   多的时候塞进列表而不是塞进两列"）
-   ⚠ 卡片多了由**列表自己滚**（max-height + overflow）✗ 不再改列数、
-     也不再放宽启动面板（面板放宽那一套已删 ✓） */
+/* 选图列表固定单列：条目多时由列表自身滚动（max-height + overflow），
+   不改变列数，也不放宽启动面板 */
 .map-pick-list {
   display: grid; grid-template-columns: 1fr; gap: 8px;
   max-height: min(58vh, 560px);
   overflow-y: auto;
   padding-right: 4px;
-  /* 滚动条自己染暗（跟侧栏同一色）✓ */
+  /* 滚动条按侧栏同色染暗 */
   scrollbar-width: thin;
   scrollbar-color: #2b3542 transparent;
 }
@@ -774,17 +745,16 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin
 .map-card span { font: 10.5px var(--mono); color: var(--text-faint); }
 
 /* ---- 导入式地图（见 docs/导入式地图-策划.md 第 4 节） ----
-   ⚠ 下面这几条的选择器必须写成 `.map-card .xxx`：
-   上面那条 `.map-card span` 的权重是 (0,1,1)，写成单个类名 (0,1,0) 会**压不过它** ✗ */
+   注意：以下选择器必须写成 `.map-card .xxx`。上面 `.map-card span` 的权重为 (0,1,1)，
+   单个类名 (0,1,0) 压不过它 */
 .map-card { position: relative; }
 .map-card .map-card-tag {
   position: absolute; left: 15px; bottom: 5px;
   font: 9.5px var(--mono); letter-spacing: .4px;
   color: #7fb0d8;
 }
-/* 左上角那个**小序号**：同一张图导了好几份时才出现（1 / 2 / …）✓
-   —— 名字里不再塞"（第 2 份）"，就靠它认是哪一份 ✓（2026-10-12 用户定的）
-   它占的是卡片的左内边距，所以带序号的卡左边要**多让一点位置** ✓ */
+/* 左上角序号：同一张图导入多份时出现（1 / 2 / …），用于区分副本。
+   它占用卡片左内边距，带序号的卡片左侧需多留位置 */
 .map-card .map-card-no {
   position: absolute; left: 6px; top: 5px;
   min-width: 15px; padding: 1px 4px; border-radius: 7px;
@@ -793,8 +763,7 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin
 }
 .map-card.has-no { padding-left: 34px; }
 
-/* 卡片右下角那两个动作（导出 / 删除）——
-   2026-10-12 从「⋯」小面板提上来的 ✓ 跟左下角那栏版本号（v…）同一行 ✓ */
+/* 卡片右下角的两个动作（导出 / 删除），与左下角版本号同一行 */
 .map-card .map-card-acts {
   position: absolute; right: 8px; bottom: 5px;
   display: flex; gap: 6px;
@@ -812,13 +781,11 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin
   background: #2a1b1b; border-color: #6b2b2b; color: #ff9c9c;
 }
 .map-card.imported { padding-bottom: 27px; }
-/* 一张图都没有时那句引导：**搬到 `.map-msg` 那个框里了** ✓
-   （原来这儿有个独立的 `.map-empty` 块，2026-10-12 用户要求挪下去省地方 ✗）
-   ⚠ 那条规则里写了 display，所以文件开头那个"[hidden] 兜底"还是必需 ✗ */
-/* 刚导入进来的那张闪一下边框（"它出现了"）✓ */
+/* 空列表引导语放在 `.map-msg` 框内以节省空间。
+   注意：该规则设置了 display，文件开头的 `[hidden]` 兜底仍然必需 */
+/* 刚导入的卡片闪一下边框，提示已出现 */
 .map-card.flash { border-color: var(--gold); background: #1f2731; }
-/* 下载卡上那行状态小字（"正在读取…" / "没导进去，看下面的提示"）✓
-   平时带 hidden（文件开头那条 `[hidden]{display:none!important}` 兜得住 ✓）*/
+/* 下载卡的状态小字；平时带 hidden，由文件开头的 `[hidden]{display:none!important}` 兜底 */
 .map-card .dl-note { display: block; margin-top: 3px; color: var(--gold-dim); }
 .map-card.dl-card { padding-bottom: 30px; }
 .map-import {
@@ -844,8 +811,8 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin
 .map-msg.bad { border-color: #6b2b2b; color: #ff9c9c; }
 .map-msg.done { border-color: #2b5a3a; color: #8fe0a8; }
 .map-msg-bar { height: 3px; margin-top: 7px; background: #1c242e; border-radius: 2px; overflow: hidden; }
-/* 失败提示后面跟一颗「复制详情」：让它自己占一整行、跟文字隔着走 ✓
-   （原来是行内元素，紧跟最后一行字，看着像压在字上 ✗） */
+/* 失败提示后的「复制详情」：独立占一整行，与文字拉开距离
+   （作为行内元素时会压在最后一行文字上） */
 .map-msg .btn { display: block; margin: 8px auto 0; }
 .map-msg-bar i {
   display: block; height: 100%; width: 0%;
@@ -853,7 +820,7 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin
   transition: width .2s;
 }
 .boot-step { font-size: 12px; color: var(--text-dim); margin-bottom: 11px; }
-/* 启动屏的静态兜底提示（脚本没跑起来才看得见 —— 跑起来了 boot() 会摘掉它）*/
+/* 启动屏静态兜底提示：脚本未运行时可见，boot() 运行后会移除 */
 .boot-hint {
   margin: 14px 2px 0; padding-top: 12px; text-align: left;
   border-top: 1px dashed var(--line-soft);
@@ -866,15 +833,11 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin
   background: linear-gradient(90deg, var(--gold-dim), var(--gold));
   transition: width .25s;
 }
-/* 🔴 **加载进度条的底要跟着晨昏变** ✗（2026-10-22 ✓ 用户："白昼模式下选地图界面的
- *   加载进度条…应该跟随变化"）
- *   `#1c242e` 是**写死的深色** ✓ 底色是白的时候它就是一道黑槽 ✓ 很突兀 ✓
- *   ⚠ 只改**槽**（`.boot-bar` 本身）✓ 进度那段（`i`）用的是 `--gold` ✓
- *     那个变量本来就随主题翻 ✓ 不用动 ✓（改它反而会破坏两套主题的观感 ✓）*/
+/* 加载进度条的槽底需跟随主题：`#1c242e` 为写死的深色，浅色底上会形成一道黑槽。
+   注意：只改槽（`.boot-bar` 本身）；进度段（`i`）使用 `--gold`，该变量已随主题变化 */
 html[data-theme="light"] .boot-bar { background: #ccd5df; }
-/* 署名那行：小、暗、不抢戏，但点得到 ✓
-   🔴 2026-10-17 用户："加载界面那些字挤在一起很难看" → **拆成两行**
-      第一行 作者 + 主页；第二行 导出诊断报告 + 版本戳 */
+/* 署名行：字号小、颜色暗，但可点击。
+   第一行 作者 + 主页；第二行 导出诊断报告 + 版本戳 */
 .boot-author {
   margin-top: 18px; padding-top: 12px;
   border-top: 1px solid var(--line);
@@ -885,8 +848,8 @@ html[data-theme="light"] .boot-bar { background: #ccd5df; }
   display: flex; align-items: center; justify-content: center;
   flex-wrap: wrap; gap: 10px;
 }
-/* 第二行：**版本戳在左、导出按钮在右**，但两个挨着居中 ✓
-   ⚠ 别用 space-between ✗ —— boot-inner 只有 340px，撑到两头会离得特别远（用户 2026-10-17 指出的 ✓） */
+/* 第二行：版本戳在左、导出按钮在右，两者相邻居中；不要用 space-between ——
+   boot-inner 仅 340px，两端对齐会拉得过远 */
 .boot-author-row-split {
   justify-content: center;
   gap: 12px;
@@ -896,14 +859,14 @@ html[data-theme="light"] .boot-bar { background: #ccd5df; }
   border-bottom: 1px solid transparent;
 }
 .boot-author-link:hover { color: var(--gold); border-bottom-color: var(--gold-dim); }
-/* 启动页那颗「导出诊断报告」：长得像旁边那条链接，但它是 <button> ✓ */
+/* 启动页「导出诊断报告」：外观与旁边链接一致，实际为 <button> */
 .boot-log-btn {
   font: inherit; color: var(--gold-dim); background: none;
   border: 0; border-bottom: 1px solid transparent;
   padding: 0; cursor: pointer;
 }
-/* 「检查更新」（2026-11-01 加）：跟版本号同一格、靠右一点，比版本戳亮半档 ✓
-   ⚠ 别让它撑高那一行 ✗ —— boot-inner 那条线本来就窄，多一行会把署名顶出去 ✓ */
+/* 「检查更新」与版本号同一格、略靠右，比版本戳亮半档；
+   不要让它撑高该行 —— boot-inner 本就狭窄，多一行会把署名顶出去 */
 .boot-ver-wrap {
   display: inline-flex; align-items: center; gap: 8px;
 }
@@ -916,7 +879,7 @@ html[data-theme="light"] .boot-bar { background: #ccd5df; }
 }
 .boot-update-btn:hover { color: var(--gold); border-bottom-color: var(--gold-dim); }
 .boot-update-btn:disabled { color: var(--text-faint); cursor: default; border-bottom-color: transparent; }
-/* 有新版本时**亮起来**（跟"已是最新"分得开 ✓）*/
+/* 有新版本时高亮，与"已是最新"状态区分 */
 .boot-update-btn.is-new { color: var(--gold); border-bottom-color: var(--gold-dim); }
 
 /* ------------------------------------------------------------ 状态栏 */
@@ -941,35 +904,34 @@ html[data-theme="light"] .boot-bar { background: #ccd5df; }
 @media (max-width: 1200px) {
   .group-label { display: none; }
   .toolbar { gap: 7px; }
-  /* 🔴 **窄屏才出折叠按钮** ✓（2026-10-19 ✓ 用户要求"手机版的栏加收起折叠"✓）
-   *   桌面地方大，不需要收；触屏/小屏上顶栏是透明的覆盖层，收起来能多露一截地图 ✓ */
+  /* 折叠按钮仅在窄屏出现：桌面空间充足无需收起；
+     触屏/小屏上顶栏为透明覆盖层，收起后可多露一截地图 */
   #toolbar-fold { display: flex; }
 }
 
 @media (max-width: 900px) {
   .sidebar { width: 268px; }
-  /* 太窄的时候剧本下拉和视图那排各占一行也放得下 ✓ 不再强迫挤一起 ✓ */
+  /* 更窄时剧本下拉与视图一排各占一行即可放下，不再强行挤在一行 */
   #era-group [data-role="era-panel"] { min-width: min(86vw, 240px); }
 }
 
-/* 🔴 **收起来的样子** ✓（顶栏折叠，2026-10-19 ✓）
- *  `body.tb-folded` 时把工具那一排藏掉 —— 品牌、剧本、视图、文件都还在 ✓
- *  ⚠ 只藏 `#tool-group`（工具）✗ 不藏视图 / 剧本 ✓ 那两个是看图的刚需 ✓ */
+/* 收起态：`body.tb-folded` 时隐藏工具那一排，品牌、剧本、视图、文件仍保留。
+ *  注意：只隐藏 `#tool-group`，视图与剧本是看图必需项 */
 body.tb-folded #tool-group { display: none; }
 #toolbar-fold .fold-caret { font-size: 9px; opacity: .7; }
 
 
-/* 左栏里的「工具」和「导入导出」（从顶栏搬过来的；左栏 322px，得允许换行） */
+/* 左栏内的「工具」与「导入导出」（自顶栏移入；左栏宽 322px，需允许换行） */
 #tool-group .segmented { flex-wrap: wrap; }
 .sidebar .actions { flex-wrap: wrap; justify-content: flex-start; }
 .sidebar .actions .btn { flex: 0 0 auto; }
 
-/* 导入导出：撤销/重做/清除一行，导出导入一行 */
+/* 导入导出：撤销/重做/清除一行，导出/导入一行 */
 .actions.stack { flex-direction: column; align-items: flex-start; gap: 6px; }
 .io-row { display: flex; gap: 6px; flex-wrap: wrap; }
 
 
-/* 右上角「导出 ▾」的下拉（点了才出来，省地方） */
+/* 右上角「导出 ▾」下拉：点击后展开 */
 #export-row { position: relative; }
 .dropdown {
   position: absolute;
@@ -989,8 +951,8 @@ body.tb-folded #tool-group { display: none; }
 .dropdown[hidden] { display: none; }
 .dropdown .btn { justify-content: flex-start; }
 
-/* 「显示」区**行高统一** —— 原来开关(~17px)、分组标题(~12px)两种高度混在一起，看着参差。
-   这里统一到 22px，并把多余的上边距清零。 */
+/* 「显示」区行高统一为 22px 并清除多余上边距，
+   避免开关(~17px)与分组标题(~12px)高度参差 */
 #display-panel .switch,
 #display-panel .group-label {
   min-height: 22px;
@@ -1001,24 +963,20 @@ body.tb-folded #tool-group { display: none; }
 #display-panel .switch input[type=checkbox] { margin: 0; }
 #display-panel .tool-group { min-height: 22px; }
 
-/* ============ 「显示」区 2026-10-13 整理 ============
-   原来三组（势力 / 地区 / 填色）挤在一起，两个毛病：
-     · 组标签宽度**自适应** —— 组内第一个开关的起点就跟着标签长度飘 ✗
-     · 次级项（父级边界）跟三个主开关长一个样 ✗
-       "边界 颜色 名称"是主开关，次级项得看得出是次要的 ✓
-   所以：标签定宽 + 组间留白 + 次级项淡一档 ✓
-   ⚠ 手机上（<=1200px）标签本来就被藏了（见上面那条 @media ✓）
-     定宽对那边没影响 ✓ */
+/* ============ 「显示」区布局 ============
+   原先三组挤在一起有两个问题：组标签宽度自适应，导致组内首个开关起点随标签长度漂移；
+   次级项（父级边界）与主开关外观相同，主次不分。
+   → 标签定宽 + 组间留白 + 次级项降一档。
+   注意：移动端（<=1200px）标签已被隐藏（见上方 @media），定宽对那边无影响 */
 #display-panel .group-label {
   width: 36px;
   flex: 0 0 auto;
 }
-#display-panel .actions.stack { gap: 8px; }   /* 三组之间：6 → 8，别糊成一片 */
+#display-panel .actions.stack { gap: 8px; }   /* 三组间距由 6 调至 8，避免粘连 */
 #display-panel .switch.sub span { color: var(--text-faint); }
 
-/* 清除那组（2026-10-17 从「文件 ▾」搬过来 ✓）：
-   跟上面的开关组**不画分割线**（用户："不要有分割线，很占空间"✓）；
-   组间距交给 `.actions.stack` 的 gap，这里不再额外加 margin/padding ✓ */
+/* 清除组：与上方开关组之间不画分割线，组间距交给 `.actions.stack` 的 gap，
+   这里不再加 margin/padding */
 #clear-group {
   flex-wrap: wrap;
 }
@@ -1120,20 +1078,17 @@ body.tb-folded #tool-group { display: none; }
   color: var(--text-faint); font-size: 11px; line-height: 1.5;
 }
 .set-grid { display: flex; gap: 22px; flex-wrap: wrap; }
-/* **设置这一个弹窗要更宽一点** ✓（用户要求：不然标签那列会把字挤换行 ✓）
-   四列（颜色 / 边界 / 导出图例 / 名字等）各占 ≥240px，加三道 22px 的缝 ≈ 1026px ✓
-   所以给到 1120px —— 留点余量，标签和滑条都不挤 ✓
-   小屏幕照样收在 94vw，不会顶出屏幕 ✓ */
+/* 设置弹窗需更宽，否则标签列会把文字挤到换行。
+   四列（颜色 / 边界 / 导出图例 / 名字等）各占 ≥240px，加三道 22px 间隙约 1026px，
+   故给到 1120px 留余量；小屏幕仍收在 94vw，不会溢出屏幕 */
 #settings .modal-box { width: min(1120px, 94vw); }
 .set-col { flex: 1 1 240px; min-width: 220px; }
 .set-col h3 { font-size: 11px; color: var(--text-faint); letter-spacing: .5px; margin: 4px 0 8px; }
-/* ---- 栏内的**小标题**（2026-10-16 加 ✓ 用户："全都进行全面优化！"✓）----------------
- * 为什么要它：颜色栏七项、边界栏八根，一栏平铺下来**分不清哪几项是一伙的** ✗
- *   （"海 / 不可通行海域 / 湖 / 河"挨着谁、"省份那两根"管哪条线 —— 全靠猜 ✓）
- * → 加一层 `.set-sub` 分组标：字号比 h3 再小一档、颜色更淡、上面留一点缝 ✓
- *   ⚠ **不许做成卡片 / 边框** ✗ —— 这一栏本来就窄（240px ✓），
- *     再套框框会把滑条挤短 ✓ 只靠"一条细线 + 淡字"分区就够了 ✓
- *   ⚠ 行高别撑大 ✗：八根滑条 + 四个小标题要能一屏放下 ✓（4px + 11px 那条 ✓）
+/* ---- 栏内小标题 ------------------------------------------------
+ * 颜色栏七项、边界栏八根平铺时，不易分辨哪些项属于一组。
+ * → 用 `.set-sub` 分组标：字号比 h3 小一档、颜色更淡、上方留缝。
+ *   注意：不做卡片或边框 —— 该栏仅 240px 宽，套框会挤短滑条；
+ *   只用"一条细线 + 淡字"分区。行高不撑大，保证八根滑条与四个小标题能一屏放下。
  */
 .set-sub {
   display: flex;
@@ -1156,16 +1111,14 @@ body.tb-folded #tool-group { display: none; }
   font-size: 11.5px;
   color: var(--text-dim);
 }
-/* 标签那一列**不许换行** ✓（"省份边界浓度"六个字在窄列里会被折成两行 ✓）
-   `flex: none` + nowrap：宁可把滑条挤短一点，也别让标签断行 ✓ */
+/* 标签列不换行：`flex: none` + nowrap，宁可挤短滑条，也不让「省份边界浓度」折成两行 */
 .set-row > span:first-child { flex: none; white-space: nowrap; }
 
-/* ---- 设置页里那些控件**统一长相** -------------------------------------------
- * 以前只给 color / range 写了样式，select、text、checkbox 一个都没有 ✗ ——
- * 于是「图例位置」「图例标题」「取色后切到」在深色主题里就是**浏览器默认的白底**，
- * 字号也走浏览器默认（13~16px ✗），跟旁边 11.5px 的标签根本不在一个调上 ✓
- * 现在：控件**一律继承行里的字体**，颜色 / 边框 / 圆角 / 焦点色共用同一套变量 ✓
- * （手机版那份 CSS 会在这之上再调宽度，不冲突 ✓）
+/* ---- 设置页控件统一外形 -------------------------------------------
+ * color 与 range 之外，select、text、checkbox 均缺少样式，
+ * 在深色主题中显示为浏览器默认白底，字号也走默认值，与 11.5px 标签不协调。
+ * 控件一律继承行内字体，颜色 / 边框 / 圆角 / 焦点色共用同一套变量；
+ * 移动端 CSS 在此基础上再调宽度，二者不冲突。
  */
 .set-row input[type=text],
 .set-row input[type=number],
@@ -1182,8 +1135,8 @@ body.tb-folded #tool-group { display: none; }
 }
 .set-row select { max-width: 132px; }
 
-/* **字体预览**（2026-10-20 ✓）—— 选完字体立刻能看出变没变 ✓
-   ⚠ 用 canvas 画，不用 CSS ✗：位图字体（.fnt + .dds）CSS 认不了 ✓ */
+/* 字体预览：选择后立即反映效果。用 canvas 绘制而非 CSS ——
+   位图字体（.fnt + .dds）CSS 不支持 */
 #font-preview {
   width: 100%;
   max-width: 260px;
@@ -1194,14 +1147,12 @@ body.tb-folded #tool-group { display: none; }
   box-sizing: border-box;
 }
 .set-row input[type=text] { max-width: 150px; }
-/* ⚠⚠ **颜色框别只写 `background: none` 就完事** ✗✗
- *   （2026-10-13 用户报"手机版设置颜色都是灰色"✓ 就是这一行）
- *   `input[type=color]` 的颜色**本来就是靠那层原生色块显示的** ✓
- *   桌面浏览器有 `::-webkit-color-swatch` 撑着，所以看着正常 ✓
- *   **手机 WebView 不一定有那层** ✗ → 露出的就是透明背景 = 一片灰 ✓
- *   ✅ 正确做法：`appearance: none` 之后**自己给 swatch 定样式** ✓
- *      这样色块能撑满整个 46×20 的框，桌面和手机长得一样 ✓
- *   ⚠ swatch 的 `padding` 一定要清零 ✗ 不然色块只有中间一小条 ✓ */
+/* 颜色框不能只写 `background: none`
+ *  `input[type=color]` 的颜色由原生色块显示：桌面浏览器有 `::-webkit-color-swatch`，
+ *  移动端 WebView 不一定有，露出的就是透明背景（呈灰色）。
+ *  → `appearance: none` 后自行定义 swatch 样式，色块撑满 46×20 的框，桌面与移动端一致。
+ *  注意：swatch 的 `padding` 必须清零，否则色块只剩中间一条。
+ */
 .set-row input[type=color] {
   width: 46px; height: 20px; padding: 0;
   border: 1px solid var(--line);
@@ -1216,11 +1167,10 @@ body.tb-folded #tool-group { display: none; }
 .set-row input[type=color]::-moz-color-swatch { border: 0; border-radius: 2px; }
 .set-row input[type=range] { width: 118px; accent-color: var(--gold); }
 .set-row input[type=checkbox] { width: 14px; height: 14px; margin: 0; flex: none; accent-color: var(--gold); }
-/* 「名字上限」那种**跟在标签后面的当前值**（"12 个" / "无上限"）——
- * 跟顶栏 `.panel-head .hint` 同一套字（等宽、faint）✓
- * `margin-right: auto` 让它**贴着标签**，把右边的空间全让给滑块 ✓
- * （不写这句的话 `.set-row` 是 space-between —— 三个元素会把滑块挤到中间去，
- *   跟"标签 + 滑块"那种两个元素的行就对不齐了 ✗）*/
+/* 「名字上限」跟在标签后的当前值（"12 个" / "无上限"）：与顶栏 `.panel-head .hint`
+ * 同一套字形（等宽、faint）。`margin-right: auto` 让它贴住标签，把右侧空间让给滑块 ——
+ * 否则 `.set-row` 的 space-between 会把滑块挤到中间，与"标签 + 滑块"两元素的行对不齐。
+ */
 .set-row .hint { font: 11px/1 var(--mono); color: var(--text-faint); white-space: nowrap; margin-right: auto; }
 .set-row select:focus,
 .set-row input[type=text]:focus,
@@ -1246,13 +1196,12 @@ body.tb-folded #tool-group { display: none; }
 .rename-foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
 
 /* ===========================================================================
-   新手引导（tutorial.js 用的浮层）
-   —— 字幕、呼吸高亮环、"叮"的反馈都画在**游戏画面上**，
-      不像以前那样另开一页让人来回对 ✓
+   新手引导（tutorial.js 使用的浮层）
+   字幕、呼吸高亮环与"叮"的反馈直接画在游戏画面上，不另开页面。
    =========================================================================== */
 #tutLayer, #tutLayer * { box-sizing: border-box; }
 
-/* 目标高亮环：呼吸的暖金圈，不挡视线 ✓ */
+/* 目标高亮环：呼吸的暖金圈，不遮挡视线 */
 #tutRing {
   position: fixed; z-index: 2147483600; pointer-events: none;
   border: 2px solid rgba(240, 217, 138, .95);
@@ -1266,7 +1215,7 @@ body.tb-folded #tool-group { display: none; }
   50%      { box-shadow: 0 0 0 6px rgba(240,217,138,.10), 0 0 34px rgba(240,217,138,.62); }
 }
 
-/* "叮"：做到那一步时从目标中心炸一圈绿光 ✓ */
+/* "叮"：达成该步骤时从目标中心扩散一圈绿光 */
 #tutPing {
   position: fixed; z-index: 2147483599; pointer-events: none;
   width: 14px; height: 14px; margin: -7px 0 0 -7px; border-radius: 50%;
@@ -1278,7 +1227,7 @@ body.tb-folded #tool-group { display: none; }
   100% { transform: scale(7);  opacity: 0; }
 }
 
-/* 步骤卡：标题 + 说明 + 两个按钮（贴在目标旁边 ✓ 不用抬头找） */
+/* 步骤卡：标题 + 说明 + 两个按钮，贴近目标显示 */
 #tutCard {
   position: fixed; z-index: 2147483601; width: min(360px, 86vw);
   padding: 14px 16px 12px; border-radius: 14px;
@@ -1303,9 +1252,9 @@ body.tb-folded #tool-group { display: none; }
 #tutCard button.tut-next { background: #241d10; border-color: #c9a94e; color: #f0d98a; font-weight: 700; }
 #tutCard button:hover { border-color: #f0d98a; color: #f0d98a; }
 
-/* （底部那行白字黑边的大字幕已经去掉了 ✓ 文案都放在卡片里 ✓） */
+/* 文案集中在卡片内，底部不另设字幕 */
 
-/* 顶部小提示条（第一次玩时冒一句 ✓） */
+/* 顶部提示条：首次进入时显示 */
 .tut-toast {
   position: fixed; left: 50%; top: 18px; transform: translate(-50%, -12px);
   z-index: 2147483602; pointer-events: none;
@@ -1317,8 +1266,8 @@ body.tb-folded #tool-group { display: none; }
 .tut-toast.on { opacity: 1; transform: translate(-50%, 0); }
 
 /* ===========================================================================
-   设置页里的「图例」那一栏
-   —— 条目是自动列出来的（同色一组 ✓），名字可以直接改 ✓
+   设置页「图例」栏
+   条目自动列出（同色一组），名称可直接编辑。
    =========================================================================== */
 .legend-list {
   margin: 8px 0 6px; max-height: 190px; overflow: auto;
@@ -1335,8 +1284,7 @@ body.tb-folded #tool-group { display: none; }
   flex: none; width: 18px; height: 18px; border-radius: 4px;
   border: 1px solid rgba(255, 255, 255, .35); box-shadow: 0 0 0 1px rgba(0, 0, 0, .5) inset;
 }
-/* 名字可编辑（留空 = 用地图上的名字 ✓）
-   太长就省略号截掉，全名挂在 title / aria-label 上 ✓ */
+/* 名称可编辑（留空则使用地图上的名称）；过长时省略号截断，全名挂在 title / aria-label 上 */
 .legend-row .legend-name {
   flex: 1 1 auto; min-width: 44px; width: 100%;
   color: var(--text); padding: 3px 5px;
@@ -1347,7 +1295,7 @@ body.tb-folded #tool-group { display: none; }
 .legend-row .legend-name:hover { border-color: #2b3947; }
 .legend-row .legend-name:focus { border-color: var(--gold); background: #0d141b; }
 .legend-row .legend-name::placeholder { color: #657384; }
-/* 图例条目的**顺序调整**：每行两个小箭头 ✓（点一下换一格 ✓ 手机上也好点 ✓） */
+/* 图例条目顺序调整：每行两个小箭头，点击移动一格，触屏也易于点按 */
 .legend-row .legend-move {
   flex: none; display: flex; flex-direction: column; gap: 2px;
 }
@@ -1359,31 +1307,29 @@ body.tb-folded #tool-group { display: none; }
 }
 .legend-row .legend-up:hover, .legend-row .legend-down:hover { color: var(--gold); border-color: #4a5a6b; }
 .legend-row .legend-up:disabled, .legend-row .legend-down:disabled { opacity: .3; cursor: default; }
-/* **按住拖动排序**的把手 ✓（鼠标 / 手指通用 ✓ 用 Pointer Events 那套 ✓） */
+/* 按住拖动排序的把手：鼠标 / 手指通用，基于 Pointer Events */
 .legend-row .legend-drag {
   flex: none; width: 20px; height: 22px; display: flex;
   align-items: center; justify-content: center;
   cursor: grab; border-radius: 4px;
   color: #5d6b7c; font-size: 13px; line-height: 1; user-select: none;
-  touch-action: none;                    /* 手机上按住它别变成滚页面 ✓ */
+  touch-action: none;                    /* 触屏按住把手时不滚动页面 */
 }
 .legend-row .legend-drag:hover { color: #f0d98a; }
 .legend-row.dragging { opacity: .55; }
 .legend-row.dragging .legend-drag { cursor: grabbing; }
 .set-tip { font-size: 11.5px; line-height: 1.6; color: #6f7f92; }
 
-/* 设置页「导出图例」里的输入框和下拉
-   —— 以前用的是浏览器默认白底 ✗ 在深色面板上特别扎眼 ✓
-      这里跟整页风格对齐：深底、细边、金色聚焦 ✓ */
+/* 设置页「导出图例」的输入框与下拉：与整页风格一致（深底、细边、金色聚焦），
+   不用浏览器默认白底 */
 #set-legend-title,
 #set-legend-pos,
 #set-legend-size,
 #set-legend-font,
 #set-legend-cols,
 #set-legend-box {
-  /* ⚠ 原来是写死的 `#121a22` = rgb(18, 26, 34)，跟旁边色卡不是一个灰 ✗
-     （用户 2026-11-03："这里怎么还是18,26,34的颜色"）
-     → 跟色卡同款半透明中性底 ✓ */
+  /* 写死的 `#121a22` = rgb(18, 26, 34) 与旁边色卡不是一个灰
+     → 改用与色卡同款的半透明中性底 */
   background-color: rgba(8, 12, 17, .35);
   color: var(--text);
   border: 1px solid var(--line);
@@ -1396,10 +1342,9 @@ body.tb-folded #tool-group { display: none; }
 }
 #set-legend-pos, #set-legend-size, #set-legend-font,
 #set-legend-cols, #set-legend-box { appearance: none; cursor: pointer; padding-right: 22px; }
-/* 下拉箭头：`appearance:none` 之后浏览器不再画箭头 ✗
-   五个框长得和文本框一模一样，用户根本不知道能点 ✓
-   只设 image / position / size，别用 background 简写 ——
-   日间那几条 `background:#fff` 在后面，会被简写清掉 ✓ */
+/* 下拉箭头：`appearance:none` 后浏览器不再绘制箭头，五个框会与文本框外观相同，
+   不易判断其可点击。只设 image / position / size，不用 background 简写 ——
+   日间相关的 `background:#fff` 在其后，会被简写清除 */
 #set-legend-pos, #set-legend-size, #set-legend-font,
 #set-legend-cols, #set-legend-box {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%238b9aab' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
@@ -1407,8 +1352,8 @@ body.tb-folded #tool-group { display: none; }
   background-position: right 8px center;
   background-size: 9px 6px;
 }
-/* 上面 `#settings .set-row select` 的 `padding: 0 6px` 权重更高，会把右侧留白压掉 ✗
-   箭头就贴在字尾上。这里用两个 id 提权，把 22px 的箭头位保住 ✓ */
+/* 上方 `#settings .set-row select` 的 `padding: 0 6px` 权重更高，会压掉右侧留白，
+   箭头贴在字尾；这里用两个 id 提权，保住 22px 的箭头位 */
 #settings #set-legend-pos,
 #settings #set-legend-size,
 #settings #set-legend-font,
@@ -1420,8 +1365,7 @@ body.tb-folded #tool-group { display: none; }
 #set-legend-font:focus,
 #set-legend-cols:focus,
 #set-legend-box:focus { border-color: #f0d98a; }
-/* 提示字别再用那个偏蓝又偏暗的 #5d6b7c ✗（用户 2026-11-03："这里的字体颜色……"）
-   跟正文的弱化色一致 ✓ */
+/* 提示字不再使用偏蓝偏暗的 #5d6b7c，改为与正文弱化色一致 */
 #set-legend-title::placeholder { color: var(--text-faint, #8b98a8); opacity: 1; }
 #set-legend-title { min-width: 132px; max-width: 150px; }
 .legend-color { display: inline-flex; align-items: center; gap: 7px; flex: none; }
@@ -1435,15 +1379,14 @@ body.tb-folded #tool-group { display: none; }
 .legend-row .legend-on { width: 14px; height: 14px; flex: none; }
 .legend-alpha { flex: 0 0 32px !important; min-width: 0 !important; font-size: 11px; }
 .legend-alpha-cap { flex: 0 0 auto; font-size: 10.5px; color: var(--text-faint); }
-/* 抽屉窄到 400 以下，先让「不透明」三个字退场；再窄连 HEX 一起收，滑条和百分比必须留住 ✓ */
+/* 抽屉窄于 400px 时先隐藏「不透明」三字；再窄时收起 HEX 输入，滑条与百分比保留 */
 @media (max-width: 400px) { .legend-alpha-cap { display: none; } }
 @media (max-width: 380px) { .legend-bg-v { display: none !important; } }
 
-/* ---- 图例二次精简（2026-10-27）-----------------------------------------------
-   原来每个设置占一整行，背景 / 边框 / 字色还各长各的；现在收成：
-     版式 = 两列小格（字体单独占一整行）
-     颜色 = 三个同规格色卡（标题 + 色块 + HEX）
-   手机端只调触摸尺寸，不再另起一套结构 ✓ */
+/* ---- 图例二次精简 -----------------------------------------------
+   每个设置收成两列小格（字体单独占一整行）：
+     版式 = 两列小格；颜色 = 三个同规格色卡（标题 + 色块 + HEX）
+   移动端只调触摸尺寸，结构不变 */
 .legend-grid {
   display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 7px 8px; margin: 3px 0 1px;
@@ -1454,8 +1397,7 @@ body.tb-folded #tool-group { display: none; }
 .legend-cell select {
   width: 100% !important; min-width: 0 !important; max-width: none !important;
   height: 28px;
-  /* 跟旁边的色卡（背景 / 边框 / 字色）同一个灰 ✗ 不要偏蓝
-     （用户 2026-11-03："字体、位置这些地方的偏蓝色UI能不能改成字色这边的灰色UI颜色"）*/
+  /* 与旁边色卡（背景 / 边框 / 字色）同一个灰，不用偏蓝色 */
   background-color: rgba(8, 12, 17, .35);
   border-color: var(--line);
 }
@@ -1502,77 +1444,75 @@ html[data-theme="light"] .legend-swatch { border-color: #bdb5a3; background: #ff
 html[data-theme="light"] .legend-hex { color: #6d6353; }
 
 
-/* 启动页角落的版本戳（就一行小灰字 ✓ 不占地方） */
+/* 启动页角落的版本号：单行小字号，不占版面 */
 .boot-ver { margin-left: 0; font-size: 11px; color: #56616f; letter-spacing: .3px; }
 
-/* ================================================================ 设置面板 v2
- *  🔴 2026-10-20 全面重做（用户："全方面遵循子代理方案"）
- *  这一整段是**覆盖**，不改上面老规则的来历注释 —— 老规则留着当对照，
- *  新规则全部用 #settings 前缀提权 ✓ 谁生效一眼看得出 ✓
+/* ================================================================ 设置面板
+ * 本段整体覆盖上文同类规则，旧规则保留作对照；新规则一律加 #settings 前缀
+ * 提高权重，便于确认哪一条生效。
  *
- *  三条主线：
- *    ① 从"带遮罩的模态框"改成**右侧抽屉** —— 拖滑条时地图必须看得见
- *    ② 字号阶梯**从外到内递减**（原来组标题 10.5px 比行文字 11.5px 还小，倒挂）
- *    ③ 行改成 **定宽标签列 + 定宽数值列 + 控件右对齐** —— 纵向终于有列可循
+ * 三条主线：
+ *   ① 由带遮罩的模态框改为右侧抽屉，拖动滑条时地图保持可见
+ *   ② 字号阶梯由外向内递减，修正组标题字号小于行文字的字号倒挂
+ *   ③ 行改为定宽标签列 + 定宽数值列 + 控件右对齐，形成纵向对齐的列
  */
-html { color-scheme: dark; }          /* 复选框 / range 轨道 / 下拉弹层一次到位 */
+html { color-scheme: dark; }          /* 复选框、range 轨道与原生下拉弹层统一为深色 */
 
 /* ---- ① 抽屉 ---- */
 #settings.modal {
   position: fixed;
-  inset: 0 0 0 auto;                  /* 贴右边，左边整块留白 = 地图露出来 ✓ */
+  inset: 0 0 0 auto;                  /* 贴靠右侧，左侧留空露出地图 */
   width: min(430px, 94vw);
-  background: transparent;            /* 不带遮罩 ✓ 点地图不会被吞 ✓ */
+  background: transparent;            /* 无遮罩底色，地图区域仍可交互 */
   padding: 0;
   display: block;
 }
 #settings[hidden] { display: none !important; }
 
 /* ===========================================================================
-   🔴🔴 **设置抽屉：滑入 / 滑出**（2026-10-21 ✓ 用户："给设置按钮也做个类似的那种
-      显示动画，同时也是按一下弹出按一下隐藏，而不依靠那个小叉叉"）
+   设置抽屉：滑入 / 滑出
    ---------------------------------------------------------------------------
-   跟**左侧栏那个折叠**是一套手感（`.22s cubic-bezier(.16,1,.3,1)` ✓ 同一条曲线 ✓）
-   但方向相反：侧栏往**左**滑出、设置从**右**滑入 ✓ 一进一出，对称 ✓
+   与左侧栏折叠共用同一条缓动曲线 `.22s cubic-bezier(.16,1,.3,1)`，方向相反：
+   侧栏向左滑出，设置由右侧滑入。
 
-   ⚠⚠ **为什么不能只写 transition + `[hidden]`** ✗✗
-     `#settings[hidden] { display: none !important }` ✓
-     `display` 从 `none` 变 `block` 是**瞬间跳变** ✗ transition 不认 ✓
-     （`transition-behavior: allow-discrete` 能救 ✓ 但兼容性还不齐 ✗ 且这里
-        `!important` 在 display 上 ✓ 更难绕 ✓）
-   → 所以**用类来驱动**（`.open`）✓ 关的时候等动画跑完再 `hidden = true` ✓
-     见 `app.js` 里 `openSettings` / `closeSettings` 两个函数 ✓
+   不能仅靠 transition 与 `[hidden]`：
+     `#settings[hidden] { display: none !important }`
+     `display` 由 `none` 变为 `block` 是瞬时切换，transition 不生效；
+     `transition-behavior: allow-discrete` 可解决，但兼容性不足，且此处
+     `display` 带 `!important`，难以绕过。
+   因此改用类驱动（`.open`），关闭时等动画结束再置 `hidden = true`，
+   对应 `app.js` 中的 `openSettings` 与 `closeSettings`。
 
-   ⚠ 关的过程中（动画还在跑）抽屉仍然 `display:block` ✗
-     它盖住右边 430px ✓ 会**吃掉那 260 毫秒的点击** ✓
-     → 没开的时候给 `pointer-events: none` ✓ 点得到底下的地图 ✓
+   关闭动画进行中抽屉仍为 `display: block`，会覆盖右侧 430px 并吞掉该区域
+   约 260 毫秒的点击，故未展开时设 `pointer-events: none`，点击可落到下方地图。
    =========================================================================== */
 #settings .modal-box.set-box {
-  /* 收起态：往右边整个推出去 + 淡掉 ✓ */
+  /* 收起态：整体右移并淡出 */
   transform: translateX(100%);
   opacity: 0;
   transition:
     transform .24s cubic-bezier(.16, 1, .3, 1),
     opacity .18s ease;
-  /* 阴影也跟着淡 ✓ 不然"透明板子还投着影"很怪 */
+  /* 阴影同步淡出，避免透明面板仍投下阴影 */
   will-change: transform;
 }
 #settings.open .modal-box.set-box {
   transform: none;
   opacity: 1;
 }
-/* 没打开的时候不吃点击 ✓（关的动画那 240ms 里也成立 ✓）*/
+/* 未展开时不接收点击，关闭动画期间同样成立 */
 #settings:not(.open) { pointer-events: none; }
 #settings.open { pointer-events: auto; }
 
-/* 🔴 2026-10-31：遮罩必须跟抽屉**一起**淡掉 ✓
-   真凶是 `#settings` 容器**自己**那层 `backdrop-filter`（vz 皮肤 ⑥ 给的 blur(6px)）✗
-   它**不跟着 `.set-box` 平移**（`.set-box` 是它的孩子，translate 只挪孩子）✓
-   → 关的时候抽屉滑走了，容器上还留着 472px 宽的一条模糊带盖着地图，
-     要等 240ms 后 `hidden = true` 才"啪"地硬切消失 ✗（用户："显示隐藏不同步"）
-   → 给容器的 backdrop-filter 也做 240ms 过渡，收起态归零 ✓ 跟抽屉同一条时长 ✓
-   ⚠ 容器底色本来就是 transparent（`#settings.modal` 那条 ✓）不用管 ✓
-   ⚠ 只针对 vz ✓ 经典皮肤没有这层 blur ✓ 别的 `.modal` 走 `hidden` 切换，不受影响 ✓ */
+/* 遮罩须与抽屉同步淡出。
+   原因是 `#settings` 容器自身的 `backdrop-filter`（vz 皮肤的 blur(6px)）不随
+   `.set-box` 平移：`.set-box` 是其子元素，transform 只作用于子元素。
+   不同步时抽屉滑走后容器上仍留一条 472px 宽的模糊带覆盖地图，直到 240ms 后
+   置 `hidden = true` 才瞬间消失。
+   处理方式：容器的 backdrop-filter 同样做 240ms 过渡，收起态归零，与抽屉
+   时长一致。容器底色本为 transparent（见 `#settings.modal`），无需处理。
+   此处仅针对 vz 皮肤；经典皮肤没有这层模糊，其余 `.modal` 通过 `hidden`
+   切换，不受影响。 */
 #settings {
   transition:
     -webkit-backdrop-filter .24s ease,
@@ -1583,8 +1523,8 @@ html[data-skin="vz"] #settings:not(.open) {
   backdrop-filter: blur(0px);
 }
 
-/* 「设置」按钮自己的开合状态：开着的时候按下去一点、底色亮一档 ✓
- * ⚠ 跟「☰ 侧栏」那个 aria 变暗是一个思路 ✓ 一眼看出"面板现在开着的" ✓ */
+/* 「设置」按钮的开合状态：展开时按钮下沉、底色提亮一档。
+   与「☰ 侧栏」按钮的 aria 变暗处理同一思路，用于标明面板当前为展开。 */
 #btn-settings[aria-expanded="true"] {
   color: var(--gold);
   border-color: var(--gold-dim);
@@ -1592,40 +1532,39 @@ html[data-skin="vz"] #settings:not(.open) {
 }
 
 /* ===========================================================================
-   🔴 **「设置」= 齿轮图标**（2026-10-21 ✓ 用户："电脑版的设置按钮也改成一个齿轮样式吧"）
+   「设置」= 齿轮图标
    ---------------------------------------------------------------------------
-   ⚠ 只剩一个字形了，**尺寸要单独配** ✗
-     别人是「导出 ▾」「教程」这种两三个字 ✓ 靠字号 11.5px + `padding: 4px 10px` 撑开 ✓
-     一个齿轮照这套来会**又扁又偏** ✓ 左边留白比右边多 ✓（中文字和字形宽度不一样 ✓）
+   该按钮只剩一个字形，尺寸需单独设定：其余按钮为「导出 ▾」「教程」这类两三个
+   字，靠 11.5px 字号加 `padding: 4px 10px` 撑开；单个齿轮沿用该规则会显得
+   扁平，且中文字与字形宽度不同，左右留白不均。
 
-   ⚠ 目标：跟旁边那排按钮**顶边底边齐平** ✗ 高度必须一样 ✓
-     它们高度 = 11.5px 字 + 上下 4px padding + 1px 边框 ≈ 21px ✓
-     这边就把齿轮做成 21px 的方块 ✓ 靠 `width/height` 写死 ✓
-     别用 em 算 ✗ 字体的行高各家不一样 ✓ 会差一两像素 ✓
-   ⚠ 齿轮本身**别再用 11.5px** ✗ 那么小看不清是齿轮 ✓ 给到 13px ✓
-     但**行高压成 1** ✓ 不然 13px 字会把按钮顶高 ✓
+   目标是顶边、底边与相邻按钮齐平：相邻按钮高度约为 11.5px 字高 + 上下 4px
+   padding + 1px 边框 ≈ 21px，因此齿轮按钮以 `width/height` 定为 21px 方块；
+   不用 em 计算，各字体行高不同，会产生一两像素误差。
+   齿轮字形本身取 13px（11.5px 过小，难以辨认），并把行高压到 1，避免把按钮
+   顶高。
    =========================================================================== */
 .gear-btn {
   width: 23px;
   height: 21px;
-  padding: 0;                     /* ⚠ 必须归零 ✗ 不然字被挤偏 ✓ */
+  padding: 0;                     /* 必须归零，否则字形偏移 */
   display: inline-flex;
   align-items: center;
   justify-content: center;
   font-size: 13px;
   line-height: 1;
-  /* ⚠ 齿轮字形在不同字体里**宽度不一** ✓ 用一个固定行盒让它在正中间 ✓ */
+  /* 齿轮字形宽度随字体变化，用固定行盒保证居中 */
   text-align: center;
 }
-/* 鼠标悬停时齿轮转一点点 ✓ 一个很小的反馈，不喧哗 ✓
- * ⚠ `prefers-reduced-motion` 下别转 ✗ 有些人晕动 ✓ */
+/* 悬停时齿轮轻微旋转，反馈克制。
+   `prefers-reduced-motion` 下不旋转，避免不适。 */
 .gear-btn:hover:not(:disabled) { color: var(--text); border-color: #38424f; }
 .gear-btn:active { transform: rotate(-18deg); }
 @media (prefers-reduced-motion: reduce) {
   .gear-btn:active { transform: none; }
 }
 
-/* 顶栏最左那个「☰」：窄一点，别跟标题抢地方 ✓ */
+/* 顶栏最左侧「☰」按钮收窄，避免挤压标题 */
 #btn-sidebar {
   flex: 0 0 auto;
   padding: 0 9px;
@@ -1688,7 +1627,7 @@ html[data-skin="vz"] #settings:not(.open) {
 #settings .set-col { min-width: 0; padding: 0; }
 #settings .set-col[hidden] { display: none !important; }
 
-/* 字号阶梯：L1 组标题 > L2 行标签；**再也不会倒挂** ✓ */
+/* 字号阶梯：L1 组标题大于 L2 行标签 */
 #settings .set-col h3 {
   font: 600 12.5px/1.4 inherit;
   color: var(--text);
@@ -1713,7 +1652,7 @@ html[data-skin="vz"] #settings:not(.open) {
   border-radius: 5px;
 }
 
-/* 行：标签 92px 定宽 + 数值 44px 右对齐 + 控件靠右 ✓ */
+/* 行布局：标签 92px 定宽、数值 44px 右对齐、控件靠右 */
 #settings .set-row {
   display: flex;
   align-items: center;
@@ -1833,7 +1772,7 @@ html[data-skin="vz"] #settings:not(.open) {
 }
 .set-dirty { flex: 1 1 auto; font-size: 11px; color: var(--text-faint); }
 
-/* ---- 预览：保持比例，不许横向压扁 ---- */
+/* ---- 预览：保持比例，不横向压缩 ---- */
 #font-preview {
   width: 100%;
   max-width: 260px;
@@ -1845,7 +1784,7 @@ html[data-skin="vz"] #settings:not(.open) {
 }
 #settings #font-status { color: var(--text-faint); }
 
-/* ---- 图例：「只显示标题」时条目不会画进图例，整块变灰且点不动 ---- */
+/* ---- 图例：「只显示标题」时条目不进入图例，整块变灰且不可点击 ---- */
 #settings .legend-list { max-height: 240px; overflow: auto; margin-top: 6px; }
 #settings .legend-list.is-off { opacity: .45; pointer-events: none; }
 
@@ -1853,8 +1792,7 @@ html[data-skin="vz"] #settings:not(.open) {
 .btn.danger { border-color: #6b2f2a; color: #e08a8a; }
 .btn.danger:hover { border-color: #c4553f; color: #ffb3ab; }
 
-/* ---- 控件尺寸统一（2026-10-20 ✓ 用户："UI 尺寸和字体大小不一致"）
-   下拉 / 文本框 / 按钮 全部对齐到步进器那 24px ✓ 字号统一 12px ✓ */
+/* ---- 控件尺寸统一：下拉、文本框、按钮对齐到步进器的 24px，字号统一 12px ---- */
 #settings .set-row select,
 #settings .set-row input[type=text] {
   height: 24px;
@@ -1871,17 +1809,15 @@ html[data-skin="vz"] #settings:not(.open) {
   border-radius: 5px;
 }
 #settings .set-row input[type=checkbox] { width: 14px; height: 14px; }
-/* 预览那块跟其它行拉开一点，但别把字号撑大 */
+/* 预览行与其上各行拉开间距，字号保持不变 */
 #settings .preview-row { padding-top: 4px; }
 
 /* ================================================================ 液态玻璃 + 主题
- *  🔴 2026-10-20 ✓ 用户："为 UI 加上液态玻璃，并允许切换白天黑夜模式"
- *
- *  做法：只加**一层壳**，不动原来的配色变量 ✓
- *    · 玻璃 = 半透明底 + backdrop-filter 模糊 + 内高光 + 外投影
- *    · 主题 = 在 <html data-theme="light"> 上覆盖同一批变量 ✓
- *      这样所有用到 var(--panel/--text/--line) 的地方一起变，不用逐条改 ✓
- *  ⚠ backdrop-filter 不支持的浏览器会退化成半透明底 ✓ 不至于糊成一片 ✓
+ * 做法：只加一层壳，不改动原有配色变量。
+ *   · 玻璃 = 半透明底 + backdrop-filter 模糊 + 内高光 + 外投影
+ *   · 主题 = 在 <html data-theme="light"> 上覆盖同一批变量，
+ *     所有引用 var(--panel/--text/--line) 的位置随之变化，无需逐条修改。
+ * 不支持 backdrop-filter 的浏览器退化为半透明底，仍可读。
  */
 
 :root {
@@ -1930,15 +1866,15 @@ html[data-theme="light"] body { background: var(--bg); }
   border-color: var(--glass-brd);
   box-shadow: var(--glass-shadow);
 }
-/* 设置抽屉是整块大面板，用更实一点的底，否则字读不清 ✓ */
+/* 设置抽屉为整块大面板，底色需更实，否则文字对比度不足 */
 #settings .modal-box {
   background:
     linear-gradient(160deg, var(--glass-hi), transparent 38%),
     var(--glass-strong);
 }
-/* 顶栏那条比较窄，投影收一点，别糊住下面的地图 */
+/* 顶栏较窄，投影收小，避免遮挡下方地图 */
 .toolbar { box-shadow: 0 6px 18px rgba(0, 0, 0, .18); }
-/* 玻璃上再贴一层极细的高光边（顶边亮一点，像有厚度） */
+/* 玻璃表面再加一道极细的高光边，顶边略亮，呈现厚度 */
 #settings .modal-box::before,
 .toolbar::before,
 #hover-card::before {
@@ -1966,26 +1902,23 @@ html[data-theme="light"] body { background: var(--bg); }
 }
 .theme-btn:hover { color: var(--gold); border-color: var(--gold-dim); }
 
-/* 🔴 **2026-10-22：主题按钮挪到设置面板「顶部」** ✗✗
- *   （用户："电脑的晨昏按钮应该放在设置的上面（参考手机版）"）
- *   ⚠ 之前那条 `#settings .theme-row` 是它在「其他」页里当设置行时的样式 ✓
- *     这一轮它搬走了 ✓ 那几条**留着没删**（无害、而且万一以后放回去还用得上 ✓）
- *     但真正生效的是下面 `.set-theme-row` 这一套 ✓
- */
+/* 主题按钮已移至设置面板顶部，由下方 `.set-theme-row` 一整套规则生效。
+   上方 `#settings .theme-row` 是它作为「其他」页设置行时的样式，当前未使用，
+   保留备用。 */
 
 /* ===========================================================================
-   🔴🔴 **设置面板顶部那一行：界面 / 白天·黑夜**
+   设置面板顶部一行：界面 / 白天·黑夜
    ---------------------------------------------------------------------------
-   位置：`.set-box` 的**第一个孩子**，在 `.set-tabs` 之前 ✓
-   跟手机版 `.mob-theme-bar` 一个意思：
-     · 在**标签行上面、内容外面** ✓ 换页不会跟着滚走 ✓
-     · 它是"整个界面长什么样"的开关，不属于任何一页 ✓
+   位置：`.set-box` 的第一个孩子，位于 `.set-tabs` 之前。
+   与手机版 `.mob-theme-bar` 同一含义：
+     · 位于标签行之上、内容之外，切换分页时不会随之滚动
+     · 它控制的是整个界面的外观，不属于任何一页
 
-   ⚠ **视觉上要比标签行轻一档** ✗（它是一行设置，不是一级导航 ✓）
-     标签是实心块 + 选中态 ✓ 这里就用一行小字 + 一个小胶囊 ✓
-   ⚠ 底边一道极细的线跟标签行分开 ✓ 别用粗边框 ✓
-   ⚠ 手机版那一行（`.mob-theme-bar`）在 `mobile_css.txt` 里**另有一份** ✗
-     两边观感要一致 ✓ 以后改一边记得看另一边 ✓
+   视觉上比标签行轻一档（它是一行设置，不是一级导航）：标签为实心块加选中态，
+   此处用一行小字加一个小胶囊。
+   底边以一道极细的线与标签行分隔，不用粗边框。
+   手机版对应行（`.mob-theme-bar`）在 `mobile_css.txt` 中另有一份，两边观感
+   需一致，修改一侧时须同步检查另一侧。
    =========================================================================== */
 .set-theme-row {
   flex: none;
@@ -2002,42 +1935,40 @@ html[data-theme="light"] body { background: var(--bg); }
   letter-spacing: .5px;
   color: var(--text-faint);
 }
-/* 按钮贴右、比默认胶囊略大一点（这一行只有它一个控件，可以大些 ✓）*/
+/* 按钮贴右，比默认胶囊略大：该行仅此一个控件，可略放大 */
 .set-theme-row .theme-btn {
   flex: 0 0 auto;
   height: 26px;
   padding: 0 12px;
   font-size: 12px;
 }
-/* 日间：细线和标签也跟着浅 ✓ 白底上不要深灰线 ✓ */
+/* 日间：细线与标签同步变浅，白底上不使用深灰线 */
 html[data-theme="light"] .set-theme-row { border-bottom-color: rgba(24, 36, 50, .08); }
 html[data-theme="light"] .set-theme-lab { color: #5b6877; }
 
 #settings .theme-row { justify-content: space-between; }
 #settings .theme-row .theme-btn { margin-left: auto; flex: 0 0 auto; }
-/* 那一行比普通设置行稍微高一点（按钮 24px + 上下留白 ✓ 不然会贴边）*/
+/* 该行略高于普通设置行：按钮 24px 加上下留白，避免贴边 */
 #settings .theme-row { min-height: 34px; }
 
-/* ================================================================ 呼吸感 v2
- *  🔴 2026-10-20 ✓ 用户："这个界面真的太挤了"
- *
- *  挤的三个来源：
- *    ① 行高 28px 配 12px 字 → 字快顶到线了
- *    ② 矩阵三列 gap 8px、下面紧接着又是「数量不限」小行
- *    ③ 组与组之间只隔 14px，一眼看过去是**一整片**而不是四块
- *  对应的三件事：加行高 / 加列距 / 加组距 ✓ 控件本身尺寸不动 ✓
+/* ================================================================ 呼吸感
+ * 拥挤的三个来源：
+ *   ① 行高 28px 配 12px 字，文字几乎顶到分隔线
+ *   ② 矩阵三列 gap 8px，下方紧接「数量不限」小行
+ *   ③ 组与组之间仅隔 14px，整体呈一整片而非四块
+ * 对应处理：加行高、加列距、加组距，控件本身尺寸不变。
  */
 
 #settings.modal { width: min(472px, 94vw); }
 #settings .modal-box.set-box { padding: 0; }
 
-/* 组：上下都松一点，标题跟内容拉开 */
+/* 组：上下留白加大，标题与内容拉开 */
 #settings .set-grid { padding: 4px 20px 26px; }
 #settings .set-col h3 { margin: 22px 0 12px; }
 #settings .set-col:first-child h3 { margin-top: 14px; }
 #settings .set-sub { margin: 20px 0 8px; letter-spacing: .3px; }
 
-/* 行：32px 高 + 10px 列距 */
+/* 行：32px 高、10px 列距 */
 #settings .set-row { min-height: 32px; gap: 10px; }
 #settings .set-row + .set-row { margin-top: 2px; }
 #settings .sub-row { min-height: 28px; padding-left: 12px; }
@@ -2047,37 +1978,35 @@ html[data-theme="light"] .set-theme-lab { color: #5b6877; }
 .mx.mx-name .mx-head, .mx.mx-name .mx-row { grid-template-columns: 56px 92px 84px 1fr; }
 .mx-row { min-height: 38px; }
 .mx-head { padding-bottom: 8px; }
-/* 两块（地块名 / 势力名）之间空一格，别糊成一坨 */
+/* 两块（地块名 / 势力名）之间留出间隔，避免粘连 */
 .mx.mx-name .mx-row + .sub-row + .mx-row { margin-top: 10px; }
 
-/* 控件本身略高一点点，跟 32px 的行配得更好 */
+/* 控件略增高，与 32px 的行匹配 */
 .ctl-step, .ctl-seg { height: 26px; }
 .ctl-step > button { flex-basis: 24px; }
 #settings .set-row select,
 #settings .set-row input[type=text],
 #settings .set-row .btn { height: 26px; }
 
-/* 字体那块：跟上面的矩阵拉开，别连成一片 */
+/* 字体区块与上方矩阵拉开间距 */
 #settings .set-col .set-sub + .set-row { margin-top: 2px; }
 #settings .preview-row { margin-top: 8px; }
 #font-preview { background: rgba(255, 255, 255, .04); }
 
-/* 底栏松一点 */
+/* 底栏留白放宽 */
 .set-foot { padding: 12px 20px; gap: 10px; }
 
 /* ================================================================ 透光 + 可读性 + 小卡片
- *  🔴 2026-10-20 ✓ 用户三条：
- *     · "左侧栏和上方栏不知道为什么没有透光效果"
- *     · "调节一下灰色的字体，不然他们在半透明环境容易看不见"
- *     · "悬停时鼠标旁边的小卡片有点太长了"
+ * 三个方面：左侧栏与顶栏的透光、半透明环境下的灰字对比度、悬停卡片宽度。
  */
 
-/* ---- ① 为什么之前不透光 ----
- *   顶栏和侧栏原来跟地图是**并排的兄弟节点** ✓ 背后什么都没有，
- *   backdrop-filter 再糊也是糊在一张纯色底上 → 看着就是"不透明" ✓
- *   → 桌面端改成**浮在地图上**：地图铺满整个窗口（`.stage` inset:0），
- *     顶栏浮在最上、侧栏浮在左边 ✓ 这才有东西可透 ✓
- *   ⚠ 只在桌面端这么排（手机是另一套 dock 布局 ✓ 别动它）*/
+/* ---- ① 透光的前提 ----
+ * 顶栏和侧栏原本与地图是并排的兄弟节点，背后没有内容，backdrop-filter 只能
+ * 模糊纯色底，因此看起来不透明。
+ * 桌面端改为浮在地图之上：地图铺满整个窗口（`.stage` inset:0），顶栏浮在最上、
+ * 侧栏浮在左侧，模糊才有内容可透。
+ * 此布局仅用于桌面端；手机为另一套 dock 布局，不适用。
+ */
 @media (min-width: 761px) {
   #app { position: relative; }
   .toolbar {
@@ -2085,13 +2014,13 @@ html[data-theme="light"] .set-theme-lab { color: #5b6877; }
   }
   .body { position: fixed; inset: 0; z-index: 1; }
   .stage { position: absolute; inset: 0; }
-  /* 🔴 **缩放按钮要让开侧栏** ✗✗（2026-10-22）
-   *   桌面版把地图铺满整个窗口、侧栏**浮在上面**（322px 宽 ✓ z-index 20 ✓）
-   *   而 `.zoom-box` 还是 `left: 12px` ✗ → 正好钻进侧栏底下：
-   *     · 深色主题：面板够实，按钮看不见（还以为没这组按钮 ✗）
-   *     · 白天主题：面板半透明，按钮**从底下透出来** → 看着像"压在最近使用上" ✗
-   *   → 让到侧栏右边：322 + 原来那 12 ✓
-   *   ⚠ 改侧栏宽度时这里**一起改** ✗（跟上面的 `width: 322px` 是同一个数 ✓）*/
+  /* 缩放按钮须让开侧栏。
+     桌面端地图铺满窗口，侧栏浮在其上（宽 322px、z-index 20），而 `.zoom-box`
+     仍为 `left: 12px`，恰好钻入侧栏之下：
+       · 深色主题下面板较实，按钮不可见
+       · 日间主题下面板半透明，按钮透出，视觉上压在最近使用之上
+     处理：左移量改为侧栏宽度加原有 12px。
+     修改侧栏宽度时此处需同步调整，与上方 `width: 322px` 为同一个数值。 */
   .zoom-box { left: 334px; }
   .sidebar {
     position: absolute; left: 0; top: var(--tb-h, 46px); bottom: 0; z-index: 20;
@@ -2104,7 +2033,7 @@ html[data-theme="light"] .set-theme-lab { color: #5b6877; }
     border-right: 1px solid var(--glass-brd);
     box-shadow: 12px 0 32px rgba(0, 0, 0, .28);
   }
-  /* 顶栏那条窄，底子给实一点，字才压得住地图 */
+  /* 顶栏较窄，底色需更实，文字才能压住地图 */
   .toolbar {
     background:
       linear-gradient(180deg, var(--glass-hi), transparent 60%),
@@ -2113,15 +2042,14 @@ html[data-theme="light"] .set-theme-lab { color: #5b6877; }
     backdrop-filter: blur(20px) saturate(150%);
     border-bottom: 1px solid var(--glass-brd);
   }
-  /* 侧栏里的分组面板 **别再自己套一层玻璃** ✗
-     不然是玻璃叠玻璃 → 每滚一层都更糊、字更难读 ✓ */
+  /* 侧栏内的分组面板不再叠加玻璃：玻璃叠玻璃会使每层滚动时更模糊、文字更难读 */
   .sidebar .panel { background: transparent; backdrop-filter: none; -webkit-backdrop-filter: none; box-shadow: none; }
   .sidebar::-webkit-scrollbar-track { background: transparent; }
 }
 
-/* ---- ② 灰字在半透明底上要提亮 ----
- *   原来 --text-dim #8e9bab 压深色底 6.07:1 够用，
- *   可玻璃后面是**地图的花花绿绿** ✓ 对比度是浮动的 ✓ → 统一提亮两档 ✓ */
+/* ---- ② 灰字在半透明底上需提亮 ----
+ * `--text-dim` 的 #8e9bab 压在深色底上对比度 6.07:1 尚可，但玻璃背后是地图的
+ * 多种色彩，对比度浮动，故统一提亮两档。 */
 :root {
   --text-dim: #a7b5c6;
   --text-faint: #8695a7;
@@ -2130,16 +2058,16 @@ html[data-theme="light"] {
   --text-dim: #43505f;
   --text-faint: #5d6a79;
 }
-/* 玻璃上的次要文字再补一层底，不然遇着亮色地块就飘了 */
+/* 玻璃上的次要文字补一层底色，避免遇到亮色地块时失去对比 */
 #settings .set-note, #settings .set-sub, .sidebar .panel-head .hint { text-shadow: 0 1px 2px rgba(0, 0, 0, .35); }
 html[data-theme="light"] #settings .set-note,
 html[data-theme="light"] #settings .set-sub,
 html[data-theme="light"] .sidebar .panel-head .hint { text-shadow: 0 1px 2px rgba(255, 255, 255, .7); }
 
-/* ---- ③ 悬停小卡片太长了 ----
- *   两行字都是 nowrap 撑出来的 ✓ 卡宽 280 上限是够的，问题是**行太长**：
- *   超长的地名又不换行，整张卡被撑成一条 ✓
- *   → 收到 244px，两行都给省略号 ✓ 同时把内边距收紧一点 ✓ */
+/* ---- ③ 悬停卡片过宽 ----
+ * 两行文字均为 nowrap 撑开，卡片 280 的宽度上限足够，问题在行过长：超长地名
+ * 不换行，整张卡被拉成一条。
+ * 处理：收到 244px，两行均加省略号，同时收紧内边距。 */
 .hover-card {
   max-width: 244px;
   padding: 6px 8px;
@@ -2160,24 +2088,21 @@ html[data-theme="light"] .hover-card { background: rgba(252, 253, 255, .86); }
 html[data-theme="light"] .hover-card .hc-title { color: #16202b; }
 
 /* ================================================================ 日间模式补完
- *  🔴 2026-10-20 ✓ 用户："日间模式太逆天了，有些组件居然还是黑色，
- *     而且白色太亮了，不透明效果也不行"
- *
- *  三件事：
- *    ① 原来有几十处**写死的深色**（#10161d / #1b222b / #fff …）— 浅色主题一开就露馅
- *       → 新控件全改成 var()，老规则用 html[data-theme=light] 逐条盖 ✓
- *    ② 白太亮：底 #eef1f5 → #e3e8ee，玻璃的白降一档并加一点冷调
- *    ③ 玻璃太"实"：浅色下本来对比就低，糊得太厚反而像磨砂塑料
- *       → 浅色玻璃透明度调到 .55，模糊略降，靠边框和投影撑结构
+ * 三项处理：
+ *   ① 原有数十处写死的深色（#10161d / #1b222b / #fff 等）在浅色主题下暴露，
+ *      新控件改用 var()，旧规则用 html[data-theme=light] 逐条覆盖
+ *   ② 白色过亮：底色由 #eef1f5 调为 #e3e8ee，玻璃白降一档并略偏冷
+ *   ③ 玻璃过实：浅色下对比本就偏低，模糊过重呈磨砂塑料感，
+ *      故浅色玻璃透明度调至 .55、模糊略降，依靠边框与投影建立结构
  */
 
-/* ---- ① 控件底/高亮改成变量（两套主题一起生效）---- */
+/* ---- ① 控件底色与高亮改为变量（两套主题同时生效）---- */
 .ctl-step, .ctl-seg { background: var(--panel-2); }
 .ctl-step > button:hover, .ctl-seg > button:hover { background: var(--panel); }
 .ctl-seg > button { background: transparent; }
 .ctl-seg > button.on { background: color-mix(in srgb, var(--gold) 22%, transparent); }
 
-/* ---- ② 浅色主题：写死深色的老规则逐条盖 ---- */
+/* ---- ② 浅色主题：逐条覆盖写死深色的旧规则 ---- */
 html[data-theme="light"] {
   --bg: #e3e8ee;
   --panel: #f4f7fa;
@@ -2219,7 +2144,7 @@ html[data-theme="light"] select,
 html[data-theme="light"] input[type=text],
 html[data-theme="light"] input[type=number] { background: #fff; color: var(--text); border-color: var(--line); }
 
-/* ---- ③ 数量格子里塞「不限」---- */
+/* ---- ③ 数量格子内放置「不限」---- */
 .mx-count { display: flex; align-items: center; gap: 7px; min-width: 0; }
 .mx-count .ctl-step { flex: 0 1 96px; }
 .mx-unl {
@@ -2236,10 +2161,10 @@ html[data-theme="light"] input[type=number] { background: #fff; color: var(--tex
 .mx-unl input[type=checkbox] { width: 13px; height: 13px; margin: 0; }
 .mx.mx-name .mx-head, .mx.mx-name .mx-row { grid-template-columns: 56px 92px 84px 1fr; }
 
-/* ---- 浅色主题：把写死深色的老组件统一收一遍 ----
- *  这些是**改造前就有**的规则（分段按钮 / 下拉 / 搜索框 / 地图卡 / 缩放按钮…），
- *  它们写死成 #0f141a 这类深色 → 日间模式一点开就是一块黑 ✓
- *  → 统一改走变量 ✓ 深色主题一个字都不变 ✓ */
+/* ---- 浅色主题：统一处理写死深色的旧组件 ----
+ * 分段按钮、下拉、搜索框、地图卡、缩放按钮等均为改造前已有的规则，写死
+ * #0f141a 一类深色，日间模式下呈黑色块。
+ * 统一改走变量；深色主题的取值不变。 */
 html[data-theme="light"] .segmented,
 html[data-theme="light"] .dd-btn,
 html[data-theme="light"] #toolbar-fold,
@@ -2261,15 +2186,13 @@ html[data-theme="light"] .zoom-box .btn { background: rgba(255, 255, 255, .92); 
 html[data-theme="light"] .map-card:hover { background: var(--panel); }
 html[data-theme="light"] .chain-row.active { background: #dbe4ee; }
 
-/* 组标题去掉了（2026-10-20 ✓ 用户："这个部分冗余了"）
- * 标签页已经把组名写在上面，再重复一遍是白占两行 ✓
- * → 每组第一个元素直接顶上去，靠 .set-grid 上内边距撑一点呼吸 */
+/* 组标题已移除：标签页已显示组名，重复会增加两行高度。
+ * 每组第一个元素直接上移，由 `.set-grid` 的上内边距提供留白。 */
 #settings .set-grid { padding-top: 14px; }
 #settings .set-col:first-child h3 { margin-top: 0; }
 
 /* ================================================================ 设置面板字号放大
- *  🔴 2026-10-20 ✓ 用户："设置界面的字体可以更大一点"
- *  整体 +1.2~1.5px，行高跟着 +2px，别让字挤在一起 ✓
+ * 整体增大 1.2~1.5px，行高相应增加 2px，避免文字拥挤。
  */
 #settings .set-row { font-size: 13.5px; min-height: 34px; }
 #settings .set-row .set-l { font-size: 13.5px; color: var(--text-dim); }
@@ -2291,22 +2214,19 @@ html[data-theme="light"] .chain-row.active { background: #dbe4ee; }
 #settings .set-row select,
 #settings .set-row input[type=text],
 #settings .set-row .btn { font-size: 13px; }
-/* 字大了，几处定宽列跟着放宽，别把长标签截掉 */
+/* 字号增大后，几处定宽列同步放宽，避免长标签被截断 */
 #settings .set-row .set-l { flex-basis: 100px; }
 #settings .set-row .set-v { flex-basis: 58px; }
 .mx-head, .mx-row { grid-template-columns: 60px 104px 1fr; }
 .mx.mx-name .mx-head, .mx.mx-name .mx-row { grid-template-columns: 60px 96px 88px 1fr; }
 #settings.modal { width: min(492px, 94vw); }
 
-/* ================================================================ 日间模式 第三轮
- *  🔴 2026-10-20 ✓ 用户四条：
- *     "亮金色字体改掉" / "视图的按钮还是暗色" / "还是太亮" / "也没有不透明效果了"
- *
- *  ① 金色 → 日间换成**沉稳的靛蓝**（金色在浅底上要么糊、要么像警告）
- *  ② 有些按钮的底色是从 `.btn` / `.segmented button` 继承来的深色 → 再扫一遍
- *  ③ 底再压暗一档（#e3e8ee → #d8dfe8），面板同步
- *  ④ 玻璃回到真半透明：侧栏 .42、顶栏 .5，模糊加重、边框提亮
- *     —— 上一版压到 .58 又把模糊降了，看着就成磨砂塑料了 ✗
+/* ================================================================ 日间模式：补完
+ * ① 金色改为沉稳的靛蓝（金色在浅底上要么对比不足，要么近似警告色）
+ * ② 部分按钮底色继承自 `.btn` 与 `.segmented button` 的深色，需再扫一遍
+ * ③ 底色再压暗一档（#e3e8ee → #d8dfe8），面板同步
+ * ④ 玻璃恢复真正半透明：侧栏 .42、顶栏 .5，模糊加重、边框提亮；
+ *    .58 且降低模糊会使材质呈磨砂塑料感
  */
 html[data-theme="light"] {
   --bg: #d8dfe8;
@@ -2314,7 +2234,7 @@ html[data-theme="light"] {
   --panel-2: #dfe7ef;
   --line: #bcc8d4;
   --line-soft: #cdd7e1;
-  --gold: #2f5f8f;          /* 日间的主强调色：靛蓝，不再用金 */
+  --gold: #2f5f8f;          /* 日间的主强调色：靛蓝，不再使用金 */
   --gold-dim: #4a7cae;
   --accent: #2a6fa8;
   --glass: rgba(240, 245, 250, .42);
@@ -2326,7 +2246,7 @@ html[data-theme="light"] {
 html[data-theme="light"] body { background: var(--bg); }
 html[data-theme="light"] .stage { background: #b9c4d1; }
 
-/* 顶栏 / 侧栏：重给一遍，模糊加重 */
+/* 顶栏与侧栏：重新指定，模糊加重 */
 html[data-theme="light"] .toolbar {
   background: linear-gradient(180deg, rgba(255, 255, 255, .55), rgba(255, 255, 255, .18)), var(--glass-strong);
   -webkit-backdrop-filter: blur(26px) saturate(160%);
@@ -2338,7 +2258,7 @@ html[data-theme="light"] .sidebar {
   backdrop-filter: blur(26px) saturate(160%);
 }
 
-/* ② 按钮一律走浅底（视图那组原来还是暗的）*/
+/* ② 按钮统一使用浅底，视图分组同样适用 */
 html[data-theme="light"] .btn,
 html[data-theme="light"] .btn.ghost,
 html[data-theme="light"] .segmented,
@@ -2359,18 +2279,17 @@ html[data-theme="light"] .zoom-box .btn:hover { background: rgba(255, 255, 255, 
 html[data-theme="light"] .segmented button.on,
 html[data-theme="light"] .segmented button[aria-pressed="true"] {
   background: rgba(47, 95, 143, .16);
-  /* ⚠ 原来这里写的是 `var(--gold)`（#2f5f8f）✗ —— 它压在**自己那层淡蓝底**上
-   *   （#d4dee8）只剩 4.29:1，差一点点够不到 AA 正文 ✓
-   *   → 压深一档到 #26598a（5.35:1）✓ 跟剧本下拉栏那边**同一个色** ✓
-   *   （两排本来就是一回事：一个"选中了这一层"，一个"选中了这个剧本" ✓） */
+  /* 此处原用 `var(--gold)`（#2f5f8f），压在其自身淡蓝底（#d4dee8）上对比度仅
+     4.29:1，略低于 AA 正文要求。
+     改用更深一档的 #26598a（5.35:1），与剧本下拉栏取同一色：两者含义相同，
+     分别表示选中的生效面与选中的剧本。 */
   color: #26598a;
 }
 html[data-theme="light"] .set-tab.on { color: var(--gold); border-bottom-color: var(--gold); }
 
 /* ================================================================ 日间模式：启动页
- *  🔴 2026-10-20 ✓ 用户截图：日间模式下启动页还是"黑底 + 亮金卡片名"
- *  启动页（.boot / .map-card / .boot-title …）用的是**写死的深色**和金色，
- *  跟设置面板那套变量完全没关系 → 这里逐条给浅色版 ✓
+ * 启动页（`.boot` / `.map-card` / `.boot-title` 等）使用写死的深色与金色，与
+ * 设置面板那套变量无关，此处在浅色主题下逐条覆盖。
  */
 html[data-theme="light"] .boot {
   background: radial-gradient(ellipse at center, #eef2f7, #d5dde7 72%);
@@ -2383,7 +2302,7 @@ html[data-theme="light"] .boot-sub,
 html[data-theme="light"] .boot-ver,
 html[data-theme="light"] .boot-step { color: var(--text-dim); }
 
-/* 地图卡片：浅底 + 深字，标题用靛蓝而不是金 */
+/* 地图卡片：浅底深字，标题使用靛蓝而非金 */
 html[data-theme="light"] .map-card {
   background: rgba(255, 255, 255, .78);
   border-color: var(--line);
@@ -2403,31 +2322,29 @@ html[data-theme="light"] .map-card .btn {
 }
 html[data-theme="light"] .map-card .btn:hover { background: #fff; border-color: var(--gold-dim); }
 
-/* 「导入地图包」那个虚线框 */
+/* 「导入地图包」虚线框 */
 html[data-theme="light"] .boot .dashed,
 html[data-theme="light"] .boot .map-import,
 html[data-theme="light"] .boot .import-box { border-color: var(--line); color: var(--text-dim); }
 
-/* 启动页里的滚动条 */
+/* 启动页滚动条 */
 html[data-theme="light"] .boot ::-webkit-scrollbar-thumb { background: #b7c3cf; }
 
 /* ================================================================ 设置面板：两处对齐
- *  🔴 2026-10-20 ✓ 用户两条：
- *     "我希望设置界面能像左侧栏一样不要遮住上方栏"
- *     "不透明度也是跟他们比较好一点"
- *     （另外：数量挪到单独一行 → 见 .mx-row2）
+ * ① 设置面板与左侧栏一致，不遮挡顶栏
+ * ② 玻璃底与侧栏一致（另：数量移至单独一行，见 `.mx-row2`）
  */
 
-/* ① 别盖住顶栏：跟侧栏一样从 --tb-h 开始 */
+/* ① 不遮挡顶栏：与侧栏一致，从 --tb-h 开始 */
 #settings.modal {
   top: var(--tb-h, 46px);
   bottom: 0;
   left: auto;
   right: 0;
-  z-index: 30;                 /* 顶栏是 40 ✓ 放在它下面 */
+  z-index: 30;                 /* 顶栏为 40，置于其下 */
 }
 
-/* ② 玻璃底跟侧栏一个口径（原来用的是更实的 --glass-strong） */
+/* ② 玻璃底与侧栏同一口径（原使用更实的 --glass-strong） */
 #settings .modal-box.set-box {
   background:
     linear-gradient(160deg, var(--glass-hi), transparent 40%),
@@ -2451,13 +2368,10 @@ html[data-theme="light"] .boot ::-webkit-scrollbar-thumb { background: #b7c3cf; 
 }
 .mx-count .ctl-step { flex: 0 1 108px; }
 
-/* ================================================================ 设置：去掉标题行 + 灰字加深
- *  🔴 2026-10-20 ✓ 用户："这里太冗余了"（截图圈的是「设置」那行标题）
- *              "日间模式下一些灰色字体应该改成更深不然看不清"
- *
- *  ① 标题行整个删掉：面板本身就是设置，写个「设置」是重复。
- *     白天/关闭两个按钮挪到标签行最右边（× 用图标，不占字宽）✓
- *  ② 日间模式的灰字再压深一档（--text-faint 在浅底上本来就飘）✓
+/* ================================================================ 设置：移除标题行 + 灰字加深
+ * ① 标题行整体移除：面板本身即设置，重复标题多余；
+ *    白天/关闭两个按钮移至标签行最右，关闭使用图标，不占字宽
+ * ② 日间模式的灰字再压深一档（--text-faint 在浅底上对比不足）
  */
 #settings .set-tabs {
   align-items: center;
@@ -2485,7 +2399,7 @@ html[data-theme="light"] .boot ::-webkit-scrollbar-thumb { background: #b7c3cf; 
   cursor: pointer;
 }
 #settings .set-x:hover { color: var(--danger); border-color: var(--danger); }
-/* 标签页本身留出空间，别被右边两个按钮挤扁 */
+/* 标签页预留空间，避免被右侧两个按钮挤压 */
 #settings .set-tab { flex: 0 1 auto; padding: 8px 8px; }
 
 /* ① 日间灰字加深 */
@@ -2499,14 +2413,13 @@ html[data-theme="light"] .mx-name,
 html[data-theme="light"] .mx-count-l { color: var(--text-dim); }
 html[data-theme="light"] .mx-head { color: var(--text-faint); }
 
-/* ---- 启动页卡片标题：日间别再是亮金色 ----
- *  🔴 2026-10-20 ✓ 用户："这里怎么还是亮金色呀，我根本看不清"
- *  原来是**写死的** `.map-card b { color: #f0d98a }` ✓
- *  我上一轮盖的是 `.map-card .map-name`，可卡片标题实际用的是 `<b>` ✗ 没压上 ✓
- *  → 直接对 b 动手，并且把权重抬高（.map-card b 是 0,1,1 ✓ 得写 0,2,1）✓ */
+/* ---- 启动页卡片标题：日间不使用亮金色 ----
+ * 写死的 `.map-card b { color: #f0d98a }` 若按 `.map-card .map-name` 覆盖，
+ * 会因卡片标题实际使用 `<b>` 而未命中。
+ * 处理：直接作用于 b，并提高权重（`.map-card b` 为 0,1,1，需写 0,2,1）。 */
 html[data-theme="light"] .boot .map-card b,
 html[data-theme="light"] .map-card > b {
-  color: #1f4e79;                 /* 深靛蓝，压在浅底上够黑够清楚 */
+  color: #1f4e79;                 /* 深靛蓝，压在浅底上对比充足 */
 }
 html[data-theme="light"] .map-card b:hover { color: #14385a; }
 html[data-theme="light"] .map-card span { color: #47535f; }
@@ -2514,10 +2427,9 @@ html[data-theme="light"] .boot-sub,
 html[data-theme="light"] .boot .hint,
 html[data-theme="light"] .boot-ver { color: #3f4b58; }
 
-/* ---- 图例那两个输入控件在日间还是深色 ----
- *  🔴 2026-10-20 ✓ 用户："这里怎么还是深色"
- *  `#set-legend-title` / `#set-legend-pos` 有自己的写死底色（#121a22 / #0f141a），
- *  权重比通用那条 `input[type=text]` 高 → 单独点它们的名 ✓ */
+/* ---- 图例两个输入控件在日间仍为深色 ----
+ * `#set-legend-title` 与 `#set-legend-pos` 自带写死的底色（#121a22 / #0f141a），
+ * 权重高于通用的 `input[type=text]`，故单独指定。 */
 html[data-theme="light"] #set-legend-title,
 html[data-theme="light"] #set-legend-pos,
 html[data-theme="light"] #set-legend-size,
@@ -2532,8 +2444,8 @@ html[data-theme="light"] #set-font-power {
   border-color: var(--line);
 }
 html[data-theme="light"] #set-legend-title::placeholder { color: #7a8794; }
-/* 日间下拉箭头：上面那条底色用了 `background` 简写，会在箭头之后把图清掉 ✗
-   所以箭头必须在这之后单独补一次（只设 image / position / size ✓） */
+/* 日间下拉箭头：上方规则使用 `background` 简写，会在箭头之后清除图像，
+   故箭头须在此之后单独补充（只设 image / position / size）。 */
 html[data-theme="light"] #set-legend-pos,
 html[data-theme="light"] #set-legend-size,
 html[data-theme="light"] #set-legend-font,
@@ -2549,15 +2461,14 @@ html[data-theme="light"] #set-legend-size option,
 html[data-theme="light"] #set-legend-font option,
 html[data-theme="light"] #set-legend-cols option,
 html[data-theme="light"] #set-legend-box option { background: #fff; color: #1a232e; }
-/* 图例名字框的悬停/聚焦：深色下只是亮一点，白天不能还压着一层黑 ✓ */
+/* 图例名称框的悬停与聚焦：深色下仅提亮，日间不可再压一层黑 */
 html[data-theme="light"] .legend-row .legend-name:hover { border-color: #b6c2cf; }
 html[data-theme="light"] .legend-row .legend-name:focus { background: #fff; color: var(--text); }
 html[data-theme="light"] .legend-row .legend-name::placeholder { color: #7a8794; }
-/* 标签页那一行在日间也要跟着透，不然是一块灰板 */
+/* 标签行在日间同样需要透明，否则呈灰板 */
 html[data-theme="light"] .set-tabs { border-bottom-color: var(--glass-brd); }
 
-/* ---- 悬停卡片：更窄、更高、字更大更深 ----
- *  🔴 2026-10-20 ✓ 用户："悬停框变窄变高，字体变大，字体变深" */
+/* ---- 悬停卡片：更窄、更高、字更大更深 ---- */
 .hover-card {
   max-width: 196px;
   min-width: 96px;
@@ -2589,52 +2500,50 @@ html[data-theme="light"] .hover-card {
 html[data-theme="light"] .hover-card .hc-title { color: #101a24; text-shadow: none; }
 html[data-theme="light"] .hover-card .hc-sub { color: #38444f; text-shadow: none; }
 
-/* ================================================================ 日间模式：剧本下拉栏的「选中」是亮金色
- *  🔴 2026-10-21 ✓ 用户截图报的：「剧本在白天模式时字体是亮金色会很难看见」
+/* ================================================================ 日间模式：剧本下拉栏选中项为亮金色
+ * 根本原因是两套按钮各自写了选中样式：
+ *   · 剧本少于 4 个（回退）时为 `.segmented button`，
+ *     日间规则 `html[data-theme="light"] .segmented button.on` 同时重写了底色
+ *     与字色，呈靛蓝字配淡蓝底，清晰可读
+ *   · 剧本不少于 4 个（下拉栏）时为 `.dd-btn`，
+ *     日间规则 `html[data-theme="light"] .dd-btn` 只重写 background，未写
+ *     color，`.dd-btn.on` 中写死的 #f0d98a 亮金因此保留
+ *   浅底（#f6f8fa）配亮金 #f0d98a 对比度为 1.12:1，几乎不可见，
+ *   外观上即表现为多剧本时未沿用单剧本的样式。
  *
- *  根子**不是**"白天没做"，而是**两套按钮各写了一套选中样式** ✓：
- *    · 剧本 **< 4 个**（回退）→ 剧本层就是 `.segmented button` ✓
- *       白天那条 `html[data-theme="light"] .segmented button.on` 把
- *       **底色和字色都重写了** → 靛蓝字 + 淡蓝底，看得清 ✓
- *    · 剧本 **≥ 4 个**（下拉栏）→ 剧本是 `.dd-btn` ✓
- *       白天那条 `html[data-theme="light"] .dd-btn` 只重写了 **background** ✗
- *       没写 color → `.dd-btn.on` 里写死的 `#f0d98a` 亮金**原样活了下来** ✓
- *   浅底（#f6f8fa）配亮金 #f0d98a → 对比度 **1.12:1**，等于隐形 ✗
- *   → 所以用户看着像"多剧本时没沿用单剧本的样式" ✓ 这个判断是对的 ✓
+ * 同族另有两处，一并处理（均为日间浅底浅字）：
+ *   · `.dd-item.on` —— 下拉面板中的选中行，同样为亮金（1.12:1）
+ *   · `.dd-btn.grain` 与 `.dd-item.grain` —— 「借用粒度」档，
+ *     #9ec5e8 淡蓝在浅底上为 1.45:1，可见度低于亮金
+ *     （`.segmented button.grain` 在日间已压成深字，两处不一致）
  *
- *  ⚠ 同族的还有两处，一起收（都是「白天 + 浅底 + 浅字」）：
- *    · `.dd-item.on` —— 下拉面板里那一行选中，同一个亮金（1.12:1）✗
- *    · `.dd-btn.grain` / `.dd-item.grain` —— "借用粒度"那一档，
- *      `#9ec5e8` 淡蓝在浅底上 **1.45:1**，比亮金还看不见 ✗
- *      （`.segmented button.grain` 在白天倒是被压成了深字 ✓ 左右不一致）
- *
- *  取色沿用白天已有的 `--gold`（靛蓝 #2f5f8f）✓ 跟"视图"那一排的选中**同一个色** ✓
- *  —— 两边本来就是一回事，长得不一样才是 bug ✓
+ * 取色沿用日间已有的 `--gold`（靛蓝 #2f5f8f），与「视图」一排的选中同色，
+ * 二者含义相同，样式不一致即为缺陷。
  */
 
-/* ① 下拉按钮：选中 / 借用粒度（字色必须显式写 ✗ 不能指望 .dd-btn 那条兜） */
+/* ① 下拉按钮的选中与借用粒度：字色须显式指定，不能依赖 `.dd-btn` 的继承 */
 html[data-theme="light"] .dd-btn.on {
-  /* 底色跟着 `.segmented button.on` 的口径走：淡蓝蒙一层，别再用深棕渐变 ✗ */
+  /* 底色与 `.segmented button.on` 一致：淡蓝蒙一层，不再使用深棕渐变 */
   background: rgba(47, 95, 143, .16);
-  color: #26598a;                        /* 比 --gold 深一档：选中底压暗后仍 5.3:1 ✓ */
+  color: #26598a;                        /* 比 --gold 深一档：选中底压暗后仍为 5.3:1 */
   border-color: rgba(47, 95, 143, .45);
 }
 html[data-theme="light"] .dd-btn.grain {
   background: rgba(47, 95, 143, .08);
-  color: #2b5f85;                        /* 5.6:1（浅底）✓ 比亮金/淡蓝都稳 */
+  color: #2b5f85;                        /* 5.6:1（浅底），比亮金与淡蓝均更稳定 */
   border-color: rgba(47, 95, 143, .30);
 }
 
-/* ② 下拉面板里的条目：同一套 */
+/* ② 下拉面板中的条目：同一套取值 */
 html[data-theme="light"] .dd-item.on {
   background: rgba(47, 95, 143, .16);
   color: #26598a;
 }
 html[data-theme="light"] .dd-item.grain { color: #2b5f85; }
 
-/* ③ 「视图」那一排的借用粒度 —— 原来直接吃 `.segmented button` 的深字，
- *    `#bcc9d8` 是给深色底配的 ✗ 浅底上虽然勉强（12.48:1 是它吃了深字，
- *    可底色 #dde5ee 一压就看不出"这是借用"）→ 跟下拉栏统一成同一个蓝 ✓ */
+/* ③ 「视图」一排的借用粒度：原继承 `.segmented button` 的深字，浅底上对比度
+      尚可，但底色 #dde5ee 一压便看不出「借用」状态，故与下拉栏统一为同一个
+      蓝。 */
 html[data-theme="light"] .segmented button.grain {
   background: rgba(47, 95, 143, .08);
   color: #2b5f85;
@@ -2642,28 +2551,23 @@ html[data-theme="light"] .segmented button.grain {
 }
 
 /* ================================================================ 液态玻璃 · 第二波
- *  🔴 2026-10-21 ✓ 用户："更多更多液态玻璃"
+ * 前一批只覆盖四个外壳（见「液态玻璃 + 主题」一节）：顶栏、侧栏内的 `.panel`、
+ * 设置抽屉、悬停卡片。
+ * 其余元素均为写死的实心深色，浮在地图上如同一块块黑板：
+ *   下拉菜单、剧本下拉面板、模态框、toast、缩放条、图例列表、搜索结果框、
+ *   归属链行、调色板、地图卡、教程卡、教程提示条。
+ * 本节将它们统一为同一套玻璃样式。
  *
- *  **第一波只盖了四个壳**（见上面「液态玻璃 + 主题」那一节）：
- *    顶栏 · 侧栏里的 .panel · 设置抽屉 · 悬停卡片 ✓
- *  剩下这些全是**写死的实心深色**，浮在地图上就是一块块黑板 ✓：
- *    下拉菜单 · 剧本下拉面板 · 模态框 · toast · 缩放条 · 图例列表
- *    搜索结果框 · 归属链行 · 调色板 · 地图卡 · 教程卡 · 教程提示条
+ * 两条硬性约定：
+ *   ① 只改底色、边框与投影，不改文字色。`--text*` 变量随主题变化，在此重写
+ *      字色会与日间模式的覆盖规则冲突。
+ *   ② `backdrop-filter` 必须带 `-webkit-` 前缀，Safari 与 iOS 仅识别前缀形式。
  *
- *  → 这一节把它们全部换成同一套玻璃语言 ✓
- *
- *  ⚠⚠ **两条硬规矩**（不照做会出乱子）：
- *   ① **只改底子 + 边框 + 投影，不碰文字色** ✗
- *      `--text*` 那几个变量本来就随主题翻 ✓ 在这里再写一遍字色会和
- *      「日间模式」那几百行覆盖打架 ✓ 以后调一处忘一处 ✓
- *   ② **`backdrop-filter` 必须带 `-webkit-` 前缀** ✗
- *      Safari / iOS 上只认前缀那个 ✓ 少一个就是"安卓是玻璃、苹果是黑板" ✓
- *
- *  ⚠ 模糊半径**分档**，不是一律 18px：
- *     · 大面板（设置抽屉 / 模态框）→ 16~18px（底子大，要糊得透）
- *     · 中小浮层（菜单 / 卡片 / toast）→ 10~14px（太小会糊成一团，反而看不清）
- *     · 细条（缩放条 / 提示条）→ 8~10px
- *   半径越大越吃 GPU ✗ 手机上尤其明显 ✓ 所以别一律拉满 ✓
+ * 模糊半径分档，不统一取 18px：
+ *   · 大面板（设置抽屉 / 模态框）16~18px
+ *   · 中小浮层（菜单 / 卡片 / toast）10~14px，过小会糊成一团
+ *   · 细条（缩放条 / 提示条）8~10px
+ * 半径越大 GPU 开销越高，移动端尤其明显，不宜一律取最大值。
  */
 
 /* ---- ① 弹出层：下拉菜单 / 剧本面板 / 模态框 ---- */
@@ -2678,13 +2582,13 @@ html[data-theme="light"] .segmented button.grain {
   border-color: var(--glass-brd);
   box-shadow: var(--glass-shadow);
 }
-/* 下拉菜单和剧本面板都不大，模糊小一档更清楚 ✓ */
+/* 下拉菜单与剧本面板尺寸较小，模糊取较小一档更清晰 */
 .dropdown,
 .dd-panel {
   -webkit-backdrop-filter: blur(12px) saturate(150%);
   backdrop-filter: blur(12px) saturate(150%);
 }
-/* 模态框是整块大面板，底子更实（字多，透过头读不下去 ✓）*/
+/* 模态框为整块大面板，文字较多，底色需更实，避免透过头 */
 .modal-box {
   background:
     linear-gradient(160deg, var(--glass-hi), transparent 40%),
@@ -2692,17 +2596,13 @@ html[data-theme="light"] .segmented button.grain {
 }
 
 /* ---- ② 小浮层：toast / 缩放条 / 教程提示条 ---- */
-/* 🔴🔴 **`.zoom-box` 不在此列** ✗✗（2026-10-21 用户截图报的"白色大条"）
- *
- *   `.zoom-box` 只是**三个按钮的容器** ✗ 它不是一块面板 ✓
- *   而且它的定位是：
- *     `position: absolute; left: 12px; right: 10px;`
- *   → `left` + `right` 同时写 = **横向撑满整个地图** ✓（以前它是透明的 ✓
- *     所以看不出来 ✓ 现在给它上玻璃底 → 整条**白色大条**横在屏幕上 ✗）
- *
- *   → 玻璃只给**它里面那三个按钮**（`.zoom-box .btn`）✓ 容器保持透明 ✓
- *   这一条以前就写错过一次（给容器上了底）✓ 别再犯 ✓
- */
+/* `.zoom-box` 不在此列。
+   `.zoom-box` 只是三个按钮的容器，不是面板。其定位为
+   `position: absolute; left: 12px; right: 10px;`，同时设置 left 与 right 会
+   横向撑满整个地图；该容器为透明，因此不可见，若给它加玻璃底，会出现一条
+   横贯屏幕的白色长条。
+   玻璃只作用于容器内的三个按钮（`.zoom-box .btn`），容器保持透明；
+   同一错误须避免重复出现。 */
 .toast,
 .tut-toast {
   background: linear-gradient(160deg, var(--glass-hi), transparent 46%), var(--glass);
@@ -2710,7 +2610,7 @@ html[data-theme="light"] .segmented button.grain {
   backdrop-filter: blur(10px) saturate(150%);
   border-color: var(--glass-brd);
 }
-/* 缩放条：**只给按钮**玻璃 ✓ 容器透明 ✓ */
+/* 缩放条：玻璃只作用于按钮，容器保持透明 */
 .zoom-box .btn {
   background: linear-gradient(160deg, var(--glass-hi), transparent 50%), var(--glass);
   -webkit-backdrop-filter: blur(10px) saturate(150%);
@@ -2718,11 +2618,11 @@ html[data-theme="light"] .segmented button.grain {
   border-color: var(--glass-brd);
   box-shadow: 0 4px 14px rgba(0, 0, 0, .3);
 }
-/* toast 左边那道金条是它的身份（出错变红）✓ 保留 ✓ */
+/* toast 左侧金条为其标识，出错时转红 */
 .toast { border-left-color: var(--gold); }
 .toast.err { border-left-color: var(--danger); }
-/* ⚠ **不要给 `.zoom-box` 容器加阴影** ✗ 它是全宽的（left+right 撑满 ✓）
- *   容器带阴影 = 屏幕上下各一道灰边 ✓ 什么也没包住 ✓ 纯属噪音 ✓ */
+/* 不给 `.zoom-box` 容器加阴影：该容器为全宽（left 与 right 撑满），
+   容器带阴影会在屏幕上下各留一道灰边，且不包裹任何内容。 */
 .tut-toast { box-shadow: 0 10px 28px rgba(0, 0, 0, .4); }
 
 /* ---- ③ 卡片与列表：地图卡 / 教程卡 / 图例列表 / 搜索结果 / 归属链 ---- */
@@ -2738,8 +2638,8 @@ html[data-theme="light"] .segmented button.grain {
   backdrop-filter: blur(12px) saturate(145%);
   border-color: var(--glass-brd);
 }
-/* 地图卡在启动页里是**整屏暗底上的一张张卡** ✗
- *   那里没有地图可透 ✓ 所以底子给实一点，别让卡片透明到能看见底下的渐变 ✓ */
+/* 地图卡位于启动页，背景为整屏暗底，没有地图可透，故底色取实，
+   避免透明后露出下方渐变。 */
 .map-card {
   background:
     linear-gradient(160deg, var(--glass-hi), transparent 46%),
@@ -2750,16 +2650,14 @@ html[data-theme="light"] .segmented button.grain {
   backdrop-filter: blur(16px) saturate(150%);
   box-shadow: 0 14px 44px rgba(0, 0, 0, .5);
 }
-/* 搜索结果 / 归属链 / 图例列表是**面板里的长列表** ✓
- *   真给每一行上模糊 = 每行一张 GPU 层 ✗ 手机上直接卡成幻灯片 ✓
- *   → 只给一层**很淡的白色高光底**，模糊交给**外面那层面板** ✓
- *     面板本身是玻璃（`--glass` 半透明 + 模糊 ✓）→ 里面再叠淡白 ✓
- *     读起来就是"玻璃上有几张纸"✓ 而不是"纸自己会透"✓
- * 🔴 **别在这儿写不透明色** ✗✗（2026-10-21 踩过）
- *   写 `rgba(255,255,255,.035)` 本来是"淡白高光" ✓ 这没错 ✓
- *   但我上一版把这几条**排在玻璃前面** ✗ → 被后面的 `var(--glass)` 盖掉 ✓
- *   （结果列表比面板还实 ✓ 一片死黑 ✓ 完全没有透光）✓
- *   现在把它们放在玻璃**之后** ✓ 顺序就是"玻璃打底、纸上提亮" ✓ */
+/* 搜索结果、归属链、图例列表为面板内的长列表。
+   逐行加模糊会让每一行各占一个 GPU 层，移动端明显掉帧。
+   处理：只加一层极淡的白色高光底，模糊交由外层玻璃面板承担；面板本身为
+   半透明玻璃加模糊，内部再叠淡白，视觉上呈「玻璃上放着几张纸」，而非
+   「纸本身透光」。
+   此处不可使用不透明色：`rgba(255,255,255,.035)` 本身是淡白高光，但若排在
+   `var(--glass)` 之前会被覆盖，导致列表比面板更实、完全不通透。
+   因此这些规则须置于玻璃规则之后，顺序为「玻璃打底、列表提亮」。 */
 .results,
 .chain-row,
 .legend-list {
@@ -2769,12 +2667,10 @@ html[data-theme="light"] .segmented button.grain {
 }
 .chain-row:hover { background: rgba(255, 255, 255, .08); }
 /* ---- ④ 玻璃的「厚度」：顶边一道高光 ---- */
-/* 第一波只给三个壳加了 ✓ 这里把新入伙的也补上（浮层才有"一片玻璃"的样子 ✓）
- * ⚠⚠ **`.zoom-box::before` 绝对不能加** ✗✗
- *   它是 `left:12px; right:10px` 的**全宽容器** ✓ `inset: 0` 会横贯整屏 ✓
- *   → 一道白线横在屏幕上 ✓（就是用户截图里那条"白色大条"的第二个来源 ✓
- *     第一个来源是给它加了玻璃底 ✓ 两个都是把容器当面板了 ✓）
- *   玻璃只给里面的按钮 ✓ 见上面 `.zoom-box .btn` 那条 ✓ */
+/* 前一批仅三个外壳带此高光，此处补齐其余浮层，使浮层呈现整片玻璃的厚度。
+   `.zoom-box::before` 不可添加：该容器为 `left:12px; right:10px` 的全宽容器，
+   `inset: 0` 会横贯整屏，形成一道白线。玻璃只作用于其内部按钮，见上方
+   `.zoom-box .btn` 一节。 */
 .dropdown::before,
 .dd-panel::before,
 .modal-box::before,
@@ -2786,31 +2682,24 @@ html[data-theme="light"] .segmented button.grain {
   border-radius: inherit;
   box-shadow: inset 0 1px 0 var(--glass-hi);
 }
-/* 🔴🔴 **绝对不要在这儿给它们加 `position: relative`** ✗✗
- *   （2026-10-21 用户截图报的："电脑版怎么改出来一个白色大条"）
- *
- *   我上一版写了：
- *     `.modal-box, #tutCard, .zoom-box { position: relative; }`
- *   → `.zoom-box` 本来是 `absolute; left:12px; bottom:12px`（贴地图左下角 ✓）
- *     被我改成 relative 之后**掉进文档流** ✓ → 在 `.stage` 顶上撑出**一条白带** ✓
- *     就是截图里那条横贯整屏的白条 ✗
- *
- *   ⚠ 那三个元素本来就**各有各的定位**（这次是真去查了 ✓）：
- *     · `.zoom-box`  → `absolute`，贴左下角 ✓
- *     · `.modal-box` → 靠模态框的 flex 居中 ✓ 自己不需要 position ✓
- *     · `#tutCard`   → `fixed` ✓（教程步骤卡贴目标旁边 ✓）
- *   它们**本来就是定位元素**（abs / fixed 都算 ✓）→ `::before` 的 `inset: 0`
- *   完全够用 ✓ **一句 position 都不用加** ✓
- *
- *   → 判据：`::before` 只要父元素是 abs / fixed / relative 任一种就成立 ✓
- *     而 `.dropdown` / `.dd-panel` 也是 absolute ✓ 全都本来就合格 ✓
- *   ⚠ 以后要加高光，**先看那个元素原本的 position 是什么** ✗
- *     别顺手写 relative —— 那是在**取消**人家原本的定位 ✓ */
+/* 此处不可为这些元素添加 `position: relative`。
+   错误写法：`.modal-box, #tutCard, .zoom-box { position: relative; }`。
+   `.zoom-box` 为 `absolute; left:12px; bottom:12px`，贴地图左下角；改为
+   relative 后脱离绝对定位进入文档流，在 `.stage` 顶部撑出一条横贯整屏的白带。
+   这三个元素各有定位：
+     · `.zoom-box`  absolute，贴左下角
+     · `.modal-box` 由模态框的 flex 居中，自身无需 position
+     · `#tutCard`   fixed，教程步骤卡贴目标旁边
+   它们本身即为定位元素（absolute 与 fixed 均满足），`::before` 的 `inset: 0`
+   已足够，无需添加任何 position 声明。
+   判据：`::before` 只要求父元素为 absolute、fixed 或 relative 之一；
+   `.dropdown` 与 `.dd-panel` 同为 absolute，均满足条件。
+   为元素添加高光前须先确认其原有 position；直接写 relative 会取消其定位。 */
 
-/* ================================================================ 日间模式：同一套玻璃要重新配
- *  ⚠ 深色玻璃是"半透明黑" ✓ 浅色下必须换成"半透明白" ✗
- *    直接在 `html[data-theme="light"]` 上重写，**只动底子和边** ✓ 不碰字色 ✓
- *    （字色那一批在「日间模式 第三轮」那节已经写好了 ✓ 别在这儿重复 ✓）
+/* ================================================================ 日间模式：同一套玻璃需重新配置
+ * 深色玻璃为「半透明黑」，浅色下须改为「半透明白」。
+ * 在 `html[data-theme="light"]` 上重写，只改底色与边框，不改文字色；文字色已由
+ * 「日间模式：补完」一节统一处理，此处不重复。
  */
 html[data-theme="light"] .dropdown,
 html[data-theme="light"] .dd-panel,
@@ -2831,7 +2720,7 @@ html[data-theme="light"] .tut-toast {
   border-color: var(--glass-brd);
   box-shadow: 0 10px 26px rgba(24, 36, 50, .16);
 }
-/* 缩放条在日间：**只改按钮** ✓ 容器别再上底了 ✗（见上面那条长注释）*/
+/* 缩放条在日间：只改按钮，容器不上底（见上方长注释）*/
 html[data-theme="light"] .zoom-box .btn {
   background:
     linear-gradient(160deg, rgba(255, 255, 255, .95), transparent 50%),
@@ -2845,14 +2734,14 @@ html[data-theme="light"] .legend-list {
   background: rgba(24, 36, 50, .045);
 }
 html[data-theme="light"] .chain-row:hover { background: rgba(24, 36, 50, .09); }
-/* 🔴 **搜索结果空着的时候别给"底"** ✗✗（2026-10-22）
- *   `#results` 是 `flex: 1`（撑满侧栏剩下的高度 ✓），没结果时就是一个空盒子 ✓
- *   深色主题下它那层极淡的底几乎看不见 ✓ 换成白天就是**一大块灰** ✗
- *   （用户截图里"左栏下半截被灰蒙住"就是它 ✓ 文字也跟着发灰 ✓）
- *   → 空的时候整层撤掉 ✓ 有结果了再铺回来 ✓
- *   ⚠ 白天那条规则的特异性比 `.results:empty` 高 ✗ → 两个都写 ✓ */
-/* ⚠ **不是 `:empty`** ✗ —— 搜索框空着时里面有一条 `.empty` 占位提示 ✓
-   所以认"只有占位提示"这个状态 ✓（`:has()` 现在各家都支持 ✓）*/
+/* 搜索结果为空时不给底色。
+   `#results` 为 `flex: 1`，撑满侧栏剩余高度，无结果时是空盒子。
+   深色主题下那层极淡底色几乎不可见，浅色主题下则呈一大块灰，即侧栏下半截被
+   灰色覆盖、文字发灰的来源。
+   处理：为空时撤掉整层底色，有结果时恢复。
+   日间规则的特异性高于 `.results:empty`，故两处均需书写。 */
+/* 判定条件不是 `:empty`：搜索框为空时其中存在一条 `.empty` 占位提示，
+   因此识别「仅含占位提示」的状态（`:has()` 目前各浏览器均支持）。 */
 .results:has(> .empty),
 html[data-theme="light"] .results:has(> .empty) {
   background: none;
@@ -2860,7 +2749,7 @@ html[data-theme="light"] .results:has(> .empty) {
   backdrop-filter: none;
 }
 /* ---- 兜底：不支持 backdrop-filter 的浏览器 ---- */
-/* ⚠ 没有模糊时，半透明底会糊成一片 ✗ → 把底子换成实色 ✓ 至少读得清 ✓ */
+/* 无模糊时半透明底会糊成一片，改为实色底以保证可读性 */
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
   .toolbar, .sidebar, .dropdown, .dd-panel, .modal-box, .toast,
   .zoom-box, #hover-card, #tutCard, .map-card, .tut-toast,
@@ -2870,25 +2759,24 @@ html[data-theme="light"] .results:has(> .empty) {
 }
 
 /* ===========================================================================
-   🔴🔴 **介绍弹窗（电脑版）**（2026-10-21 ✓ 用户："电脑版的教程按钮也改成和
-      手机版一样显示那些东西"）
+   介绍弹窗（桌面版）
    ---------------------------------------------------------------------------
-   手机版的「教程」早就不做逐步引导了 ✓ 改成弹一篇**介绍长文** ✓（`.mi-*` ✓）
-   电脑版还停在老那套"一步步照着点" ✓ 现在统一成同一个介绍窗 ✓
-   ⚠ **老教程模块一个字没删** ✗（`web/js/tutorial.js` 原封不动 ✓
-     里面那些注释、步骤、引导卡片全留着 ✓ 只是按钮不再指向它 ✓）
-     想换回去：把 `intro.js` 里那段 clone 去掉、让 `initTutorial` 接管即可 ✓
+   手机版「教程」已改为弹出一篇介绍长文（`.mi-*`），不再做逐步引导；桌面版原先
+   仍是「一步步照着点」的旧教程，现统一为同一个介绍窗。
+   旧教程模块未删除（`web/js/tutorial.js` 保持原样，其中的注释、步骤与引导卡片
+   均保留），只是按钮不再指向它。如需恢复：移除 `intro.js` 中那段 clone，让
+   `initTutorial` 接管即可。
 
-   ⚠ 样式跟手机版**同一套类名**（`.mi-box` / `.mi-body` / `.mi-lead` ✓）
-     这样两边的文案能共用一份写法 ✓ 但**排版各按各的屏幕来** ✗ 不硬抄手机 ✓
+   样式与手机版共用同一套类名（`.mi-box` / `.mi-body` / `.mi-lead`），文案写法
+   可共用，但排版按各自屏幕尺寸处理，不照搬手机版。
    =========================================================================== */
 #app-intro .modal-box {
   width: min(620px, 92vw);
   max-height: 84vh;
-  padding: 0;                       /* 头部自己带内边距 ✓ 贴着圆角 */
+  padding: 0;                       /* 头部自带内边距，贴合圆角 */
   display: flex;
   flex-direction: column;
-  overflow: hidden;                 /* 让内部滚动 ✓ 外框不跟着滚 ✓ */
+  overflow: hidden;                 /* 内部滚动，外框不随之滚动 */
   border-radius: 12px;
 }
 #app-intro .modal-head {
@@ -2904,7 +2792,7 @@ html[data-theme="light"] .results:has(> .empty) {
   overflow-y: auto;
   padding: 14px 18px 20px;
 }
-/* 正文：比手机宽一点、行距松一点 ✓ 长文在电脑上一行别太长 ✓ */
+/* 正文：较手机版略宽、行距略松，长文单行不宜过长 */
 .mi-body { font-size: 13.5px; line-height: 1.9; color: var(--text-dim); }
 .mi-body p { margin: 0 0 10px; }
 .mi-body p:last-child { margin-bottom: 0; }
@@ -2913,7 +2801,7 @@ html[data-theme="light"] .results:has(> .empty) {
   font-size: 13px;
   color: var(--gold);
   letter-spacing: .5px;
-  /* 左边竖一道细线 ✓ 跟手机版那个"│"一个意思 ✓ */
+  /* 左侧竖一道细线，与手机版的「│」含义相同 */
   padding-left: 8px;
   border-left: 2px solid var(--gold-dim);
 }
@@ -2921,55 +2809,47 @@ html[data-theme="light"] .results:has(> .empty) {
 .mi-body strong { color: var(--text); font-weight: 700; }
 .mi-body .mi-lead { color: var(--text); }
 
-/* 日间：白底深字 ✓（跟手机版那套取值一致 ✓ 别另造一套）*/
+/* 日间：白底深字，取值与手机版一致，不另立一套 */
 html[data-theme="light"] .mi-body { color: #3a4652; }
 html[data-theme="light"] .mi-body .mi-lead { color: #2b3743; }
 html[data-theme="light"] .mi-body h4 { color: #26598a; border-left-color: rgba(47, 95, 143, .45); }
 html[data-theme="light"] .mi-body strong { color: #16202b; }
 
 /* ===========================================================================
-   🔴 **滚动条也要跟着晨昏**（2026-10-22 ✓ 用户："栏目右侧滑条应该跟随变化"）
+   滚动条随主题切换
    ---------------------------------------------------------------------------
-   各处的滑条原来都是**写死的深色** `#2b3542` ✗
-   白底上就是一道黑条 ✓ 尤其「选地图」那一栏右侧那条最显眼 ✓
-
-   ⚠ 原来只有 `.sidebar` 和 `.boot` 两处补过日间版 ✗ 剩下的都没管 ✓
-     `.map-pick-list`（选图列表）、`.results`（搜索结果）、设置抽屉里的
-     那一大块滚动区 —— 全是黑的 ✓
-   → 这次**统一兜一遍**：
-     · 一条 `*::-webkit-scrollbar-thumb` 打底 ✓ 覆盖所有还没单独写过的
-     · 再点名各容器 ✓（它们原来的选择器特异性更高、会盖住通用那条 ✓
-       所以必须逐个点名，光写通用那条不够 ✗）
-   ⚠ 只改**滑条** ✗ 宽度 / 轨道别动 ✓ 那跟主题无关 ✓
+   默认滚动条为写死的深色 `#2b3542`，白底上呈一道黑条，「选地图」栏右侧
+   最为明显。
+   仅 `.sidebar` 与 `.boot` 两处有日间样式，`.map-pick-list`、`.results`、
+   设置抽屉内的滚动区仍为深色。
+   处理：以 `*::-webkit-scrollbar-thumb` 统一兜底，再逐个点名各容器；容器原有
+   选择器特异性更高，会覆盖通用规则，故必须逐个指定。
+   仅调整滑块颜色，宽度与轨道保持不变，二者与主题无关。
    =========================================================================== */
 html[data-theme="light"] .map-pick-list::-webkit-scrollbar-thumb { background: #b7c3cf; }
 html[data-theme="light"] .results::-webkit-scrollbar-thumb { background: #b7c3cf; }
 html[data-theme="light"] .modal-box::-webkit-scrollbar-thumb { background: #b7c3cf; }
 html[data-theme="light"] .set-box::-webkit-scrollbar-thumb { background: #b7c3cf; }
 html[data-theme="light"] .set-grid::-webkit-scrollbar-thumb { background: #b7c3cf; }
-/* 通用兜底：上面没点到的容器也不会是黑条 ✓ */
+/* 通用兜底：未被单独指定的容器也不会出现黑条 */
 html[data-theme="light"] *::-webkit-scrollbar-thumb { background: #b7c3cf; }
 html[data-theme="light"] *::-webkit-scrollbar-thumb:hover { background: #9fb0c0; }
-/* Firefox / 新版 Edge 认这条 ✓（webkit 那套它们不认）*/
+/* Firefox 与新版 Edge 使用此写法，不识别 webkit 前缀规则 */
 html[data-theme="light"] * { scrollbar-color: #b7c3cf transparent; }
 
 /* ===========================================================================
-   🔴🔴 **状态色（`:hover` / `:focus`）的日间补完**（2026-10-22）
-   （用户截图："白昼模式下这个按钮会变黑" —— 鼠标停在「删除」上）
+   状态色（`:hover` / `:focus`）的日间补完
    ---------------------------------------------------------------------------
-   ⚠⚠ **为什么之前那批"日间补完"漏了这些** ✗
-     那批是按**组件**补的 ✓ 补的是每个组件的**常态** ✓
-     可这些组件把"悬停"**另写了一条** ✓ 那一条没人管 ✓
-     白底上鼠标一停 → 啪一下变黑 ✓（比常态还显眼 ✓）
+   既有日间规则按组件处理，覆盖的是常态；这些组件另写了悬停态，未纳入处理，
+   白底上鼠标一停即变黑，比常态更显眼。
 
-   ⚠ 还有一层**特异性陷阱**，不补这一条就永远盖不住：
-       `.map-card .map-act.danger:hover`      →（0,4,0）
-       `html[data-theme="light"] .map-card .map-act` →（0,3,1）
-     前者赢 ✗ 所以日间**必须也给状态写一条** ✓ 光盖常态没用 ✓
+   此外存在特异性问题，不补状态规则将无法覆盖：
+       `.map-card .map-act.danger:hover`              （0,4,0）
+       `html[data-theme="light"] .map-card .map-act`  （0,3,1）
+   前者优先级更高，故日间必须为状态单独书写规则，仅覆盖常态无效。
 
-   ⚠ 补齐口径：**不改变"这个是危险操作"这层意思** ✗
-     删除/危险那档在深色下是暗红 ✓ 在浅色下用**浅红底 + 深红字** ✓
-     别因为"要白"就把它变成普通灰 ✓ 那会丢掉警示 ✓
+   补齐原则：不改变「危险操作」的含义。删除与危险档在深色下为暗红，浅色下用
+   浅红底配深红字，不因追求浅色而退化为普通灰，以免丢失警示。
    =========================================================================== */
 
 /* ---- 剧本下拉按钮 ---- */
@@ -2988,7 +2868,7 @@ html[data-theme="light"] .map-card .map-act:hover {
   border-color: var(--gold-dim);
   color: var(--gold);
 }
-/* ⚠ 危险那档：**保留红** ✗ 只是换成浅底深字 ✓ */
+/* 危险档保留红色，仅改为浅底深字 */
 html[data-theme="light"] .map-card .map-act.danger:hover {
   background: #fdecec;
   border-color: #e3a3a3;
@@ -3009,42 +2889,36 @@ html[data-theme="light"] .ctl-seg > button:hover {
 }
 
 /* ===========================================================================
-   🔴🔴 **电脑版：写死深色的最后一轮清扫**（2026-10-22）
-   （用户截图："成功删除地图：EU5 原版" 那个框 —— 深底 + 深字，读不出来）
+   桌面版：写死深色的清扫
    ---------------------------------------------------------------------------
-   那个框不是浮条（`.toast`）✓ 是选图页的 **`#map-msg`** ✓
-   `background: #161c24` 写死 ✓ 日间一条都没有 ✓
-   而字用的是 `var(--text-dim)` ✓ 那个**会随主题翻** ✓
-   → 白天：深底 + 深字 ✓ 正好是最坏那种组合 ✓
+   问题元素为选图页的 `#map-msg`（非 `.toast` 浮条），其 `background: #161c24`
+   为写死值，而字色使用随主题变化的 `var(--text-dim)`，日间即形成深底深字。
 
-   顺手把整个 web/style.css 扫了一遍（`_local/deskaudit.js`），**20 处**同类。
-   这次一次清完，不再一个个等截图：
+   对 web/style.css 全量扫描（`_local/deskaudit.js`）后，共 20 处同类问题，
+   此处一次处理完毕：
 
-     .map-msg / .bad / .done / .map-msg-bar   选图页消息框 + 它的进度条
+     .map-msg / .bad / .done / .map-msg-bar   选图页消息框及其进度条
      .map-card.flash / .map-card-no           选图卡片：刚处理过的高亮 / 序号角标
      .statusbar                               底部状态条
-     .set-row input / select                  设置里的输入框和下拉
+     .set-row input / select                  设置中的输入框与下拉
      .rename-input                            改名弹窗的输入框
      .legend-row .legend-up / -down           图例行上下移按钮
      .ctl-step / .ctl-seg > button            步进器 / 分段条
-     #tutCard button                          老教程卡的按钮（现在不用了，顺手补）
-     .btn.danger                              危险按钮的边框
-     .swatch                                  取色块（它显示的就是颜色本身，只补占位底）
+     #tutCard button                          旧教程卡按钮（当前未使用，一并补齐）
+     .btn.danger                              危险按钮边框
+     .swatch                                  取色块（显示颜色本身，仅补占位底）
 
-   ⚠⚠ **每一条都必须带 `html[data-theme="light"]` 前缀** ✗✗
-     我第一版写成了裸选择器 ✓ 那等于**连深色模式一起改** ✓
-     深色主题会被这批白底盖掉 ✓（扫子也立刻没认出来 —— 它要的是带前缀的 ✓
-     这次就是被自己的扫子逮住的 ✓）
+   每一条均须带 `html[data-theme="light"]` 前缀；写成裸选择器会同时修改深色
+   模式，深色主题将被这批白底覆盖。
 
-   ⚠ **故意不动**：`.modal` 那层遮罩 `rgba(6,9,12,.62)`
-     那是"把背后的地图压暗"的作用 ✓ 浅色主题下也照样该是暗的 ✓
-     （改成浅色就压不住了，弹窗会糊在地图上 ✓ 跟"深色控件的可读性"不是一回事 ✓）
+   有意不改：`.modal` 的遮罩 `rgba(6,9,12,.62)`。其作用为压暗背后的地图，浅色
+   主题下同样应保持深色，否则弹窗会与地图混在一起，与控件可读性无关。
 
-   ⚠ 取值一律用**日间那套变量**（`--panel` / `--panel-2` / `--line` / `--text-*`）✓
-     别再造一堆写死的白色 ✓ 那样下次换主题又得再来一轮 ✓
+   取值一律使用日间变量（`--panel` / `--panel-2` / `--line` / `--text-*`），不再
+   写死白色，以免下次更换主题时重复处理。
    =========================================================================== */
 
-/* ---- 选图页：消息框（用户截图那个）---- */
+/* ---- 选图页：消息框 ---- */
 html[data-theme="light"] #map-msg,
 html[data-theme="light"] .map-msg {
   background: var(--panel-2);
@@ -3066,8 +2940,8 @@ html[data-theme="light"] .set-row input[type=text],
 html[data-theme="light"] .set-row input[type=number],
 html[data-theme="light"] .set-row select,
 html[data-theme="light"] .rename-input {
-  /* ⚠ 这里只改底色，别用 `background:` 简写 ——
-     它会把图例下拉的箭头 background-image 一起清掉 ✗（2026-10-27） */
+  /* 此处只改底色，不使用 `background:` 简写，否则会一并清除图例下拉箭头的
+     background-image */
   background-color: #fff;
   border-color: var(--line);
   color: var(--text);
@@ -3096,16 +2970,12 @@ html[data-theme="light"] .ctl-seg > button {
   color: var(--text);
 }
 html[data-theme="light"] .ctl-step > button { color: var(--text-dim); }
-/* 🔴 **白昼模式下「不透明度」分段条的选中块要看得出来** ✗✗（2026-10-27 用户：
- *   "白昼模式下不透明度块块根本看不见谁是谁"）
- *
- *   根因：上面这条 `html[data-theme="light"] .ctl-seg > button` 权重跟
- *   `.ctl-seg > button.on` 一样（都是 0,2,1）✓ 但它写在后面 ✗
- *   → 把选中块的 background / color 一起盖成了"普通按钮" ✓
- *   → 25 / 50 / 75 / 100 四块看着一模一样 ✓ 根本不知道现在选的是哪档 ✓
- *
- *   ⚠ 别只改 color ✗ —— 底色一样的话，浅底上还是分不出块 ✓
- *   → 给选中块一块**淡金底 + 深金字 + 内圈** ✓（跟夜间同一套金，只是翻成浅版）*/
+/* 日间模式下「不透明度」分段条的选中块须可辨认。
+   原因：`html[data-theme="light"] .ctl-seg > button` 与 `.ctl-seg > button.on`
+   特异性相同（均为 0,2,1），但前者书写在后，将选中块的 background 与 color
+   一并覆盖为普通按钮样式，25 / 50 / 75 / 100 四档外观一致。
+   只改 color 不足以区分，底色相同时浅底上仍无法分辨；故为选中块设置淡金底、
+   深金字与内圈，与夜间同一套金色，仅转为浅色版本。 */
 html[data-theme="light"] .ctl-seg > button.on {
   background: #f0e3c0;
   color: #6b4f0e;
@@ -3119,12 +2989,12 @@ html[data-theme="light"] .export-size input {
 html[data-theme="light"] .export-size input.bad { border-color: #b34a35; color: #8f2f1e; }
 html[data-theme="light"] .export-prog-track { background: #e8edf2; }
 html[data-theme="light"] .export-pick-layer {
-  /* 框选层只压暗框外；白天压暗也必须是浅的 ✓ */
+  /* 框选层仅压暗框外，日间压暗程度也须较轻 */
   background: transparent;
 }
 html[data-theme="light"] .export-pick-box {
   border-color: #8a6a12;
-  /* 框外压暗，框内保持原色 ✓ */
+  /* 框外压暗，框内保持原色 */
   box-shadow:
     0 0 0 9999px rgba(24, 36, 50, .26),
     0 0 0 1px rgba(255, 255, 255, .75),
@@ -3141,7 +3011,7 @@ html[data-theme="light"] .export-pick-bar {
 }
 html[data-theme="light"] .export-pick-bar { box-shadow: 0 10px 30px rgba(24, 36, 50, .14); }
 
-/* ---- 老教程卡（现在不用了，补上免得哪天翻出来又白字白底）---- */
+/* ---- 旧教程卡（当前未使用，一并补齐以免日后出现白字白底）---- */
 html[data-theme="light"] #tutCard button { background: var(--panel-2); border-color: var(--line); color: var(--text); }
 html[data-theme="light"] #tutCard button.tut-next { background: #fdf5e0; border-color: var(--gold-dim); color: var(--gold); }
 
@@ -3149,18 +3019,18 @@ html[data-theme="light"] #tutCard button.tut-next { background: #fdf5e0; border-
 html[data-theme="light"] .btn.danger { border-color: #c1867c; color: #8f2f1d; }
 html[data-theme="light"] .swatch { background: #d5dce4; }
 
-/* ============================================================ 地图仓库（2026-10-24）
-   选图页的「🗺 地图仓库…」面板 + 画图时「文件 ▾ → 存入地图仓库」✓
-   卡片样式沿用 .map-card 那套（同一个选图页 ✓ 视觉一致 ✓） */
+/* ============================================================ 地图仓库
+   选图页的「🗺 地图仓库…」面板，以及画图时「文件 ▾ → 存入地图仓库」。
+   卡片样式沿用 `.map-card`，与选图页保持一致。 */
 .map-actions { display: flex; gap: 8px; }
 .map-actions .map-import { flex: 1 1 0; min-width: 0; }
 
-/* 主菜单（选图页）不显示顶栏 ✓（2026-10-25 用户定的 ✓）
-   #boot 遮罩只盖 #stage（在 .body 里 ✓），顶栏在外面会露出来 ✗
-   → 选图期间 body.pick-open 藏顶栏 ✓ 选完图摘掉（见 pickMap ✓）*/
+/* 主菜单（选图页）不显示顶栏：
+   `#boot` 遮罩只覆盖 `#stage`（位于 `.body` 内），顶栏在外会露出。
+   故选图期间以 `body.pick-open` 隐藏顶栏，选完图后移除（见 `pickMap`）。 */
 body.pick-open .toolbar { display: none; }
 
-/* 🗺 主菜单页签（2026-10-24 ✓）：跟顶栏 .segmented 同一个视觉系统 ✓ */
+/* 🗺 主菜单页签：与顶栏 `.segmented` 属同一视觉系统 */
 .pick-tabs {
   display: flex;
   background: #0f141a;
@@ -3183,8 +3053,8 @@ body.pick-open .toolbar { display: none; }
   color: #f0d98a;
   box-shadow: inset 0 0 0 1px rgba(201, 162, 39, .38);
 }
-/* 🌞 白天版**照抄 .segmented 那套** ✓（2026-10-25 用户："二分栏的配色没改"✓）
-   顶栏层级按钮长什么样，这里就长什么样 ✓ 一个色都不发明 ✓ */
+/* 日间版本沿用 `.segmented` 的取值：顶栏层级按钮的外观即为本处外观，
+   不另立配色。 */
 html[data-theme="light"] .pick-tabs { background: var(--panel-2); border-color: #d4dee8; }
 html[data-theme="light"] .pick-tab { color: #5b6877; }
 html[data-theme="light"] .pick-tab:hover { background: #dde5ee; }
@@ -3200,48 +3070,48 @@ html[data-theme="light"] .pick-tab.on {
 }
 .map-store-list::-webkit-scrollbar { width: 8px; }
 .map-store-list::-webkit-scrollbar-thumb { background: #2b3542; border-radius: 4px; }
-/* 仓库卡片：**直接用 .map-card 那套** ✓（悬停浮起 / 金色名字 / 右下角动作 /
-   日间版全继承 ✓）只补差异：缩略图尺寸、动作行让位 ✓ */
+/* 仓库卡片直接沿用 `.map-card`（悬停浮起、金色名称、右下角动作、日间版全部
+   继承），仅补差异：缩略图尺寸与动作行让位。 */
 html[data-theme="light"] .map-store { background: #eef2f7; }
 html[data-theme="light"] .map-store-list::-webkit-scrollbar-thumb { background: #b7c3cf; }
 .store-card { padding-bottom: 27px; }
 .store-card .map-card-acts { flex-wrap: wrap; max-width: 172px; }
 
-/* ============================================================ 开局页二分起步页（2026-10-24）
-   落地两块（地图 / 涂色），点谁进谁 ✓ 返回按钮回到这一层 ✓ */
+/* ============================================================ 开局页二分起步页
+   包含地图与涂色两块入口，点击进入对应页，返回按钮回到本层。 */
 
-/* 仓库页不显示地图侧的提示 / 消息 ✓（各页各的 ✓）*/
+/* 仓库页不显示地图侧的提示与消息 */
 .map-pick.store-mode .map-import-hint,
 .map-pick.store-mode .map-msg { display: none !important; }
-/* 「下载地图包」只在地图页出现 ✓（仓库页那边导入的是涂色方案，凑什么热闹 ✗）
-   ⚠ 2026-11-03：这条规则被写坏了 —— 选择器列表断成两截，
-      `.map-fetch` 只拿到了 `margin-top: 0`，**根本没被藏掉** ✗（用户截图里两个按钮并排）*/
+/* 「下载地图包」只在地图页出现；仓库页导入的是涂色方案。
+   选择器列表须保持完整：断成两截时 `.map-fetch` 仅获得 `margin-top: 0`，
+   未被隐藏，两个按钮会并排显示。 */
 .map-pick.store-mode .map-fetch { display: none !important; }
-/* 藏掉以后「＋ 导入涂色方案…」独占一整行 ✓ */
+/* 隐藏后「＋ 导入涂色方案…」独占一整行 */
 .map-pick.store-mode .map-actions .map-import { flex: 1 1 100%; }
 
-/* 仓库页的「导入涂色方案」也用 .map-import 同款 ✓ */
+/* 仓库页的「导入涂色方案」沿用 `.map-import` */
 .map-store-foot .map-import { margin-top: 0; }
 
-/* 仓库卡片做大（至少地图卡两倍 ✓ 2026-10-25 用户定的 ✓）
-   ⚠ 只作用于仓库页 ✗ —— .store-mode 由 showPickView 切换 ✓
-   两个页签共用 #map-pick-list，不带前缀会把地图卡也放大 ✗（踩过 ✓）*/
+/* 仓库卡片放大（至少为地图卡的两倍）。
+   仅作用于仓库页：`.store-mode` 由 `showPickView` 切换；两个页签共用
+   `#map-pick-list`，不带前缀会同时放大地图卡。 */
 .map-pick.store-mode .map-card { padding: 20px 22px; }
 .map-pick.store-mode .map-card b { font-size: 17px; }
 .map-pick.store-mode .map-card span { font-size: 12.5px; }
 
 /* ============================================================================
- * 视觉皮肤：Vercel × shadcn/ui（2026-10-29 · 本地测试版）
+ * 视觉皮肤：Vercel × shadcn/ui
  *
- * 用法：<html data-skin="vz"> 才生效 ✓ 摘掉这个属性就回到原来的"羊皮纸 + 金色" ✓
+ * 用法：<html data-skin="vz"> 时生效，移除该属性即回到默认的羊皮纸配金色。
  *
- * 三条设计约束（照着 shadcn 的 token 思路来）：
- *   ① **颜色只出现在变量里** ✗ —— 组件规则一律 var() / color-mix()
- *      （`check_mobile_parity` 那把"写死深色"的扫子只扫 background/color/border
- *        的字面色值；变量声明不受影响 ✓ 这样一改深浅两套只动一个地方 ✓）
- *   ② 黑白为主（Vercel 的观感），强调色只给"可点 / 链接 / 超链接动作"（--vz-accent）
+ * 三条设计约束（沿用 shadcn 的 token 思路）：
+ *   ① 颜色只出现在变量中，组件规则一律使用 var() / color-mix()
+ *      （`check_mobile_parity` 只扫描 background / color / border 的字面色值，
+ *        变量声明不受影响；如此深浅两套主题只需改动一处）
+ *   ② 以黑白为主（Vercel 观感），强调色仅用于可点击项与链接（--vz-accent）
  *   ③ 液态玻璃 = 半透明底 + 高倍 blur + 1px 渐变亮边 + 顶部内高光
- *      动效统一 cubic-bezier(.16,1,.3,1)，并尊重 prefers-reduced-motion ✓
+ *      动效统一 cubic-bezier(.16,1,.3,1)，并遵循 prefers-reduced-motion
  * ========================================================================== */
 
 /* ---- ① tokens：深色（默认） -------------------------------------------- */
@@ -3273,7 +3143,7 @@ html[data-skin="vz"] {
   --vz-glow: rgba(255, 255, 255, .07);
   --vz-shadow-2: 0 24px 70px rgba(0, 0, 0, .55);
 
-  /* 老样式全在用的同名变量 → 一并换成新皮 ✓（不然 var(--text) 那一大片还是旧色）*/
+  /* 旧样式沿用的同名变量一并换为新值，否则 var(--text) 一处仍为旧色 */
   --bg: var(--vz-bg);
   --panel: var(--vz-surface-solid);
   --panel-2: var(--vz-surface-2);
@@ -3524,8 +3394,7 @@ html[data-skin="vz"] .switch input[type=checkbox]:focus-visible {
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--vz-ring) 32%, transparent);
 }
 html[data-skin="vz"] #display-panel .switch input[type=checkbox] { margin: 0; }
-/* 滑杆不用强调蓝 ✗（用户 2026-11-03："白昼淡灰色，黑夜深灰色，这样比蓝色好"）
- *   暗色（默认）：深灰；浅色：淡灰 ✓ */
+/* 滑杆不使用强调蓝：暗色（默认）为深灰，浅色为淡灰。 */
 html[data-skin="vz"] .switch input[type=range],
 html[data-skin="vz"] input[type=range] { accent-color: #55555c; }
 html[data-skin="vz"][data-theme="light"] .switch input[type=range],
@@ -3747,16 +3616,15 @@ html[data-skin="vz"] .map-card .map-card-tag { color: var(--vz-fg-faint); }
 html[data-skin="vz"] .map-act { color: var(--vz-fg-dim); border-radius: 6px; padding: 2px 6px; transition: background .12s ease, color .12s ease; }
 html[data-skin="vz"] .map-act:hover { background: var(--vz-hover); color: var(--vz-fg); }
 html[data-skin="vz"] .map-act.danger { color: var(--vz-danger); }
-/* 🔴 2026-10-31：vz 皮肤下**导入包卡片被压扁**了 ✓
-   用户截图："名字和版本号、按钮和分辨率挤一块了，可以分开一点点"
-   真凶是上面那条 `html[data-skin="vz"] .map-card { padding: 14px 16px }` ✗ ——
-   权重 (0,1,1,1)=21（属性 + 类 + 元素）比 `.map-card.imported` 的 (0,2,0)=20 **还高** ✓
-   → 卡片底下那 27px 的额外内边距被整个吃掉 ✗
-   → 左下角的版本号（`.map-card-tag`，bottom:5）和右下角的动作（bottom:5）
-     直接压在名字那行上：实测版本号比标题底部**还高 4px**、按钮压住分辨率 8.8px ✓
-   → 这里用同权重的选择器把内边距还回来，再抬到 32px（比经典皮肤的 27 松一点 ✓
-     vz 那张卡本来就更矮：圆角 12、字号 13.5 ✓）✓
-   实测（456px 宽）：标题底→版本号 14px、分辨率底→按钮 9px、两个下沿各留 6px ✓ */
+/* vz 皮肤下导入包卡片的内边距被压缩。
+   上方 `html[data-skin="vz"] .map-card { padding: 14px 16px }` 的权重为
+   (0,1,1,1)=21（属性 + 类 + 元素），高于 `.map-card.imported` 的 (0,2,0)=20，
+   卡片底部 27px 的额外内边距因此失效。
+   结果左下版本号（`.map-card-tag`，bottom:5）与右下动作（bottom:5）压在名称行
+   上：版本号比标题底部高 4px，按钮压住分辨率 8.8px。
+   处理：以同权重选择器恢复内边距并提高到 32px（比经典皮肤的 27px 略松；vz 卡片
+   本身更矮，圆角 12、字号 13.5）。
+   实测（456px 宽）：标题底到版本号 14px，分辨率底到按钮 9px，两处下沿各留 6px。 */
 html[data-skin="vz"] .map-card.imported { padding-bottom: 32px; }
 html[data-skin="vz"] .map-import {
   background: transparent;
@@ -3831,7 +3699,7 @@ html[data-skin="vz"] .export-x {
 html[data-skin="vz"] .set-x:hover,
 html[data-skin="vz"] .export-x:hover { background: var(--vz-hover); color: var(--vz-fg); }
 
-/* 玻璃亮边：1px 渐变描边 + 顶部内高光（只给浮层，别给所有卡片加） */
+/* 玻璃亮边：1px 渐变描边加顶部内高光，仅用于浮层，不用于所有卡片 */
 html[data-skin="vz"] :is(.modal-box, .dropdown, .brush-menu, .dd-panel, .hover-card, .toast, .zoom-box, #tutCard)::before {
   content: "";
   position: absolute;
@@ -3999,13 +3867,14 @@ html[data-skin="vz"] #perf-hud {
 }
 
 
-/* ---- ㉑ 压过老样式里"带 id / 祖先"的玻璃规则 -------------------------------
- * 老文件里有一组 `#settings .modal-box, .toolbar, #hover-card, .sidebar .panel`
- * 的玻璃底（id 选择器权重高）✗ —— 不在这里点名覆盖，新皮肤就会被它盖掉：
- *   · 悬停卡还是旧的灰玻璃（0.64 透明度）
- *   · 侧栏每一块 panel 各带一层玻璃 → 叠在侧栏玻璃上，出现一条条色带
- *   · 设置抽屉是 0.86 的浅玻璃 → 背后的地图字全透上来，读不清
- * 现在：悬停卡/抽屉用新 token；panel 透明（只留分隔壁纸），整条侧栏一块玻璃 ✓ */
+/* ---- ㉑ 压过旧样式中带 id 与祖先的玻璃规则 -------------------------------
+ * 旧文件有一组 `#settings .modal-box, .toolbar, #hover-card, .sidebar .panel`
+ * 的玻璃底规则，id 选择器权重较高，不在此处点名覆盖会被其覆盖：
+ *   · 悬停卡仍为旧灰玻璃（0.64 透明度）
+ *   · 侧栏每个 panel 各带一层玻璃，叠加在侧栏玻璃上形成色带
+ *   · 设置抽屉为 0.86 的浅玻璃，背后地图文字全部透出，难以阅读
+ * 处理：悬停卡与抽屉改用新 token；panel 透明（仅保留分隔用的纸色），
+ * 整条侧栏只保留一层玻璃 */
 html[data-skin="vz"] #hover-card {
   background: var(--vz-surface);
   border-color: var(--vz-border);
@@ -4043,9 +3912,9 @@ html[data-skin="vz"] .dd-btn.on { box-shadow: none; }
 
 
 /* ---- ㉒ 侧栏画笔字段：标签不再被输入框挤成竖排 ---------------------------
- * 老布局是 flex：<label>标记 <input></label> —— 输入框 flex:1 把文本框挤到 0 宽，
- * 中文按字换行 → 「标」「记」上下摞着（英文 HEX 是不可断词才幸免）✗
- * grid 两列：文字列按 min-content，输入框吃掉剩下的 ✓ */
+ * 原布局为 flex：<label>标记 <input></label>，输入框 flex:1 将文本框压到 0 宽，
+ * 中文按字换行，「标」「记」上下堆叠（英文 HEX 因不可断词而未受影响）。
+ * 改为 grid 两列：文字列按 min-content，输入框占据剩余空间。 */
 html[data-skin="vz"] .brush-fields label {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
@@ -4067,14 +3936,14 @@ html[data-skin="vz"] .brush-fields input:focus {
 }
 
 /* ---- ㉓ 设置抽屉压到近乎不透明 -----------------------------------------
- * 玻璃留给侧栏 / 弹窗 / 小卡 —— 设置是一整页表单，背后透出地图笔画读不清 ✗
- * （实测 94% 仍能在深色字上看到地图的笔画，97% 才干净 ✓）*/
+ * 玻璃仅用于侧栏、弹窗与小卡片；设置是一整页表单，背后透出地图笔画会读不清
+ * （实测 94% 时深色字上仍可见地图笔画，97% 才干净）。*/
 html[data-skin="vz"] #settings .modal-box { background: color-mix(in srgb, var(--vz-bg) 97%, transparent); }
 
 
-/* ---- ㉔ 页签改成"下划线标签条"（不要整圈边框）---------------------------
- * 老 .pick-tabs / .set-tabs 是 `border: 1px solid` 的容器 → 看着像分段控件 ✗
- * Vercel 的 tab 只有一条底线 + 选中项下面一道短横 ✓ */
+/* ---- ㉔ 页签为「下划线标签条」，不使用整圈边框 ---------------------------
+ * 容器不加 `border: 1px solid`，避免呈分段控件外观；
+ * Vercel 的 tab 只有一条底线，选中项下方一道短横。 */
 html[data-skin="vz"] .pick-tabs,
 html[data-skin="vz"] .set-tabs {
   border: 0;
@@ -4089,34 +3958,33 @@ html[data-skin="vz"] .set-tab { border-radius: 0; }
 html[data-skin="vz"] #settings .modal-box { background: var(--vz-bg); }
 
 /* ---- ㉖ 顶栏保留一个小标识 -------------------------------------------------
- * 老样式在 1560px 以下把 .brand 整个藏了（给功能按钮让位）——
- * 这一版只留「PDX」三个字母，宽度很小，不动布局 ✓ */
+ * 旧样式在 1560px 以下隐藏整个 `.brand` 以给功能按钮让位；此版本仅保留「PDX」
+ * 三个字母，宽度很小，不影响布局。 */
 @media (max-width: 1560px) {
   html[data-skin="vz"] .brand { display: flex; }
   html[data-skin="vz"] .brand-text { display: none; }
 }
 
 
-/* ---- ㉗ 显示区开关：标签不许被挤成竖排 ---------------------------------
- * 真图有「地块 / 势力 / 水域 / 荒地」四组、最多一组 4 个开关 ——
- * shadcn 那种 30px 轨道比原来的原生勾选框宽，flex 会把中文标签压到 0 宽、
- * 逐字换行（"边 界"两行）✗
- * → 标签不换行；放不下时在**开关之间**换行，而不是把字挤断 ✓ */
+/* ---- ㉗ 显示区开关：标签不得被挤成竖排 ---------------------------------
+ * 实际有四组开关（地块 / 势力 / 水域 / 荒地），单组最多 4 个；shadcn 的 30px
+ * 轨道宽于原生勾选框，flex 会将中文标签压到 0 宽并逐字换行。
+ * 处理：标签不换行；空间不足时在开关之间换行，而非把字挤断。 */
 html[data-skin="vz"] .switch { white-space: nowrap; }
 html[data-skin="vz"] .switch > span { white-space: nowrap; flex: 0 0 auto; }
 html[data-skin="vz"] .switch > input { flex: 0 0 auto; }
 html[data-skin="vz"] #display-panel .tool-group { flex-wrap: wrap; row-gap: 5px; }
 html[data-skin="vz"] #display-panel .switch { font-size: 10.5px; gap: 5px; }
 
-/* 🔴 2026-10-31：「父级边界」并回「地块」那一行 ✓
-   用户截图问"是塞不下还是为什么" —— 就是塞不下：
-   侧栏 322 - 左右 padding 32 = **290px** 可用 ✓（实测 `.tool-group` 288px）
-   标签 36 + 三个开关（30 轨道 + 5 间距 + 两字标签 55.9）
-   +「父级边界」（30+5+四字 72.7）+ 四个列间隙 6 ≈ **299px** → 换行掉到第二行 ✓
-   → 只压 vz 这套：标签列 36→28、列间隙 6→4、
-     「父级边界」轨道 30→26（旋钮圆心跟着挪）、字号 10.5→10、内部间距 5→3 ✓
-   实测这一行 28 + 55.9×3 + 68.7 + 4×4 ≈ 278px，留 ~10px 余量 ✓
-   经典皮肤是原生 13px 勾选框，四个开关加起来才 ~209px ✓ 不动 ✓ */
+/* 「父级边界」并入「地块」一行。
+   空间不足的原因：侧栏 322 - 左右 padding 32 = 290px 可用（实测 `.tool-group`
+   为 288px）。
+   标签 36 + 三个开关（30 轨道 + 5 间距 + 两字标签 55.9）+「父级边界」
+   （30+5+四字 72.7）+ 四个列间隙 6 ≈ 299px，超出后换行到第二行。
+   处理（仅 vz 皮肤）：标签列 36→28、列间隙 6→4、「父级边界」轨道 30→26
+   （旋钮圆心跟着挪）、字号 10.5→10、内部间距 5→3。
+   实测该行 28 + 55.9×3 + 68.7 + 4×4 ≈ 278px，余量约 10px。
+   经典皮肤为原生 13px 勾选框，四个开关合计约 209px，不作调整。 */
 html[data-skin="vz"] #display-panel .group-label { width: 28px; }
 html[data-skin="vz"] #display-panel .tool-group { column-gap: 4px; }
 html[data-skin="vz"] #display-panel #parent-border-row.switch { font-size: 10px; gap: 3px; }
@@ -4129,15 +3997,15 @@ html[data-skin="vz"] #parent-border-row input[type=checkbox]:checked {
 }
 
 
-/* ---- ㉘ 液态玻璃：更顺滑的动效 + 更细腻的材质 ---------------------------
- * 目标：切换深浅、开合浮层、拖动地图时都"顺着走"，而不是硬切/掉帧 ✓
- *   ① 大块表面只在**颜色**上做 0.28s 过渡（不给 * 加 transition ✗
- *      —— 地图每帧重绘，全量插值会把平移拖出掉帧 ✓）
- *   ② 玻璃浮层加一层**顶部斜向高光**（liquid 的"厚度感"来自这层 ✓）
- *   ③ 弹出层按锚点方向展开（`transform-origin`），而不是从中心缩放 ✓
- *   ④ 地图正在拖动/缩放时**临时收窄毛玻璃半径**，手一停自动恢复 ✓
- *      （大面板的 backdrop blur 每帧重算很贵；这是平移卡顿的主要来源 ✓）
- *   ⑤ 主按钮悬停有一道很淡的光扫过（不喧哗，但让玻璃"活"一点 ✓）*/
+/* ---- ㉘ 液态玻璃：更顺滑的动效与更细腻的材质 ---------------------------
+ * 目标：主题切换、浮层开合、地图拖动均平滑过渡，避免硬切与掉帧。
+ *   ① 大块表面仅在颜色上做 0.28s 过渡（不为 * 添加 transition：地图每帧重绘，
+ *      全量插值会导致平移掉帧）
+ *   ② 玻璃浮层加一层顶部斜向高光（液态材质的厚度感来自这一层）
+ *   ③ 弹出层按锚点方向展开（`transform-origin`），不从中心缩放
+ *   ④ 地图拖动或缩放期间临时收窄毛玻璃半径，操作停止后恢复
+ *      （大面板的 backdrop blur 每帧重算开销较高，是平移卡顿的主要来源）
+ *   ⑤ 主按钮悬停时有一道极淡的光扫过 */
 html[data-skin="vz"] body,
 html[data-skin="vz"] .toolbar,
 html[data-skin="vz"] .sidebar,
@@ -4151,7 +4019,7 @@ html[data-skin="vz"] .brush-menu,
 html[data-skin="vz"] #tutCard {
   transition: background-color .28s ease, color .28s ease, border-color .28s ease;
 }
-/* 卡片自己的过渡（含位移/阴影），别被上面那条覆盖掉 ✓ */
+/* 卡片自身的过渡（含位移与阴影），避免被上一条覆盖 */
 html[data-skin="vz"] .map-card {
   transition: background-color .28s ease, border-color .2s ease,
               transform .18s cubic-bezier(.16, 1, .3, 1), box-shadow .2s ease;
@@ -4175,7 +4043,7 @@ html[data-skin="vz"] .brush-menu { transform-origin: top left; }
 html[data-skin="vz"] .modal:not([hidden]) { animation: vz-fade .18s ease-out; }
 @keyframes vz-fade { from { opacity: 0; } to { opacity: 1; } }
 
-/* 主按钮：一道很淡的光扫过（只在悬停时；ghost 不扫，别抢主次 ✓）*/
+/* 主按钮悬停时有一道极淡的光扫过；ghost 按钮不加，以免喧宾夺主 */
 html[data-skin="vz"] .btn:not(.ghost) { position: relative; overflow: hidden; }
 html[data-skin="vz"] .btn:not(.ghost)::after {
   content: "";
@@ -4189,7 +4057,8 @@ html[data-skin="vz"] .btn:not(.ghost)::after {
 }
 html[data-skin="vz"] .btn:not(.ghost):hover::after { opacity: 1; transform: translateX(30%); }
 
-/* 拖动/缩放地图时：毛玻璃先变薄，手停下再恢复（app.js 的 noteViewMotion 加/去 class ✓） */
+/* 拖动或缩放地图时毛玻璃变薄，操作结束后恢复（`app.js` 的 `noteViewMotion`
+   添加与移除类） */
 html[data-skin="vz"] body.vz-moving .sidebar,
 html[data-skin="vz"] body.vz-moving #hover-card,
 html[data-skin="vz"] body.vz-moving .zoom-box,
@@ -4225,15 +4094,15 @@ html[data-skin="vz"] body.vz-moving .brush-menu {
 
 
 
-/* ============ 旗帜（剪贴蒙版）2026-11-02 ============
- *  两样东西：地图上那个可拖的框 + 框旁边的**悬浮小窗** ✓
- *  ⚠ 数值不放侧栏（用户 2026-11-02 定的）✗ —— 贴哪个块就在哪个块旁边调 ✓
+/* ============ 旗帜（剪贴蒙版） ============
+ *  包含两部分：地图上可拖动的框，以及框旁的悬浮小窗。
+ *  数值不放入侧栏，贴近对应块在块旁调整。
  *
- *  画风照两套既有规矩来（用户点名的）：
- *    · **Vercel 风**：黑底、1px 细边、无重投影、留白干净 ✓
- *    · **shadcn/ui 风**：label 在上、input 在下，7~12px 圆角，
- *      焦点环用 --vz-glow，按钮是 outline/ghost 两种，没有渐变没有发光 ✓
- *  下面先是**中性那套**（经典皮肤也能用 ✓），再是 vz 皮肤的细化 ✓
+ *  风格沿用两套既有约定：
+ *    · Vercel 风格：黑底、1px 细边、无重投影、留白干净
+ *    · shadcn/ui 风格：label 在上、input 在下，7~12px 圆角，
+ *      焦点环用 --vz-glow，按钮为 outline 与 ghost 两种，无渐变与发光
+ *  以下先为中性样式（经典皮肤同样可用），再为 vz 皮肤的细化。
  */
 
 /* ---------- 框：白细虚线 + 四角抓手 ---------- */
@@ -4290,7 +4159,7 @@ html[data-skin="vz"] body.vz-moving .brush-menu {
   color: var(--text, #fafafa);
 }
 
-/* label 在上、input 在下 —— shadcn 那套表单的排法 ✓ */
+/* label 在上、input 在下，沿用 shadcn 的表单排法 */
 #flag-pop .fp-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
 #flag-pop .fp-grid label {
   display: flex; flex-direction: column; gap: 4px;
@@ -4315,7 +4184,7 @@ html[data-skin="vz"] body.vz-moving .brush-menu {
   background: rgba(255, 255, 255, .06);
 }
 
-/* 范围 / 比例 两排小按钮（每排一个标签 + 三个选择）✓ */
+/* 范围与比例两排小按钮：每排一个标签加三个选择 */
 #flag-pop .fp-rows { display: flex; flex-direction: column; gap: 5px; margin-top: 8px; }
 #flag-pop .fp-row { display: flex; align-items: center; gap: 4px; }
 #flag-pop .fp-row > span {
@@ -4364,14 +4233,14 @@ html[data-skin="vz"] body.vz-moving .brush-menu {
   border-color: var(--vz-border-strong, rgba(255, 255, 255, .22));
 }
 #flag-pop .fp-acts button:active { background: var(--vz-hover-2, rgba(255, 255, 255, .1)); }
-/* 「等比」是按下去会亮的那种（shadcn 的 default 变体：实心反色）*/
+/* 「等比」采用按下高亮的样式（shadcn 的 default 变体：实心反色）*/
 #flag-pop .fp-acts button.on {
   background: var(--vz-primary, #fafafa);
   border-color: var(--vz-primary, #fafafa);
   color: var(--vz-primary-fg, #09090b);
 }
 #flag-pop .fp-acts button.on:hover { filter: brightness(.94); }
-/* 「删除」是破坏性动作 —— shadcn 的 destructive 变体：平时不喊，悬停才红 ✓ */
+/* 「删除」为破坏性动作，对应 shadcn 的 destructive 变体：常态不突出，悬停时转红 */
 #flag-pop #flag-del:hover {
   color: var(--danger, var(--vz-danger, #ff7a7a));
   border-color: color-mix(in srgb, var(--danger, #ff7a7a) 55%, transparent);
@@ -4404,13 +4273,11 @@ html[data-skin="vz"] #flag-knobbox .fb-h {
   border-radius: 3px;
 }
 
-/* ============ 色标（ColorBrewer）2026-11-02 ============
- *  放在色块二级菜单里 ✓ **单向渐变 / 双向渐变 各一套，一行八个** ✓
- *  （用户 2026-11-03："按之前那样双向、单向渐变那样"）
- */
+/* ============ 色标（ColorBrewer） ============
+ *  位于色块二级菜单中：单向渐变与双向渐变各一套，每行八个。 */
 .brush-menu { max-height: 72vh; overflow-y: auto; }
 .brush-menu .brw-row {
-  /* 跟 .palette 一模一样 ✓（抄的就是调色板那套 26px 网格）*/
+  /* 与 `.palette` 一致，沿用调色板的 26px 网格 */
   display: grid; grid-template-columns: repeat(8, 26px); grid-auto-rows: 26px;
   gap: 4px; justify-content: start; margin-bottom: 4px;
 }
@@ -4425,17 +4292,17 @@ html[data-skin="vz"] #flag-knobbox .fb-h {
 }
 
 /* ================================================================ 日间模式：补给
- *  🔴 2026-11-03 用户："手机版和电脑版不少 UI 组件都没有切换白昼或黑夜"
- *  —— 下面这些组件原来只写了暗色的白描边 / 黑影 / 写死深底，浅底上不是糊就是脏 ✓
- *  全部只改颜色（底 / 边 / 阴影 / 字），尺寸、布局、字号一个都没动 ✓
- *  取色统一走现有浅色那套：面板 #eaf0f6、边 rgba(24,36,50,.x)、选中 #26598a ✓ */
+ *  以下组件仅有暗色描边、阴影与写死的深底，在浅底上或糊或脏。
+ *  此处只改颜色（底、边、阴影、字色），尺寸、布局与字号均不变。
+ *  取色统一走现有浅色体系：面板 #eaf0f6、边 rgba(24,36,50,.x)、选中 #26598a。
+ */
 
-/* ── 画笔菜单（运行时被 JS 搬到 body 下 ✗ 不能写 .sidebar 前缀 ✓）── */
+/* ── 画笔菜单（运行时由 JS 移至 body 下，不能使用 .sidebar 前缀）── */
 html[data-theme="light"] .brush-menu {
   box-shadow: 0 10px 26px rgba(24, 36, 50, .18);
 }
 
-/* ── 色块：白描边 + 黑影在浅底上等于没有边 / 一圈脏影 ── */
+/* ── 色块：白描边与黑影在浅底上等同于无边与一圈脏影 ── */
 html[data-theme="light"] .swatch {
   box-shadow: inset 0 0 0 1px rgba(24, 36, 50, .18), 0 2px 9px rgba(24, 36, 50, .14);
 }
@@ -4446,7 +4313,7 @@ html[data-theme="light"] .palette .chip:hover {
   box-shadow: inset 0 0 0 1px rgba(24, 36, 50, .3), 0 2px 6px rgba(24, 36, 50, .18);
 }
 
-/* ── 色标（二级菜单里的那排 26px 小格）── */
+/* ── 色标（二级菜单中的那排 26px 小格）── */
 html[data-theme="light"] .brush-menu .brw-row i {
   box-shadow: inset 0 0 0 1px rgba(24, 36, 50, .16);
 }
@@ -4454,7 +4321,7 @@ html[data-theme="light"] .brush-menu .brw-row i:hover {
   box-shadow: inset 0 0 0 1px rgba(24, 36, 50, .3), 0 2px 6px rgba(24, 36, 50, .18);
 }
 
-/* ── 旗帜：拖拽框的白色虚线 / 白色小方块在浅底上直接消失 ── */
+/* ── 旗帜：拖拽框的白色虚线与白色小方块在浅底上会消失 ── */
 html[data-theme="light"] #flag-knobbox {
   border-color: rgba(24, 36, 50, .55);
   box-shadow: 0 0 0 1px rgba(24, 36, 50, .12);
@@ -4500,14 +4367,221 @@ html[data-theme="light"] #flag-pop #flag-del:hover {
   background: rgba(143, 47, 29, .08);
 }
 
-/* ── 图例条目左边的色块：白描边 + 内黑圈，浅底上像糊了一圈灰 ── */
+/* ── 图例条目左侧色块：白描边加内黑圈，浅底上呈一圈灰 ── */
 html[data-theme="light"] .legend-row .legend-sw {
   border-color: rgba(24, 36, 50, .38);
   box-shadow: 0 0 0 1px rgba(24, 36, 50, .32) inset;
 }
 
 /* ── 设置抽屉：`#settings .modal-box.set-box` 带 id 权重，
-     浅色 `.modal-box` 那条盖不到它的黑影（0 0 0 .28 在浅底上偏重）── */
+     浅色 `.modal-box` 规则无法覆盖其阴影（0 0 0 .28 在浅底上偏重）── */
 html[data-theme="light"] #settings .modal-box.set-box {
   box-shadow: -12px 0 32px rgba(24, 36, 50, .16);
 }
+
+/* ================================================================ 原生 <select> 展开后的弹层
+ *  问题现象：深色模式下下拉展开为白底白字，截图取自设置中的字体下拉。
+ *
+ *  原因（与 color-scheme 关系不大）：
+ *    · `.set-row select` 只把控件本身刷成深底浅字
+ *    · 弹层中的 `<option>` 属于另一层原生 UI；作者未为 option 指定颜色时，
+ *      Chrome 与 Edge（Windows）使用系统浅色菜单绘制底色，字色仍从 select
+ *      继承 `var(--text)` = #dfe6ef，形成白底白字
+ *    · `html { color-scheme: dark }` 对控件本体与滚动条生效，不影响 Windows
+ *      原生弹层的底色
+ *      → 只有为 option 显式书写 `background-color` 与 `color` 才能生效
+ *
+ *  仅处理原生弹层：`#era-dd` 与 `.dd-panel` 为 DOM 自绘的下拉，此处不作改动。
+ *  色值全部走变量：--panel-2 / --text / --text-dim / --text-faint，已在
+ *  `html[data-theme="light"]` 各段整体翻转；深色默认值因此自动正确，浅色在
+ *  ④ 中单独固定。
+ * ========================================================================== */
+
+/* ---- ① 弹层底 + 字 -------------------------------------------------------- */
+/* 弹层使用 --panel-2（浮起层），比控件本身的 #10161d 亮一档，呈现从控件弹出的层次 */
+select option,
+select optgroup,
+select optgroup option {
+  background-color: var(--panel-2, #1b222b);
+  color: var(--text, #dfe6ef);
+}
+/* 分组标题（optgroup）为分隔行，压暗一档；粗体为浏览器默认，不作处理 */
+select optgroup { color: var(--text-dim, #a7b5c6); }
+
+/* ---- ② 选中 / 禁用 --------------------------------------------------------
+ *  `:checked` 在 Chrome 的 Windows 弹层中不一定生效（可能整条使用系统高亮绘制）；
+ *  生效时可辨认当前条目，不生效时也不至丢失文字。
+ *  两条均显式书写 color：系统高亮叠加后，继承字色可能不可读。 */
+select option:checked {
+  /* 由主题色混合得出，深色偏亮、浅色偏灰，两套主题均无需写死色值 */
+  background-color: color-mix(in srgb, var(--text) 16%, var(--panel-2));
+  color: var(--text, #dfe6ef);
+}
+select option:disabled { color: var(--text-faint, #8695a7); }
+
+/* ---- ③ color-scheme 加固（并非此问题的修法）-------------------------
+ *  `html { color-scheme: dark }` 本已继承至 select；此处显式重写，仅用于防止
+ *  以后某个祖先将其重置为 normal，使弹层重新变白。
+ *  该条不能解决白底白字：Windows 原生弹层的底色不受其控制。
+ *  三个下拉族的背景、字色与边框均为作者样式，套用 dark 不会被改坏。 */
+select { color-scheme: dark; }
+
+/* ---- ④ 浅色主题：白底深字，单独固定一遍 -----------------------------------
+ *  ① 的变量已随主题翻转，但浅色下 `html[data-theme="light"] select` 将控件刷成
+ *  纯 #fff，弹层若使用 --panel-2（#e9eef4）会与控件存在色差，显得未对齐。
+ *  故此处显式定为 #fff / #1a232e，与控件保持一致。
+ *  （另一条仅作用于图例的五个下拉，取值相同，不冲突。） */
+html[data-theme="light"] select option,
+html[data-theme="light"] select optgroup,
+html[data-theme="light"] select optgroup option {
+  background-color: #ffffff;
+  color: #1a232e;
+}
+html[data-theme="light"] select optgroup { color: #414e5d; }
+html[data-theme="light"] select option:checked {
+  background-color: #dbe5f0;
+  color: #10202f;
+}
+html[data-theme="light"] select option:disabled { color: #6b7887; }
+html[data-theme="light"] select { color-scheme: light; }
+
+/* ============================================================================
+ * 自写调色器
+ *
+ * 点击任意 `<input type="color">` 会弹出系统拾色器，桌面、手机与 WebView
+ * 外观各异，与编辑器风格不一致；现统一为这一组件（见 `app.js` 的 CP 一节）。
+ *
+ * 颜色全部走主题变量，随昼夜自动切换；窄屏下作为底部弹层。
+ * ========================================================================== */
+.color-pop {
+  position: fixed;
+  z-index: 210;
+  width: 284px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  touch-action: none;
+}
+/* display:flex 会覆盖 UA 的 `[hidden]{display:none}`，需自行补充一条 */
+.color-pop[hidden] { display: none; }
+.color-pop .cp-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--text-dim);
+  letter-spacing: .3px;
+}
+.color-pop .cp-x {
+  padding: 1px 4px;
+  border: 0;
+  background: none;
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  border-radius: 4px;
+}
+.color-pop .cp-x:hover { color: var(--text); background: var(--panel-2); }
+.color-pop .cp-main { display: flex; gap: 8px; }
+.color-pop canvas { display: block; border-radius: 6px; cursor: crosshair; }
+#color-pop-sv { width: 236px; height: 160px; flex: none; touch-action: none; }
+#color-pop-hue { width: 18px; height: 160px; flex: none; touch-action: none; }
+.color-pop .cp-foot { display: flex; align-items: center; gap: 8px; }
+.color-pop .cp-preview {
+  width: 26px; height: 26px; flex: none;
+  border: 1px solid var(--line); border-radius: 6px;
+}
+.color-pop .cp-hex {
+  flex: 1 1 auto; min-width: 0;
+  padding: 5px 8px;
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font: 12px/1.3 var(--mono);
+  text-transform: lowercase;
+}
+.color-pop .cp-hex:focus { outline: none; border-color: var(--accent); }
+.color-pop .cp-presets { display: flex; flex-wrap: wrap; gap: 6px; }
+.color-pop .cp-presets:empty { display: none; }
+.color-pop .cp-chip {
+  width: 22px; height: 22px; padding: 0;
+  border: 1px solid rgba(255, 255, 255, .22);
+  border-radius: 5px;
+  cursor: pointer;
+}
+html[data-theme="light"] .color-pop .cp-chip { border-color: rgba(0, 0, 0, .18); }
+@media (max-width: 560px) {
+  .color-pop {
+    width: min(340px, calc(100vw - 24px));
+    padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+  }
+  .color-pop .cp-main { gap: 10px; }
+}
+
+/* ── 设置中的「?」提示：晦涩设置加问号，悬停显示说明
+   不使用原生 title，改为自绘气泡：鼠标悬停、键盘聚焦、手机点按均可触发 */
+.help-q {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  margin-left: 5px;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  color: var(--text-dim);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  vertical-align: 1px;
+  cursor: help;
+  user-select: none;
+  transition: color .12s, border-color .12s, background .12s;
+}
+.help-q:hover,
+.help-q:focus-visible {
+  color: var(--text);
+  border-color: var(--gold-dim);
+  background: rgba(201, 162, 39, .14);
+  outline: none;
+}
+.help-tip {
+  position: fixed;
+  z-index: 260;
+  max-width: 280px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--text);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .35);
+  font-size: 12.5px;
+  line-height: 1.55;
+  white-space: pre-line;
+  pointer-events: none;
+}
+html[data-theme="light"] .help-tip {
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .16);
+}
+@media (max-width: 560px) {
+  .help-q { width: 17px; height: 17px; font-size: 11px; }
+}
+
+/* 保存 / 加载地图弹窗：起名框 + 存档列表（两种模式共用） */
+.store-box { width: min(460px, 92vw); }
+.store-hint { margin: 0 0 10px; padding: 8px 10px; border: 1px solid #6b5320; border-radius: 6px; background: rgba(201, 162, 39, .12); color: var(--gold-dim); font-size: 12px; line-height: 1.5; }
+.store-list { max-height: 240px; overflow: auto; margin-top: 10px; border-top: 1px solid var(--line); }
+.store-row { display: flex; align-items: center; gap: 10px; padding: 9px 4px; border-bottom: 1px solid var(--line); cursor: default; }
+.store-row.load { cursor: pointer; }
+.store-row.load:hover { background: rgba(201, 162, 39, .10); }
+.store-row b { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: var(--text); }
+.store-date { color: var(--text-dim); font-size: 11px; font-family: ui-monospace, Consolas, monospace; }
+.store-ov { padding: 2px 10px; font-size: 12px; }
+.store-empty { padding: 14px 4px; color: var(--text-dim); font-size: 12px; text-align: center; }

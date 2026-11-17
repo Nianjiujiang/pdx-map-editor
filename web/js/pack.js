@@ -1,36 +1,36 @@
 /**
- * 地图包（.pdxmap）的校验 —— 导入前把陌生人给的东西查一遍。
+ * 地图包（.pdxmap）的校验：导入前检查外部来源的包内容。
  *
- * 分工（见 docs/导入式地图-策划.md 第 3.2 节）：
- *   · ``zip.js`` 的 readZip：只管**结构**（是不是 zip、有没有加密 / zip64 / 重名 / 越界）
- *   · 这里：管**内容**（认不认识这些文件、哈希对不对、数字自不自洽）
- *   · **只负责拒绝，绝不修数据** ✓ —— 缺什么就说什么缺，不替作者猜、不补齐
+ * 分工：
+ *   · ``zip.js`` 的 readZip：只校验**结构**（是否 zip、是否加密 / zip64 / 重名 / 越界）
+ *   · 本模块：校验**内容**（文件是否认识、哈希是否匹配、数值是否自洽）
+ *   · **只拒绝，不修改数据** —— 缺什么就报告什么，不猜测、不补齐
  *
- * 三条贯穿全篇的原则：
- *   ① 每一步都要给人话：**哪个文件、哪儿不对、应该是什么**，
- *      别只说"校验失败"（作者拿着这句话没法改 ✗）
- *   ② 大文件一律**流式**过，边读边数、边算哈希 ✓
- *      EU5 原尺寸那张图，光省份图解压后 268 MB，整块摊进内存手机上必崩 ✗
- *   ③ 先看**声明值**（中央目录里的 size）把明显过大的挡在门外，
- *      再在流里数**实际值** —— 声明可以撒谎，实际数出来的不会 ✓
+ * 三条原则：
+ *   ① 错误信息须指明**哪个文件、哪里不对、期望是什么**，
+ *      不能只报告"校验失败"（作者无法据此修正）
+ *   ② 大文件一律**流式**处理，边读边计数、边计算哈希
+ *      EU5 原尺寸地图的省份图仅解压后即 268 MB，整块读入内存会导致移动端崩溃
+ *   ③ 先用**声明值**（中央目录中的 size）拦截明显过大的条目，
+ *      再在流中统计**实际值** —— 声明值可能不准确，实际统计值可靠
  */
 
 /** 包格式名，写在 manifest.format 里 */
 export const PACK_FORMAT = 'pdxmap';
 
-/** 包格式版本（zip 内的布局）。比它高的包要求玩家更新编辑器 */
+/** 包格式版本（zip 内的布局）。高于此版本的包要求更新编辑器 */
 export const PACK_FORMAT_VERSION = 1;
 
 /** 缓存数据结构的版本范围。build_*.py 改结构就 +1，两端一起改 */
 export const PACK_SCHEMA_MIN = 1;
 export const PACK_SCHEMA_MAX = 1;
 
-/** 包必须属于这六个游戏之一（术语 / 层级 / 导出格式全走那个游戏的现成设定）
- *  ⚠ 跟 `pack_map.py` 的 `GAMES` **必须一起改** ✗ —— 那边放行这边拒收就是
- *    "自己打的包自己导不进来" */
+/** 包必须属于下列游戏之一（术语 / 层级 / 导出格式沿用该游戏的现有设定）
+ *  必须与 `pack_map.py` 的 `GAMES` **同步修改** —— 两侧不一致会导致
+ *  自行打包的文件无法导入 */
 export const PACK_GAMES = ['ck3', 'eu4', 'hoi4', 'vic3', 'eu5'];
 
-/** 必需文件：和 data_xxx/ 里同名同格式，编辑器一个字节都不用改 */
+/** 必需文件：与 data_xxx/ 中同名同格式，编辑器无需改动即可读取 */
 export const PACK_REQUIRED = [
   'manifest.json', 'meta.json', 'titles.json',
   'provinces_id.bin', 'titlemap.bin', 'adjacency.bin', 'prov_pos.bin',
@@ -42,7 +42,7 @@ export const PACK_MAX_FILE = 512 * 1024 * 1024;
 export const PACK_MAX_TOTAL = 1024 * 1024 * 1024;
 export const PACK_MAX_ENTRIES = 500;
 
-/** 字段长度上限（**超了拒绝，不截断**） */
+/** 字段长度上限（**超限即拒绝，不截断**） */
 export const PACK_LIMITS = {
   id: 64, label: 40, note: 80, version: 32,
   author: 40, license: 200, description: 1000, homepage: 300,
@@ -61,7 +61,7 @@ const CAP = {
 const ID_RE = /^[a-z0-9][a-z0-9._-]{2,63}$/;
 const HEX64_RE = /^[0-9a-f]{64}$/;
 
-/** 地图尺寸上限（宽高各自）—— 再大就不是给人看的图了，纯属拿内存开玩笑 */
+/** 地图尺寸上限（宽高各自）；超过此尺寸的图不具可用性，且会占用过多内存 */
 const MAX_SIDE = 32768;
 
 /** 校验失败。message 是给人看的，file 指出问题在哪个文件 */
@@ -77,7 +77,7 @@ function fail(msg, file) {
   throw new PackError(msg, file);
 }
 
-/** 这个条目名是地图包允许的吗（认不认识） */
+/** 判断条目名是否为地图包允许的文件 */
 export function isKnownPackFile(name) {
   if (PACK_REQUIRED.indexOf(name) >= 0) return true;
   if (name === 'tiles.json' || name === 'preview.jpg') return true;
@@ -90,14 +90,14 @@ export function isKnownPackFile(name) {
 
 /* ---------------------------------------------------------------- 流式 SHA-256
  *
- * 为什么不用 ``crypto.subtle.digest``：它只能**整块**吃（要一个完整 ArrayBuffer），
- * EU5 原尺寸那包光省份图就 268 MB ✗；而且 ``file://`` 双击打开时
- * （非安全上下文）有些浏览器根本没有 crypto.subtle ✗。
- * 自带这份不到 60 行的流式实现，两个问题一起没了 ✓
+ * 不使用 ``crypto.subtle.digest``：该方法只能**整块**处理（需要完整 ArrayBuffer），
+ * EU5 原尺寸包的省份图即 268 MB；且在 ``file://`` 直接打开
+ * （非安全上下文）时，部分浏览器没有 crypto.subtle。
+ * 因此内置这份流式实现，同时解决上述两个问题。
  *
- * 实现就是标准 SHA-256。**别改成"看着差不多"的写法** ——
- * 它错了不会报错，只会安静地算出另一个哈希值，然后所有包都"哈希不对" ✗
- * （tools/check_pack.js 里有 FIPS 的测试向量盯着）
+ * 实现为标准 SHA-256。**不可改为近似实现** ——
+ * 此类错误不会抛异常，只会静默算出不同的哈希值，导致所有包都报"哈希不对"
+ * （tools/check_pack.js 中有 FIPS 测试向量）
  */
 const K256 = new Uint32Array([
   0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
@@ -118,7 +118,7 @@ export class Sha256 {
     ]);
     this.buf = new Uint8Array(64);
     this.n = 0;                 // buf 里攒了几个字节
-    this.total = 0;             // 一共吃了多少字节（用 Number，2^53 够大了）
+    this.total = 0;             // 已累计处理的字节数（Number 可表示到 2^53，足够）
     this.w = new Uint32Array(64);
   }
 
@@ -168,7 +168,7 @@ export class Sha256 {
     this.h[7] = (this.h[7] + h) | 0;
   }
 
-  /** 收尾出十六进制（调完别再 update 了） */
+  /** 输出十六进制摘要（调用后不应再 update） */
   hex() {
     const bits = this.total * 8;
     const pad = new Uint8Array(this.n < 56 ? 64 : 128);
@@ -186,13 +186,13 @@ export class Sha256 {
   }
 }
 
-/** 算 SHA-256：**能用原生就用原生**（快一个数量级：~3ms/MB vs ~100ms/MB ✓）
+/** 计算 SHA-256：**优先使用原生实现**（快一个数量级：约 3ms/MB 对约 100ms/MB）
  *
- *  ⚠ 原生 `crypto.subtle.digest` 只能**整块吃** ✗ —— 所以只在"数据装得下"的地方用：
- *    导入校验喂的是**包里那一层**的原始字节（十几 MB 以内 ✓），不是解压后的省份图 ✓
- *  ⚠ `file://` 双击打开时有些浏览器没有 `crypto.subtle` → 自动回退到上面那份流式实现 ✓
- *    两份算出来的值必须一模一样 ✓（check_pack 里两边对着 FIPS 向量各跑一遍 ✓）
- *  ⚠ 原生那条**失败也回退** ✓ —— 有些环境 subtle 在但 digest 会抛（策略限制 ✓）
+ *  原生 `crypto.subtle.digest` 只能**整块**处理，仅在数据量可控处使用：
+ *    导入校验传入的是**包内那一层**的原始字节（十余 MB 以内），不含解压后的省份图
+ *  `file://` 直接打开时部分浏览器没有 `crypto.subtle`，此时回退到上方的流式实现；
+ *    两种实现的输出必须完全一致（check_pack 中使用 FIPS 向量分别校验）
+ *  原生实现**失败时同样回退**：部分环境中 subtle 存在但 digest 会抛异常（策略限制）
  */
 async function sha256Chunks(chunks, total) {
   let subtle = null;
@@ -211,20 +211,20 @@ async function sha256Chunks(chunks, total) {
       let out = '';
       for (let i = 0; i < dig.length; i++) out += dig[i].toString(16).padStart(2, '0');
       return out;
-    } catch (e) { /* 回退 ✓ */ }
+    } catch (e) { /* 回退 */ }
   }
   const h = new Sha256();
   for (const c of chunks) h.update(c);
   return h.hex();
 }
 
-/** 顺手给别处用（导入时算整包哈希、测试里比向量） */
+/** 供其他模块使用（导入时计算整包哈希、测试中比对向量） */
 export async function sha256Hex(blobOrBytes) {
   if (blobOrBytes instanceof Uint8Array) {
     return sha256Chunks([blobOrBytes], blobOrBytes.length);
   }
   const size = Number(blobOrBytes.size) || 0;
-  // 大 Blob 别整块读进来 ✗ —— 退回流式那份 ✓（调用方给的都是小东西，这条只是兜底）
+  // 大 Blob 不要整块读入，改走流式实现（调用方传入的通常较小，此分支为兜底）
   if (size <= 16 * 1024 * 1024) {
     const buf = new Uint8Array(await blobOrBytes.arrayBuffer());
     return sha256Chunks([buf], buf.length);
@@ -258,7 +258,7 @@ function wantPosInt(v, field) {
 }
 
 /**
- * 查 manifest.json。返回清好的 manifest（未知字段原样留着，给 v1.x 留余地 ✓）
+ * 校验 manifest.json，返回整理后的 manifest（未知字段原样保留，兼容 v1.x）
  */
 export async function readManifest(zip) {
   if (!zip.has('manifest.json')) fail('缺少 manifest.json，不是有效的地图包', 'manifest.json');
@@ -322,18 +322,18 @@ export async function readManifest(zip) {
 /* ---------------------------------------------------------------- 大文件扫描 */
 
 /**
- * 流式过一条，边读边喂回调。
+ * 流式读取一个条目，边读边回调。
  *
- * ⚠ **.bin 是两层压**：zip 一层（外面），里面还有一层 zlib（`78 9c` 开头）。
- * 数据目录里那些 `.bin` 本来就是 zlib 压的，包只是把它们装进了 zip ✓
- * 所以这一条要揭两层 —— 少揭一层的话，读出来的是 zlib 字节流，
- * 长度公式会全部对不上（EU5 那种光省份图就差 268 MB）✗
- * （编辑器真正取数据时也是两层：包 → zlib → u16，见 data.js 的 decompress ✓）
+ * **.bin 为双层压缩**：外层 zip，内层 zlib（以 `78 9c` 开头）。
+ * 数据目录中的 `.bin` 本身即为 zlib 压缩，包只是将其装入 zip。
+ * 因此该函数需解两层；只解一层会得到 zlib 字节流，
+ * 所有长度公式均不成立（EU5 的省份图相差 268 MB）。
+ * （编辑器读取数据时同样为两层：包 → zlib → u16，见 data.js 的 decompress）
  *
- * 两个回调分的是**不同层**，别弄混：
- *   · onLayer1(chunk) 第一层（zip 里那份）—— 进度 + **算哈希**（manifest.files 就是按这份算的）
- *   · onChunk(chunk)  第二层（zlib 解完）—— 长度 / 内容范围检查
- * @returns {Promise<number>} 第二层解完有多少字节（= 真正的数据长度）
+ * 两个回调作用于**不同层**：
+ *   · onLayer1(chunk) 第一层（zip 内数据）—— 进度 + **计算哈希**（manifest.files 按此层计算）
+ *   · onChunk(chunk)  第二层（zlib 解压后）—— 长度 / 内容范围检查
+ * @returns {Promise<number>} 第二层解压后的字节数（即真实数据长度）
  */
 async function scan(zip, e, cap, onChunk, onLayer1) {
   const inner = e.name.slice(-4) === '.bin';
@@ -351,17 +351,16 @@ async function scan(zip, e, cap, onChunk, onLayer1) {
     try {
       step = await reader.read();
     } catch (err) {
-      /* 解压流自己坏了（文件被改过 / 没传完）✗ —— 底层给的是英文，
-         有的环境甚至只有一个空 TypeError ✓ 直接上屏等于没说 ✗
-         （2026-10-19 变异测试抓到的：改坏一个字节就能撞出这种）*/
-      try { await reader.cancel(); } catch (e2) { /* 取消失败无所谓，反正要抛了 */ }
+      /* 解压流出错（文件被修改或传输不完整）—— 底层抛出的是英文信息，
+         部分环境仅有空的 TypeError，直接展示无法说明问题。 */
+      try { await reader.cancel(); } catch (e2) { /* 取消失败可忽略（随后即抛出） */ }
       fail(`「${e.name}」解压失败（文件坏了或者没传完）`, e.name);
     }
     const { done, value } = step;
     if (done) break;
     raw += value.length;
     if (raw > cap) {
-      try { await reader.cancel(); } catch (err) { /* 取消失败无所谓，反正要抛了 */ }
+      try { await reader.cancel(); } catch (err) { /* 取消失败可忽略（随后即抛出） */ }
       fail(`「${e.name}」解压后超过上限（${Math.floor(cap / 1048576)} MB）`, e.name);
     }
     if (onChunk) onChunk(value);
@@ -381,7 +380,7 @@ async function smallBytes(zip, name) {
   }
 }
 
-/** 预览图的魔数：只认 JPEG / PNG / WebP（**不看扩展名**，也不收 SVG）✓ */
+/** 预览图魔数：仅接受 JPEG / PNG / WebP（**不依据扩展名**，不接受 SVG） */
 function imageKind(head) {
   if (head.length >= 3 && head[0] === 0xFF && head[1] === 0xD8 && head[2] === 0xFF) return 'jpeg';
   if (head.length >= 8 && head[0] === 0x89 && head[1] === 0x50 && head[2] === 0x4E && head[3] === 0x47) return 'png';
@@ -393,7 +392,7 @@ function imageKind(head) {
 /* ---------------------------------------------------------------- 主入口 */
 
 /**
- * 把一个 zip 当地图包查一遍。**通过就返回解好的数据，不通过就抛 PackError**。
+ * 将 zip 作为地图包校验。**通过则返回解析后的数据，不通过则抛出 PackError**。
  *
  * @param {ZipFile} zip     readZip() 的结果
  * @param {object} [opts]
@@ -424,9 +423,9 @@ export async function validatePack(zip, opts = {}) {
     if (!zip.has(n)) fail(`包里缺「${n}」`, n);
   }
 
-  // ---- 3. 先按声明值挡一道（炸弹最便宜的防线：看它自己说有多大）
-  /* ⚠ e.size 是**第一层**（zip 解完）的大小。.bin 里面还有一层 zlib，
-     所以这一道只是"荒唐值"的粗筛；真正卡死的是后面流式数出来的第二层字节 ✓ */
+  // ---- 3. 先按声明值拦截（以声明尺寸作为第一道防线）
+  /* e.size 为**第一层**（zip 解压后）的大小；.bin 内部还有一层 zlib，
+     因此此处仅粗筛异常值，实际限制由后续流式统计的第二层字节数决定 */
   let declaredTotal = 0;
   for (const e of zip.entries) {
     if (e.name === 'manifest.json') continue;
@@ -483,20 +482,20 @@ export async function validatePack(zip, opts = {}) {
   if (!titles || typeof titles !== 'object' || Array.isArray(titles)) {
     fail('titles.json 得是一个对象（里面是一组等长数组）', 'titles.json');
   }
-  // 必需的下标数组：编辑器会直接按下标取；width/length 不对会读到 undefined 而**不报错** ✗
-  // （labels.js 里 `titles.area || titles.provCount.map(...)` 就是没护栏的那一处）
+  // 必需的下标数组：编辑器按下标直接读取；长度不符会读到 undefined 而不抛错
+  // （labels.js 中 `titles.area || titles.provCount.map(...)` 即缺少保护的一处）
   for (const k of ['keys', 'tiers', 'parents', 'names', 'colors', 'provCount']) {
     if (!Array.isArray(titles[k])) fail(`titles.json 里缺 ${k}（编辑器会直接按下标取）`, 'titles.json');
     if (titles[k].length !== N) {
       fail(`titles.json 的 ${k} 有 ${titles[k].length} 项，应该和 numTitles 一样是 ${N} 项`, 'titles.json');
     }
   }
-  // 可选字段：**有就必须等长**（没有是允许的，编辑器都有兜底 ✓）
-  // ⚠ `angle` / `path` 是**旧缓存遗留**的兼容字段（2026-10-13 加的倾斜/折线系统 ✓，
-  //   2026-10-15 整体退役 ✗ 构建侧已不再产出 ✓ 前端也不再读 ✓）
-  //   旧包里有 → 继续照"等长"校验：万一长度不对照样报出来，别默默放过 ✓
-  //   （当年 `angle` 那次真的闹到"整包导不进来"：patch_wasteland 追加节点时漏加了它 ✓）
-  // ⚠ `seaNames` 这类不在这儿 ✗ 它们挂在 `meta` 上（是字典，不是等长数组 ✓）
+  // 可选字段：**存在时长度必须一致**（可缺省，编辑器均有兜底）
+  // `angle` / `path` 为旧缓存遗留的兼容字段（倾斜 / 折线系统已停用，
+  //   构建侧不再产出，前端不再读取）；
+  //   旧包中若存在，仍按等长规则校验，长度不符时照常报错，不静默跳过
+  //   （`angle` 缺失曾导致整包无法导入：patch_wasteland 追加节点时遗漏该字段）
+  // `seaNames` 等字段不在此列，它们位于 `meta` 中（为字典，非等长数组）
   for (const k of ['area', 'blockArea', 'lx', 'ly', 'gx', 'gy', 'hideLabel', 'namesEn', 'angle', 'path']) {
     if (titles[k] === undefined || titles[k] === null) continue;
     if (!Array.isArray(titles[k])) fail(`titles.json 的 ${k} 得是数组`, 'titles.json');
@@ -510,7 +509,7 @@ export async function validatePack(zip, opts = {}) {
       fail(`titles.json 的 provinceNames 有 ${titles.provinceNames.length} 项，应该和 numProvinces 一样是 ${P} 项`, 'titles.json');
     }
   }
-  // locKeys 只在 EU5 那种数据里有，实测**允许比 numTitles 少**（差 2 条），所以只查不超 ✗
+  // locKeys 仅部分数据（如 EU5）存在，允许少于 numTitles（实测差 2 条），故只校验不超出
   if (titles.locKeys && Array.isArray(titles.locKeys) && titles.locKeys.length > N) {
     fail(`titles.json 的 locKeys 比 numTitles 还多（${titles.locKeys.length} > ${N}）`, 'titles.json');
   }
@@ -540,9 +539,9 @@ export async function validatePack(zip, opts = {}) {
     if (tileManifest.mapW !== W || tileManifest.mapH !== H) {
       fail(`tiles.json 里的图是 ${tileManifest.mapW}×${tileManifest.mapH}，meta.json 说是 ${W}×${H}`, 'tiles.json');
     }
-    /* 先查"清单和包里的文件对不对得上"，再查几何 ——
-       顺序反过来的话，一个多写的幽灵条目会报成"块数不对"，
-       而作者需要看到的是**哪个文件名**没对上 ✗（这条踩过） */
+    /* 先校验清单与包内文件是否一致，再校验几何参数 ——
+       顺序相反时，多余的条目会被误报为块数不符，
+       而实际需要指出的是**哪个文件名**未对上 */
     const listed = new Set(tileManifest.files.map((f) => `tiles/${f.name}`));
     for (const n of listed) if (!zip.has(n)) fail(`tiles.json 里列了 ${n}，包里没有`, n);
     for (const e of zip.entries) {
@@ -550,9 +549,9 @@ export async function validatePack(zip, opts = {}) {
         fail(`包里的 ${e.name} 没写进 tiles.json`, e.name);
       }
     }
-    /* 几何自洽（tilemap.js 是按 cols/rows 找块、按 tileW/tileH 定位的 ✓）：
-       这几条对不上，表现是"有些块永远加载不出来 / 画到错的地方"——
-       比报错难查得多，所以在导入时就说清楚 ✗ */
+    /* 几何自洽（tilemap.js 按 cols/rows 查找块、按 tileW/tileH 定位）：
+       参数不符时表现为部分块无法加载或绘制位置错误，
+       这类问题排查困难，因此在导入阶段即报错 */
     const tw = tileManifest.tileW, th = tileManifest.tileH;
     const cols = tileManifest.cols, rows = tileManifest.rows;
     if (!(tw > 0) || !(th > 0) || !(cols > 0) || !(rows > 0)) {
@@ -562,7 +561,7 @@ export async function validatePack(zip, opts = {}) {
       fail(`tiles.json 说有 ${cols}×${rows} = ${cols * rows} 块，但只列了 ${tileManifest.files.length} 块`, 'tiles.json');
     }
     if (tw * cols !== W || th * rows !== H) {
-      // 只报**对不上的那一维**（对的那维也写上去，作者会以为自己看错了 ✗）
+      // 只报告**不匹配的那一维**（写出匹配的维度会误导作者）
       const bad = [];
       if (tw * cols !== W) bad.push(`横向 ${tw}×${cols} = ${tw * cols}（应该是 ${W}）`);
       if (th * rows !== H) bad.push(`纵向 ${th}×${rows} = ${th * rows}（应该是 ${H}）`);
@@ -585,15 +584,15 @@ export async function validatePack(zip, opts = {}) {
     }
   }
 
-  // ---- 8. 大文件：**一趟走完**（长度 + 哈希 + 内容范围一次过）
-  /* 每个 .bin 解压一遍是几百 MB 的开销，所以哈希和内容检查挤在同一趟里 ✓
-     （分两趟 = 白解压一遍，EU5 原尺寸那包要多花好几秒 ✗） */
+  // ---- 8. 大文件：**单趟完成**（长度 + 哈希 + 内容范围一次处理）
+  /* 每个 .bin 解压一次即产生数百 MB 开销，因此哈希与内容检查合并为同一趟；
+     分两趟会重复解压，EU5 原尺寸包将额外耗时数秒 */
   const wantHash = (manifest.files && typeof manifest.files === 'object') ? manifest.files : null;
   if (!wantHash) note('这个包没给 manifest.files，跳过 sha256 核对');
   const hashed = {};
 
   if (wantHash) {
-    // 小文件在别处已经读过/读过一遍了，这里补上它们的哈希 ✓
+    // 小文件已在别处读取，此处补充其哈希
     hashed['meta.json'] = await sha256Chunks([metaBytes], metaBytes.length);
     hashed['titles.json'] = await sha256Chunks([titleBytes], titleBytes.length);
     if (zip.has('tiles.json')) {
@@ -605,7 +604,7 @@ export async function validatePack(zip, opts = {}) {
     }
   }
 
-  // 分块的地图，每块的期望解压长度从 tiles.json 拿（tilemap.js 加载时也按这个查 ✓）
+  // 分块地图的每块期望解压长度取自 tiles.json（tilemap.js 加载时按同一规则校验）
   const tileWant = {};
   if (tileManifest) {
     for (const f of tileManifest.files) tileWant[`tiles/${f.name}`] = f.w * f.h * 2;
@@ -615,14 +614,14 @@ export async function validatePack(zip, opts = {}) {
     && e.name !== 'meta.json' && e.name !== 'titles.json'
     && e.name !== 'tiles.json' && e.name !== 'preview.jpg');
 
-  // 进度按"声明解压总量"铺在 16% ~ 96% 这一段上（声明值可以撒谎，所以只用来画进度）
+  // 进度按"声明解压总量"映射到 16% ~ 96% 区间（声明值不可靠，仅用于进度显示）
   let rawSum = 0;
   for (const e of dataEntries) rawSum += e.size || 0;
   let rawDone = 0;
   let rawTotal = 0;
   let lastPct = -1;
 
-  // 半截 u16 的暂存（块边界不保证落在偶数位上）
+  // 跨块半截 u16 的暂存区（块边界不保证落在偶数位）
   let provTail = new Uint8Array(0);
   let tmTail = new Uint8Array(0);
   let badProv = -1;
@@ -631,14 +630,14 @@ export async function validatePack(zip, opts = {}) {
   for (const e of dataEntries) {
     const isProv = e.name === 'provinces_id.bin';
     const isTm = e.name === 'titlemap.bin';
-    /* 哈希口径 = **包里那一层**的原始字节（十几 MB 以内 ✓）→ 攒起来最后一次性算 ✓
-       以前是边扫边喂 JS 流式实现（~100ms/MB ✗）；现在优先原生（~3ms/MB ✓）
-       ⚠ 攒的是**拷贝** ✗ —— 分块的内存不保证还能活到循环外面 ✓ */
+    /* 哈希口径 = **包内那一层**的原始字节（十余 MB 以内），先攒齐再一次性计算
+       原生实现优先（约 3ms/MB），优于 JS 流式实现（约 100ms/MB）
+       攒存的是**拷贝**：分块缓冲区的生命周期不保证延伸到循环之外 */
     const hashChunks = wantHash ? [] : null;
 
     const len = await scan(zip, e, PACK_MAX_FILE, (bytes) => {
       if (isProv || isTm) {
-        // 上一块剩的半个 u16 接回来再看（不然会读出一堆错位的值 ✗）
+        // 接续上一块剩余的半个 u16，否则会出现整体错位的读数
         const prev = isProv ? provTail : tmTail;
         const buf = prev.length ? cat(prev, bytes) : bytes;
         let end = buf.length;
@@ -648,7 +647,7 @@ export async function validatePack(zip, opts = {}) {
         for (let i = 0; i < end; i += 2) {
           const v = buf[i] | (buf[i + 1] << 8);
           if (isProv) {
-            // 省份号 >= numProvinces：一半是手改坏的，一半是版本对不上 —— 两种都得在导入时说清楚 ✓
+            // 省份号 >= numProvinces：可能为手工修改错误或版本不匹配，两种情况均需在导入时说明
             if (v >= P && badProv < 0) badProv = v;
           } else if (v >= N && v !== NO_TITLE && badTid < 0) {
             badTid = v;
@@ -656,24 +655,24 @@ export async function validatePack(zip, opts = {}) {
         }
       }
     }, (chunk) => {
-      // 第一层（zip 里那份）：哈希的口径就是它 ——
-      // manifest.files 记的是"包里那个文件"的 sha256，不是解压之后的省份图 ✓
+      // 第一层（zip 内数据）：哈希按此层计算 ——
+      // manifest.files 记录的是包内文件的 sha256，而非解压后的省份图
       if (hashChunks) hashChunks.push(chunk.slice());
       rawDone += chunk.length;
-      // 进度**按整数百分比节流** ✓ —— 268 MB 是几千个 chunk，
-      // 每个 chunk 都去改一次界面就是自己把自己卡死 ✗
+      // 进度**按整数百分比节流** —— 268 MB 数据包含数千个 chunk，
+      // 每个 chunk 均更新界面会造成卡顿
       if (rawSum) {
         const pct = Math.floor(16 + 80 * Math.min(1, rawDone / rawSum));
         if (pct !== lastPct) { lastPct = pct; say(`校验 ${e.name}…`, pct); }
       }
     });
     rawTotal += len;                      // 第二层：真正解出来的量，用来卡总上限
-    /* ⚠ 长度要用**第一层**攒下来的字节数 ✗ —— `len` 是解压后的量（可能几百 MB ✗）
-       拿它去拼缓冲区 → 后面全是 0 → 哈希必然对不上 ✓（我自己踩过一次 ✓）*/
+    /* 长度必须使用**第一层**累计的字节数 —— `len` 是解压后的量（可能数百 MB），
+       用它拼接缓冲区会导致尾部全为 0，哈希必然不匹配 */
     if (hashChunks) hashed[e.name] = await sha256Chunks(hashChunks,
       hashChunks.reduce((s2, c) => s2 + c.length, 0));
 
-    // 长度公式：跟 pack_map.py 的 check_data_dir 是同一套，改一边必须改另一边
+    // 长度公式与 pack_map.py 的 check_data_dir 一致，修改一处必须同步另一处
     if (isProv && len !== W * H * 2) {
       fail(`provinces_id.bin 解压后 ${len} 字节，应该正好是 ${W}×${H}×2 = ${W * H * 2} 字节`, e.name);
     }
@@ -705,7 +704,7 @@ export async function validatePack(zip, opts = {}) {
     fail(`titlemap.bin 里有头衔号 ${badTid}，超出了 ${N} 个头衔的范围`, 'titlemap.bin');
   }
 
-  // ---- 9. 哈希核对（放在最后：内容先自洽了，再谈"是不是原来那份"）
+  // ---- 9. 哈希核对（置于最后：先确认内容自洽，再确认是否为原始内容）
   if (wantHash) {
     say('核对哈希…', 97);
     const names2 = Object.keys(wantHash);
@@ -716,7 +715,7 @@ export async function validatePack(zip, opts = {}) {
         fail(`${n} 的内容和 manifest 里记的 sha256 对不上（这个包被改过或者传坏了）`, n);
       }
     }
-    // 有哈希就必须列全 —— 不然"改个没列进去的文件"就绕过了这道 ✓
+    // 存在哈希清单时必须列全，否则未列入的文件可绕过此项校验
     for (const e of zip.entries) {
       if (e.name === 'manifest.json') continue;
       if (wantHash[e.name] === undefined) {
@@ -729,7 +728,7 @@ export async function validatePack(zip, opts = {}) {
   return { manifest, meta, titles, raw: { rawTotal } };
 }
 
-/** 把两段接起来（u16 跨块用；只在块边界上发生，几字节的事） */
+/** 拼接两段字节（用于跨块 u16；仅发生在块边界，长度很小） */
 function cat(a, b) {
   const out = new Uint8Array(a.length + b.length);
   out.set(a, 0);

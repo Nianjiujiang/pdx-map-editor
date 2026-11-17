@@ -1,8 +1,8 @@
 /* ===========================================================================
-   手机版界面（**这个文件只打进手机版** ✓ 电脑版一个字节不动 ✓）
+   手机版界面（本文件只打进手机版，电脑版不受影响）
    —— 一级界面：地图 + 左上返回 / 右上导入导出 / 底部四个入口
-      二级界面：从底部滑上来的下拉面板，内容直接搬桌面那几块 ✓
-   宽屏打开（电脑上调试）时，整体收进一个手机大小的框里居中 ✓
+      二级界面：从按钮上方弹出的下拉面板，内容直接搬桌面那几块
+   宽屏打开（电脑上调试）时，整体收进一个手机大小的框里居中
    =========================================================================== */
 
 /* ── 一级界面：六个入口 ───────────────────────────────────────────── */
@@ -19,8 +19,7 @@
   min-height: 38px; padding: 0 14px; border-radius: 19px;
   border: 1px solid #2b3743; background: rgba(13, 19, 26, .92); color: #e8eef6;
   font: 600 14px/1 "Microsoft YaHei", system-ui, sans-serif;
-  /* ⚠ **前缀两行都要** ✗ iOS Safari 只认 `-webkit-` ✓（2026-10-21 补）
-   *   原来只写了无前缀的 → 苹果手机上这颗按钮一点模糊都没有 ✓ */
+  /* 前缀两行都要：iOS Safari 只认 -webkit-，只写无前缀时苹果手机上模糊失效 */
   box-shadow: 0 6px 18px rgba(0, 0, 0, .45);
   -webkit-backdrop-filter: blur(6px);
   backdrop-filter: blur(6px);
@@ -46,35 +45,32 @@
 #mob-dock button i { font-style: normal; font-size: 17px; line-height: 1; }
 #mob-dock button.on { border-color: #c9a94e; color: #f0d98a; background: rgba(36, 29, 16, .95); }
 
-/* 面板打开时点一下地图也能收起 ✓ */
+/* 面板打开时点一下地图也能收起 */
 #mob-backdrop {
   position: absolute; inset: 0; background: rgba(0, 0, 0, .42);
   opacity: 0; pointer-events: none; transition: opacity .22s;
 }
 #mob-backdrop.on { opacity: 1; pointer-events: auto; }
 
-/* ── 二级界面：从按钮**正上方**弹出来的那一栏（上拉菜单那种 ✓）──────── */
+/* ── 二级界面：从按钮正上方弹出的那一栏 ──────── */
 #mob-sheet {
   position: absolute; z-index: 61;
-  /* ⚠ 2026-10-13：跟 `.tall` 一起**按三成降**（用户要求"设置高度减去 30%"✓）
-   *   原来是 **62vh** → 62 × 0.5 ≈ **31vh** ✓（之前试过 52 ✗ 那个不是"三成"）
-   *   这一条管的是**非 tall** 的常规二级面板（工具 / 颜色那些）✓ 它们内容本来就短 ✓ */
+  /* 常规二级面板（工具 / 颜色那些）的高度：内容本来就短 */
   max-height: 25vh; display: flex; flex-direction: column;
-  /* 🔴 **必须 `overflow: hidden`** ✗（2026-10-13 用户报"高度仍然遵循界面最高的"✓）
-   *   不加这句，超出 max-height 的内容**照样画在面板外面** ✓
-   *   看着就是"面板高度跟着内容走"✗ 其实是溢出了 ✓
-   *   收了之后：多余的进 `.mob-panes` 的滑条 ✓ 面板本身老老实实 43vh / 40vh ✓ */
+  /* 必须 overflow: hidden：不加这句，超出 max-height 的内容会画在面板外面，
+   * 看着像「面板高度跟着内容走」，实际是溢出。收住之后多余的进 .mob-panes 的滑条。
+   */
   overflow: hidden;
   background: #0d131a; border-radius: 16px;
   border: 1px solid #2b3743;
   box-shadow: 0 -14px 44px rgba(0, 0, 0, .66), 0 0 0 1px rgba(0, 0, 0, .3);
-  /* 左 / 下 / 宽 由 JS 按"哪个按钮被按了"算出来 ✓ */
+  /* 左 / 下 / 宽 由 JS 按「哪个按钮被按了」算出 */
   opacity: 0; transform: translateY(16px) scale(.97);
   transform-origin: bottom center; pointer-events: none;
   transition: opacity .18s ease, transform .24s cubic-bezier(.16, 1, .3, 1);
 }
 #mob-sheet.on { opacity: 1; transform: none; pointer-events: auto; }
-/* 按钮在上半屏（比如顶栏那个「导入导出」）→ 那一栏往下弹，尖角翻到顶上 ✓ */
+/* 按钮在上半屏（如顶栏的「导入导出」）时那一栏往下弹，尖角翻到顶上 */
 #mob-sheet.below { transform-origin: top center; }
 #mob-sheet.below::after {
   bottom: auto; top: -9px;
@@ -84,7 +80,7 @@
   bottom: auto; top: -7px;
   border-top: 0; border-bottom: 7px solid #0d131a;
 }
-/* 指向按钮的小尖角：像真的从那个按钮上长出来的 ✓ */
+/* 指向按钮的小尖角 */
 #mob-sheet::after {
   content: ''; position: absolute; bottom: -9px; left: var(--tail-x, 50%);
   margin-left: -9px; width: 0; height: 0;
@@ -107,30 +103,28 @@
   min-height: 34px; padding: 0 12px; border-radius: 17px; border: 1px solid #2b3743;
   background: #131b23; color: #cfd9e4; font: 600 13px/1 "Microsoft YaHei", system-ui, sans-serif;
 }
-/* 🔴🔴 **这里不许滚动** ✗✗（2026-10-13 用户报"滑动时连带着上面的分类按钮一起滑动，很怪"✓）
+/* 这里不许滚动。
  *
- *   原来的 DOM 是"两层滚动套着"，而且**标签栏住在滚动层里面** ✗：
- *     #mob-sheet-head     ← 标题栏（不滚 ✓）
- *     #mob-sheet-body     ← `overflow-y: auto` **滚动层 ①** ← 标签栏在这儿 ✗
- *       .mob-tabs         ← 「设置 / 颜色 / 工具 / 视图」← 被一起滑走了 ✓
- *       .mob-panes        ← **滚动层 ②**（但原来只在 `mob-tall` 时才允许滚 ✓）
+ * 两层滚动相套时，标签栏会落在滚动层里面：
+ *   #mob-sheet-head     ← 标题栏（不滚）
+ *   #mob-sheet-body     ← overflow-y: auto 滚动层 ① ← 标签栏在这儿
+ *     .mob-tabs         ← 「设置 / 颜色 / 工具 / 视图」，被一起滑走
+ *     .mob-panes        ← 滚动层 ②（仅在 mob-tall 前缀下允许滚动）
+ * 普通模式下只能靠 ① 滚，标签栏必然跟着走。
  *
- *   所以在**普通模式**下只能靠①滚 → 标签栏必然跟着走 ✓ 就是那个"很怪" ✓
- *   （「更高」模式下①被设成 `hidden` ✗ 反而不犯这个毛病 ✓
- *     所以这个 bug 只在普通模式出现 ✓ 用户看到的正是这样 ✓）
- *
- *   ✅ 正确分工：**滚动只发生在 `.mob-panes` 里** ✓
- *     · `#mob-sheet-body` → `overflow: hidden`（一个像素都不滚 ✓）
- *     · 但它是 flex 列容器 ✗ 这样 `.mob-panes` 才能撑满剩下的地方 ✓
- *     · `.mob-tabs` 加 `flex: none` ✓ 永远待在原地 ✓
- *   ⚠ 这三处是一套 ✗ 改一处要看另外两处 ✓（见下面 `.mob-tabs` 和 `.mob-panes` ✓）
- *   ⚠ 原来那句 `-webkit-overflow-scrolling: touch` 一起搬给 `.mob-panes` ✓
- *     那才是真正滚动的那个层 ✓ 不搬的话手机上滑起来会发涩 ✓ */
+ * 正确分工：滚动只发生在 .mob-panes 里。
+ *   · #mob-sheet-body → overflow: hidden（一个像素都不滚）
+ *   · 但它是 flex 列容器，这样 .mob-panes 才能撑满剩下的地方
+ *   · .mob-tabs 加 flex: none，永远待在原地
+ * ⚠ 这三处是一套，改一处要看另外两处（见下面 .mob-tabs 和 .mob-panes）
+ * ⚠ -webkit-overflow-scrolling: touch 要一起搬给 .mob-panes，
+ *   那才是真正滚动的层，不搬的话手机上滑起来会发涩。
+ */
 #mob-sheet-body {
   flex: 1 1 auto;
-  overflow: hidden;                  /* ← 不滚 ✓ 交给里面的 .mob-panes */
+  overflow: hidden;                  /* 不滚，交给里面的 .mob-panes */
   display: flex; flex-direction: column;
-  min-height: 0;                     /* ← 不写这句，内容会把面板顶高 ✓ */
+  min-height: 0;                     /* 不写这句，内容会把面板顶高 */
   padding: 10px 12px calc(20px + env(safe-area-inset-bottom, 0px));
 }
 .mob-group { display: block; }
@@ -141,12 +135,12 @@
 .mob-group .panel-head { padding: 6px 2px 8px; }
 .mob-group .panel-head h2 { font-size: 14px; color: #9fb0c2; }
 
-/* ── 悬停那套手机上手没法用 ✓ 全藏掉（跟随鼠标的信息卡 + 侧栏里的归属链）──── */
+/* ── 悬停那套在手机上用不了，全部藏掉（跟随鼠标的信息卡 + 侧栏里的归属链）──── */
 #hover-card { display: none !important; }
 #hover-chain { display: none !important; }
 
 /* ── 「设置」= 一排标签按钮 + 下面跟着换内容 ────────────────────────── */
-/* 顶上那个多余的总标题行不要了 ✗ */
+/* 顶上多余的总标题行不要 */
 .mob-set-title { display: none; }
 .mob-tabs {
   display: flex; flex-wrap: wrap; gap: 8px;
@@ -154,14 +148,14 @@
 }
 
 /* ===========================================================================
-   🔴 **晨昏按钮那一行**（2026-10-21 ✓ 用户："晨昏按钮还是放设置顶部吧（不是屏幕顶部）"）
+   晨昏按钮那一行
    ---------------------------------------------------------------------------
-   位置：**设置面板自己的顶部** —— 标题行下面、五个标签上面 ✓
-     （见 mobile_js.txt 的「白天 / 黑夜」那段 ✓ 它把按钮搬进 `.mob-theme-bar` ✓）
-   ⚠ 它在 `.mob-panes` **外面** ✗ 所以换页、滚动都不会把它带走 ✓
-     那是这一行和"一页"的根本区别 ✓ 界面主题不是哪一页的设置 ✓
-   ⚠ 视觉上要比标签行**轻一档** ✗ 它是全局开关，不是一级导航 ✓
-     所以用细线分隔、标签写小灰字 ✓ 让标签行仍然是"最上层的东西"✓
+   位置：设置面板自己的顶部 —— 标题行下面、五个标签上面
+     （见 mobile_js.txt 的「白天 / 黑夜」那段，它把按钮搬进 .mob-theme-bar）
+   ⚠ 它在 .mob-panes 外面，所以换页、滚动都不会把它带走：
+     界面主题不属于任何一页。
+   ⚠ 视觉上要比标签行轻一档：它是全局开关，不是一级导航。
+     因此用细线分隔、标签写小灰字，让标签行仍然是顶层。
    =========================================================================== */
 .mob-theme-bar {
   display: flex; align-items: center; gap: 10px;
@@ -172,7 +166,7 @@
   font: 600 12.5px/1 "Microsoft YaHei", system-ui, sans-serif;
   color: #8b9aab; letter-spacing: .5px;
 }
-/* 按钮本身：**贴右**、圆角、可点区域够大 ✓ */
+/* 按钮本身：贴右、圆角、可点区域够大 */
 .mob-theme-bar .theme-btn {
   flex: 0 0 auto;
   min-height: 34px; padding: 0 16px; border-radius: 17px;
@@ -186,7 +180,7 @@
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, .08);
 }
 .mob-theme-bar .theme-btn:active { transform: translateY(1px); }
-/* 日间：白玻璃 ✓ */
+/* 日间：白玻璃 */
 html[data-theme="light"] .mob-theme-lab { color: #5b6877; }
 html[data-theme="light"] .mob-theme-bar .theme-btn {
   background: rgba(255, 255, 255, .62);
@@ -195,55 +189,48 @@ html[data-theme="light"] .mob-theme-bar .theme-btn {
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, .9);
 }
 /* ===========================================================================
-   🔴 **「更高」的高度：这里不再写死数值** ✗✗（2026-10-21 收敛 ✓）
+   「更高」的高度：这里不写死数值
    ---------------------------------------------------------------------------
-   原来这里是一条：
-     `#mob-sheet.mob-tall { height: 38vh !important; max-height: 38vh !important; }`
-   ⚠ 它把 `mobile_js.txt` 的 `place()` 算出来的**内联** `max-height` / `height`
-     **一起压掉了** ✗ —— 那条 `!important` 权重比内联样式还高 ✓
-   于是：
-     · 不管屏幕多大，「更高」永远 38vh ✓（小屏太满、大屏太矮 ✓）
-     · 用户在 2026-10-13 / 10-17 那几轮"调高度没反应"，根子都在这儿 ✓
-       （跟更早那个 `.tall` 死类是同一个病：**两个地方写同一个数** ✓）
-   ✅ 现在：**高度只由 JS 算** ✓（见 mobile_js.txt 的 `_f` / `_cap`）
-     这里只留一条**兜底**：JS 还没跑起来的那一瞬，面板别塌成一条线 ✓
-     ⚠ 兜底**不许带 !important** ✗ 也不许跟 JS 抢数值 ✓
+   本文件不参与高度计算。!important 会压过 JS 的内联 max-height / height，
+   一旦在此写死数值，无论屏幕多大都固定成该值，且调高度不会有反应。
+   高度只由 JS 算（见 mobile_js.txt 的 _f / _cap），
+   这里只留一条兜底：JS 还没跑起来的那一瞬，面板不塌成一条线。
+   ⚠ 兜底不许带 !important，也不许跟 JS 抢数值。
    =========================================================================== */
-#mob-sheet.mob-tall { max-height: 60vh; }          /* 兜底：JS 一算就被内联盖掉 ✓ */
+#mob-sheet.mob-tall { max-height: 60vh; }          /* 兜底：JS 一算就被内联盖掉 */
 
-/* 链子那几条（`#mob-sheet.mob-tall` 下的 flex 传导）**必须留着** ✓
-   ⚠ 它们只管"能不能滚"，不管高度数值 ✓ 跟上面那条不是一回事 ✓
-   链子是 `#mob-sheet-body`（flex 列）→ `.mob-group` → `.mob-tabs` + `.mob-panes` ✓
-   少一环 `.mob-panes` 的 `flex: 1` 就撑不开、滑条永远不出现 ✓ */
+/* 链子那几条（#mob-sheet.mob-tall 下的 flex 传导）必须留着：
+   ⚠ 它们只管「能不能滚」，不管高度数值，跟上面那条不是一回事。
+   链子是 #mob-sheet-body（flex 列）→ .mob-group → .mob-tabs + .mob-panes，
+   少一环 .mob-panes 的 flex: 1 就撑不开、滑条永远不出现。 */
 #mob-sheet.tall #mob-sheet-body, #mob-sheet.mob-tall #mob-sheet-body {
   display: flex; flex-direction: column;
-  min-height: 0;            /* ← 不加这句，内容会把面板顶回原高度 ✓ */
+  min-height: 0;            /* 不加这句，内容会把面板顶回原高度 */
 }
 #mob-sheet.tall .mob-group, #mob-sheet.mob-tall .mob-group {
   flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column;
 }
-/* ⚠ **普通模式也要能滚** ✗（2026-10-13 跟上面 `#mob-sheet-body` 配套改的 ✓）
- *   原来是 `#mob-sheet.tall …, #mob-sheet.mob-tall …` 两个前缀 ✗
- *   → 只有「更高」模式下 `.mob-panes` 才滚 ✓ 普通模式压根不滚 ✓
- *     于是滚动全落在 `#mob-sheet-body` 上 → **标签栏被一起滑走** ✓（用户报的那个 ✓）
- *   现在**无条件**让它滚 ✓ 标签栏就固定住了 ✓
- *   ⚠ `min-height: 0` 必须有 ✗ 不然 flex 子项按内容撑开、滚条不出现 ✓
- *   ⚠ `overflow-y: auto` 只管纵向 ✗ 横向那个 `overflow-x: hidden !important`
- *     在下面那段"滑块彻底根治"里 ✓ 两者不冲突 ✓ */
+/* 普通模式也要能滚。
+ * 只在 mob-tall 前缀下给 .mob-panes 滚动，于是只有「更高」模式才滚，
+ * 普通模式的滚动全落在 #mob-sheet-body 上，标签栏被一起滑走。
+ * 改为无条件滚动，标签栏即固定。
+ * ⚠ min-height: 0 必须有，否则 flex 子项按内容撑开、滚条不出现。
+ * ⚠ overflow-y: auto 只管纵向，横向的 overflow-x: hidden !important 在下面。
+ */
 .mob-panes {
   flex: 1 1 auto; min-height: 0;
   overflow-y: auto;
-  -webkit-overflow-scrolling: touch;   /* ← 从 #mob-sheet-body 搬过来的 ✓ */
+  -webkit-overflow-scrolling: touch;   /* 从 #mob-sheet-body 搬过来 */
 }
-.mob-tabs, .mob-tabs-row { flex: none; }   /* ← 标签栏固定，永远不被挤/不被滑 ✓ */
-/* ⚠ **中间那层（`.mob-group`）也得能撑** ✗（2026-10-13 补 ✓）
- *   链子是 `#mob-sheet-body`（flex 列）→ `.mob-group` → `.mob-tabs` + `.mob-panes`
- *   · `.mob-panes` 写了 `flex: 1` ✓ 但它得先有个"能撑开的父"
- *   · 原来 `flex: 1 1 auto` 只在 `#mob-sheet.tall …` / `.mob-tall …` 下给 ✗
- *     → **普通模式**里 `.mob-group` 是普通块 ✓ 高度按内容走 ✓
- *     → `.mob-panes` 跟着按内容 ✓ `overflow-y: auto` **永远不触发** ✗
- *     → 于是滚动还是落回 `#mob-sheet-body` ✓ 标签栏又被滑走 ✓（白改 ✓）
- *   ⚠ 这四层是一条链子 ✗（body / group / panes / tabs）少一环就白搭 ✓ */
+.mob-tabs, .mob-tabs-row { flex: none; }   /* 标签栏固定，不被挤、不被滑走 */
+/* 中间那层（.mob-group）也得能撑。
+ * 链子是 #mob-sheet-body（flex 列）→ .mob-group → .mob-tabs + .mob-panes：
+ *   · .mob-panes 写了 flex: 1，但它得先有个能撑开的父
+ *   · 若只给 tall 模式，普通模式里 .mob-group 是普通块，高度按内容走，
+ *     .mob-panes 跟着按内容，overflow-y: auto 永远不触发，
+ *     滚动还是落回 #mob-sheet-body，标签栏又被滑走。
+ * ⚠ 这四层是一条链子（body / group / panes / tabs），少一环就失效。
+ */
 .mob-sheet-body > .mob-group, #mob-sheet-body > .mob-group {
   flex: 1 1 auto; min-height: 0;
   display: flex; flex-direction: column;
@@ -256,13 +243,13 @@ html[data-theme="light"] .mob-theme-bar .theme-btn {
 .mob-tab.on { border-color: #c9a94e; color: #f0d98a; background: rgba(36, 29, 16, .95); }
 .mob-pane[hidden] { display: none !important; }
 .mob-pane .set-col { display: block; }
-/* 每页顶上那行小标题（颜色/边界/名字等/导出图例）跟标签重复 ✗ 去掉 ✓ */
+/* 每页顶上那行小标题（颜色 / 边界 / 名字 / 导出图例）与标签重复，去掉 */
 .mob-pane .set-col h3, .mob-pane h3 { display: none; }
-/* 显示页顶上那个「显示」标题同样是重复的 ✗ 去掉 ✓ */
+/* 显示页顶上的「显示」标题同样是重复的，去掉 */
 #display-panel .panel-head { display: none; }
 
-/* **一页就是一块** ✓ 不许出现"两段"的观感 ✗
-   （搬进来的是两个节点：显示面板 + 那一栏设置 ✓ 把它们的边距/边框/内边距全抹平 ✓） */
+/* 一页就是一块，不允许出现「两段」的观感。
+   （搬进来的是两个节点：显示面板 + 那一栏设置，把它们的边距 / 边框 / 内边距全抹平）*/
 .mob-pane > .panel {
   margin: 0; padding: 0; border: 0; background: none; box-shadow: none;
 }
@@ -273,10 +260,10 @@ html[data-theme="light"] .mob-theme-bar .theme-btn {
 .mob-pane .switch { min-height: 32px; }
 .mob-pane .set-row:last-child, .mob-pane .switch:last-child { margin-bottom: 0; }
 
-/* ── 面板内一律对齐（用户嫌不整齐 ✗）────────────────────────────────
-   问题在：每行的勾选框个数不一样（势力 2 个、地区 4 个 ✓），
-   于是"颜色/边界"在每行里起跑线不同 ✗ 看着就乱 ✓
-   办法：给行首的组名和每个勾选框**定死宽度** ✓ 自然就成列了 ✓
+/* ── 面板内一律对齐 ─────────────────────────────────
+   每行的勾选框个数不一样（势力 2 个、地区 4 个），
+   于是「颜色 / 边界」在每行里的起跑线不同。
+   办法：给行首的组名和每个勾选框定死宽度，自然成列。
    ────────────────────────────────────────────────────────────────── */
 .mob-pane .tool-group, .mob-pane .set-col, .mob-pane > .panel {
   margin: 0 !important; padding: 0 !important; border: 0 !important; background: none !important;
@@ -290,16 +277,16 @@ html[data-theme="light"] .mob-theme-bar .theme-btn {
   min-height: 32px; margin: 0;
 }
 .mob-pane .switch input[type="checkbox"] { margin: 0; }
-/* 「恢复默认」别甩到右边去 ✗ 跟着左边对齐 ✓ */
+/* 「恢复默认」跟着左边对齐，不要甩到右边 */
 .mob-pane .set-row > span:empty { display: none; }
 .mob-pane #set-reset, .mob-pane .set-row button { margin-right: auto; }
 .mob-pane .set-row { display: flex; align-items: center; gap: 10px; min-height: 34px; }
 .mob-pane .set-row > span:first-child { min-width: 76px; color: #cfd9e4; }
 
-/* 工具 / 视图：**一行一个选项、占满整栏** ✓
-   （踩过坑：第一版只写了 .mob-pane ✗ 那是"设置"里四个标签页的类名 ✓
-     而工具/视图是 .mob-group → 规则没命中 → 还是一排小胶囊 ✗
-     所以这里两个都写上 ✓ 反正面板里的分段按钮都该一行一个 ✓） */
+/* 工具 / 视图：一行一个选项、占满整栏。
+   （只写 .mob-pane 命中不了它：那是「设置」里四个标签页的类名，
+     工具 / 视图是 .mob-group，规则没命中，仍是一排小胶囊；
+     所以两个都写上，反正面板里的分段按钮都该一行一个）*/
 .mob-pane .segmented, .mob-group .segmented {
   display: block !important; flex-wrap: nowrap !important; width: 100% !important;
 }
@@ -310,12 +297,12 @@ html[data-theme="light"] .mob-theme-bar .theme-btn {
 }
 .mob-pane .segmented button:first-child, .mob-group .segmented button:first-child { margin-top: 0; }
 .mob-pane .segmented button:last-child, .mob-group .segmented button:last-child { margin-bottom: 0; }
-/* 分段按钮里那个小小的层级角标（1936 后面那个 1）也摆整齐点 ✓ */
+/* 分段按钮里的层级角标（1936 后面那个 1）也摆整齐 */
 .mob-group .segmented button i, .mob-pane .segmented button i { color: #7d8b9c; font-style: normal; }
 .mob-author-row { margin-top: 18px; border-top: 1px dashed #26313d; padding-top: 12px; }
 .mob-author-row .btn, .mob-author-row a { min-height: 40px; }
 
-/* 面板里的控件：手指点得到就行 ✓ 不用搞那么松散、那么大 ✗ */
+/* 面板里的控件：手指点得到即可，不必过于松散、过大 */
 #mob-sheet-head { padding: 9px 12px 8px; }
 #mob-sheet-head b { font-size: 14px; }
 #mob-sheet-body { padding: 8px 10px calc(14px + env(safe-area-inset-bottom, 0px)); }
@@ -329,33 +316,30 @@ html[data-theme="light"] .mob-theme-bar .theme-btn {
 #mob-sheet .palette { display: grid; grid-template-columns: repeat(8, 26px); grid-auto-rows: 26px; gap: 4px; justify-content: start; }
 
 /* ===========================================================================
-   🎨 手机版：色块二级菜单退役 → 调色板 / 最近使用直接摆在「颜色」页底部
-   （2026-10-27 用户："关于二级窗口可以取消，调色板和常用颜色放在面板下方"）
+   手机版：色块二级菜单停用 → 调色板 / 最近使用直接摆在「颜色」页底部
    ---------------------------------------------------------------------------
-   ⚠ 标题（调色板 / 最近使用）和色块是一起从 `#brush-menu` 搬出来的 ✓
-     别只搬色块 ✗ 那样面板底下会冒出两排没名字的方块 ✓
+   ⚠ 标题（调色板 / 最近使用）和色块是一起从 #brush-menu 搬出来的，
+     不能只搬色块，否则面板底下会出现两排无名字的方块。
    =========================================================================== */
-/* 🎨 **调色板 / 最近使用 / 色标 单独一窗，自己滚** ✓
- *  （用户 2026-11-03："把调色板-最近取色-色标改成一个单独的窗口，滚动条针对这个窗口而不是色彩窗口"）
- *  原来这三块直接摊在「颜色」页里，跟着整个面板一起滚 ✗
- *  现在它们有自己的边框、底色和 `max-height`，滚动条只出现在这个小窗里 ✓ */
+/* 调色板 / 最近使用 / 色标 单独一窗，自己滚。
+ *  这三块若摊在「颜色」页里，会跟着整个面板一起滚；
+ *  独立成窗后有自己的边框、底色和 max-height，滚动条只出现在小窗里。 */
 .mob-color-kit {
   margin-top: 14px; padding: 8px 10px 10px;
-  /* 兜底值，真正的上限由 `mobile_js.txt` 的 `_lockH()` 现量（面板剩多少给多少 ✓）
-     ⚠ 只用 vh 不够 ✗ —— vh 算的是整屏，而面板本身只占屏幕一部分 ✓
-       小窗比面板还高，最后一排就切在面板外面（用户 2026-11-03 报的"拉不到底"）*/
+  /* 兜底值，真正的上限由 mobile_js.txt 的 fitColorKit() 现量（面板剩多少给多少）。
+     ⚠ 只用 vh 不够：vh 算的是整屏，而面板本身只占屏幕一部分，
+       小窗会比面板还高，最后一排被裁在面板外面。 */
   max-height: 46vh; overflow-y: auto; overflow-x: hidden;
-  /* ⚠ 不许 `contain` ✗（2026-11-03）
-   *   `contain` 会掐断滚动链：小窗滑到头之后，手指再滑，外面那层一动不动 ✓
-   *   小窗万一还是比面板高（老版本 / JS 没跑起来），就再也够不到最后一排 ✓
-   *   改成 `auto`：小窗到底之后**接力**给 `.mob-panes` ✓ 兜住这一手 ✓
-   *   平时不影响体感 —— 小窗自己还能滑的时候轮不到外面动 ✓ */
+  /* 不用 contain：它会掐断滚动链，小窗滑到头之后手指再滑，外面那层不动。
+   * 小窗万一还是比面板高（JS 没跑起来），最后一排就够不到。
+   * 用 auto：小窗到底之后把滚动接力给 .mob-panes。
+   * 平时不影响体感——小窗自己还能滑时轮不到外面动。 */
   overscroll-behavior: auto;
   border: 1px solid rgba(255, 255, 255, .08);
   border-radius: 12px;
   background: rgba(255, 255, 255, .035);
   scrollbar-color: #2b3542 transparent;
-  /* 别在这儿再叠一层模糊 ✗ 父面板本来就带 backdrop-filter，滚动时叠两次最费 ✓ */
+  /* 不再叠一层模糊：父面板本来就带 backdrop-filter，滚动时叠两次最费 */
   -webkit-backdrop-filter: none; backdrop-filter: none;
 }
 html[data-theme="light"] .mob-color-kit {
@@ -367,14 +351,13 @@ html[data-theme="light"] .mob-color-kit {
   margin: 8px 2px 6px; font-size: 11.5px; color: #8b9aab;
 }
 .mob-color-kit .palette { gap: 4px; }
-/* 手指点得到：26px 太小，长按也容易滑 ✗
-   ⚠ 必须带 `#mob-sheet` ✗ —— 上面 `#mob-sheet .chip { 32px }` 是 id 权重 ✓ */
-/* 颜色页的色块**铺满宽度** ✓（用户 2026-11-03："把颜色的小方块尺寸放在以占满几乎宽度"）
- *   一行八个、每格按 `1fr` 均分，正方形 ✓ */
+/* 手指点得到：26px 太小，长按也容易滑。
+   ⚠ 必须带 #mob-sheet：上面 #mob-sheet .chip { 32px } 是 id 权重 */
+/* 颜色页的色块铺满宽度：一行八个、每格按 1fr 均分，正方形 */
 #mob-sheet .mob-color-kit .palette {
   grid-template-columns: repeat(8, 1fr) !important;
-  /* ⚠ 行高必须交回 auto ✗ —— 桌面那条 `.palette { grid-auto-rows: 26px }` 还在，
-   *   格子改成 1fr 正方形后比 26px 高得多 → 溢出到下一行、看着全压在一起 ✓（用户截图）*/
+  /* 行高必须交回 auto：桌面那条 .palette { grid-auto-rows: 26px } 还在，
+   * 格子改成 1fr 正方形后比 26px 高得多，会溢出到下一行、看着全压在一起。 */
   grid-auto-rows: auto !important;
   gap: 6px !important;
 }
@@ -400,7 +383,7 @@ html[data-theme="light"] .mob-color-hint { color: #6b7887; }
 #mob-sheet input[type="text"], #mob-sheet input[type="number"] { font-size: 13.5px; padding: 6px 8px; }
 #mob-sheet .btn { min-height: 34px; padding: 0 12px; font-size: 13px; }
 #mob-sheet .set-row { min-height: 34px; font-size: 14px; }
-/* ↑ 跟 .switch 那行一样大 ✓（用户：别把「字号倍率」几个字弄得跟别人不一样 ✓）*/
+/* 与 .switch 那行一样大：「字号倍率」几个字与其他行保持一致 */
 #mob-sheet .set-col { margin: 0; }
 #mob-sheet .panel-head { padding: 4px 2px 6px; }
 #mob-sheet .panel-head h2 { font-size: 13px; }
@@ -408,65 +391,55 @@ html[data-theme="light"] .mob-color-hint { color: #6b7887; }
 .mob-author-row .btn, .mob-author-row a { min-height: 34px; font-size: 13px; }
 
 /* ===========================================================================
-   🔴 **设置面板再紧凑一档 + 高度 +15%**（2026-10-17 ✓ 用户点名 ✓）
-      原话："手机版的设置UI再紧凑一下，同时高度提升15%。**只有设置**！颜色什么的不要改"✓
-
-   ⚠ **选择器一律带 `.mob-pane`** ✗✗ —— 三个理由：
-     ① 那是"**设置**"里那 5 个标签页（显示 / 颜色 / 边界 / 名字 / 其他）的类名 ✓
-        工具 / 视图 / 文件那些面板用的是 `.mob-group` ✓ **一个都不会被这条命中** ✓
-        （2026-10-13 踩过反过来的坑：规则只写 `.mob-pane`，工具页没命中 ✗
-          这次要的正是"只打设置" ✓ 所以这个前缀刚好对 ✓）
-     ② 上面那一坨 `#mob-sheet …` 是**所有**二级面板共用的 ✓ 不能直接改 ✗
-     ③ 颜色那几条（`.set-row input[type=color]` / `-webkit-color-swatch`）是修
-        "手机上色块露灰"的 ✓ 跟疏密无关 ✓ —— 这一段里**一个 color 字样都没有** ✓
-
-   ⚠ **高度的来历**（这一节只讲疏密 ✓ 高度已经整条搬走了 ✓）：
-     2026-10-13 用户要"设置高度减 30%" → 2026-10-17 又要"+15%" ✓
-     那两轮加的 `#mob-sheet.mob-tall { height: 38vh !important }` **2026-10-21 已删** ✗
-     原因：它把 JS `place()` 算出来的内联高度一起压掉了 ✓
-     高度现在只由 `mobile_js.txt` 的 `_f` / `_cap` 管 ✓ 见那一节的长注释 ✓
+   设置面板再紧凑一档
+   ---------------------------------------------------------------------------
+   ⚠ 选择器一律带 .mob-pane —— 三个理由：
+     ① 那是「设置」里 5 个标签页（显示 / 颜色 / 边界 / 名字 / 其他）的类名，
+        工具 / 视图 / 文件那些面板用的是 .mob-group，一个都不会被命中；
+     ② 上面那一组 #mob-sheet … 是所有二级面板共用的，不能直接改；
+     ③ 颜色那几条（.set-row input[type=color] / -webkit-color-swatch）是修
+        「手机上色块露灰」的，与疏密无关。
+   ⚠ 本节只讲疏密。高度由 mobile_js.txt 的 _f / _cap 统一管理。
    =========================================================================== */
 
-/* ── 疏密：每一行的"手感"往下压一档 ─────────────────────────────────
-   压的是**留白**，不是字号 ✗（字号再小就影响读了 ✓ 用户只说"紧凑" ✓）
-   ⚠ 数值都只在设置页里用 ✓ 别把这些挪到 `#mob-sheet …` 去 ✗ */
+/* ── 疏密：每一行的「手感」往下压一档 ─────────────────────────────────
+   压的是留白，不是字号（字号再小就影响阅读）。
+   ⚠ 这些数值只在设置页里用，别挪到 #mob-sheet … 去 */
 .mob-pane #mob-sheet-body { padding-top: 6px; }
 .mob-pane .mob-tabs { gap: 5px; padding-bottom: 6px; margin-bottom: 6px; }
 .mob-pane .mob-tab { min-height: 29px; padding: 0 11px; border-radius: 15px; }
 .mob-pane .set-row { min-height: 29px; gap: 8px; }
 .mob-pane .switch { min-height: 29px; gap: 4px; }
 .mob-pane .tool-group + .tool-group { margin-top: 4px !important; }
-/* 小标题（陆地 / 水域 / 省份…）那一条细线上下也收一点 ✓ */
+/* 小标题（陆地 / 水域 / 省份…）那条细线上下也收一点 */
 .mob-pane .set-sub { padding-top: 3px; margin-top: 4px; }
-/* 色块 / 色板 / 结果行 / 链条行：跟着行高一齐收 ✓（**只动尺寸，不动颜色** ✓）*/
+/* 色块 / 色板 / 结果行 / 链条行：跟着行高一齐收（只动尺寸，不动颜色）*/
 .mob-pane .chip { width: 26px; height: 26px; border-radius: 4px; }
 .mob-pane .result { min-height: 30px; }
 .mob-pane .chain-row { min-height: 30px; }
 .mob-pane input[type="text"], .mob-pane input[type="number"] { padding: 5px 7px; }
 .mob-pane .btn { min-height: 30px; padding: 0 11px; }
-/* 滑条那几行：把 range 上下那点余量也收掉 ✓ */
+/* 滑条那几行：把 range 上下余量也收掉 */
 .mob-pane .set-row input[type="range"] { margin: 0; }
 
-/* ── 地图：一级界面就它一个 ───────────────────────────────────────── */
-.toolbar { display: none !important; }        /* 顶栏全部搬进面板了 ✓ */
-.sidebar { display: none !important; }        /* 左栏内容也搬进去了 ✓ */
-/* 🔴 **「☰ 侧栏」那个折叠按钮手机上也藏掉** ✗✗（2026-10-21）
- *   它是这一轮给**电脑版**加的（用户："电脑版的显示左侧栏改成…可收起"）
- *   手机版侧栏本来 `display:none`、内容全在面板里 ✓
- *   这个按钮在手机上点了什么都不会发生 ✓ 纯属多一个废按钮 ✓
- *   ⚠ 它是**顶栏里的**，顶栏整条已经藏了 ✓ 这条是兜底
- *     （万一以后谁把顶栏挪出来，别让它跟着冒出来 ✓）*/
+/* ── 地图：一级界面就它一个 ───── */
+.toolbar { display: none !important; }        /* 顶栏全部搬进面板 */
+.sidebar { display: none !important; }        /* 左栏内容也搬进去了 */
+/* 「☰ 侧栏」折叠按钮手机上也藏掉。
+ *   它是给电脑版加的（桌面左侧栏改成可收起）。
+ *   手机版侧栏本来 display:none、内容全在面板里，这个按钮点了什么都不会发生。
+ *   ⚠ 它在顶栏里，顶栏整条已经藏了，这条是兜底（万一顶栏被挪出来，别让它冒出来）*/
 #btn-sidebar { display: none !important; }
 
-/* 「更高」那个按钮**不做动画** ✓（用户要求去掉 ✓）
-   曾经给 #mob-sheet 加过 height 过渡 ✓ 但那要求高度一直是显式 px ✗
-   → 面板就不再跟着内容长高了 ✗ 得不偿失 ✓ 已撤掉 ✓ */
+/* 「更高」那个按钮不做动画：
+   给 #mob-sheet 加 height 过渡要求高度一直是显式 px，
+   面板就不再跟着内容长高，得不偿失。 */
 .body, .stage { height: 100%; }
 .stage { width: 100%; }
 #stage { touch-action: none; }
 .statusbar {
-  position: absolute; left: 0; right: 0; bottom: 66px;   /* 浮在四个入口上方 ✓ */
-  display: flex; flex-wrap: nowrap; align-items: center;  /* **不许换行** ✗（换行就变成竖着摞一串 — 了 ✓）*/
+  position: absolute; left: 0; right: 0; bottom: 66px;   /* 浮在四个入口上方 */
+  display: flex; flex-wrap: nowrap; align-items: center;  /* 不许换行，换行就变成竖着摞一串「—」*/
   gap: 12px; padding: 4px 12px; font-size: 12px;
   overflow-x: auto; overflow-y: hidden; white-space: nowrap;
   background: linear-gradient(#0b0f1400, #0b0f14cc 60%);
@@ -474,27 +447,27 @@ html[data-theme="light"] .mob-color-hint { color: #6b7887; }
 }
 .statusbar > * { flex: none; pointer-events: auto; }
 .statusbar .spacer { display: none; }
-#status-meta { display: none; }        /* 那串「N 个头衔 · N 个地块 · 尺寸」手机上没人看 ✓ */
+#status-meta { display: none; }        /* 「N 个头衔 · N 个地块 · 尺寸」这串在手机上不用 */
 #status-pos { order: -1; }
 
 /* 悬停卡 / 缩放条 / 教程卡片 */
 .hover-card { max-width: 72vw; font-size: 13px; padding: 8px 10px; border-radius: 10px; z-index: 50; }
-/* 🔴 **缩放条必须真正贴右边** ✗✗（2026-10-27 用户："三个小按钮怎么跑到左边了"）
- *   桌面基类是 `left: 12px` ✓ 手机版只写了 `right: 10px` ✗
- *   → left + right 同时存在 = 容器被撑成整屏宽 ✓
- *   → `flex-direction: column` 的子项默认靠左 ✓ 三个按钮就掉到左边去了 ✓
- *   → 必须 `left: auto` 把左边放开 ✓ 再 `align-items: flex-end` 兜一层 ✓ */
+/* 缩放条必须真正贴右边。
+ *   桌面基类是 left: 12px，手机版只写了 right: 10px，
+ *   left + right 同时存在会撑成整屏宽，flex-direction: column 的子项默认靠左，
+ *   三个按钮就掉到左边去了。
+ *   因此 left: auto 放开左边，再 align-items: flex-end 兜一层。 */
 .zoom-box { left: auto !important; right: 10px; bottom: 86px; align-items: flex-end; }
 #tutCard { max-width: calc(100vw - 24px); padding: 14px 16px; border-radius: 12px; }
 #tutCard button { min-height: 42px; padding: 0 16px; font-size: 14px; }
 
-/* 设置那个弹窗在手机版用不上了 ✓ —— 内容整块搬进了「设置」二级面板 ✗ 不再套第三层 */
+/* 设置弹窗在手机版不用了：内容整块搬进「设置」二级面板，不再套第三层 */
 #settings { display: none !important; }
 
-/* 弹窗底子：竖屏全屏、一栏
-   ⚠ 这是给「设置」那种**大弹窗**写的 ✗
-     改名 / 保存地图这种"一行输入"的小窗在后面单独改成居中卡片 ✓
-     （见「小输入弹窗」那一节 ✓ 别在这里改，不然大窗也跟着缩 ✓） */
+/* 弹窗底子：竖屏全屏、一栏。
+   ⚠ 这是给「设置」那种大弹窗写的。
+     改名 / 保存地图这种「一行输入」的小窗在后面单独改成居中卡片
+     （见「小输入弹窗」那一节，别在这里改，否则大窗也跟着缩） */
 .modal { align-items: stretch; justify-content: stretch; padding: 0; }
 .modal-box {
   width: 100% !important; max-width: none; height: 100%; max-height: none;
@@ -506,18 +479,12 @@ html[data-theme="light"] .mob-color-hint { color: #6b7887; }
 .set-row { min-height: 44px; }
 .legend-row { min-height: 44px; }
 
-/* 启动页：单列大按钮（⚠ 2026-10-17 起**电脑版也统一一列** ✓
-   这里只把宽度 / 间距调到手指友好；`.boot-inner` 不许超宽 ✓）
-   🔴🔴 **2026-10-21：`width: 100%` 必须只在真手机上生效** ✗✗
-   （用户截图报的："电脑上的手机版怎么变这样了" ✓）
-   ·
-   原来这条是**无条件**的 ✓ 桌面那份 `.boot-inner` 写的是固定 340px ✓
-   → 在电脑上一开手机版：`#app` 被下面那条 561px 的媒体查询收成了 430px ✓
-     可 `width: 100%` 是按**视口**算的 ✗ → 2549px ✗
-   → 于是启动页的进度条**横贯整个屏幕**、文字缩在中间那一小条 ✓
-     （就是用户截图里那个样子 ✓）
-   ✅ 现在：`100%` 只给**窄屏**（真手机）✓
-      宽屏交给下面那条 @media —— 它会把宽度收进 430px 的手机框 ✓ */
+/* 启动页：单列大按钮。这里只把宽度 / 间距调到手指友好，.boot-inner 不许超宽。
+   width: 100% 只在真手机上生效：
+   这条若不带媒体查询，而桌面那份 .boot-inner 写的是固定 340px，
+   在电脑上一开手机版，#app 被下面的媒体查询收成 430px，
+   可 width: 100% 按视口算，于是启动页的进度条横贯整个屏幕。
+   此处 100% 只给窄屏（真手机），宽屏交给下面那条 @media 收进 430px 的手机框。 */
 @media (max-width: 560px) {
   .boot-inner { width: 100%; padding: 16px 14px; }
 }
@@ -526,7 +493,7 @@ html[data-theme="light"] .mob-color-hint { color: #6b7887; }
 .map-pick-list > * { min-height: 56px; }
 .boot-author { font-size: 12px; flex-wrap: wrap; gap: 6px; }
 
-/* 顶栏左边那个「永夜廿九」小胶囊（贴在「返回」右边 ✓）*/
+/* 顶栏左边那个「永夜廿九」小胶囊（贴在「返回」右边）*/
 #mob-mid { flex: 1 1 auto; }
 #mob-topbar .mob-author, #mob-mid .btn, #mob-mid a {
   min-height: 34px; padding: 0 13px; border-radius: 17px; line-height: 34px;
@@ -535,10 +502,10 @@ html[data-theme="light"] .mob-color-hint { color: #6b7887; }
 }
 
 /* ===========================================================================
-   🔴 **顶栏那个白天/黑夜开关**（2026-10-21 新搬进来的 ✓ 见 mobile_js.txt）
-   —— 它原来是桌面设置弹窗里的 `.theme-btn` ✓ 搬进顶栏后那个壳不适用了 ✓
-      CSS 里给的底子是半透明的（给玻璃面板用的）→ 这里补成 `.mob-btn` 同款 ✓
-   ⚠ 那两条 `☀ / ☾` 的字从 `app.js` 的 LABEL() 来 ✓ 这里只管长相 ✓
+   顶栏上的白天 / 黑夜开关（见 mobile_js.txt）
+   —— 它原本是桌面设置弹窗里的 .theme-btn，搬进顶栏后那个壳不适用。
+      CSS 里给的底子是给玻璃面板用的半透明色，这里补成 .mob-btn 同款。
+   ⚠ ☀ / ☾ 两个字来自 app.js 的 LABEL()，这里只管长相。
    =========================================================================== */
 #mob-topbar .mob-theme {
   min-height: 34px; padding: 0 12px; border-radius: 17px;
@@ -546,12 +513,10 @@ html[data-theme="light"] .mob-color-hint { color: #6b7887; }
   color: #e8eef6; font: 600 13px/1 "Microsoft YaHei", system-ui, sans-serif;
   white-space: nowrap; flex: none;
 }
-/* 白天模式下顶栏自己也得跟着亮 ✓（不然那排胶囊还是黑的 ✓）
-   🔴 **2026-10-21：这里原来那条"白渐隐"已经删掉了** ✗✗
-   原因见文件后面「液态玻璃 · 手机版 ⑦」那一节的长注释 ✓
-   （一句话：白色渐隐叠在深色地图上 = 一道灰泥 ✓ 浅色顶栏必须够实 ✓）
-   ⚠ **别再在这里补第二份** ✗ 顶栏的日间配色**只有一个来源** ✓
-     两份并存的话，改一处忘一处 ✓ 上次就是这么出的问题 ✓ */
+/* 白天模式下顶栏自己也得跟着亮，否则那排胶囊还是黑的。
+   顶栏的日间配色只有一个来源：本文件后面「液态玻璃 · 手机版 ⑦」那一节。
+   （白色渐隐叠在深色地图上会糊成一片灰，浅色顶栏必须够实）
+   ⚠ 别再在这里补第二份，两份并存时改一处忘一处。 */
 html[data-theme="light"] #mob-dock button {
   background: rgba(255, 255, 255, .94); border-color: #bcc8d4; color: #1a232e;
 }
@@ -574,8 +539,8 @@ html[data-theme="light"] .mob-tab {
 html[data-theme="light"] .mob-tab.on {
   border-color: #2f5f8f; color: #26598a; background: rgba(47, 95, 143, .16);
 }
-/* 设置页里那些行 / 开关 / 小标题，白天也要跟着翻 ✓
-   （它们本来吃的是 `style.css` 的变量 ✓ 但手机版给过一批写死的深色 ✗ 这里盖回来）*/
+/* 设置页里那些行 / 开关 / 小标题，白天也要跟着翻。
+   （它们本来吃的是 style.css 的变量，但手机版给过一批写死的深色，这里盖回来）*/
 html[data-theme="light"] #mob-sheet .group-label { color: #5b6877; }
 html[data-theme="light"] #mob-sheet .set-row > span:first-child { color: #27313d; }
 html[data-theme="light"] #mob-sheet .switch { color: #333f4c; }
@@ -590,15 +555,13 @@ html[data-theme="light"] .mob-era .dd-item { color: #333f4c; }
 html[data-theme="light"] .mob-era .dd-item.on { color: #26598a; background: rgba(47, 95, 143, .16); }
 html[data-theme="light"] #mob-backdrop { background: rgba(24, 36, 50, .28); }
 
-/* **设置底栏（已改动 / 恢复默认）**搬进「其他」页之后的样子 ✓
-   ⚠ 它原来是 `.set-box` 的 flex 子项（贴着抽屉底）✗ 现在是个普通块 ✓ */
+/* 设置底栏（已改动 / 恢复默认）搬进「其他」页之后的样子。
+   ⚠ 在桌面 .set-box 里它是贴底的 flex 子项，搬进手机面板后是普通块。 */
 .mob-set-foot {
   display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
   margin: 12px 0 0; padding-top: 10px; border-top: 1px dashed #26313d;
-  /* 🔴 **底必须是透明的** ✗✗（2026-10-27 用户："这一块莫名其妙是更灰色的底
-   *   （似乎是沿用电脑版设定），和旁边不一样"）
-   *   桌面 `.set-foot` 有一条 `background: rgba(0,0,0,.18)` ✓ 那是抽屉底栏的色 ✓
-   *   搬进手机面板后就成了面板中间一块灰板 ✓ 跟旁边格格不入 ✓ */
+  /* 底必须是透明的：桌面 .set-foot 有一条 background: rgba(0,0,0,.18)，
+   *   那是抽屉底栏的色，搬进手机面板后就成了面板中间一块灰板。 */
   background: transparent !important;
   box-shadow: none !important;
 }
@@ -608,29 +571,20 @@ html[data-theme="light"] .mob-set-foot { border-top-color: #ccd5df; }
 html[data-theme="light"] .mob-set-foot .set-dirty { color: #5b6877; }
 
 /* ===========================================================================
-   宽屏打开时（电脑上调试）：把一切收进一个手机大小的框里居中 ✓
-   真手机上窗口本来就窄，这条不生效 ✓
+   宽屏打开时（电脑上调试）：把一切收进一个手机大小的框里居中。
+   真手机上窗口本来就窄，这条不生效。
 
-   🔴🔴 **2026-10-21：必须把桌面那条 `@media (min-width: 761px)` 的定位盖掉** ✗✗
-   （用户截图报的："在电脑上的手机版怎么变这样了" ✓ 启动页进度条横贯全屏）
+   桌面 style.css 里有一条只给桌面用的 @media (min-width: 761px)，
+   它把 .toolbar 设为 fixed、.body 设为 fixed inset 0、.stage 设为 absolute inset 0。
+   在电脑上它与下面的 561 查询同时生效：#app 确实被收成 430px，
+   可 .body / .stage 按视口铺满整个屏幕，里面的启动页、进度条、地图全顶出手机框。
 
-   桌面 `style.css` 里有一条只给桌面用的：
-     `@media (min-width: 761px) {
-        .toolbar { position: fixed; … }
-        .body    { position: fixed; inset: 0; }
-        .stage   { position: absolute; inset: 0; }
-      }`
-   在电脑上（视口 > 761）它**和下面这条 561 同时生效** ✓
-   → `#app` 确实被收成了 430px ✓ 可 `.body` / `.stage` 被 `fixed; inset:0`
-     **按视口铺满整个屏幕** ✗ → 里面的启动页、进度条、地图全顶出手机框 ✓
-   → 用户看到的就是"文字挤在中间一小条、进度条横贯 2549px" ✓
-
-   ✅ 修法：宽屏这条里**显式把它们改回来** ✓
-     · `.body`  → `position: static`（让 `#app` 的 flex 正常排）
-     · `.stage` → `position: relative`（它是 `.body` 的 flex 子项）
-   ⚠ 别指望靠书写顺序蒙过去 ✗ —— 这是**两个不同的媒体查询**，
-     谁生效只看视口，跟先后无关 ✓ 必须在自己这条里显式覆盖 ✓
-   ⚠ 真手机（≤560）压根不匹配 761 那条 ✓ 所以只在这里改就够 ✓
+   修法：宽屏这条里显式改回来
+     · .body  → position: static（让 #app 的 flex 正常排）
+     · .stage → position: relative（它是 .body 的 flex 子项）
+   ⚠ 别指望靠书写顺序解决：这是两个不同的媒体查询，
+     谁生效只看视口，与先后无关，必须在自己这条里显式覆盖。
+   ⚠ 真手机（≤560）压根不匹配 761 那条，所以只在这里改就够。
    =========================================================================== */
 @media (min-width: 561px) {
   body { display: flex; align-items: center; justify-content: center; background: #06090c; }
@@ -641,32 +595,30 @@ html[data-theme="light"] .mob-set-foot .set-dirty { color: #5b6877; }
   }
   #mob-sheet, #mob-backdrop, #mob-ui, #mob-intro, #rename, #save-map, #export-map { position: absolute; }
   #mob-backdrop { border-radius: 24px; }
-  /* 🔴 **教程那三个也要收** ✗✗（2026-10-21 补）
-   *   桌面 `style.css` 里 `#tutRing` / `#tutPing` / `#tutCard` 全是 `position: fixed` ✓
-   *   不定死就是"按视口算坐标" → 高亮圈和步骤卡会飘到手机框外面 ✓
-   *   ⚠ 手机版现在不用逐步教程（换成介绍弹窗了 ✓ 见 mobile_js.txt）✗
-   *     但这几条留着兜底 —— 万一以后用回来，别让它在宽屏上飘 ✓ */
+  /* 教程那三个也要收。
+   *   桌面 style.css 里 #tutRing / #tutPing / #tutCard 全是 position: fixed，
+   *   不定死就按视口算坐标，高亮圈和步骤卡会飘到手机框外面。
+   *   ⚠ 手机版改用介绍弹窗、不用逐步教程，这几条留着兜底。 */
   #tutLayer, #tutRing, #tutPing, #tutCard { position: absolute; }
   #tutLayer { position: absolute; }
-  /* **设置抽屉 / 改名弹窗 / 介绍窗**：桌面的 `.modal` 是 `fixed; inset:0` ✓
-   *   手机版要跟着**手机框**走，所以改成 absolute ✓（`inset:0` 保留 —— 它相对 #app ✓）*/
+  /* 设置抽屉 / 改名弹窗 / 介绍窗：桌面的 .modal 是 fixed; inset:0，
+   *   手机版要跟着手机框走，所以改成 absolute（inset:0 保留，它相对 #app）*/
   .modal { position: absolute; inset: 0; }
-  /* 🔴 **把桌面那套 fixed 布局收回来** ✗✗（见上面那段）
-     ⚠ 顶栏 / 侧栏在手机版是 `display: none` ✓ 不用管 ✓
-       要管的只有 `.body` 和 `.stage` —— 它们是"地图那一片"的容器 ✓ */
+  /* 把桌面那套 fixed 布局收回来。
+     ⚠ 顶栏 / 侧栏在手机版是 display: none，不用管；
+       要管的只有 .body 和 .stage，它们是「地图那一片」的容器。 */
   .body { position: static; height: 100%; }
   .stage { position: relative; inset: auto; width: 100%; height: 100%; }
-  /* 🔴 **启动页的宽度必须收进手机框** ✗✗（用户截图报的）
-   *   手机版上面那条 `.boot-inner { width: 100% }` 现在只在 ≤560px 生效 ✓
-   *   宽屏这里**显式写死一个手机宽度** ✓ 别指望回落到桌面那份 340px ✗
-   *   （桌面那份是 340px ✓ 但手机卡片本身有 16px 内边距，340 会显得偏窄 ✓
-   *     430 - 14×2 = 402 ✓ 就用它 ✓）
-   *   ⚠ `.boot` 是 `position: absolute; inset: 0` ✓ 它跟着 `.stage` 走 ✓
-   *     `.stage` 一回到 `relative`，`.boot` 就只铺满手机框 ✓ */
+  /* 启动页的宽度必须收进手机框。
+   *   上面那条 .boot-inner { width: 100% } 只在 ≤560px 生效，
+   *   宽屏这里显式写死一个手机宽度，别指望回落到桌面那份 340px。
+   *   （手机卡片有 16px 内边距，430 - 14×2 = 402）
+   *   ⚠ .boot 是 position: absolute; inset: 0，它跟着 .stage 走；
+   *     .stage 一回到 relative，.boot 就只铺满手机框。 */
   .boot-inner { width: 100%; max-width: 402px; padding: 16px 14px; }
 }
 
-/* 导出下拉里那些项，摊到面板里要长得像按钮 ✓ */
+/* 导出下拉里那些项，摊到面板里要长得像按钮 */
 .mob-group .menu-item, .mob-group #export-menu button {
   display: block; width: 100%; text-align: left;
   min-height: 46px; margin: 6px 0; padding: 0 14px;
@@ -676,10 +628,10 @@ html[data-theme="light"] .mob-set-foot .set-dirty { color: #5b6877; }
 }
 
 /* ===========================================================================
-   面板内瘦身（用户嫌臃肿 ✗）
-   ① 桌面那套"组名"（视图 / 工具 这种小字）在手机面板里是重复的 → 藏掉 ✓
-   ② 分段按钮外面那层圆角壳（边框 + 内边距）去掉 → 只留按钮本身 ✓
-   ③ 标题那一行压扁、收紧 ✓
+   面板内瘦身
+   ① 桌面那套「组名」（视图 / 工具 这种小字）在手机面板里是重复的 → 藏掉
+   ② 分段按钮外面那层圆角壳（边框 + 内边距）去掉 → 只留按钮本身
+   ③ 标题那一行压扁、收紧
    =========================================================================== */
 .mob-group .group-label { display: none !important; }
 .mob-group .segmented, .mob-pane .segmented {
@@ -697,11 +649,11 @@ html[data-theme="light"] .mob-set-foot .set-dirty { color: #5b6877; }
 #mob-sheet-body { padding: 6px 9px calc(12px + env(safe-area-inset-bottom, 0px)) !important; }
 
 /* ===========================================================================
-   用户嫌臃肿的最后一刀：
-   ① 顶部那条（金标题 + 收起）**整条去掉** ✓
-      —— 点同一个入口按钮就能收回 ✓ 左上「返回」也行 ✓ 点地图也行 ✓ 三种都够 ✓
-   ② **横向溢出堵住** ✓（之前底部冒出一条横向滑块 ✗ 说明里面某块比面板宽 ✓）
-      → 面板体只许竖着滚 ✓ 里面的行允许换行 ✓ 勾选框窄一点 ✓
+   最后一道瘦身：
+   ① 顶部那条（金标题 + 收起）整条去掉
+      —— 点同一个入口按钮就能收回，左上「返回」也行，点地图也行。
+   ② 横向溢出堵住（底部冒出横向滑块说明里面某块比面板宽）
+      → 面板体只许竖着滚，里面的行允许换行，勾选框窄一点。
    =========================================================================== */
 #mob-sheet-head { display: none !important; }
 #mob-sheet, #mob-sheet-body, .mob-group, .mob-pane, .mob-subs {
@@ -716,15 +668,15 @@ html[data-theme="light"] .mob-set-foot .set-dirty { color: #5b6877; }
 }
 .mob-pane .group-label, .mob-group .group-label { min-width: 34px !important; }
 .mob-pane .set-row > span:first-child { min-width: 58px !important; }
-/* 面板体自身的滚动条也别露出来 ✓ */
+/* 面板体自身的滚动条也不显示 */
 #mob-sheet-body { scrollbar-width: none; }
 #mob-sheet-body::-webkit-scrollbar { width: 0; height: 0; }
 
 /* ===========================================================================
-   滑块彻底根治（用户：该死的滑块 ✗）
-   ① 面板体和里面每一层都不许有横向滚动 ✓
-   ② 纵向滚动条也不画出来 ✓（能滚，但别露那根灰条 ✗）
-   ③ 行内容再压一档，四个勾选框老老实实排得下 ✓
+   滑块彻底根治
+   ① 面板体和里面每一层都不许有横向滚动
+   ② 纵向滚动条也不画出来（能滚，但别露那根灰条）
+   ③ 行内容再压一档，四个勾选框排得下
    =========================================================================== */
 #mob-sheet, #mob-sheet-body, .mob-group, .mob-pane, .mob-subs,
 .mob-group > *, .mob-pane > * { overflow-x: hidden !important; }
@@ -736,17 +688,16 @@ html[data-theme="light"] .mob-set-foot .set-dirty { color: #5b6877; }
 .mob-pane .switch input[type="checkbox"], .mob-group .switch input[type="checkbox"] {
   width: 30px !important; height: 18px !important; border-radius: 999px !important;
 }
-/* 🔴 2026-10-31：vz 皮肤那个假开关**缩到 16px 后圆心全跑偏** ✓
-   用户："手机版的水域小按钮的灰色边界和白色内心没有贴合"
-   真凶：`web/style.css` 里 vz 的开关是 `background: radial-gradient(...)` 画的 ✗
-   ——**圆心写死 9px / 21px、半径 6px**，那是按 30×18 的轨道量的 ✓
-   上面那条 `!important` 把轨道压成 16×16 之后：
-     · 未选中：白心圆心 9px + 半径 6 → 贴到右边缘（左边留一道灰边）✗
-     · 选中：圆心 21px **跑出框外** → 白心整个看不见，只剩一块实心 ✓
-   → 手机尺寸单独给一套圆心/半径（16px 的框：白心半径 4.5 ✓
-     未选中圆心 5.5、选中 10.5，两边各留 1px 边框 ✓）
-   ⚠ 必须写 `html[data-skin="vz"]` 前缀提权 ✗ —— 光靠 `.mob-pane` 压不过
-     `html[data-skin="vz"] input[type=checkbox]` 那一条 ✓ */
+/* vz 皮肤那个假开关缩到 16px 后圆心全跑偏。
+   真凶：web/style.css 里 vz 的开关是 background: radial-gradient(...) 画的，
+   圆心写死 9px / 21px、半径 6px，那是按 30×18 的轨道量的。
+   上面那条 !important 把轨道压成 16×16 之后：
+     · 未选中：白心圆心 9px + 半径 6 → 贴到右边缘（左边留一道灰边）
+     · 选中：圆心 21px 跑出框外 → 白心整个看不见，只剩一块实心
+   → 手机尺寸单独给一套圆心 / 半径（16px 的框：白心半径 4.5，
+     未选中圆心 5.5、选中 10.5，两边各留 1px 边框）
+   ⚠ 必须写 html[data-skin="vz"] 前缀提权，光靠 .mob-pane 压不过
+     html[data-skin="vz"] input[type=checkbox] 那一条。 */
 html[data-skin="vz"] .mob-pane .switch input[type="checkbox"],
 html[data-skin="vz"] .mob-group .switch input[type="checkbox"] {
   background:
@@ -763,10 +714,10 @@ html[data-skin="vz"] .mob-group .switch input[type="checkbox"]:checked {
 .mob-pane .set-row > span:first-child { min-width: 54px !important; font-size: 13px !important; }
 
 /* ===========================================================================
-   手机上哪来的键盘 ✗
-   ① 工具按钮尾巴上的 Q/W/E…、年份按钮上的小数字 —— 全是快捷键 ✓ 一律藏掉 ✓
-   ② 滚动条：面板里**任何一层**都不许画出来 ✓（能滚，但别露 ✗）
-   ③ 按钮再紧一档，工具那一栏 148px 就够了 ✓
+   手机上哪来的键盘
+   ① 工具按钮尾巴上的 Q/W/E…、年份按钮上的小数字 —— 全是快捷键，一律藏掉
+   ② 滚动条：面板里任何一层都不许画出来（能滚，但别露）
+   ③ 按钮再紧一档，工具那一栏 148px 就够了
    =========================================================================== */
 .mob-group .k, .mob-pane .k { display: none !important; }
 #mob-sheet, #mob-sheet * { scrollbar-width: none !important; -ms-overflow-style: none !important; }
@@ -779,8 +730,8 @@ html[data-skin="vz"] .mob-group .switch input[type="checkbox"]:checked {
 .mob-group { padding-bottom: 0 !important; }
 
 /* ===========================================================================
-   手机版的「教程」= 一个介绍弹窗（不再是逐步引导 ✓）
-   直接复用 app 原有的 .modal 体系 ✓ 所以竖屏自动全屏、可滚动 ✓
+   手机版的「教程」= 一个介绍弹窗（不再是逐步引导）
+   直接复用 app 原有的 .modal 体系，所以竖屏自动全屏、可滚动
    =========================================================================== */
 #mob-intro { display: flex; }
 #mob-intro[hidden] { display: none !important; }
@@ -797,10 +748,10 @@ html[data-skin="vz"] .mob-group .switch input[type="checkbox"]:checked {
 .mi-body .mi-lead { color: #e8eef6; }
 
 /* ===========================================================================
-   顶栏那几个胶囊（返回 / 永夜廿九 / 教程 / 文件）**一律 flex 居中** ✓
-   —— 之前用 line-height 撑高度 ✗ 字体行盒上下留白不对称 ✓
-      中文尤其明显，看着就是"字比胶囊中心高一点点" ✗
-      flex + align-items:center + line-height:1 才是真正的垂直居中 ✓
+   顶栏那几个胶囊（返回 / 永夜廿九 / 教程 / 文件）一律 flex 居中
+   —— 用 line-height 撑高度时，字体行盒上下留白不对称，中文尤其明显，
+      看着就是「字比胶囊中心高一点点」。
+      flex + align-items:center + line-height:1 才是真正的垂直居中。
    =========================================================================== */
 #mob-topbar .mob-btn,
 #mob-topbar .mob-author,
@@ -818,14 +769,14 @@ html[data-skin="vz"] .mob-group .switch input[type="checkbox"]:checked {
   box-sizing: border-box !important;
 }
 
-/* 坐标在手机上是废的 ✗（没有悬停 → 永远显示「—」）→ 去掉 ✓ */
+/* 坐标在手机上没有意义（没有悬停，永远显示「—」），去掉 */
 #status-pos { display: none !important; }
 .statusbar { justify-content: flex-start !important; gap: 14px !important; }
 .statusbar #status-changes { font-weight: 600; }
 
 /* ===========================================================================
-   教程那个介绍窗 = **居中的圆角卡片** ✓ 不是全屏 ✗（用户要求）
-   （之前复用了"设置弹窗竖屏全屏"那套 → 于是铺满整屏 ✓ 太唬人 ✗）
+   教程那个介绍窗 = 居中的圆角卡片，不是全屏
+   （复用了「设置弹窗竖屏全屏」那套会铺满整屏，太唬人）
    =========================================================================== */
 #mob-intro {
   display: flex !important;
@@ -843,12 +794,12 @@ html[data-skin="vz"] .mob-group .switch input[type="checkbox"]:checked {
 #mob-intro .modal-head { position: static !important; padding: 4px 0 10px !important; }
 #mob-intro .mi-body { font-size: 13.5px; line-height: 1.8; }
 
-/* 底部那条状态栏（缩放 / 改动 N）也**整条藏掉** ✓（用户要求 ✓） */
+/* 底部状态栏（缩放 / 改动 N）也整条藏掉 */
 .statusbar { display: none !important; }
 
 /* ===========================================================================
    文件那栏（导出整图 / 导出涂色 / 导入 / 撤销 / 重做 / 清除）
-   **跟工具那栏一个样式**：一行一个、占满整栏、左对齐 ✓
+   跟工具那栏一个样式：一行一个、占满整栏、左对齐
    =========================================================================== */
 .mob-group[data-group="io"] button,
 .mob-group[data-group="io"] .menu-item,
@@ -862,8 +813,8 @@ html[data-skin="vz"] .mob-group .switch input[type="checkbox"]:checked {
 #btn-export { display: none !important; }
 
 /* ===========================================================================
-   顶栏正中间那对「撤销 / 重做」✓
-   圆圈按钮、跟顶栏其它胶囊一样高 ✓ 禁用时是灰的（原样式保留 ✓）
+   顶栏正中间那对「撤销 / 重做」
+   圆圈按钮、跟顶栏其它胶囊一样高，禁用时是灰的（原样式保留）
    =========================================================================== */
 #mob-mid { display: flex; align-items: center; justify-content: center; }
 .mob-undo { display: inline-flex; align-items: center; gap: 6px; }
@@ -878,8 +829,8 @@ html[data-skin="vz"] .mob-group .switch input[type="checkbox"]:checked {
 .mob-icobtn:disabled { opacity: .38 !important; }
 
 /* ===========================================================================
-   当前工具 / 当前颜色（顶栏下面左边那个小胶囊 ✓）
-   色块 + 工具名 ✓ 点一下开「工具」面板 ✓
+   当前工具 / 当前颜色（顶栏下面左边那个小胶囊）
+   色块 + 工具名，点一下开「工具」面板
    =========================================================================== */
 #mob-now {
   position: absolute; top: 60px; left: 10px; z-index: 58;
@@ -887,7 +838,7 @@ html[data-skin="vz"] .mob-group .switch input[type="checkbox"]:checked {
   min-height: 32px; padding: 0 12px 0 8px; border-radius: 16px;
   border: 1px solid #2b3743; background: rgba(13, 19, 26, .92); color: #e8eef6;
   font: 600 13px/1 "Microsoft YaHei", system-ui, sans-serif;
-  /* ⚠ 前缀两行都要 ✓（同 `.mob-btn` 那条，2026-10-21 补）*/
+  /* 前缀两行都要（同 .mob-btn 那条）*/
   box-shadow: 0 6px 18px rgba(0, 0, 0, .45);
   -webkit-backdrop-filter: blur(6px);
   backdrop-filter: blur(6px);
@@ -899,25 +850,25 @@ html[data-skin="vz"] .mob-group .switch input[type="checkbox"]:checked {
 }
 
 /* ===========================================================================
-   撤销 / 重做：**相对整条顶栏居中** ✓
-   （以前放在中间那个 flex 槽里 ✗ 可左右两边宽度不一样 → 看着就是偏的 ✗）
+   撤销 / 重做：相对整条顶栏居中
+   （放在中间那个 flex 槽里时，左右两边宽度不一样，看着就是偏的）
    =========================================================================== */
 #mob-topbar { position: absolute; }
 .mob-undo {
   position: absolute !important; left: 50% !important; top: 50% !important;
   transform: translate(-50%, -50%) !important;
 }
-/* 底部那条渐变交给 JS 按当前颜色画 ✓ 这里只留个兜底 */
+/* 底部渐变交给 JS 按当前颜色画，这里只留兜底 */
 #mob-dock { transition: background .25s linear; }
 #mob-dock button { background: rgba(13, 19, 26, .94); }
 
-/* 双保险：状态栏里那三项（缩放百分比 / 坐标 / 改动）**点名禁掉** ✓
-   （万一以后有人把 .statusbar 那条 display:none 删了，这三项也照样不冒出来 ✓） */
+/* 双保险：状态栏里那三项（缩放百分比 / 坐标 / 改动）点名禁掉。
+   （万一以后有人把 .statusbar 那条 display:none 删了，这三项也照样不冒出来） */
 #status-zoom, #status-pos, #status-changes, #status-meta { display: none !important; }
 .statusbar { display: none !important; visibility: hidden !important; height: 0 !important; }
 
-/* 显示页里「势力 / 地区 / 填色」这几个前缀**必须留着** ✓
-   （上一版我一刀切把 .group-label 全藏了 ✗ 结果那三个前缀也没了 ✓ 用户骂得对 ✓） */
+/* 显示页里「势力 / 地区 / 填色」这几个前缀必须留着。
+   （一刀切把 .group-label 全藏了会连它们一起藏掉） */
 .mob-pane .group-label {
   display: inline-block !important;
   min-width: 34px !important;
@@ -925,13 +876,13 @@ html[data-skin="vz"] .mob-group .switch input[type="checkbox"]:checked {
   font-size: 12.5px !important;
 }
 
-/* 设置页的内容区：高度由 JS 量完锁住 ✓ 切标签时不许变 ✗ */
+/* 设置页的内容区：高度由 JS 量完锁住，切标签时不变 */
 .mob-panes { display: block; }
 .mob-pane { display: block; }
 
 /* ===========================================================================
-   顶栏那个返回箭头（手机版 ✓ 用户要"就一个箭头"）
-   方块按钮、箭头居中、点得到的尺寸 ✓ 比带字的胶囊更省地方 ✓
+   顶栏那个返回箭头（手机版：就一个箭头）
+   方块按钮、箭头居中、点得到的尺寸，比带字的胶囊更省地方
    =========================================================================== */
 #mob-topbar .mob-back-arrow {
   width: 38px !important; min-width: 38px !important; padding: 0 !important;
@@ -940,24 +891,22 @@ html[data-skin="vz"] .mob-group .switch input[type="checkbox"]:checked {
 
 
 /* ===========================================================================
-   小输入弹窗（改名 / 保存地图）= **居中的小卡片**，不要铺满全屏
-   —— 上面那段 .modal 是给"设置弹窗"写的竖屏全屏版 ✗
-      它们只有一行输入，铺满整屏太唬人、还看不见地图 ✓
-      （2026-10-27 用户："保存地图等输入框会占满全屏，不像改名工具那样"）
-   ⚠ 以后再加这种"一行输入"的小弹窗，**记得把 id 加进下面这组选择器** ✗
-     `tools/check_mobile_parity.js` 的「小弹窗」那一节会扫 HTML，
-     带文本输入框却没登记的弹窗会直接报红 ✓
+   小输入弹窗（改名 / 保存地图）= 居中的小卡片，不铺满全屏
+   —— 上面那段 .modal 是给「设置弹窗」写的竖屏全屏版，
+      它们只有一行输入，铺满整屏太唬人、还看不见地图。
+   ⚠ 以后再加这种「一行输入」的小弹窗，需把 id 加进下面这组选择器。
+     tools/check_mobile_parity.js 的「小弹窗」那一节会扫 HTML，
+     带文本输入框却没登记的弹窗会直接报错。
    =========================================================================== */
 #rename, #save-map {
   display: flex !important;
   align-items: center !important; justify-content: center !important;
   padding: 16px !important;
 }
-/* **必须补这一句** ✗ —— 上面那个 display:flex 带 !important ✓
-   会把元素自带的 hidden 属性压过去 ✓ 于是弹窗**一进页面就杵在屏幕中间** ✗
-   （用户报的"一点进去一个大大的改名"就是这个 ✓）
-   [hidden] 是属性选择器、权重比单独的 #rename 高 ✓ 所以这句一定压得住 ✓
-   —— 教程那个介绍窗当初就记得写了 ✓ 改名窗漏了 ✗） */
+/* 必须补这一句：上面那个 display:flex 带 !important，
+   会把元素自带的 hidden 属性压过去，于是弹窗一进页面就杵在屏幕中间。
+   [hidden] 是属性选择器、权重比单独的 #rename 高，所以这句一定压得住。
+   （教程那个介绍窗当初写了这一句，改名窗漏了） */
 #rename[hidden], #save-map[hidden] { display: none !important; }
 #rename .modal-box, #save-map .modal-box {
   width: 100% !important; max-width: 380px !important;
@@ -974,26 +923,25 @@ html[data-skin="vz"] .mob-group .switch input[type="checkbox"]:checked {
 #rename button, #save-map button { min-height: 38px !important; padding: 0 14px !important; font-size: 14px !important; }
 
 /* ===========================================================================
-   导出整图弹窗：手机上也用**居中卡片**，不铺满全屏
-   —— 规格 / 范围 / 进度就这么几行，铺满整屏反而像进了另一个页面 ✓
+   导出整图弹窗：手机上也用居中卡片，不铺满全屏
+   —— 规格 / 范围 / 进度就这么几行，铺满整屏反而像进了另一个页面
    =========================================================================== */
 #export-map {
   display: flex !important;
   align-items: center !important; justify-content: center !important;
-  /* 底部给安全区留位 ✓（原来 fixed 铺满整屏、卡片贴到最下面 ✗） */
+  /* 底部给安全区留位（铺满整屏时卡片会贴到最下面） */
   padding: 12px 12px calc(12px + env(safe-area-inset-bottom, 0px)) !important;
 }
 #export-map[hidden] { display: none !important; }
 #export-map .modal-box {
   width: 100% !important; max-width: 410px !important;
   height: auto !important;
-  /* 🔴 2026-11-02 用户："整图导出的按钮太下面，被 UI 遮住了"
-   *   根因：卡片被 max-height 卡住之后，底部那排按钮**跟着内容沉到滚动区外面** ✗
-   *   （横屏 / 矮窗口最明显：只能看见半截「导出」✓ 中心点还落在遮罩上、点不动 ✓）
+  /* 根因：卡片被 max-height 卡住之后，底部那排按钮跟着内容沉到滚动区外面
+   *   （横屏 / 矮窗口最明显：只能看见半截「导出」，中心点还落在遮罩上、点不动）
    *   三件事一起修：
-   *     ① 高度扣掉上下留白和安全区，卡片再矮也不会顶到屏幕边 ✓
-   *     ② 底部按钮 sticky 钉在卡片底边，内容再多也露着脸 ✓
-   *     ③ 卡片自己不留底内边距，底边由 .export-foot 填满（滚上去的内容压不到按钮下面）✓ */
+   *     ① 高度扣掉上下留白和安全区，卡片再矮也不会顶到屏幕边
+   *     ② 底部按钮 sticky 钉在卡片底边，内容再多也露着脸
+   *     ③ 卡片自己不留底内边距，底边由 .export-foot 填满（滚上去的内容压不到按钮下面）*/
   max-height: calc(100vh - 24px - env(safe-area-inset-bottom, 0px)) !important;
   max-height: calc(100dvh - 24px - env(safe-area-inset-bottom, 0px)) !important;
   border-radius: 16px !important; border: 1px solid #2b3743 !important;
@@ -1004,7 +952,7 @@ html[data-skin="vz"] .mob-group .switch input[type="checkbox"]:checked {
   position: sticky !important; bottom: 0 !important; z-index: 4 !important;
   margin: 12px -16px 0 !important;
   padding: 10px 16px 14px !important;
-  /* 用卡片那层玻璃底色，别自己另起一块颜色 ✓ */
+  /* 用卡片那层玻璃底色，不另起一块颜色 */
   background: rgba(13, 19, 26, .96) !important;
 }
 html[data-theme="light"] #export-map .export-foot {
@@ -1027,7 +975,7 @@ html[data-theme="light"] #export-map .export-foot {
 }
 #export-map .export-foot button { min-height: 42px !important; padding: 0 18px !important; font-size: 14px !important; }
 
-/* 导出框选：手机上没有鼠标，把手得大到指尖按得住，底部按钮也要够高 */
+/* 导出框选：手机上没有鼠标，把手要大到指尖按得住，底部按钮也要够高 */
 .export-pick-handle { width: 18px !important; height: 18px !important; border-radius: 4px !important; }
 .export-pick-handle.h-nw { left: -9px !important; top: -9px !important; }
 .export-pick-handle.h-n  { top: -9px !important; margin-left: -9px !important; }
@@ -1048,7 +996,7 @@ html[data-theme="light"] #export-map .export-foot {
 }
 
 
-/* 地图上的图例：手机上把手要按得住，别只有 18px ✓ */
+/* 地图上的图例：手机上把手要按得住，别只有 18px */
 #legend-overlay { touch-action: none !important; -webkit-tap-highlight-color: transparent; }
 #legend-resize {
   width: 30px !important; height: 30px !important;
@@ -1058,12 +1006,12 @@ html[data-theme="light"] #export-map .export-foot {
 #mob-sheet #set-legend-title { max-width: none !important; flex: 1 1 auto !important; }
 #mob-sheet .legend-tools { margin: 4px 0 6px !important; }
 #mob-sheet .legend-tools .btn { height: 30px !important; padding: 0 10px !important; font-size: 12px !important; }
-/* 图例二次精简：版式小格 + 三张同规格色卡（2026-10-27）
-   手机上只放触摸尺寸，结构跟桌面完全一致 ✓ */
+/* 图例二次精简：版式小格 + 三张同规格色卡
+   手机上只放触摸尺寸，结构跟桌面完全一致 */
 #mob-sheet .legend-grid { gap: 8px !important; }
 #mob-sheet .legend-cell select {
   height: 32px !important; font-size: 12.5px !important;
-  /* 跟色卡同灰 ✓（原来是 rgba(255,255,255,.09)，叠在玻璃面板上发蓝）*/
+  /* 跟色卡同灰（rgba(255,255,255,.09) 叠在玻璃面板上发蓝）*/
   background-color: rgba(8, 12, 17, .38);
   border-color: rgba(255, 255, 255, .10);
 }
@@ -1083,8 +1031,8 @@ html[data-theme="light"] #mob-sheet .legend-cell select {
 #mob-sheet .legend-count { font-size: 10.5px !important; }
 
 /* ===========================================================================
-   图例条目在窄面板里也要排得下（现在一行是：勾选 + 色块 + 名字 + ↑↓）
-   —— 名字框让它缩 ✓ 箭头小一点但还是要指尖点得到 ✓
+   图例条目在窄面板里也要排得下（一行是：勾选 + 色块 + 名字 + ↑↓）
+   —— 名字框让它缩，箭头小一点但还是要指尖点得到
    =========================================================================== */
 #mob-sheet .legend-row { flex-wrap: nowrap !important; gap: 6px !important; }
 #mob-sheet .legend-row .legend-name { min-width: 0 !important; font-size: 13px !important; padding: 4px 7px !important; }
@@ -1096,27 +1044,27 @@ html[data-theme="light"] #mob-sheet .legend-cell select {
 
 
 /* ===========================================================================
-   图例的**拖动把手**在手机上也要按得住
-   （一行现在是：勾选 + 色块 + 名字 + ↑↓ + 把手 ✓ 名字让位给它们 ✓）
+   图例的拖动把手在手机上也要按得住
+   （一行含：勾选 + 色块 + 名字 + ↑↓ + 把手，名字让位给它们）
    =========================================================================== */
 #mob-sheet .legend-row .legend-drag {
   width: 22px !important; font-size: 15px !important;
   display: flex !important; align-items: center !important; justify-content: center !important;
   min-height: 24px !important;
-  touch-action: none !important;   /* 按住把手拖动时不许滚页面 ✓ */
+  touch-action: none !important;   /* 按住把手拖动时不许滚页面 */
 }
 #mob-sheet .legend-row .legend-name { flex: 1 1 auto !important; }
 
 
 /* ===========================================================================
-   ① 图例列表**做小一点**（用户要求：设置界面里的这个 UI 小一点）
-      一行是：勾选 + 色块 + 名字 + ↑↓ + 把手 ✓ 全部收一档 ✓
+   ① 图例列表做小一点（设置界面里的这个 UI 小一点）
+      一行是：勾选 + 色块 + 名字 + ↑↓ + 把手，全部收一档
    =========================================================================== */
 #mob-sheet .legend-row {
   gap: 6px !important; padding: 1px 0 !important;
-  /* **行高必须清掉** ✗ —— 早期那条 `.legend-row { min-height: 44px }`（触摸友好的老规矩 ✓）
-     一直在撑着每一行 ✓ 光收内边距根本压不下去 ✓（用户：项目之间的间距再小一点 ✓）
-     现在按内容自己的高度走（勾选框 15px + 上下 1px ≈ 17~20px 一行 ✓）*/
+  /* 行高必须清掉：早期那条 .legend-row { min-height: 44px }（触摸友好的老规矩）
+     一直在撑着每一行，光收内边距压不下去。
+     行高交由内容自身决定（勾选框 15px + 上下 1px ≈ 17~20px 一行）*/
   min-height: 0 !important;
 }
 #mob-sheet .legend-row .legend-on { width: 15px !important; height: 15px !important; }
@@ -1131,21 +1079,20 @@ html[data-theme="light"] #mob-sheet .legend-cell select {
 }
 #mob-sheet .legend-row .legend-drag { width: 22px !important; font-size: 13px !important; min-height: 22px !important; }
 #mob-sheet .legend-list { max-height: 190px; }
-/* 320~360 这类窄屏：背景那行少一个 HEX 读数，别把滑条挤出屏幕 ✓ */
+/* 320~360 这类窄屏：背景那行少一个 HEX 读数，避免把滑条挤出屏幕 */
 @media (max-width: 380px) {
   #mob-sheet .legend-bg-v { display: none !important; }
 }
 
 /* ===========================================================================
-   ② 「更高」按钮：把设置面板拔到 88vh，图例列表跟着放开 → 一次能看更多条
-      普通模式：列表上限 190px（面板本来就矮 ✓）
-      高的模式：列表放开到 42vh ✓ 面板内部滚动 ✓
+   ② 「更高」按钮：把设置面板拔高，图例列表跟着放开 → 一次能看更多条
+      普通模式：列表上限 190px（面板本来就矮）
+      高的模式：列表放开，面板内部滚动
    =========================================================================== */
 #mob-sheet .mob-tallbtn {
   margin-left: auto; align-self: center;
-  /* 🔴 2026-10-27 用户："「更高」小按钮的 UI 样式和晨昏按钮不一样，统一按晨昏按钮的来"
-   *   → 尺寸 / 圆角 / 字重 / 玻璃底全部照抄 `.mob-theme-bar .theme-btn` ✓
-   *     （原来是自己一套 26px 深黑板 ✓ 跟旁边的晨昏胶囊完全不像一家人 ✓）*/
+  /* 「更高」小按钮的 UI 样式与晨昏按钮统一：
+   *   尺寸 / 圆角 / 字重 / 玻璃底全部照抄 .mob-theme-bar .theme-btn。 */
   min-height: 34px; padding: 0 16px; border-radius: 17px;
   border: 1px solid rgba(255, 255, 255, .14);
   background: rgba(255, 255, 255, .07);
@@ -1163,24 +1110,21 @@ html[data-theme="light"] #mob-sheet .legend-cell select {
 }
 
 /* ===========================================================================
-   🔴 **「更高」那个小圆钮的日间配色**（2026-10-21 ✓ 用户截图："这个按钮为什么没有跟随晨昏变化"）
+   「更高」那个小圆钮的日间配色
    ---------------------------------------------------------------------------
-   它上面那条是**写死的深色** ✗：
-     `background: #101820; color: #9fb0c2; border-color: #2b3743`
-   一个 `html[data-theme]` 都没写 ✓ 所以白天模式开着，它**仍然是黑板一块** ✓
-   —— 用户截图里那个突兀的黑圆钮就是这个 ✓
+   它上面那条是写死的深色：
+     background: #101820; color: #9fb0c2; border-color: #2b3743
+   没有写 html[data-theme]，所以白天模式下它仍然是一块黑板。
 
-   ⚠ **别指望它继承面板的颜色** ✗
-     它在 `.mob-tabs` 那一行里 ✓ 而标签按钮有自己的玻璃底 ✓
-     这颗按钮是**另写了一套写死的值** ✓ 跟面板那套完全没关系 ✓
+   ⚠ 它不继承面板的颜色：它在 .mob-tabs 那一行里，而标签按钮有自己的玻璃底，
+     这颗按钮另写了一套写死的值，跟面板那套没有关系。
 
-   ⚠ **`.on` 那档也要单独写** ✗
-     它只改了边框和字色（金色 ✓）✓ 底色还是继承上面那条的 `#101820` ✓
-     所以白天必须**两条都盖** ✓ 只盖一条会得到"白底 + 金边 + 深字"或者
-     "黑底 + 金边"这种半吊子 ✓
+   ⚠ .on 那档也要单独写：它只改了边框和字色（金色），底色仍是上面那条 #101820，
+     所以白天必须两条都盖，只盖一条会得到「白底 + 金边 + 深字」
+     或「黑底 + 金边」。
 
-   → 白天：跟旁边那几个标签按钮**同一个白玻璃** ✓（这才是"跟随晨昏"的意思 ✓）
-     `.on`（已经拔高了）：浅蓝玻璃 + 蓝边 ✓ 跟「显示」那个选中标签一个口径 ✓
+   → 白天：跟旁边那几个标签按钮同一个白玻璃。
+     .on：浅蓝玻璃 + 蓝边，跟「显示」那个选中标签一个口径。
    =========================================================================== */
 html[data-theme="light"] #mob-sheet .mob-tallbtn {
   background: rgba(255, 255, 255, .62);
@@ -1195,12 +1139,12 @@ html[data-theme="light"] #mob-sheet .mob-tallbtn.on {
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, .9);
 }
 
-/* 高度**不写死** ✗ —— JS 会把它顶到 place() 算出来的那个上限（贴着底部往上长 ✓）
-   写死 88vh 会顶出屏幕（用户报过 ✓）；而且列表还被上限卡着 → 下面留一大块空地 ✗
+/* 高度不写死：JS 会把它顶到 place() 算出的上限（贴着底部往上长）。
+   写死 88vh 会顶出屏幕，而且列表还被上限卡着 → 下面留一大块空地。
 
-   ⚠ **每条都要加 :not([hidden])** ✗ —— 这些 display:flex 带 !important，
-     会把"面板自带的 hidden"直接压过去 → 四个面板一起显出来 ✗（踩过三次了 ✗）
-     :not([hidden]) 既把权重抬够 ✓ 又天然绕开该藏起来的那些 ✓
+   ⚠ 每条都要加 :not([hidden])：这些 display:flex 带 !important，
+     会把「面板自带的 hidden」直接压过去 → 四个面板一起显出来。
+     :not([hidden]) 既把权重抬够，又天然绕开该藏起来的那些。
 */
 #mob-sheet.mob-tall { display: flex !important; flex-direction: column !important; }
 #mob-sheet.mob-tall #mob-sheet-body:not([hidden]) {
@@ -1215,7 +1159,7 @@ html[data-theme="light"] #mob-sheet .mob-tallbtn.on {
   flex: 1 1 auto !important; min-height: 0 !important;
   display: flex !important; flex-direction: column !important; overflow-y: auto !important;
 }
-/* 图例那一页：列表**把剩下的空间全吃掉** ✓ 内部滚动 ✓ 不再留空地 ✓ */
+/* 图例那一页：列表把剩下的空间全吃掉，内部滚动，不留空地 */
 #mob-sheet.mob-tall .mob-pane[data-pane="legend"]:not([hidden]) {
   flex: 1 1 auto !important; min-height: 0 !important;
   display: flex !important; flex-direction: column !important;
@@ -1223,45 +1167,44 @@ html[data-theme="light"] #mob-sheet .mob-tallbtn.on {
 #mob-sheet.mob-tall .mob-pane[data-pane="legend"]:not([hidden]) .legend-list {
   flex: 1 1 auto !important; max-height: none !important; min-height: 60px !important;
 }
-/* 兜底：高模式下面，凡是带 hidden 的都别想冒出来 ✓（权重按需要抬到最高） */
+/* 兜底：高模式下凡是带 hidden 的都不显示（权重抬到最高） */
 #mob-sheet.mob-tall .mob-group[hidden],
 #mob-sheet.mob-tall .mob-panes[hidden],
 #mob-sheet.mob-tall .mob-pane[hidden],
 #mob-sheet.mob-tall .mob-subs[hidden],
 #mob-sheet.mob-tall #mob-sheet-body[hidden] { display: none !important; }
 
-/* 量"最高那页"的时候，临时把列表收回普通上限 ✓
-   —— 不然在高的模式下量一次，高度锁就被顶到那么高 ✗ 之后普通模式也跟着变高 ✗ */
+/* 量「最高那页」的时候，临时把列表收回普通上限
+   —— 否则在高的模式下量一次，高度锁就被顶到那么高，之后普通模式也跟着变高 */
 #mob-sheet.measuring .legend-list { max-height: 190px !important; }
 
 
 /* ===========================================================================
-   ① 「地区 · 涂色」那个小标（#brush-target）在手机上藏掉 ✓（用户要求去掉 ✓）
+   ① 「地区 · 涂色」那个小标（#brush-target）在手机上藏掉
    =========================================================================== */
 #brush-target { display: none !important; }
 
 /* ===========================================================================
-   ③ 颜色页变高时：让"搜索结果"那块**吃掉剩余空间** ✓ 内部滚动 ✓
-      （面板本身的高度由 JS 顶到可用上限 ✓ 见 place() ✓）
+   ③ 颜色页变高时：让「搜索结果」那块吃掉剩余空间，内部滚动
+      （面板本身的高度由 JS 顶到可用上限，见 place()）
    =========================================================================== */
 #mob-sheet.mob-tall[data-group="color"] .mob-grow {
   flex: 1 1 auto !important; min-height: 0 !important;
   display: flex !important; flex-direction: column !important;
 }
-/* 搜索结果（#results）：**普通模式给它一个上限** ✗
-   基类里 `.results { flex: 1 1 auto; max-height: 100% }` 自己就会撑满容器 ✓
-   面板矮的时候它一长（搜个 a 就 231 条 ✓）就把上面的「当前颜色 / 最近使用」顶出视野 ✗
-   → 用户报的"搜索结果把原来的 UI 挡住"就是这个 ✓ 普通模式留 34vh、内部滚动 ✓ */
+/* 搜索结果（#results）：普通模式给它一个上限。
+   基类里 .results { flex: 1 1 auto; max-height: 100% } 自己就会撑满容器，
+   面板矮的时候它一长（搜个 a 就 231 条）就把上面的「当前颜色 / 最近使用」顶出视野。
+   → 普通模式留 34vh、内部滚动。 */
 #mob-sheet .results { max-height: 34vh !important; }
 
-/* 「更高」模式下改成**只吃剩下的空间** ✓（不是卡一个死数字 ✗）
-   之前写死 52vh → 面板里"当前颜色 + 最近使用 + 查找 + 结果"加起来超过面板 ✗
-   → 变成面板滚一层、列表内部再滚一层 ✗ 底下一行正好卡在缝上 ✓
-     （用户："是不是还差一点没显示" ✓）
-   现在：固定那几块各占各的 ✓ 列表把余量填满 ✓ **只有一层滚动** ✓ 一行都不卡缝 ✓ */
+/* 「更高」模式下改成只吃剩下的空间（不是卡一个死数字）。
+   写死 52vh 时，面板里「当前颜色 + 最近使用 + 查找 + 结果」加起来会超过面板，
+   变成面板滚一层、列表内部再滚一层，底下一行正好卡在缝上。
+   此处：固定那几块各占各的，列表把余量填满，只有一层滚动。 */
 #mob-sheet.mob-tall[data-group="color"] .mob-panes:not([hidden]) {
-  overflow-y: hidden !important;          /* 外层的滚动关掉 ✓ 交给列表自己滚 ✓ */
-  padding-bottom: 6px !important;         /* 最后一行不贴着边 ✓ */
+  overflow-y: hidden !important;          /* 外层的滚动关掉，交给列表自己滚 */
+  padding-bottom: 6px !important;         /* 最后一行不贴着边 */
 }
 #mob-sheet.mob-tall[data-group="color"] .mob-grow {
   flex: 1 1 auto !important; min-height: 0 !important;
@@ -1271,39 +1214,36 @@ html[data-theme="light"] #mob-sheet .mob-tallbtn.on {
   flex: 1 1 auto !important; max-height: none !important; min-height: 0 !important;
   overflow-y: auto !important;
 }
-/* 面板头里那个「▾」按钮：贴右边 ✓ */
+/* 面板头里那个「▾」按钮：贴右边 */
 #mob-sheet .panel-head .mob-tallbtn {
   margin-left: auto; flex: none;
-  /* 别被面板头/三角之类的盖住 ✗（2026-11-03：「右上角的小按钮也点不了」）*/
+  /* 别被面板头 / 三角之类的盖住，否则点不动 */
   position: relative; z-index: 9; pointer-events: auto;
 }
 
 /* ===========================================================================
-   滚动条统一成**暗色** ✓
-   （用户 2026-10-12："手机版剧本太多导致的那个滑块改成符合背景颜色，不要白色" ✓）
+   滚动条统一成暗色
+   （手机版剧本太多时那条滑块要符合背景颜色，不要白色）
 
-   **只管颜色，不管"露不露"** ✗：
-     · 上面那些 `scrollbar-width: none !important` 和 id/类级 `::-webkit-scrollbar`
-       选择器照样优先 —— 该藏的还藏着 ✓
-     · 只把**没人管过的**那些（= 浏览器默认那根白条）染成跟电脑版侧栏同色的暗灰 ✓
+   只管颜色，不管「露不露」：
+     · 上面那些 scrollbar-width: none !important 和 id/类级 ::-webkit-scrollbar
+       选择器照样优先，该藏的还藏着
+     · 只把没人管过的那些（浏览器默认那根白条）染成跟电脑版侧栏同色的暗灰
 
-   `#2b3542` 就是电脑版 `.sidebar::-webkit-scrollbar-thumb` 用色 ✓（同一套视觉）
+   #2b3542 就是电脑版 .sidebar::-webkit-scrollbar-thumb 的用色（同一套视觉）
    =========================================================================== */
-* { scrollbar-color: #2b3542 transparent; }            /* Firefox ✓ */
-*::-webkit-scrollbar { width: 9px; height: 9px; }      /* Chromium / Safari；横向那条靠 height ✓ */
+* { scrollbar-color: #2b3542 transparent; }            /* Firefox */
+*::-webkit-scrollbar { width: 9px; height: 9px; }      /* Chromium / Safari；横向那条靠 height */
 *::-webkit-scrollbar-thumb { background: #2b3542; border-radius: 5px; }
 *::-webkit-scrollbar-thumb:hover { background: #3a4757; }
 *::-webkit-scrollbar-track { background: transparent; }
 *::-webkit-scrollbar-corner { background: transparent; }
 
 /* ------------------------------------------------------------ 剧本（手机版折叠）
- *  🔴 2026-10-20 ✓ 用户："手机版的剧本…你可以做一个折叠式的，
- *     打开视图栏的时候剧本在第二层折叠起来" ✓
- *
- *  桌面那套是**浮层下拉**（absolute 定位）—— 手机上不行 ✗
- *  面板本身就带滚动，浮层会被裁掉一半 ✓
- *  → 手机上改成**手风琴**：点开就**就地展开**，把下面的视图按钮往下推 ✓
- *    位置也是静态的，不飘不裁 ✓
+ *  桌面那套是浮层下拉（absolute 定位），手机上不行：
+ *  面板本身就带滚动，浮层会被裁掉一半。
+ *  → 手机上改成手风琴：点开就地展开，把下面的视图按钮往下推，
+ *    位置也是静态的，不飘不裁。
  */
 .mob-era { display: block; margin: 0 0 10px; }
 .mob-era .group-label {
@@ -1312,13 +1252,13 @@ html[data-theme="light"] #mob-sheet .mob-tallbtn.on {
 }
 .mob-era .era-drop { position: static; display: block; }
 .mob-era .dd-btn {
-  width: 100%;                    /* 手机上占满一行，比 92px 好点 ✓ */
+  width: 100%;                    /* 手机上占满一行，比 92px 好 */
   min-height: 38px; font-size: 14px;
   background: #101820; border-color: #26313d; color: #cfd9e4;
 }
 .mob-era .dd-btn.on { border-color: #c9a94e; color: #f0d98a; background: rgba(36, 29, 16, .95); }
 .mob-era .dd-panel {
-  /* **就地展开**（不定位 ✓ 不浮 ✓）—— 这就是"第二层折叠" */
+  /* 就地展开（不定位、不浮）—— 这就是「第二层折叠」 */
   position: static;
   width: 100%;
   margin-top: 6px;
@@ -1333,81 +1273,62 @@ html[data-theme="light"] #mob-sheet .mob-tallbtn.on {
 }
 
 /* ===========================================================================
-   🔴🔴 **液态玻璃 · 手机版**（2026-10-21 ✓ 用户："更多更多液态玻璃"）
+   液态玻璃 · 手机版
    ---------------------------------------------------------------------------
-   ⚠⚠ **先搞清楚"玻璃"到底是什么** ✗✗（用户："液态玻璃明明是需要透明的"）
+   玻璃 = 半透明的底 + 背后那张图被糊掉，两者都做到才有那个效果。
 
-   玻璃 = **半透明的底** + **背后那张图被糊掉** ✓ 两个都做到才有那味儿 ✓
+   手机版几处都不到位：
+     · 顶栏       rgba(13,19,26,.92)   → 92% 实心，等于不透明
+     · 底部入口   rgba(13,19,26,.94)   → 同上
+     · 二级面板   #0d131a              → 纯色
+     · 很多按钮   #101820 / #131b23    → 纯色
+     · 全文件只有两处 backdrop-filter（顶栏按钮的 blur(6px)），而且没带 -webkit-
+   → 所以手机上看起来是一块块深色板子，地图在底下一点都透不上来。
 
-   手机版原来**一条都没做到** ✗：
-     · 顶栏       `rgba(13,19,26,.92)`   → 92% 实心，等于不透明 ✗
-     · 底部入口   `rgba(13,19,26,.94)`   → 同上 ✗
-     · 二级面板   `#0d131a`              → **纯色** ✗ 连 .92 都没有 ✗
-     · 很多按钮   `#101820` / `#131b23`  → 纯色 ✗
-     · 全文件只有两处 `backdrop-filter`（顶栏按钮的 `blur(6px)`）✓ 而且**没带 -webkit-** ✗
-   → 所以手机上看起来是"一块块深色板子" ✓ 地图在地底下，一点都透不上来 ✓
+   这一节做三件事：
+     ① 把这批底全换成真正的半透明（.5~.78 档，见下面分档理由）
+     ② 给需要透的地方补上 backdrop-filter（带 -webkit- 前缀）
+     ③ 玻璃「厚度」：顶边一道内高光，看着像一片有厚度的玻璃而不是一块色纸
 
-   ✅ 这一节干三件事：
-     ① 把这批底全换成**真正的半透明**（.5~.78 档，见下面分档理由）
-     ② 给需要透的地方补上 `backdrop-filter`（**带 -webkit- 前缀** ✓）
-     ③ 玻璃"厚度"：顶边一道内高光 ✓ 看着像一片有厚度的玻璃而不是一块色纸 ✓
+   ⚠ 三条硬规矩
+     ① 底越薄（面板 / 顶栏），模糊要越强，反过来会糊成一片
+        顶栏 .62 + blur 20、面板 .74 + blur 24、按钮 .82 + blur 12
+        （按钮小、字又密，透太多就读不清，所以它最实）
+     ② backdrop-filter 必须两种写法都有
+        只写无前缀的，iOS Safari 上完全不生效，表现就是「苹果上是黑板」
+     ③ 别给每个列表行加模糊
+        一行一层 GPU，手机上滑起来直接卡；
+        列表只给淡白高光，模糊交给它外面那层面板
 
-   ⚠⚠ **三条硬规矩**
-     ① **底越"薄"（面板/顶栏），模糊要越强** ✗ 反过来会糊成一片 ✓
-        顶栏 .62 + blur 20、面板 .74 + blur 24、按钮 .82 + blur 12 ✓
-        （按钮小、字又密，透太多就读不清 ✓ 所以它最实 ✓）
-     ② **`backdrop-filter` 必须两种写法都有** ✗
-        只写无前缀的 → iOS Safari 上**完全不生效** ✓ 表现就是"苹果上是黑板" ✓
-     ③ **别给每个列表行加模糊** ✗
-        一行一层 GPU ✓ 手机上滑起来直接卡 ✓
-        列表只给淡白高光，模糊交给它外面那层面板 ✓
-
-   ⚠ **真手机上地图是满屏的** ✗ 玻璃后面永远是地图 ✓ 所以透出来的一定是颜色 ✓
-     不会出现"透过玻璃看见窗口背景"那种怪事 ✓
-   ⚠ 宽屏（电脑调试）时 `#app` 是个 430px 的手机框 ✓
-     框外是 `body` 的深底 ✓ 玻璃透的就是框里的地图 ✓ 照样成立 ✓
+   ⚠ 真手机上地图是满屏的，玻璃后面永远是地图，所以透出来的一定是颜色，
+     不会出现「透过玻璃看见窗口背景」的情况。
+   ⚠ 宽屏（电脑调试）时 #app 是个 430px 的手机框，框外是 body 的深底，
+     玻璃透的还是框里的地图，照样成立。
    =========================================================================== */
 
 /* ---- ① 顶栏：最容易看出玻璃的地方（它压在地图最上沿）---- */
-/* 🔴🔴 **2026-10-21 晚：顶栏太突兀** ✗✗（用户截图里那条深灰长条）
+/* 顶栏做成下方栏的镜像。
  *
- *   三个原因叠在一起：
- *     ① 底子到**底边**还有 .12 的浓度 → 下沿是一道**可见的硬边** ✓
- *     ② `blur(20px)` 糊的是**栏内那条 54px 的带子** ✗
- *        它下面紧接着就是清晰的地图 → 一糊一清，边界特别扎眼 ✓
- *     ③ 背景本来就有个"从上到下渐隐"（`linear-gradient(#0b0f14f2, #0b0f1400)`）✓
- *        我把它整条盖掉了 ✗ 那才是不突兀的关键 ✓
+ *   难看的三个原因叠在一起：
+ *     ① 底子到底边还有 .12 的浓度 → 下沿是一道可见的硬边
+ *     ② blur(20px) 糊的是栏内那条 54px 的带子，
+ *        它下面紧接着就是清晰的地图 → 一糊一清，边界特别扎眼
+ *     ③ 背景本来有个「从上到下渐隐」的渐变，被整条盖掉了
  *
- *   → 现在：**一路淡到 0** ✓ 下沿彻底没有边界 ✓
- *     顶栏就是"地图往上慢慢变暗"，而不是"上面贴了一条板子"✓
- *   ⚠ 浓度不能一味调低 ✗ 顶栏上的胶囊按钮要读得清 ✓
- *     它们自己有 .58 的底 ✓ 所以栏本身可以淡 ✓ 两件事分开算 ✓
- */
-/* 🔴🔴 **2026-10-21 晚（第四版）：顶栏做成下方栏的镜像** ✗✗
- *   （用户："上方栏那个渐变完全可以像下方栏的渐变一样呀"）
+ *   下方栏（#mob-dock）为什么好看：容器上根本没有 backdrop-filter，
+ *   只有一个纯 alpha 渐变，模糊全在按钮上。
+ *   顶栏的问题就是给容器加了 blur(20px)：那层模糊只在 54px 栏内生效，
+ *   栏下面紧接着就是没被模糊的地图，于是一条「糊的 / 清的」硬接缝横在 y=54。
  *
- *   ⚠⚠ **这一版的根子在这儿 —— 之前三轮都在改错东西** ✗
- *
- *   下方栏（`#mob-dock`）为什么好看？去翻它的 CSS 就明白：
- *     `#mob-dock { background: linear-gradient(180deg, 透明 → .5@52% → .82); }`
- *     **容器上根本没有 `backdrop-filter`** ✗ 只有一个纯 alpha 渐变 ✓
- *     模糊全在**按钮**上（`#mob-dock button` 那条）✓
- *
- *   顶栏之前为什么难看？我给它**容器**加了 `blur(20px)` ✗
- *     → 那层模糊只在 **54px 栏内**生效 ✓
- *     → 栏下面紧接着就是**没被模糊的地图** ✓
- *     → 于是一条"糊的 / 清的"**硬接缝**横在 y=54 那儿 ✓
- *     那道灰泥其实是**模糊的边界**，不是渐变本身 ✓（我前三轮全在调 alpha ✓ 白忙）
- *
- *   → 现在照下方栏镜像：
- *     · 容器：**去掉 `backdrop-filter`** ✗ 只留纯渐变 ✓
- *     · 渐变：把下方栏那三档**上下翻过来** ✓
+ *   → 照下方栏镜像：
+ *     · 容器：去掉 backdrop-filter，只留纯渐变
+ *     · 渐变：把下方栏那三档上下翻过来
  *         下方栏 = 顶透明 → 底(.5@52%) → 底(.82)
  *         顶  栏 = 顶(.82) → (.5@48%) → 底透明
- *       这样两条栏在地图上下对称 ✓ 眼睛一看就是一套 ✓
- *     · 模糊：留给**按钮**（下面那条 `#mob-topbar .mob-btn` 本来就有 ✓）
+ *       两条栏在地图上下对称，看着是一套
+ *     · 模糊：留给按钮（下面那条 #mob-topbar .mob-btn 本来就有）
  *
- *   ⚠ 深色和浅色**各写一条**，但两边都是"镜像下方栏" ✓ 别再各造一套 ✓
+ *   ⚠ 深色和浅色各写一条，但两边都是「镜像下方栏」，别再各造一套。
  */
 #mob-topbar {
   background: linear-gradient(180deg,
@@ -1415,7 +1336,7 @@ html[data-theme="light"] #mob-sheet .mob-tallbtn.on {
     rgba(10, 15, 21, .50) 48%,
     rgba(10, 15, 21, 0) 100%);
 }
-/* 顶栏上那些胶囊按钮：**比顶栏实一档** ✓ 不然字压在地图花纹上读不清 ✓ */
+/* 顶栏上那些胶囊按钮：比顶栏实一档，否则字压在地图花纹上读不清 */
 #mob-topbar .mob-btn,
 #mob-topbar .mob-theme,
 #mob-topbar .mob-author {
@@ -1427,42 +1348,41 @@ html[data-theme="light"] #mob-sheet .mob-tallbtn.on {
 }
 
 /* ---- ② 底部四个入口 ---- */
-/* ⚠ 这一条**只给容器**加上下渐隐 ✓ 真正的玻璃在按钮上 ✓
- *   容器本身铺满整条底边，给它上模糊没意义（底下没有地图可糊 ✓ 只有按钮）✓ */
+/* 这一条只给容器加上下渐隐，真正的玻璃在按钮上。
+   容器本身铺满整条底边，给它上模糊没意义（底下没有地图可糊，只有按钮） */
 #mob-dock {
   background: linear-gradient(180deg, rgba(10, 15, 21, 0), rgba(10, 15, 21, .5) 52%, rgba(10, 15, 21, .82));
 }
 #mob-dock button {
-  /* ⚠ **底栏按钮要够实** ✗✗ —— 它背后是**画笔色渐变**（JS 每 0.4 秒刷一次 ✓）
-   *   透太多就会被画笔颜色染上去 ✓ 日间那版被这个坑染成粉色过 ✓
-   *   玻璃感靠**内高光 + 细边**做 ✓ 不靠透明度 ✓（见 2026-10-21 那条长注释）*/
+  /* 底栏按钮要够实 —— 它背后是画笔色渐变（JS 每 0.4 秒刷一次），
+   *   透太多就会被画笔颜色染上去，日间那版曾被染成粉色。
+   *   玻璃感靠内高光 + 细边做，不靠透明度。 */
   background: rgba(13, 19, 26, .92);
   -webkit-backdrop-filter: blur(14px) saturate(150%);
   backdrop-filter: blur(14px) saturate(150%);
   border-color: rgba(255, 255, 255, .12);
   box-shadow: 0 6px 18px rgba(0, 0, 0, .34), inset 0 1px 0 rgba(255, 255, 255, .1);
 }
-/* 当前那个入口：亮一档 + 金色边 ✓ 让它在一片玻璃里认得出来 ✓ */
+/* 当前那个入口：亮一档 + 金色边，让它在玻璃里认得出来 */
 #mob-dock button.on {
   background: rgba(58, 45, 20, .95);
   border-color: rgba(201, 169, 78, .85);
 }
 
 /* ---- ③ 二级面板：最大的一块玻璃 ---- */
-/* ⚠ 它原来写的是纯色 `#0d131a` ✗ 一点不透 ✓ 现在是整块玻璃 ✓
- *   面板比按钮大得多，底子要更薄（.74）、模糊要更强（24px）✓
- *   否则在大面板上"薄底 + 弱模糊"= 背后的地图花纹直接读得出来 ✓ 字就乱了 ✓ */
+/* 底色若用纯色 #0d131a 会一点不透，此处换成整块玻璃。
+ *   面板比按钮大得多，底子要更薄（.74）、模糊要更强（24px），
+ *   否则在大面板上「薄底 + 弱模糊」会让背后的地图花纹直接读得出来。 */
 #mob-sheet {
-  /* 🔴🔴 **2026-10-21 晚：再透一档** ✗✗（用户："更多更多液态玻璃"）
-   *   上一版 .74 —— 太实了 ✓ 透光只剩 26%，深色叠在深色地图上
-   *   看着跟"实心板子"几乎没差 ✓（自检截图里就是这样 ✓）
+  /* 再透一档。.74 太实，透光只剩 26%，深色叠在深色地图上
+   *   看着跟实心板子几乎没差。
    *
-   *   算过对比度（`#c8d4e2` 的文字）：
+   *   对比度（#c8d4e2 的文字）：
    *     alpha .74 → 海面底 11.8 / 陆地底 9.1
-   *     alpha .54 → 海面底 11.2 / 陆地底 6.6   ← 文字仍然稳稳达标（AA 要 4.5）
-   *   → 取 **.54** ✓ 透光 46% ✓ 地图轮廓明显浮上来了 ✓
-   *   ⚠ 再往下（.48 → 陆地底 5.9）就开始"地图花纹抢字"了 ✓ 别贪 ✓
-   *   ⚠ 这是**深色模式**的值 ✓ 日间那套单独在下面写 ✓ 别混 ✓ */
+   *     alpha .54 → 海面底 11.2 / 陆地底 6.6   ← 文字仍稳稳达标（AA 要 4.5）
+   *   → 取 .54，透光 46%，地图轮廓明显浮上来。
+   *   ⚠ 再往下（.48 → 陆地底 5.9）地图花纹就开始抢字了，别贪。
+   *   ⚠ 这是深色模式的值，日间那套单独在下面写，别混。 */
   background:
     linear-gradient(160deg, rgba(255, 255, 255, .12), transparent 46%),
     rgba(13, 19, 26, .54);
@@ -1471,7 +1391,7 @@ html[data-theme="light"] #mob-sheet .mob-tallbtn.on {
   border-color: rgba(255, 255, 255, .16);
   box-shadow: 0 -14px 44px rgba(0, 0, 0, .5), inset 0 1px 0 rgba(255, 255, 255, .14);
 }
-/* 面板头部（标题 + 收起）：别再叠一层实色 ✗ 直接透面板的玻璃 ✓ */
+/* 面板头部（标题 + 收起）：不再叠一层实色，直接透面板的玻璃 */
 #mob-sheet-head {
   background: linear-gradient(180deg, rgba(255, 255, 255, .05), transparent);
   border-bottom-color: rgba(255, 255, 255, .1);
@@ -1484,9 +1404,9 @@ html[data-theme="light"] #mob-sheet .mob-tallbtn.on {
 }
 
 /* ---- ④ 面板里的按钮 / 分段 / 标签页：小一号的玻璃片 ---- */
-/* ⚠ 这些是**密排的控件** ✗ 底子要给到 .78（比面板实）✓
- *   不然一排几十个按钮、每个都透出地图花纹 → 一片花 ✓
- *   ⚠ 模糊只给 8~10px ✓ 小元素上大模糊纯属浪费 GPU ✓ */
+/* 这些是密排的控件，底子要给到 .78（比面板实），
+ *   否则一排几十个按钮、每个都透出地图花纹，会糊成一片。
+ *   ⚠ 模糊只给 8~10px，小元素上大模糊纯属浪费 GPU。 */
 .mob-tab,
 #mob-sheet .segmented button,
 .mob-pane .segmented button,
@@ -1500,13 +1420,13 @@ html[data-theme="light"] #mob-sheet .mob-tallbtn.on {
   border-color: rgba(255, 255, 255, .12);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, .08);
 }
-/* ⚠ 上面这层是「白 7%」的玻璃片，不是白色实心主按钮 ✓
- *   默认 vz 皮肤下 `.btn` 的字色是 `--vz-primary-fg`（暗色 = #09090b）✗
- *   不补 color 就是**深底 + 近黑字**（用户截图：按名称 A→Z / 全部恢复默认）✓
- *   只修 vz：经典皮肤的金字本来就对；ghost 保持它自己的暗灰 ✓ */
+/* 上面这层是「白 7%」的玻璃片，不是白色实心主按钮。
+ *   默认 vz 皮肤下 .btn 的字色是 --vz-primary-fg（暗色 = #09090b），
+ *   不补 color 就是深底 + 近黑字（见按名称 A→Z / 全部恢复默认两个按钮）。
+ *   只修 vz：经典皮肤的金字本来就对；ghost 保持它自己的暗灰。 */
 html[data-skin="vz"] #mob-sheet .btn:not(.ghost),
 html[data-skin="vz"] .mob-io .btn:not(.ghost) { color: var(--vz-fg); }
-/* 选中的那几个：金色玻璃 ✓（跟顶栏/桌面的选中态一个口径 ✓）*/
+/* 选中的那几个：金色玻璃（跟顶栏 / 桌面的选中态一个口径）*/
 #mob-sheet .segmented button.on,
 .mob-pane .segmented button.on,
 .mob-group .segmented button.on,
@@ -1517,19 +1437,17 @@ html[data-skin="vz"] .mob-io .btn:not(.ghost) { color: var(--vz-fg); }
   color: #f6dfa0;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, .16), 0 2px 10px rgba(0, 0, 0, .28);
 }
-/* 🔴🔴 **「借用粒度」那一档在手机上也要看得出来** ✗✗（2026-10-27 用户：
- *   "同时选中剧本和某个下级层级（比如省份）时，省份按钮仅仅是颜色变了一点点
- *    而没有选中效果"）
+/* 「借用粒度」那一档在手机上也要看得出来。
  *
- *   根因：桌面 `.segmented button.grain` 有深蓝底 + 一圈蓝边 ✓
- *     可手机这套玻璃按钮（`#mob-sheet .segmented button` 等）写在后面 ✗
- *     权重又带 id → 把 grain 的 background / box-shadow 全盖掉 ✓
- *     只剩桌面那句 `color` 活着 → 看着就是"字稍微亮了一点" ✓
+ *   根因：桌面 .segmented button.grain 有深蓝底 + 一圈蓝边，
+ *   可手机这套玻璃按钮（#mob-sheet .segmented button 等）写在后面，
+ *   权重又带 id，把 grain 的 background / box-shadow 全盖掉，
+ *   只剩桌面那句 color 活着 → 看着就是「字稍微亮了一点」。
  *
- *   现在给手机补一条专属的 grain：淡蓝玻璃底 + 内圈蓝边 ✓
- *   仍然比金色 `.on` 弱一档 ✓（金色 = 当前视图；蓝色 = 笔刷 / 边界用的层级 ✓）
- *   ⚠ `:not(.on)` 是保险：万一两个类同时挂上，金色必须赢 ✓
- *   ⚠ **别只改 `color`** ✗ —— 手机上一排全是玻璃底，只换字色等于没选中 ✓ */
+ *   手机版另补一条专属的 grain：淡蓝玻璃底 + 内圈蓝边。
+ *   仍然比金色 .on 弱一档（金色 = 当前视图；蓝色 = 笔刷 / 边界用的层级）。
+ *   ⚠ :not(.on) 是保险：万一两个类同时挂上，金色必须赢。
+ *   ⚠ 别只改 color —— 手机上一排全是玻璃底，只换字色等于没选中。 */
 #mob-sheet .segmented button.grain:not(.on),
 .mob-pane .segmented button.grain:not(.on),
 .mob-group .segmented button.grain:not(.on) {
@@ -1539,22 +1457,19 @@ html[data-skin="vz"] .mob-io .btn:not(.ghost) { color: var(--vz-fg); }
   box-shadow: inset 0 0 0 1px rgba(122, 152, 192, .62),
               inset 0 1px 0 rgba(255, 255, 255, .14);
 }
-/* 🔴🔴 **2026-10-21 晚：选中态在白天要换成深蓝** ✗✗
- *   （用户截图："这里的字怎么还是亮金色的（白天模式下）" —— 指「涂抹」那一项）
+/* 选中态在白天要换成深蓝。
  *
- *   根因跟**最开始那个剧本下拉**是同一个毛病 ✗：
- *     上面那条只给夜间写了 `color: #f6dfa0`（亮金 ✓ 深底上是 9.3:1 ✓ 好看 ✓）
- *     而白天底子是**白玻璃**（`rgba(255,255,255,.6)` ✓）
- *     → 亮金压在浅底上 = **1.3:1** ✓ 基本看不见 ✓（跟当初那个 1.12:1 一模一样）
+ *   根因：上面那条只给夜间写了 color: #f6dfa0（亮金，深底上是 9.3:1），
+ *   而白天底子是白玻璃（rgba(255,255,255,.6)），
+ *   亮金压在浅底上只有 1.3:1，基本看不见。
  *
- *   ⚠ **为什么我的日间扫子没抓到它** ✗
- *     那个扫子只查"**写死深色**、却没有日间版" ✓（比如 `#101820` 底 ✗）
- *     这里是**浅色字 × 浅色底** ✓ 方向反了 ✓ 扫子的判据得两边都管 ✓
- *     （扫子已经补上了 ✓ 见 tools/check_mobile_parity.js 第 ⑥ 组 ✓）
+ *   ⚠ 静态扫描的判据未覆盖它：判据只查「写死深色、却没有日间版」，
+ *     这里是「浅色字 × 浅色底」，方向反了（判据已补上，
+ *     见 tools/check_mobile_parity.js 第 ⑥ 组）。
  *
- *   → 白天用 `#26598a` ✓ 这是全项目"选中态在浅底上"的**统一色** ✓
- *     5.35:1 ✓ 跟「颜色/边界/名字」那几个标签、跟桌面那条 `--gold` 日间版一个值 ✓
- *   ⚠ 别在这儿另调一个蓝色 ✗ 选中态全项目只有一个蓝 ✓ 换一处改一处 ✓ */
+ *   → 白天用 #26598a，这是全项目「选中态在浅底上」的统一色，
+ *     5.35:1，跟「颜色 / 边界 / 名字」那几个标签、跟桌面 --gold 日间版同一个值。
+ *   ⚠ 别在这儿另调一个蓝色，选中态全项目只有一个蓝。 */
 html[data-theme="light"] #mob-sheet .segmented button.on,
 html[data-theme="light"] .mob-pane .segmented button.on,
 html[data-theme="light"] .mob-group .segmented button.on,
@@ -1565,9 +1480,9 @@ html[data-theme="light"] .mob-tab.on {
   color: #26598a;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, .9);
 }
-/* 「借用粒度」的日间版：同一套淡蓝，别用亮金/淡白 ✓
- * ⚠ 权重必须压过上面 `html[data-theme="light"] #mob-sheet .segmented button` 那条
- *   （它带 id ✗）→ 这里也带 `#mob-sheet` ✓ */
+/* 「借用粒度」的日间版：同一套淡蓝，不用亮金 / 淡白。
+ * ⚠ 权重必须压过上面 html[data-theme="light"] #mob-sheet .segmented button 那条
+ *   （它带 id）→ 这里也带 #mob-sheet */
 html[data-theme="light"] #mob-sheet .segmented button.grain:not(.on),
 html[data-theme="light"] .mob-pane .segmented button.grain:not(.on),
 html[data-theme="light"] .mob-group .segmented button.grain:not(.on) {
@@ -1577,7 +1492,7 @@ html[data-theme="light"] .mob-group .segmented button.grain:not(.on) {
   box-shadow: inset 0 0 0 1px rgba(47, 95, 143, .40),
               inset 0 1px 0 rgba(255, 255, 255, .9);
 }
-/* 剧本下拉的面板：**浮在面板之上** ✓ 它是"面板里的浮层"✓ 底子要更实一点 ✓ */
+/* 剧本下拉的面板：浮在面板之上，它是面板里的浮层，底子要更实一点 */
 .mob-era .dd-panel {
   background: rgba(16, 22, 30, .88);
   -webkit-backdrop-filter: blur(20px) saturate(150%);
@@ -1586,9 +1501,9 @@ html[data-theme="light"] .mob-group .segmented button.grain:not(.on) {
   box-shadow: 0 10px 30px rgba(0, 0, 0, .5);
 }
 
-/* ---- ⑤ 列表 / 输入框：**不给模糊**（性能）---- */
-/* ⚠ 一行一层 GPU ✗ 手机上滑列表直接卡 ✓
- *   → 只给淡白高光 ✓ 模糊由外层面板负责 ✓ */
+/* ---- ⑤ 列表 / 输入框：不给模糊（性能）---- */
+/* 一行一层 GPU，手机上滑列表直接卡
+ *   → 只给淡白高光，模糊由外层面板负责 */
 #mob-sheet .result,
 #mob-sheet .chain-row,
 #mob-sheet .legend-row,
@@ -1597,23 +1512,23 @@ html[data-theme="light"] .mob-group .segmented button.grain:not(.on) {
   border-color: rgba(255, 255, 255, .1);
 }
 #mob-sheet .legend-list { border-radius: 10px; }
-/* 输入框：比按钮实一点（要能读清打的字 ✓）*/
+/* 输入框：比按钮实一点，要能读清打的字 */
 #mob-sheet input[type="text"],
 #mob-sheet input[type="number"],
 #mob-sheet input[type="search"],
 #mob-sheet select {
-  /* 只改颜色，别用 background 简写 —— 会把桌面版刚补的下拉箭头图清掉 ✗ */
+  /* 只改颜色，不用 background 简写 —— 会把桌面版补的下拉箭头图清掉 */
   background-color: rgba(255, 255, 255, .09);
   border-color: rgba(255, 255, 255, .16);
 }
 
 /* ---- ⑥ 弹窗：介绍窗 / 改名 / 设置底部那几条 ---- */
-/* ⚠ **这里不再写 `#mob-intro .mi-box`** ✗（2026-10-22 去掉）
- *   手机版那个窗是 `<div class="modal-box mi-box">` ✓ 两个类是**同一个元素** ✓
- *   再列一遍 `.mi-box` 纯属重复 ✓ 而且会让"白天有没有覆盖"这类静态扫描看花眼 ✓
- *     （扫子按选择器名一一比对 ✓ 看到 `.mi-box` 有深底、又找不到它的日间版 → 报红 ✓
- *       其实是 `.modal-box` 那条日间版在管着它 ✓ 误报 ✓）
- *   → 一个元素只用一个选择器表达 ✓ 别为了"看起来更明确"多列一遍 ✓ */
+/* 这里不再写 #mob-intro .mi-box：
+ *   手机版那个窗是 <div class="modal-box mi-box">，两个类是同一个元素，
+ *   再列一遍 .mi-box 纯属重复，而且会让「白天有没有覆盖」这类静态扫描看花眼
+ *   （扫描按选择器名一一比对，看到 .mi-box 有深底、又找不到它的日间版就报错，
+ *    实际由 .modal-box 那条日间版管着）。
+ *   → 一个元素只用一个选择器表达。 */
 #mob-intro .modal-box,
 #rename .modal-box,
 #save-map .modal-box,
@@ -1625,34 +1540,30 @@ html[data-theme="light"] .mob-group .segmented button.grain:not(.on) {
   backdrop-filter: blur(24px) saturate(160%);
   border: 1px solid rgba(255, 255, 255, .14);
 }
-/* 遮罩：**别做全黑** ✗ 玻璃要透，遮罩太狠就成"黑底玻璃"了 ✓ */
+/* 遮罩：不要全黑，玻璃要透，遮罩太狠就成了「黑底玻璃」*/
 #mob-backdrop { background: rgba(4, 8, 12, .34); }
 
 /* ===========================================================================
-   ⑦ **日间模式：同一套玻璃换成白玻璃**
+   ⑦ 日间模式：同一套玻璃换成白玻璃
    ---------------------------------------------------------------------------
-   ⚠ 深色玻璃是"半透明黑" ✓ 浅色下必须换"半透明白" ✗
-     直接拿深色那套 → 白底上浮一块灰板 ✓ 比不做还难看 ✓
-   ⚠ **只动底 / 边 / 影，不碰字色** ✗
-     字色那一批在文件前半段（`html[data-theme="light"]` 那几条）已经写好了 ✓
-     这里再写一遍就是两个来源 ✓ 以后改一处忘一处 ✓
+   ⚠ 深色玻璃是「半透明黑」，浅色下必须换「半透明白」：
+     直接拿深色那套会在白底上浮一块灰板，比不做还难看。
+   ⚠ 只动底 / 边 / 影，不碰字色：
+     字色那一批在文件前半段（html[data-theme="light"] 那几条）已经写好了，
+     这里再写一遍就是两个来源，以后改一处忘一处。
    =========================================================================== */
 html[data-theme="light"] #mob-topbar {
-  /* 🔴🔴 **2026-10-21 晚（第四版）：浅色顶栏 = 浅色下方栏的镜像** ✗✗
-   *   （用户："上方栏那个渐变完全可以像下方栏的渐变一样呀" —— 说得对 ✓）
+  /* 浅色顶栏 = 浅色下方栏的镜像。
    *
-   *   ⚠ 前三版我都在调 alpha ✗ 白忙 ✓ 真正的问题**不在渐变** ✓
-   *     是给容器加了 `backdrop-filter` ✓ 那层模糊只在 54px 栏内生效 ✓
-   *     栏外是清晰地图 ✓ → y=54 那儿一条"糊/清"的硬接缝 ✓
-   *     用户看到的灰泥是**模糊边界**✓（详见上面 `#mob-topbar` 深色那条的注释 ✓）
+   *   真正的问题不在渐变，而是给容器加了 backdrop-filter：
+   *   那层模糊只在 54px 栏内生效，栏外是清晰地图，y=54 那儿就有一条「糊 / 清」的硬接缝。
+   *   （详见上面 #mob-topbar 深色那条的注释）
    *
-   *   → 照下方栏镜像，**连数值都对着抄** ✓
-   *     下方栏浅色：`透明 → .55@52% → .88`（rgb 248,251,254 起、244,248,252 收）
-   *     顶  栏浅色：`.88 → .55@48% → 透明`（同一组色，把首尾对调 ✓）
-   *     这样上下一对，眼睛一看就是同一套 ✓
+   *   → 照下方栏镜像，连数值都对着抄：
+   *     下方栏浅色：透明 → .55@52% → .88（rgb 248,251,254 起、244,248,252 收）
+   *     顶  栏浅色：.88 → .55@48% → 透明（同一组色，把首尾对调）
    *
-   *   ⚠ 不再加**细线 / 投影** ✗ 下方栏没有 ✓ 顶栏也不该有 ✓
-   *     两条栏必须"同一套语言"，多一笔就露怯 ✓
+   *   ⚠ 不加细线 / 投影：下方栏没有，顶栏也不该有，两条栏必须同一套语言。
    */
   background: linear-gradient(180deg,
     rgba(244, 248, 252, .88) 0%,
@@ -1662,9 +1573,9 @@ html[data-theme="light"] #mob-topbar {
 html[data-theme="light"] #mob-topbar .mob-btn,
 html[data-theme="light"] #mob-topbar .mob-theme,
 html[data-theme="light"] #mob-topbar .mob-author {
-  /* ⚠ 按钮要**比顶栏更白** ✗ 不然渐变最上面那截已经 .88 了、
-   *   按钮再 .82 就糊在一起 ✓ 给到接近纯白 ✓ 靠"更白 + 细边"浮起来 ✓
-   *   ⚠ 按钮**保留自己的模糊** ✓（下方栏按钮也是这么干的 ✓ 一致 ✓）*/
+  /* 按钮要比顶栏更白：渐变最上面那截已经 .88，按钮再 .82 就糊在一起，
+   *   给到接近纯白，靠「更白 + 细边」浮起来。
+   *   ⚠ 按钮保留自己的模糊（下方栏按钮也是这么干的）*/
   background: rgba(255, 255, 255, .96);
   border-color: rgba(24, 36, 50, .13);
   color: #1a232e;
@@ -1675,18 +1586,17 @@ html[data-theme="light"] #mob-topbar .mob-author {
 html[data-theme="light"] #mob-dock {
   background: linear-gradient(180deg, rgba(248, 251, 254, 0), rgba(248, 251, 254, .55) 52%, rgba(244, 248, 252, .88));
 }
-/* 🔴🔴 **底部入口的底色必须够实** ✗✗（2026-10-21 用户截图："底部按钮发粉"）
+/* 底部入口的底色必须够实。
  *
- *   底栏背后有个**会变色的东西** ✗：
- *     `mobile_js.txt` 每 0.4 秒拿**当前画笔颜色**给 `#mob-dock` 铺一条渐变 ✓
- *     （"底部渐变 = 当前颜色"✓ 那是用户 2026-10 要的 ✓ 别删 ✓）
- *   所以底栏那片**永远不是中性色** ✓ 拿它当玻璃底 → 按钮跟着画笔变粉/变红/变绿 ✗
+ *   底栏背后有个会变色的东西：
+ *     mobile_js.txt 每 0.4 秒拿當前画笔颜色给 #mob-dock 铺一条渐变
+ *     （「底部渐变 = 当前颜色」）。
+ *   所以底栏那片永远不是中性色，拿它当玻璃底 → 按钮跟着画笔变粉 / 变红 / 变绿。
  *
- *   → 底栏按钮的底子要**接近不透明**（.94）✓
- *     它跟面板里那些按钮不是一回事：那些透的是地图 ✓ 这个透的是画笔色 ✗
- *   ⚠ 别为了"更玻璃"把它降到 .8 ✗ 会重现这个 bug ✓
- *     想要玻璃感可以给它**内高光 + 细边**（下面那行 box-shadow 就是）✓
- *     那不靠透明度也能做出"一片玻璃"的厚度 ✓
+ *   → 底栏按钮的底子要接近不透明（.94）。
+ *     它跟面板里那些按钮不是一回事：那些透的是地图，这个透的是画笔色。
+ *   ⚠ 别为了「更玻璃」把它降到 .8。
+ *     想要玻璃感可以给它内高光 + 细边，那不靠透明度也能做出厚度。
  */
 html[data-theme="light"] #mob-dock button {
   background: rgba(252, 253, 255, .94);
@@ -1694,12 +1604,11 @@ html[data-theme="light"] #mob-dock button {
   box-shadow: 0 6px 18px rgba(24, 36, 50, .14), inset 0 1px 0 rgba(255, 255, 255, .9);
 }
 html[data-theme="light"] #mob-dock button.on {
-  /* 🔴 **选中态也要够实** ✗✗（2026-10-21 用户截图：底栏那颗红按钮）
-   *   原来 `.2 / .1` 两档蓝 —— 淡得几乎看不见 ✗
-   *   而底栏背后是**画笔色渐变**（当前是红色）→ 透上来就成一颗**红按钮** ✓
-   *   用户说的"太突兀"就是这个 ✓
-   *   → 底子提到 .95 ✓ 跟旁边那几颗白按钮一个"厚度" ✓
-   *     选中态靠**蓝底 + 蓝边**区分 ✓ 不靠透明度 ✓ */
+  /* 选中态也要够实。
+   *   .2 / .1 两档蓝太淡，几乎看不见；
+   *   而底栏背后是画笔色渐变（当前是红色），透上来就成一颗红按钮。
+   *   → 底子提到 .95，跟旁边那几颗白按钮一个厚度，
+   *     选中态靠蓝底 + 蓝边区分，不靠透明度。 */
   background: linear-gradient(180deg, rgba(226, 237, 248, .97), rgba(212, 227, 242, .95));
   border-color: rgba(47, 95, 143, .75);
   box-shadow: 0 6px 18px rgba(24, 36, 50, .16), inset 0 1px 0 rgba(255, 255, 255, .95);
@@ -1745,36 +1654,32 @@ html[data-theme="light"] #mob-sheet input[type="text"],
 html[data-theme="light"] #mob-sheet input[type="number"],
 html[data-theme="light"] #mob-sheet input[type="search"],
 html[data-theme="light"] #mob-sheet select {
-  /* 同上：简写会清掉下拉箭头 ✓ */
+  /* 同上：简写会清掉下拉箭头 */
   background-color: rgba(255, 255, 255, .92);
   border-color: rgba(24, 36, 50, .18);
 }
 html[data-theme="light"] #mob-backdrop { background: rgba(24, 36, 50, .22); }
 
 /* ===========================================================================
-   🔴🔴 **手机版「日间模式」补完**（2026-10-21 ✓ 用户截图："这个按钮为什么没有跟随晨昏变化"）
+   手机版「日间模式」补完
    ---------------------------------------------------------------------------
-   那个按钮是「更高」的小圆钮 ✓ 已经单独修了（见上面 `.mob-tallbtn` 那节）✓
-   但问题**不止它一个** ✗ —— 我写了个小扫子（`_local/moblightaudit.js`）
-   把整个文件里"**写死了深色、却没有任何 `html[data-theme="light"]` 覆盖**"
-   的规则全列出来，一共 **15 条** ✓
+   扫描了整份文件里「写死了深色、却没有任何 html[data-theme="light"] 覆盖」
+   的规则，共 15 条，真正影响白天观感的是下面这些（滚动条那两个不影响，跳过）：
+     · .mob-btn —— 顶栏那排胶囊的基础样式（白天另有几条盖着，但兜底也得有）
+     · #mob-topbar .mob-author / .mob-theme / #mob-mid .btn —— 同一类
+     · .modal-head / #mob-intro .modal-head —— 介绍窗和改名窗的吸顶标题条
+     · .mob-group .menu-item / #export-menu button —— 「文件」面板里那排按钮
+     · #mob-now —— 左上角那个「当前工具 / 颜色」的小胶囊
+     · #app 的边框、#rename / #save-map / #mob-intro 的边框
 
-   真正影响白天观感的是下面这些（滚动条那两个不影响，跳过 ✓）：
-     · `.mob-btn` —— 顶栏那排胶囊的**基础样式**（白天另有几条盖着 ✓ 但兜底也得有）
-     · `#mob-topbar .mob-author` / `.mob-theme` / `#mob-mid .btn` —— 同一类
-     · `.modal-head` / `#mob-intro .modal-head` —— 介绍窗和改名窗的**吸顶标题条**
-     · `.mob-group .menu-item` / `#export-menu button` —— 「文件」面板里那排按钮
-     · `#mob-now` —— 左上角那个"当前工具/颜色"的小胶囊
-     · `#app` 的边框、`#rename` / `#save-map` / `#mob-intro` 的边框
-
-   ⚠⚠ **这一节统一用 `.mob-btn` 那一套的口径** ✗ 不要各写各的：
-     底 = `rgba(255,255,255,.58~.62)` ✓
-     边 = `rgba(24,36,50,.14)` ✓
-     字 = `#1a232e` ✓
-   跟前面「液态玻璃 · 手机版 ⑦」那节是同一个语言 ✓ 别再造第三套白色 ✓
+   ⚠ 这一节统一用 .mob-btn 那一套口径，不要各写各的：
+     底 = rgba(255,255,255,.58~.62)
+     边 = rgba(24,36,50,.14)
+     字 = #1a232e
+   跟前面「液态玻璃 · 手机版 ⑦」那节是同一种语言，别再造第三套白色。
    =========================================================================== */
 
-/* ---- ① 顶栏胶囊的兜底（`#mob-topbar` 那几条之外的也管）---- */
+/* ---- ① 顶栏胶囊的兜底（#mob-topbar 那几条之外的也管）---- */
 html[data-theme="light"] .mob-btn {
   background: rgba(255, 255, 255, .82);
   border-color: rgba(24, 36, 50, .16);
@@ -1793,7 +1698,7 @@ html[data-theme="light"] #mob-topbar .mob-theme {
   border-color: rgba(24, 36, 50, .16);
   color: #1a232e;
 }
-/* 撤销 / 重做那两颗小图标钮（带 !important 那条也盖）*/
+/* 撤销 / 重做那两颗小图标钮（带 !important 的那条也盖）*/
 html[data-theme="light"] .mob-icobtn {
   background: rgba(255, 255, 255, .82) !important;
   border-color: rgba(24, 36, 50, .16) !important;
@@ -1801,8 +1706,8 @@ html[data-theme="light"] .mob-icobtn {
 }
 
 /* ---- ② 弹窗的吸顶标题条 ---- */
-/* ⚠ 它白天是**一块深色板子贴在白弹窗顶上** ✓ 特别扎眼 ✓
- *   改成跟弹窗同色的半透明白 ✓ 再补一条细底边区分层次 ✓ */
+/* 它白天是一块深色板子贴在白弹窗顶上，特别扎眼。
+ *   改成跟弹窗同色的半透明白，再补一条细底边区分层次。 */
 html[data-theme="light"] .modal-head,
 html[data-theme="light"] #mob-intro .modal-head {
   background: rgba(250, 252, 254, .96);
@@ -1810,7 +1715,7 @@ html[data-theme="light"] #mob-intro .modal-head {
 }
 
 /* ---- ③ 「文件」面板里那排按钮 ---- */
-/* ⚠ 它们带 `!important` ✗ 所以这边也得带 ✓ 不然盖不住 ✓ */
+/* ⚠ 它们带 !important，这边也得带，否则盖不住 */
 html[data-theme="light"] .mob-group .menu-item,
 html[data-theme="light"] .mob-group #export-menu button,
 html[data-theme="light"] .mob-group[data-group="io"] button,
@@ -1821,9 +1726,9 @@ html[data-theme="light"] .mob-group[data-group="io"] a.btn {
   color: #1a232e !important;
 }
 
-/* ---- ④ 左上角那个"当前工具 / 颜色"小胶囊 ---- */
-/* ⚠ 它默认是**隐藏的**（见 mobile_js.txt：这一版不挂了 ✓）
- *   但样式留着 ✓ 哪天用回来得有日间版 ✓ */
+/* ---- ④ 左上角那个「当前工具 / 颜色」小胶囊 ---- */
+/* 它默认是隐藏的（见 mobile_js.txt：不挂这个小胶囊），
+ *   但样式留着，用回来时得有日间版。 */
 html[data-theme="light"] #mob-now {
   background: rgba(255, 255, 255, .86);
   border-color: rgba(24, 36, 50, .16);
@@ -1831,7 +1736,7 @@ html[data-theme="light"] #mob-now {
 }
 
 /* ---- ⑤ 手机框 / 弹窗的边框 ---- */
-/* ⚠ 宽屏调试时 `#app` 是个带圆角的手机框 ✓ 边框深色在浅底上像一道黑边 ✓ */
+/* ⚠ 宽屏调试时 #app 是个带圆角的手机框，深色边框在浅底上像一道黑边 */
 html[data-theme="light"] #app { border-color: rgba(24, 36, 50, .16); }
 html[data-theme="light"] #mob-intro .modal-box { border-color: rgba(24, 36, 50, .16) !important; }
 html[data-theme="light"] #rename .modal-box,
@@ -1843,112 +1748,100 @@ html[data-theme="light"] *::-webkit-scrollbar-thumb { background: #b7c3cf; }
 html[data-theme="light"] *::-webkit-scrollbar-thumb:hover { background: #9fb0c0; }
 html[data-theme="light"] * { scrollbar-color: #b7c3cf transparent; }
 
-/* 🔴 **宽屏调试时手机框外面那片底色**（2026-10-21 补 ✓ 同日间补完那条一起）
- *   `@media (min-width: 561px)` 里把 `body` 刷成了 `#06090c` ✓ 用来衬手机框 ✓
- *   白天模式下那片还是黑的 ✗ → 手机框像贴在一口黑井里 ✓ 很突兀 ✓
- *   ⚠ 只改**框外那圈** ✓ 手机框里由 `#app` 自己的底管着 ✓ 两件事 ✓
- *   ⚠ 必须放回同一个媒体查询里 ✗ 不然真手机上 body 也变浅 ✓ 没意义 ✓ */
+/* 宽屏调试时手机框外面那片底色：
+ *   @media (min-width: 561px) 里把 body 刷成了 #06090c，用来衬手机框，
+ *   白天模式下那片还是黑的，手机框像贴在一口黑井里。
+ *   ⚠ 只改框外那圈，手机框里由 #app 自己的底管着。
+ *   ⚠ 必须放回同一个媒体查询里，否则真手机上 body 也变浅。 */
 @media (min-width: 561px) {
   html[data-theme="light"] body { background: #dfe4ea; }
 }
 
 /* ===========================================================================
-   🔴🔴 **手机版「亮色字」的日间补完**（2026-10-21 ✓ 用户截图："这里的字怎么还是亮金色的"）
+   手机版「亮色字」的日间补完
    ---------------------------------------------------------------------------
-   上面那节扫的是"**写死深色**没日间版" ✓（底/边 ✗ 白天还是黑的 ✓）
-   可还有**反方向**的一种 ✗✗：
-     · 深色界面里，文字为了醒目写成**亮金 / 近白** ✓ 深底上对比度 9:1+ ✓
-     · 到了白天，底子换成白玻璃 ✓ 亮字压浅底 → **1.3:1** ✓ 基本看不见 ✓
-   跟最开始那个剧本下拉（1.12:1）是**一类**毛病 ✓
+   上面那节扫的是「写死深色、没有日间版」（底 / 边 × 白天还是黑的），
+   还有反方向的一种：
+     · 深色界面里，文字为了醒目写成亮金 / 近白，深底上对比度 9:1 以上
+     · 到了白天，底子换成白玻璃，亮字压浅底只有 1.3:1，基本看不见
+   跟剧本下拉那处（1.12:1）是一类毛病。
 
-   扫出来 9 条，其中真要紧的是**介绍窗整篇**（`.mi-body` 那一族）：
-     正文 `#cdd7e2` / 小标题 `#f0d98a` / 强调 `#fff` / 导语 `#e8eef6`
-     → 白天点开「介绍」会是**一整屏白字压白底** ✓ 直接读不了 ✓ 比那个金色按钮严重得多 ✓
+   扫出来 9 条，其中真要紧的是介绍窗整篇（.mi-body 那一族）：
+     正文 #cdd7e2 / 小标题 #f0d98a / 强调 #fff / 导语 #e8eef6
+     → 白天点开「介绍」会是一整屏白字压白底，直接读不了。
 
-   ⚠ 统一换成项目里"浅底上的字"那一套 ✓ 别各写各的：
-     正文 `#2b3743` / 次级 `#414e5d` / 金色强调 → `#26598a`（全项目统一那个蓝 ✓）
-   ⚠ **只动字色**，不动字号/行高/间距 ✗ 那些跟主题无关 ✓
+   ⚠ 统一换成项目里「浅底上的字」那一套，别各写各的：
+     正文 #2b3743 / 次级 #414e5d / 金色强调 → #26598a（全项目统一那个蓝）
+   ⚠ 只动字色，不动字号 / 行高 / 间距，那些跟主题无关。
    =========================================================================== */
 
-/* ---- ① 介绍窗（`.mi-body` 一整族）---- */
+/* ---- ① 介绍窗（.mi-body 一整族）---- */
 html[data-theme="light"] .mi-body { color: #2b3743; }
 html[data-theme="light"] .mi-body .mi-lead { color: #414e5d; }
 html[data-theme="light"] .mi-body h4 { color: #26598a; }
-/* ⚠ `<strong>` 原来写的是**纯白** ✗ 浅底上等于消失 ✓ 换成深底上的强调色 ✓ */
+/* ⚠ <strong> 若为纯白，浅底上等于消失，浅底改用深色强调 */
 html[data-theme="light"] .mi-body strong { color: #16202b; font-weight: 700; }
-/* 介绍窗吸顶标题：底子已经改白了 ✓ 字也得跟着深 ✓ */
+/* 介绍窗吸顶标题：底子已经改白了，字也得跟着深 */
 html[data-theme="light"] #mob-intro .modal-head h2 { color: #26598a; }
 
-/* ---- ② 左上角那个"当前工具"胶囊的选中态 ---- */
-/* ⚠ 它这一版是隐藏的（mobile_js 不挂它 ✓）但样式留着 ✓ 用回来时得有日间版 ✓ */
+/* ---- ② 左上角那个「当前工具」胶囊的选中态 ---- */
+/* ⚠ 它目前是隐藏的（mobile_js 不挂它），但样式留着，用回来时得有日间版 */
 html[data-theme="light"] #mob-now.on { color: #26598a; border-color: rgba(47, 95, 143, .6); }
 
-/* ---- ③ 金色按钮（`.mob-btn.gold`）---- */
-/* ⚠ 理论上它已经被 `html[data-theme="light"] .mob-btn` 的 `color:#1a232e` 盖掉了
- *   （specificity 0,2,1 胜过 0,2,0 ✓）✓ 但**别指望这个巧合** ✗
- *   显式写一条 ✓ 以后谁改 `.mob-btn` 那条也不会把这个连带弄坏 ✓ */
+/* ---- ③ 金色按钮（.mob-btn.gold）---- */
+/* ⚠ 理论上它已经被 html[data-theme="light"] .mob-btn 的 color:#1a232e 盖掉
+ *   （specificity 0,2,1 胜过 0,2,0），但别指望这个巧合。
+ *   显式写一条，以后谁改 .mob-btn 那条也不会把这里连带弄坏。 */
 html[data-theme="light"] .mob-btn.gold {
   color: #26598a;
   border-color: rgba(47, 95, 143, .5);
 }
 
 /* ===========================================================================
-   🔴🔴 **介绍窗 / 改名窗在白天要改成白卡**（2026-10-21 ✓ 用户截图："教程怎么在白天是这样的"）
+   介绍窗 / 改名窗在白天要改成白卡
    ---------------------------------------------------------------------------
-   用户看到的：**深色卡片 + 深色字** ✓ 比改之前更难读 ✓
+   只改字色、不改卡片底时会得到深色卡片 + 深色字，比底色不动时更难读。
+   教训：字和底是一对的，改一侧必须改另一侧。
 
-   为什么会这样 —— 是我上一轮**只改了一半** ✗✗：
-     · 上一轮我把 `.mi-body` 那一族的**字色**改深了 ✓（`#2b3743` / `#26598a` ✓）
-     · 可卡片**底**还是 `rgba(13, 19, 26, .86)`（深色 ✓）✗ 一点没动 ✓
-     → 深字压深底 ✓ 两头都暗 ✓（改之前至少字是亮的、还能看 ✓）
-   教训：**改一侧必须改另一侧** ✗ 字和底是一对的 ✓
+   ⚠ 静态扫描的判据未覆盖：那个 background 的值是
+       linear-gradient(160deg, rgba(255,255,255,.08), transparent 42%), rgba(13,19,26,.86)，
+     而 isDark() 只取第一个颜色，拿到的是白色高光，
+     于是判成「这条不是深色」，整条漏掉。isDark() 的取值应覆盖全部颜色。
 
-   ⚠⚠ **为什么扫子没抓到** —— 它自己也有 bug ✗（2026-10-21 修）
-     那个 `background` 的值是：
-       `linear-gradient(160deg, rgba(255,255,255,.08), transparent 42%), rgba(13,19,26,.86)`
-     扫子的 `isDark()` **只取第一个颜色** ✗ → 拿到的是那条**白色高光** ✓
-     → 判成"这条不是深色" ✓ 整条漏掉 ✓ 断言恒绿 ✓
-     → 现在 `isDark()` 改成**扫全部颜色**（值里出现任何深色就算 ✓）✓
-       这条正是改完扫子之后才浮出来的 ✓
-
-   ⚠ 白的深浅：**这里也按用户要求做成玻璃** ✗（2026-10-22 "加上液态玻璃效果"）
-      原来写 `.96`（几乎是实心白 ✓ 读是最好读的 ✓ 但一点玻璃感都没有 ✓）
-      → 现在 `.82` + `blur(28px)` ✓ 地图透上来是**糊过的** ✓
-        不是清晰花纹 ✓ 所以长文仍然读得下去 ✓
-      算过对比度：`.82` 的字压在海面上 ≈ 9:1 ✓ 压在陆地上更高 ✓（AA 要 4.5）
-      ⚠ 再往下就不行了：`.70` 时海面上的深字掉到 6:1 上下 ✓ 花纹开始抢字 ✓
-      ⚠ 模糊半径给到 28px（比别的面板 24px 还大）✗
-        介绍窗是**长文** ✓ 背后糊得越彻底、字越稳 ✓ 而且它比面板大、够糊不糊成一片 ✓
-    ⚠ 边框：原来 `!important` 那些 ✓ 这里只改背景 ✗ 边框另有规则管 ✓ 别重复
+   ⚠ 白的深浅：按液态玻璃的要求做成玻璃。
+      写 .96 时几乎是实心白，可读性最好，但一点玻璃感都没有；
+      此处 .82 + blur(28px)，地图透上来是糊过的，不是清晰花纹。
+      对比度：.82 的字压在海面上 ≈ 9:1，压在陆地上更高（AA 要 4.5）。
+      再往下就不行：.70 时海面上的深字掉到 6:1 上下，花纹开始抢字。
+      模糊半径给到 28px（比别的面板 24px 大）：介绍窗是长文，背后糊得越彻底字越稳。
+   ⚠ 边框那几条 !important 不动，这里只改背景。
    =========================================================================== */
 html[data-theme="light"] #mob-intro .modal-box {
   background:
-    /* ⚠ 左上那道高光是"玻璃厚度"的来源 ✓ 没有它就只是一块半透明塑料 ✓ */
+    /* ⚠ 左上那道高光是「玻璃厚度」的来源，没有它就只是一块半透明塑料 */
     linear-gradient(160deg, rgba(255, 255, 255, .92), transparent 42%),
     rgba(250, 252, 254, .82);
-  /* ⚠ **两行都要** ✗ iOS Safari 只认 `-webkit-` 那个 ✓ */
+  /* ⚠ 两行都要：iOS Safari 只认 -webkit- 那个 */
   -webkit-backdrop-filter: blur(28px) saturate(165%);
   backdrop-filter: blur(28px) saturate(165%);
-  /* 外投影 + 顶边内高光：跟别的玻璃一个语言 ✓ */
+  /* 外投影 + 顶边内高光：跟别的玻璃同一语言 */
   box-shadow:
     0 18px 48px rgba(24, 36, 50, .22),
     inset 0 1px 0 rgba(255, 255, 255, .9);
 }
-/* 🔴🔴 **介绍窗的标题条：不许有自己的底** ✗✗
- *   （2026-10-22 ✓ 用户截图："红框这里居然是纯白色的，和周围格格不入"）
+/* 介绍窗的标题条：不许有自己的底。
  *
- *   ⚠ 我上一版写的是 `.72` 的半透明白 ✓ 以为"半透明就淡了" ✗ 想错了：
- *     标题条是**卡片的子元素** ✓ 画在卡片上面 ✓
- *     卡片自己已经是 `.82` 的白 ✓ 再叠一层 `.72` 的白 →
- *     合起来 ≈ `1 - (1-.82)(1-.72)` = **.95** ✓ 几乎纯白 ✓
- *     （而卡片另一部分只叠了一层 ✓ 看着是灰玻璃 ✓ 于是两块差一大截 ✓）
+ *   标题条是卡片的子元素，画在卡片上面。
+ *   卡片自己已经是 .82 的白，再叠一层 .72 的白
+ *   合起来 ≈ 1 - (1-.82)(1-.72) = .95，几乎纯白，
+ *   而卡片另一部分只叠了一层，看着是灰玻璃，两块差一大截。
  *
- *   ⚠ 而且它**根本不需要底** ✗✗
- *     `#mob-intro .modal-head` 已经被改成 `position: static !important` ✓（第 738 行）
- *     **不吸顶** ✓ 底下不会滚过正文 ✓ 没有"必须挡住内容"的理由 ✓
- *   → 直接透明 ✓ 让它跟卡片是同一片玻璃 ✓ 只留一道极细的分隔线 ✓
+ *   ⚠ 而且它根本不需要底：
+ *     #mob-intro .modal-head 已经是 position: static !important，
+ *     不吸顶，底下不会滚过正文，没有「必须挡住内容」的理由。
+ *   → 直接透明，让它跟卡片是同一片玻璃，只留一道极细的分隔线。
  *
- *   ⚠ 深色那条（`background: #0f151c`）同理 ✓ 一起改成透明 ✓ 别只修一半 ✗
+ *   ⚠ 深色那条（background: #0f151c）同理，一起改成透明，别只修一半。
  */
 #mob-intro .modal-head {
   background: transparent;
@@ -1962,22 +1855,19 @@ html[data-theme="light"] #mob-intro .modal-head {
   backdrop-filter: none;
   border-bottom: 1px solid rgba(24, 36, 50, .08);
 }
-/* 🔴🔴 **这里原来写的是 `.mi-box { background: transparent }`——错的** ✗✗
- *   （2026-10-22 ✓ 用户截图："啥玩意" → 介绍窗整个透出地图、字压在地图花纹上）
+/* 不要在这里写 .mi-box { background: transparent }。
  *
- *   ⚠⚠ **`.mi-box` 和 `.modal-box` 是同一个元素** ✗✗
- *     手机版建窗时写的是 `<div class="modal-box mi-box">` ✓（`mobile_js.txt`）
- *     我照着电脑版的结构想象成"外层卡片 + 内层盒子" ✓ 以为是两层 ✓
- *   → 于是写了"内层透明、底交给外层" ✓
- *   → 可它们就是一个元素 ✓ 这条把**卡片自己的底刷成透明** ✓
- *     结果：整个窗透明 ✓ 底下地图全透上来 ✓ 深字压在深色海面上 ✓ 几乎读不出 ✓
+ *   ⚠ .mi-box 和 .modal-box 是同一个元素：
+ *     手机版建窗时写的是 <div class="modal-box mi-box">（mobile_js.txt）。
+ *     若按「外层卡片 + 内层盒子」写「内层透明、底交给外层」，
+ *     这条会把卡片自己的底刷成透明：整个窗透明，底下地图全透上来，
+ *     深字压在深色海面上，几乎读不出。
  *
- *   ⚠ 而且这条的**特异性跟上面那条 `.modal-box` 一样** ✓
- *     谁后写谁赢 ✓ 它排在后面 ✓ 所以让它赢了 ✓
- *   ⚠ **桌面版（`#app-intro`）才是真的两层**（`.modal-box > .mi-box` ✓）
- *     那边"内层透明"是对的 ✓ 别混着改 ✗
+ *   ⚠ 而且这条的特异性跟上面那条 .modal-box 一样，谁后写谁赢，它排在后面。
+ *   ⚠ 桌面版（#app-intro）才是真的两层（.modal-box > .mi-box），
+ *     那边「内层透明」是对的，别混着改。
  *
- *   → 手机版这里**什么都不写** ✓ 底由上面那条 `.modal-box` 管 ✓
+ *   → 手机版这里什么都不写，底由上面那条 .modal-box 管。
  */
 html[data-theme="light"] #rename .modal-box,
 html[data-theme="light"] #save-map .modal-box,
@@ -1988,13 +1878,12 @@ html[data-theme="light"] #export-map .modal-box {
   box-shadow: 0 18px 48px rgba(24, 36, 50, .2);
 }
 
-/* ============ 框选导出那三个按钮（取消 / 重选 / 确定）2026-11-02 ============
- *  用户："手机版整图导出框选时的三个按钮还是在最底下"
- *  原来 `bottom: 16px` —— 手机底下有 #mob-dock（约 66px 高）压着，
- *  三个按钮正好沉在底栏后面，点不到 ✓ 现在抬到底栏上方，并压住底栏的层级 ✓
+/* ============ 框选导出那三个按钮（取消 / 重选 / 确定） ============
+ *  bottom: 16px 时手机底下有 #mob-dock（约 66px 高）压着，
+ *  三个按钮正好沉在底栏后面，点不到；此处抬到底栏上方，并压住底栏的层级。
  */
 /* 层级：框选这一层要压在手机面板（#mob-sheet z=61）和它那层遮罩上面，
-   否则点按钮命中的是遮罩 ✗（实测 elementFromPoint 返回 #mob-backdrop）*/
+   否则点按钮命中的是遮罩（实测 elementFromPoint 返回 #mob-backdrop）*/
 .export-pick-layer { z-index: 80 !important; }
 .export-pick-bar {
   bottom: calc(92px + env(safe-area-inset-bottom, 0px)) !important;
@@ -2002,47 +1891,46 @@ html[data-theme="light"] #export-map .modal-box {
 }
 .export-pick-bar .btn { height: 36px !important; padding: 0 16px !important; font-size: 12.5px !important; }
 
-/* 手机颜色页里的色标 ✓ 一行八个 26px（跟桌面同款）*/
+/* 手机颜色页里的色标：一行八个 26px（跟桌面同款）*/
 .mob-brw { display: block; }
-/* 一行一套 → 每行自己是 grid（不再是 display:contents），这样行可以懒渲染 ✓
- * （216 个色块一次性全画、滚动时每个都带 inset 阴影 → 掉帧 ✓）*/
+/* 一行一套 → 每行自己是 grid（不再是 display:contents），这样行可以懒渲染
+ * （216 个色块一次性全画、滚动时每个都带 inset 阴影 → 掉帧）*/
 .mob-brw .brw-row {
   display: grid; grid-template-columns: repeat(8, 1fr); gap: 6px;
   margin-bottom: 6px;
   content-visibility: auto; contain-intrinsic-size: auto 40px;
 }
 .mob-brw i { width: auto; height: auto; aspect-ratio: 1 / 1; border-radius: 6px; cursor: pointer;
-  /* 滚动性能：色块上不挂阴影/过渡 ✗（一屏几十个、滚动时每帧都要重绘）*/
+  /* 滚动性能：色块上不挂阴影 / 过渡（一屏几十个，滚动时每帧都要重绘）*/
   box-shadow: none; transition: none; }
 .mob-brw i:active { opacity: .8; }
 
 /* ================================================================ 日间模式：补给
- *  🔴 2026-11-03 用户："手机版…不少 UI 组件都没有切换白昼或黑夜"
- *  —— 下面全是只写了暗色、浅底上会糊 / 会脏 / 会变成黑块的几处 ✓
- *  只改颜色，尺寸 / 布局 / 字号一律没动 ✓ */
+ *  下面几处若只写暗色，浅底上会糊 / 会脏 / 会变成黑块。
+ *  只改颜色，尺寸 / 布局 / 字号一律没动。 */
 
-/* 面板指向按钮的小尖角：外层是面板边框色、内层是面板底色 ✓
-   暗色写死了 #2b3743 / #0d131a，浅色不换就是浅面板下面挂一颗黑三角 ✗ */
+/* 面板指向按钮的小尖角：外层是面板边框色、内层是面板底色。
+   暗色写死了 #2b3743 / #0d131a，浅色不换就是浅面板下面挂一颗黑三角 */
 html[data-theme="light"] #mob-sheet::after { border-top-color: #bcc8d4; }
 html[data-theme="light"] #mob-sheet::before { border-top-color: #eef3f8; }
 html[data-theme="light"] #mob-sheet.below::after { border-bottom-color: #bcc8d4; }
 html[data-theme="light"] #mob-sheet.below::before { border-bottom-color: #eef3f8; }
 
-/* 设置里的标签栏底线 / 作者栏虚线：暗色那两条 #1d2833、#26313d 在浅底上太重 ✓ */
+/* 设置里的标签栏底线 / 作者栏虚线：暗色那两条 #1d2833、#26313d 在浅底上太重 */
 html[data-theme="light"] .mob-tabs { border-bottom-color: rgba(24, 36, 50, .16); }
 html[data-theme="light"] .mob-author-row { border-top-color: rgba(24, 36, 50, .18); }
 
-/* 分段按钮里的小图标：暗色 #7d8b9c 提到浅底上太淡 ✓ */
+/* 分段按钮里的小图标：暗色 #7d8b9c 放到浅底上太淡 */
 html[data-theme="light"] .mob-group .segmented button i,
 html[data-theme="light"] .mob-pane .segmented button i { color: #5b6877; }
 
-/* 「当前颜色」小方块：白边 + 内黑圈，浅底上像糊了一圈脏边 ✓ */
+/* 「当前颜色」小方块：白边 + 内黑圈，浅底上像糊了一圈脏边 */
 html[data-theme="light"] #mob-now .mn-sw {
   border-color: rgba(24, 36, 50, .45);
   box-shadow: 0 0 0 1px rgba(24, 36, 50, .28) inset;
 }
 
-/* 手机颜色页的色标：白内描边在浅底上等于没有 ✓ */
+/* 手机颜色页的色标：白内描边在浅底上等于没有 */
 html[data-theme="light"] .mob-brw i {
   box-shadow: inset 0 0 0 1px rgba(24, 36, 50, .16);
 }

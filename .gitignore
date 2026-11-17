@@ -108,6 +108,24 @@ tmp_*.json
 tmp_*.log
 
 
+# ── 内部方案 / 调研 / 邮件转录：私下判断与聊天原话，不进仓库 ──
+docs/地图合并方案.md
+docs/重构方案-边界统一渲染.md
+docs/Mapchart地图清单.md
+docs/公共地理数据源清单.md
+邮件截图文字转录.md
+
+# ── 内部工具与测试版产物（beta 打包脚本 / 模组报表 / 限时测试版）──
+tools/build_beta.py
+tools/beta_snippet.html
+tools/scheme_report.py
+pdx-map-editor-mobile-beta.html
+
+# ── 私有实验与本机产物（安卓壳、Rust 试验、报表输出）──
+apk/
+rust-exp/
+out/
+
 # ── 内部工作文档 / 本机部署脚本：只留在本地，不进仓库 ──
 docs/体检报告-*.md
 docs/文案审计-*.md

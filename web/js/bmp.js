@@ -1,12 +1,12 @@
 /**
  * 24 位 BMP 编码。
  *
- * 只有 EU4 那条导出路径用得上 —— EU4 的省份颜色不在任何文本文件里，
- * 它就是 ``map/provinces.bmp`` 本身（颜色 = 省份身份，跟 definition.csv 对齐），
- * 所以要给玩家一个"按我涂的颜色重写一遍省份图"的出口。
+ * 仅 EU4 导出路径使用：EU4 的省份颜色不存于文本文件，而由 ``map/provinces.bmp``
+ * 本身表达（颜色即省份身份，与 definition.csv 对齐），因此需要按当前涂色
+ * 重写一份省份图。
  *
- * EU4 那张原图是 5632×2048、24 位、**自下而上**存放，这里出来的格式跟它一致，
- * 可以直接覆盖进 mod。
+ * EU4 原图为 5632×2048、24 位、自下而上存放，本模块输出格式与之相同，
+ * 可直接覆盖进 mod。
  */
 
 /**
@@ -29,7 +29,7 @@ export function encodeBMP24(rgb, w, h) {
   dv.setUint32(10, 54, true);          // 像素数据偏移
   dv.setUint32(14, 40, true);          // BITMAPINFOHEADER
   dv.setInt32(18, w, true);
-  dv.setInt32(22, h, true);            // 正数 = 自下而上，跟 EU4 原图一样
+  dv.setInt32(22, h, true);            // 正数 = 自下而上，与 EU4 原图一致
   dv.setUint16(26, 1, true);           // planes
   dv.setUint16(28, 24, true);          // 位深
   dv.setUint32(30, 0, true);           // 不压缩

@@ -4,64 +4,62 @@
  *
  * 三层间接查表，全程在 GPU 上：
  *
- *   屏幕像素 → uProv(省份 id 纹理) → uTitleMap[(省份, 层级)] → 头衔序号
+ *   屏幕像素 → uProv（省份 id 纹理）→ uTitleMap[(省份, 层级)] → 头衔序号
  *            → uColorLut(头衔序号) → 实际颜色
  *
- * 这么绕的好处是：改一个头衔的颜色只要往 LUT 里写一个像素，
- * 不用碰那张 9216×4608 的大纹理，涂色是即时的。
+ * 改一个头衔的颜色只需往 LUT 写一个像素，不必改那张 9216×4608 的大纹理，
+ * 所以涂色是即时的。
  *
  * 两个正交的显示开关：
  *   uShowTitles —— 画不画头衔色
- *   uShowPaint  —— 画不画玩家手绘层
- *   头衔关 + 手绘开 = 只有自己涂过的东西，别的领地留空。
+ *   uShowPaint  —— 画不画手绘层
+ *   头衔关、手绘开 = 只显示涂过的区域，其余领地留空。
  *
- * 注意 uColorLut 里放的是**这一刻该显示的头衔色**，不是"头衔被改成了什么色"：
- * 玩家涂过的头衔，LUT 那份颜色只在 uShowPaint 开着时才换成涂色，
- * 关掉就换回游戏原色 —— 不然"藏掉填色"根本藏不掉（改过的色还顶在 LUT 里）。
- * 谁写进 LUT 由 app.js 的 lutColorOf() 说了算。
+ * uColorLut 存的是当前该显示的头衔色，不是"头衔被改成了什么色"：
+ * 涂过的头衔只有在 uShowPaint 开着时才用涂色，关掉就回到游戏原色，
+ * 否则"藏掉填色"无法生效：LUT 里仍是改写后的颜色。
+ * 写 LUT 的规则由 app.js 的 lutColorOf() 决定。
  *
- * 还有两件不受开关管的事：
+ * 两件不受开关管的事：
  *   * 海、湖、河、不可通行区（伪头衔）始终显示 —— 它们不是领地，
- *     没有"上不上色"这回事，抹掉只会让地图看着像破了个洞；
- *   * 玩家手绘盖在头衔色上面 —— 玩家涂的是"地图上这块地方"，
- *     不管当前在看哪个层级，涂过的地方都保持那个色。
+ *     没有"上不上色"一说，抹掉只会让地图出现空洞；
+ *   * 手绘层盖在头衔色之上 —— 涂的是地图上的位置，与当前层级无关。
  */
 
-/*: **画布的像素总数上限**（自动降 dpr 用 ✓）。
-
- * 边界是逐像素算的，一帧开销 ∝ 画布像素数 ✗ 所以给总像素封顶：
- * 超了就把 dpr 降下来（`resize()` 里那句 ✓），画面略糊、但省下的是十几倍时间 ✓
+/**
+ * 画布像素总数上限（自动降 dpr 用）。
  *
- * 2.6e6 这个数的来源：手机（390×844、dpr 2）就是 260 万左右 ✓ ——
- * 也就是"拿手机上那个流畅的量级"当标准 ✓
- * 普通 1080p 屏（1920×1080×1 ≈ 200 万）在限额内，**一点不受影响** ✓
- * 会被降的是 4K 屏、以及 Windows 缩放 125%/150% 那种高 dpr 场合 ✓
+ * 边界逐像素计算，一帧开销与画布像素数成正比，因此给总像素封顶：
+ * 超限就降低 dpr（见 resize()），画面略糊，但省下十几倍时间。
+ *
+ * 2.6e6 的取值依据：手机（390×844、dpr 2）约 260 万像素，
+ * 即以手机上流畅的量级为标准。
+ * 1080p 屏（1920×1080×1 ≈ 200 万）在限额内，不受影响。
+ * 会被降的是 4K 屏，以及 Windows 缩放 125%/150% 的高 dpr 场合。
  */
 const MAX_CANVAS_PX = 2.6e6;
 
-// ---- 渲染器初始化失败的分类 / 现场收集（**必须排在 FRAG 之前** ✓
-//    ⚠ 测试把片元着色器那一段到 compile 函数之间当**着色器源码**扫保留字 ✗
-//      这段里只要出现 class / this 就会被误报成"着色器里用了保留字" ✓
-//      （2026-10-17 第一次就这么红的 ✓）
-//    ⚠ 注释里也**不许**写出那两个标记字面量 ✗ —— 测试用 indexOf 找它们，
-//      注释里先出现一次就会把"着色器源码"截成一段注释（这次真踩了 ✓）
+// ---- 渲染器初始化失败的分类 / 现场收集（必须排在 FRAG 之前）
+//    测试把从片元着色器开头到 compile 之间的内容当作着色器源码扫描保留字：
+//    该区间内出现 class / this 会被误报成"着色器里用了保留字"。
+//    测试还用 indexOf 定位两个标记字面量，注释里出现同样的字面量会把
+//    "着色器源码"截成一段注释，因此在该区间内不要写出这两个词。
 /**
- * **渲染器初始化失败** —— 错误里必须带"死在哪一步" ✓（2026-10-17 加）
+ * 渲染器初始化失败。错误信息必须说明失败发生在哪一步。
  *
- *  以前 `_build()` 里任何一处失败都只剩一句 `着色器编译失败` ✗ ——
- *  可"上下文在创建时就被浏览器收走"跟"着色器真的写错了"完全是两回事：
- *    · 前者是**显卡/显存/驱动/后台切换**，换台机器或刷新就好了；
- *    · 后者是**代码 bug**，刷新一百次也一样。
- *  管理员那边看到的"着色器连接失败"就是被这一句话带偏的 ✓
+ * 上下文在创建时被浏览器收走与着色器写错是两回事：
+ *   · 前者是显卡 / 显存 / 驱动 / 后台切换问题，换机器或刷新即可；
+ *   · 后者是代码 bug，刷新多少次都一样。
+ * 二者混为一谈会把排查方向带偏。
  *
- *  stage 取值（app.js 的 `describeRendererFailure` 按它分人话）：
- *    `no-webgl2`      —— 浏览器/显卡没给出 WebGL2 上下文
- *    `context-lost`   —— 上下文创建后丢了 / 编译或链接时丢了
- *    `out-of-memory`  —— 显存 / 内存不够
- *    `shader-compile` —— 顶点 / 片元着色器真的编译不过
- *    `shader-link`    —— 两个着色器链接失败
- *    `texture-limit`  —— 设备贴图上限小到放不下任何切片
- *    `renderer`       —— 上面之外（建纹理 / VAO 之类）
+ * stage 取值（app.js 的 describeRendererFailure 据此生成说明）：
+ *   no-webgl2      —— 浏览器 / 显卡没给出 WebGL2 上下文
+ *   context-lost   —— 上下文创建后丢失，或编译 / 链接期间丢失
+ *   out-of-memory  —— 显存 / 内存不足
+ *   shader-compile —— 顶点 / 片元着色器编译失败
+ *   shader-link    —— 两个着色器链接失败
+ *   texture-limit  —— 设备贴图上限小到放不下任何切片
+ *   renderer       —— 以上之外（建纹理 / VAO 等）
  */
 export class RendererSetupError extends Error {
   constructor(stage, message, detail) {
@@ -73,15 +71,15 @@ export class RendererSetupError extends Error {
 }
 
 /**
- * 这台机器是不是在用**软件渲染**（SwiftShader / llvmpipe / 微软基本显示适配器）✓
+ * 判断这台机器是否在用软件渲染（SwiftShader / llvmpipe / 微软基本显示适配器）。
  *
- *  判据只用品味得出的两条，任意一条成立就算 ✓：
- *    ① `WEBGL_debug_renderer_info` 的 unmasked 名字里带软件光栅器的特征；
- *    ② **拿不到 unmasked 名字**，但 RENDERER 就是 `WebKit WebGL`
- *       （真显卡的 Chrome/Edge 在 Windows 上一般给得出 unmasked ✓；
- *        拿不到 + 原生渲染器名 = 大概率为软件路径 ✓）
+ * 两条判据，任意一条成立即算：
+ *   ① WEBGL_debug_renderer_info 的 unmasked 名字含软件光栅器特征；
+ *   ② 拿不到 unmasked 名字，但 RENDERER 是 WebKit WebGL
+ *      （真显卡的 Chrome/Edge 在 Windows 上通常给得出 unmasked 名字；
+ *       拿不到且原生名如此，大概率为软件路径）。
  *
- *  ⚠ 宁可**少判**也别误伤 ✗ —— 把正常显卡认成软件渲染，会让用户白关一堆东西 ✓
+ * 宁可漏判，也不要把正常显卡误判成软件渲染 —— 误判会让排查方向偏离。
  */
 function detectSoftwareGL(gl) {
   try {
@@ -93,19 +91,19 @@ function detectSoftwareGL(gl) {
     const base = String((gl.getParameter && gl.getParameter(gl.RENDERER)) || '');
     const s = (name + ' ' + base).toLowerCase();
     if (/swiftshader|llvmpipe|software|basic render|microsoft basic/.test(s)) return true;
-    // 没有 unmasked 名字、且原生名就是 WebKit WebGL → 多半是软件路径 ✓
+    // 没有 unmasked 名字、且原生名就是 WebKit WebGL → 多半是软件路径
     if (!name && /webkit webgl/.test(base.toLowerCase())) return true;
     return false;
   } catch (e) { return false; }
 }
 
 /**
- * 地址栏上的 `?shader=border` 之类的调试开关 ✓（2026-11-01 加，量性能用的）
+ * 地址栏的 ?shader=border 之类调试开关（量性能用）。
  *
- *   为什么要它 ✗：软件渲染下**链接完整着色器要 39 秒**（SwiftShader 现场编译），
- *   想量"退一档到底省多少"就得能直接指定档位 ✓
- *   玩家不用管它；支持时让人加一句 `?shader=border` 就能先跑起来 ✓
- *   ⚠ 认不出来的值一律当"没指定" ✗，绝不因此改变默认行为 ✓
+ * 软件渲染下链接完整着色器需要 39 秒（SwiftShader 现场编译），
+ * 要衡量"退一档省多少"必须能直接指定档位。
+ * 普通使用不需要它；支持时加 ?shader=border 即可先跑起来。
+ * 认不出的值一律当作"未指定"，不改变默认行为。
  */
 function _shaderTierFromUrl() {
   try {
@@ -115,7 +113,9 @@ function _shaderTierFromUrl() {
   } catch (e) { return ''; }
 }
 
-/** 把 GL 的"现场"收集成一组普通字段 ✓（导出日志 / 错误屏都要用） */
+/**
+ * 把 GL 的现场收集成一组普通字段（导出日志 / 错误屏都要用）。
+ */
 function _glFacts(gl) {
   const out = { contextLost: false, glError: 0 };
   if (!gl) return out;
@@ -130,9 +130,8 @@ function _glFacts(gl) {
       out.unmaskedRenderer = String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) || '');
       out.unmaskedVendor = String(gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL) || '');
     }
-    /* ⚠ 软件渲染标记也要进报告 ✗ —— 它决定了错误屏给哪一套建议 ✓
-     *   （2026-10-18：用户那台就是软件渲染，报告里却只有一句 "WebKit WebGL"，
-     *     光看报告分不出是"显卡弱"还是"根本没用显卡" ✓）*/
+    /* 软件渲染标记也要进报告：它决定错误屏给出哪一套建议。
+     * 报告里只有 "WebKit WebGL" 时，无法区分"显卡弱"和"根本没用到显卡"。 */
     out.softwareGL = detectSoftwareGL(gl);
   } catch (e) {
     out.factsError = String((e && e.message) || e);
@@ -140,21 +139,21 @@ function _glFacts(gl) {
   return out;
 }
 
-/** 抛一个带 stage 的初始化错误 ✓（detail 里自动带上 GL 现场） */
+/** 抛一个带 stage 的初始化错误（detail 自动带上 GL 现场）。 */
 function _setupFail(stage, message, gl, extra) {
   throw new RendererSetupError(stage, message, Object.assign(_glFacts(gl), extra || {}));
 }
 
-/** 建 WebGL2 上下文 —— **多试几组属性** ✓（2026-10-17 加）
+/** 建 WebGL2 上下文 —— 依次尝试多组属性。
  *
- *  为什么不能一次定生死 ✗：
- *    · 双显卡 / 集显机器上 `powerPreference: 'high-performance'` 偶尔直接返回 null；
- *    · 浏览器把"硬件加速被关"报成创建失败，但换一组属性（或稍后再试）能拿到软件上下文；
- *    · `webglcontextcreationerror` 的 `statusMessage` 是**唯一**能说明原因的文字，
- *      以前没接，玩家只能看到一句"不支持 WebGL2"。
+ * 不能只试一次：
+ *   · 双显卡 / 集显机器上 powerPreference: 'high-performance' 偶尔直接返回 null；
+ *   · 浏览器把"硬件加速被关"报成创建失败，但换一组属性（或稍后再试）能拿到软件上下文；
+ *   · webglcontextcreationerror 的 statusMessage 是唯一能说明原因的文字，
+ *     不接它就只剩一句"不支持 WebGL2"。
  *
- *  ⚠ 这里只负责"拿到一个 gl 对象"，**不判断它是不是已经丢了** ✗ ——
- *    调用方在拿到之后立刻要 `isContextLost()` 判一次 ✓
+ * 这里只负责拿到 gl 对象，不判断它是否已经丢失；
+ * 调用方取得后应立即用 isContextLost() 判断一次。
  */
 const _GL_ATTRS = {
   alpha: false,
@@ -178,10 +177,8 @@ function _createGL(canvas) {
     Object.assign({}, _GL_ATTRS, { powerPreference: 'high-performance' }),
     Object.assign({}, _GL_ATTRS, { powerPreference: 'default' }),
     Object.assign({}, _GL_ATTRS),
-    /* 最后再试一次**完全默认**的属性 ✓（2026-10-27 用户报 vivo 浏览器
-     *   "Failed to create a WebGL2 context"）—— 有些国产浏览器对
-     *   `alpha:false` / `premultipliedAlpha:false` 这类组合会直接拒绝，
-     *   默认属性反而给得出上下文 ✓ 能画总比报错强 ✓ */
+    /* 最后尝试完全默认的属性：有些浏览器对 alpha:false /
+     * premultipliedAlpha:false 这类组合会直接拒绝，默认属性反而能拿到上下文。 */
     {},
   ];
   let gl = null;
@@ -211,75 +208,64 @@ void main() {
   gl_Position = vec4(clip.x, -clip.y, 0.0, 1.0);
 }`;
 
-/* 🔴🔴 **2026-10-19：整数纹理整条退役** ✗✗
+/* 整数纹理全部停用。
  *
- *  HOI4 那份报告 + 图形体检把根因钉死了（Adreno 616 · Chrome 132）：
- *     · 「整数纹理采样: 读回 0，应该是 156」    → R16UI + texelFetch 在这台机器上**永远给 0**
- *     · 「分块数组纹理: 读回 0 / 0 / 0」        → R16UI 的数组纹理更是一层都采不出来
- *  于是整张图的每个像素都拿到省份 id = 0 → 一帧全是"0 号地块"的颜色，
- *  而 0 号在 LUT 里是白的 → **地图纯白 255,255,255**，地名（2D canvas）却好好的 ✓
- *  （报告里写的是老的 WEBGL2_UNAVAILABLE，那是 content:// 那条路的事 ✗ 两码事）
+ * HOI4 的报告与图形体检定位到根因（Adreno 616 · Chrome 132）：
+ *    · 「整数纹理采样: 读回 0，应该是 156」    → R16UI + texelFetch 恒为 0
+ *    · 「分块数组纹理: 读回 0 / 0 / 0」        → R16UI 数组纹理一层都采不出
+ * 于是每个像素的省份 id 都是 0 → 全图按 0 号地块上色 → 纯白 255,255,255，
+ * 而地名走 2D canvas，不受影响。
+ * （报告里的 WEBGL2_UNAVAILABLE 属于 content:// 那条路径，与此无关。）
  *
- *  → 16 位值改成 **RG8 归一化**（低字节 R、高字节 G ✓ 正好还是 2 字节/像素，
- *    显存一分不多 ✗）；8 位值改成 **R8 归一化**（跟 uBorderDepth 同一套 ✓）。
- *    归一化纹理是所有驱动的最快路径，不碰整型采样这条雷 ✓
- *  代价：着色器里多一句解码（两次乘、一次移位 ✓ 可以忽略）
- *  收益：**再没有任何整数采样器** ✗ 这一类驱动 bug 整个消失 ✓
+ * 16 位值改用 RG8 归一化（低字节 R、高字节 G），仍是 2 字节/像素，
+ * 显存不增加；8 位值改用 R8 归一化（与 uBorderDepth 同一套）。
+ * 归一化纹理是所有驱动的最快路径，避开整型采样。
+ * 代价：着色器里多一次解码（两次乘、一次移位，可忽略）。
+ * 收益：不再有任何整数采样器，这一类驱动 bug 整体消失。
  */
 const FRAG = `#version 300 es
 precision highp float;
 precision highp int;
-/* 🔴🔴 **采样器的精度必须单独声明** ✗✗（2026-10-19 用户实测踩到 ✓）
+/* 采样器的精度必须单独声明。
  *
- *  GLSL ES 3.00 里 **sampler 类型没有默认精度** —— 不写就在**部分驱动上编译不过**：
+ * GLSL ES 3.00 中 sampler 类型没有默认精度，不声明会在部分驱动上编译失败：
  *      ERROR: 0:9:   'sampler2DArray' : No precision specified
  *      ERROR: 0:178: 'sampler2DArray' : No precision specified
- *  （用户那台 AMD Radeon 610M · ANGLE D3D11 ✓ ANGLE 会较真，桌面原生 GL 常常糊过去 ✓
- *    所以本地怎么试都好的，一到 ANGLE 就白屏 ✓ —— 2026-10-19 真机上逮到的 ✓）
+ * （AMD Radeon 610M · ANGLE D3D11；ANGLE 校严格，桌面原生 GL 常常放过，
+ *   因此本地怎么试都正常，一到 ANGLE 就白屏。）
  *
- *  ⚠ v1.9 里这两行是「precision highp usampler2D;」「precision highp usampler2DArray;」✓
- *    我退役整数纹理时**把 usampler 那两行删了、却没补归一化的** ✗
- *    → 采样器一下子全变成「没精度」✓ 全平台的隐患 ✓
- *  ⚠ sampler2DArray 和 sampler2D 是**两个独立类型**，各声明一次 ✓
- *    （写了 sampler2D 不会顺带管住 sampler2DArray ✓ 就是这么坑 ✓）*/
+ * 整数纹理退役时，usampler 的两行精度声明被删除，却未补归一化版本的声明，
+ * 会使采样器全部失去精度声明，构成全平台隐患。
+ * sampler2DArray 与 sampler2D 是两个独立类型，各需声明一次。
+ */
 precision highp sampler2D;
 precision highp sampler2DArray;
 
 uniform sampler2D uProv;          // RG8    province id（低字节 R · 高字节 G）
-// **分块路径**（原尺寸 16384×8192 用）：每层一块 ✓
-// uUseTiles == 0 时下面的 provAt() 就退化成读 uProv，
-// 跟加这套东西之前**完全等价** ✓ —— 所以半尺寸那套一点不受影响。
+// 分块路径（原尺寸 16384×8192 用）：每层一块
+// uUseTiles == 0 时下面的 provAt() 退化为读 uProv，
+// 与不分块时完全等价，半尺寸那套一点不受影响。
 uniform sampler2DArray uProvArr;  // RG8    每层一块
 uniform ivec2 uProvTiles;         // (tileW, tileH)
 uniform int   uProvCols;          // 每行几块
 uniform int   uUseTiles;          // 0 = 用 uProv（老路）, 1 = 用 uProvArr（分块）
-/* **降采样倍数**（2026-10-19 ✓ 只有"数组纹理都采不出来"的设备才 >1）
- *   那种机器连分块贴图都没了 → 只能把 id 图缩着传（一块 2D 贴图装得下 ✓）
- *   画面上的省界会粗一点，但**地图能显示、能涂、能悬停** ✓（总比纯白强 ✗）
- *   ⚠ 取整除法即可（最近邻 ✓ 反正同一个小块里的几格本来就是同一个省 ✓）*/
+/* 降采样倍数（只有"数组纹理都采不出"的设备才 >1）
+ *   这类机器无法使用分块贴图，只能把 id 图缩小上传（一块 2D 贴图即可容纳）
+ *   画面上的省界会粗一些，但地图仍可显示、涂色和悬停
+ *   取整除法即可（最近邻，缩图后的省界会粗一格）*/
 uniform int   uProvScale;
-uniform sampler2D uTitleMap;    // RG8    (省份, 层级) → 头衔序号（**拍平成一维**存）
+uniform sampler2D uTitleMap;    // RG8    (省份, 层级) → 头衔序号（拍平成一维存）
 uniform sampler2D  uColorLut;   // RGBA8  头衔序号 -> 颜色
 uniform sampler2D  uPaint;      // RGBA8  province -> 手绘色（alpha=0 表示没涂）
-/* **距离场**：RGBA8 ✓ 每通道一条主线（R 填色 · G 水岸线 · B 荒地边 · A 本层 ✓）
- *   值 = "格心到最近那条缝的距离 − 0.5"（单位是**格** ✗ 所以采样后要 ×255 ✓）
- *   ⚠ **必须 LINEAR 采样** ✗ —— 缝两侧的格都存 0，靠插值在缝的位置过零才拿得到亚格精度 ✓
- *     用 NEAREST 就退化成"一格一格"的阶梯了 ✓（我拿布尔掩码试过一轮，就是栽在这 ✓）*/
-/* **边掩码**：R16UI ✓ 每格 16 bit —— 每条线 4 位（1 左 · 2 右 · 4 上 · 8 下 ✓）
- *   线0 填色（bit0~3）· 线1 水（4~7）· 线2 荒地（8~11）· 线3 本层（12~15）✓
- *   用户点破的：边界就是"把一部分格子的**边框**点亮"✓ 所以缝就是**格子的边** ✓
- *   → 亚格精度天然有（用的是片元在格内的小数 f ✓）**不需要插值、也不需要距离场** ✓ */
-/* **距离场**：RGBA8 ✓ 每格 4 个字节 = 四路"到最近那条缝有多远"（单位：格 ✓）
- *   R 填色 · G 水 · B 荒地 · A 头衔（本层 + 多级链共用 ✓ 它俩只差线宽 ✓）
- *   加载时算一次（app.js 的 buildBorderDepth ✓）· 用来**粗筛**每帧要不要细算 ✓
- *   实测 EU4：需要承担边界的只有 8.6% ✗ 其余 91.4% 在这儿一次采样就返回了 ✓
- *   ⚠ **不参与画线** ✗ 只当守门员 —— 算不准最多多跑几趟射线 ✓ 线的样子不会变 ✓ */
-/* ⚠ **归一化 sampler2D，不是 usampler2D** ✗ —— 上传用的是 gl.R8（归一化 ✓）
- *   归一化 R8 是各家的**最快上传路径** ✓ 而整数纹理（R8UI）会走格式转换的慢路 ✓
- *   代价：texelFetch 出来是 **0~1 的 float** ✗ 所以取位前要 ×255 还原 ✓
- *   🔴 **这两处必须同时改** ✗ 只改一处就是白屏：
- *     纹理用 R8、声明却写 usampler2D → texelFetch 给 uint → uint x float 编不过 ✓
- *     报错长这样：'*' : no operation exists that takes 'highp uint' and 'const float' ✓（踩过 ✓）*/
+/* 边界粗筛位图：归一化 R8，每个字节存 8 个格子的 1 bit
+ *   1 = 该格靠近省界，值得跑射线；0 = 该格不可能画到线
+ *   与当前层、涂色无关，换层 / 涂色都不需要重算
+ *   未接入该图时 _nearSeam 恒真 → 完全退回逐像素射线，不会画错
+ *   采样用 texelFetch；归一化取样后需 ×255 还原
+ *   纹理格式与着色器声明必须一致：纹理用 R8、声明写 usampler2D 会因
+ *     uint 与 float 混算而编译失败，报错形如
+ *     '*' : no operation exists that takes 'highp uint' and 'const float'
+ */
 uniform sampler2D  uBorderDepth;
 uniform int        uBorderDepthOn;
 uniform sampler2D  uPaintLabel; // RG8    province -> 标记编号（0 = 没涂）
@@ -288,138 +274,137 @@ uniform int   uTitleMapW;       // 归属表纹理的宽度
 uniform int   uNumProvinces;    // 省份总数（拍平索引要用）
 uniform int   uPaintW;          // 手绘层纹理的宽度（同样是拍平的）
 uniform int   uTier;           // 颜色取哪一层
-uniform int   uEditTier;       // **边界和悬停**看哪一层
-uniform int   uFineTier;       // **最细层**（荒地逐块节点住在这一层）
+uniform int   uEditTier;       // 边界和悬停看哪一层
+uniform int   uFineTier;       // 最细层（荒地逐块节点住在这一层）
 uniform int   uShowTitles;
 uniform int   uShowPaint;
 uniform float uMix;
 uniform int   uBorderTitle;     // 画不画头衔之间的分界线
 uniform int   uBorderPaint;     // 画不画手绘色块的分界线
-uniform int   uPaintOnly;       // 1 = **当前没停在年份视图**（CK3 那种没有年份层的也算）
+uniform int   uPaintOnly;       // 1 = 当前没停在年份视图（CK3 那种没有年份层的也算）
                                 //     JS 那边 = !(有年份层 && 视图停在年份层)
                                 //     用途：没开年份视图时，未上色的地块之间不互相划界
 uniform vec3  uUnpainted;       // 「未上色区域」的颜色
-uniform float uBorderW;         // 分界线线宽，单位是**设备像素**
+uniform float uBorderW;         // 分界线线宽，单位是设备像素
 uniform int   uExtraCount;      // 链上还有几级（0~4）
 uniform int   uExtraTier[4];    // 每一级看哪一层
 uniform float uExtraW[4];       // 每一级的线宽（越往上越粗）
 uniform int   uExtraShow[4];    // 每一级那个开关开没开
 uniform float uExtraA[4];       // 每一级的浓度（本层之上：父级可半透明）
 uniform float uBorderA;         // 分界线浓度
-uniform float uPaintBorderW;    // **填色边界**自己的宽度（默认取上两层 ✓）
-                                // 注意别跟上面的 uPaintW（手绘纹理宽度 ✗）撞名
-uniform float uPaintBorderA;    // 填色边界的浓度（实心 ✓）
+uniform float uPaintBorderW;    // 填色边界的宽度（默认取上两层）
+                                // 注意别与上面的 uPaintW（手绘纹理宽度）重名
+uniform float uPaintBorderA;    // 填色边界的浓度（实心）
 
 uniform float uMapPerPx;        // 一个设备像素等于多少个地图像素
 uniform int   uNoAA;            // 1 = 关掉抗锯齿（整图导出用：每个像素取精确颜色）
 uniform int   uLutW;
 uniform int   uRealTitles;      // 序号 >= 它的都是海/湖/河/山这类伪头衔
-uniform uint  uHoverTid;        // != NONE 时按**当前层那个头衔**整片亮（新包：一片一个 tid ✓）
+uniform uint  uHoverTid;        // != NONE 时按当前层那个头衔整片亮（新包：一片一个 tid）
 uniform int   uHoverPaintOn;    // 1 = 高亮按涂色认族（只有剧本粒度 + 填色·边界时）
 uniform vec3  uHoverPaint;      // 要高亮的那一族的涂色
 uniform int   uHoverPid;        // >0 = 只高亮这一个地块（老包那种共享伪节点退回这一条）
-/* **「同一片海」的编组号** —— 2026-10-13 起这是**老包的退路** ✓
- *   每层一片之后（#sea_<层>_<序号> 那种 ✓）同一片 = 同一个 tid ✓ 直接比 uHoverTid 就行 ✓
- *   但**每层一片之前打的包**里全世界的海共用一个 #sea（tid 相同 ✗）：
- *     按 tid 亮 = 全世界的海一起亮 ✗ 按 pid 又只能亮一格 ✗
- *   → 那批包仍由 CPU 侧按**当前编辑层那张水域名表**编号：同名 = 同一组 ✓
- *     （见 gl.js 的 rebuildHoverGroups / app.js 的悬停那一段 ✓）
- *   ⚠ 组号是**每 pid 一个**（EU5 最细层有 3635 组 ✗ 8 位装不下 ✓ 所以走 R16UI ✓）
- *   ⚠ uHoverGroupId == 0 = 没编组（新包 ✓）→ 走 uHoverTid / uHoverPid 那两条 ✓
- *   ⚠ 编组**优先于**下面两条 ✗（新包传的就是 0，所以不会打架 ✓）*/
+/* 「同一片海」的编组号 —— 老包的退路
+ *   每层一片的包里，同一片 = 同一个 tid，直接比较 uHoverTid 即可
+ *   但每层一片之前打的包里，全世界的海共用一个 #sea（tid 相同）：
+ *     按 tid 亮会让全世界的海一起亮，按 pid 又只能亮一格
+ *   → 那批包由 CPU 侧按当前编辑层那张水域名表编号：同名 = 同一组
+ *     （见 gl.js 的 rebuildHoverGroups / app.js 的悬停逻辑）
+ *   组号每个 pid 一个（EU5 最细层有 3635 组，超过 8 位，按 16 位传入）
+ *   uHoverGroupId == 0 表示未编组（新包），走 uHoverTid / uHoverPid 两条
+ *   编组优先于后两条（新包传的就是 0，不会冲突）
+ */
 uniform sampler2D  uHoverGroup; // RG8    province -> 组号（1..N 海 · N+1.. 荒地 · 0 = 不属于任何一片）
-uniform int   uHoverGroupW;     // 那张表的宽度（跟手绘层同一套**拍平**写法 ✓）
-uniform uint  uHoverGroupId;    // != 0 = 亮**这一组**（同一片海的所有地块 ✓ 不是全世界的海 ✗）
-uniform uint  uHoverLabel;      // 要高亮的那一族的**标记编号**（0 = 没涂）✓ 同色不同标记 = 两块 ✗
+uniform int   uHoverGroupW;     // 那张表的宽度（与手绘层同一套拍平写法）
+uniform uint  uHoverGroupId;    // != 0 = 亮这一组（同一片海的所有地块，不是全世界的海）
+uniform uint  uHoverLabel;      // 要高亮那一族的标记编号（0 = 没涂），同色不同标记 = 两块
 uniform vec3  uBackdrop;
-/* 🔴🔴 **底层身份标**（meta.kindMask 传成一张"每 pid 一格"的表 ✓ 2026-10-15 ✓）
- *   0 = 空位（0 号不用 ✓）/ 1 陆地 / 2 海洋 / 3 湖泊 / 4 河流 /
- *   5 不可通行海域 / 6 不可通行区域 ✓
- *   用途：**每一格按它最底层那个 pid 的身份上色** ✗ —
- *     归属、当前层有没有片，**都不参与** ✓（用户原话见下面 colorOfPid 那段 ✓）
- *   ⚠ uKindOn == 0（老包没这枚标 ✓）→ 整条让开，行为一丝不变 ✓ */
+/* 底层身份标（meta.kindMask 传成一张每 pid 一格的表）
+ *   0 = 空位（0 号不用）/ 1 陆地 / 2 海洋 / 3 湖泊 / 4 河流 /
+ *   5 不可通行海域 / 6 不可通行区域
+ *   用途：每一格按它最底层那个 pid 的身份上色 ——
+ *     归属、当前层有没有片，都不参与
+ *   uKindOn == 0（老包没有这枚标）→ 整条让开，行为不变
+ */
 uniform sampler2D uKindTex;     // R8     0..6（归一化，取样后 ×255 还原）
 uniform int   uKindOn;
-uniform int   uKindW;           // 拍平宽度（跟 hoverGroup 同一套写法 ✓）
-uniform vec3  uNature[5];       // 2..6 → 海 / 湖 / 河 / 不可通行海域 / 不可通行 ✓
+uniform int   uKindW;           // 拍平宽度（与 hoverGroup 同一套写法）
+uniform vec3  uNature[5];       // 2..6 → 海 / 湖 / 河 / 不可通行海域 / 不可通行
 
-/* **「水域 · 边界」那条线**（2026-10-16 ✓ 用户定的口径 ✓）
- *   只管**水域之间**（海洋 / 湖泊 / 河流 / 不可通行海域 ✓ 身份码 2..5 ✓）的缝 ✗
- *   海岸线（水 ↔ 陆）照旧归**本层头衔线**那条通道 ✓ 不归它 ✓
- *   于是同一条缝**只有一个出处** ✗（"两条通道不许同处画一遍"那个坑的正面写法 ✓
- *     旧通道那边由本层线 / 填色 / 多级链让开 ✓ 见 main 里那趟射线 ✓）
- *   ⚠ 它是**独立一条通道**：地区 / 势力 / 填色三个开关**都不管它** ✓
- *     （用户原话："水域边界开关负责且仅负责水域之间的边界的显示或隐藏"✓
- *      所以"边界全关"也不影响它 ✓ —— 只认自己那个勾 ✓）
- *   ⚠ 走**编辑层**（uEditTier ✓）：跟本层头衔线同一层 ✓ 换层就换粒度 ✓
- *     跟别的边界一条规矩 ✓（见 handover 2026-10-16 §3.4 第 5 步 ✓）*/
+/* 「水域 · 边界」那条线
+ *   只负责水域之间（海洋 / 湖泊 / 河流 / 不可通行海域，身份码 2..5）的缝
+ *   海岸线（水 ↔ 陆）仍归本层头衔线，不归它
+ *   同一条缝只有一个出处：旧通道（本层线 / 填色 / 多级链）在这一条上让开
+ *     （见 main 里的射线）
+ *   独立通道：地区 / 势力 / 填色三个开关都不管它，
+ *     因此"边界全关"也不影响它，只认自己的开关
+ *   走编辑层（uEditTier），与本层头衔线同一层，换层即换粒度
+ */
 uniform int   uWaterBorderOn;
-uniform float uWaterBorderW;    // 粗细（格数，跟其它边界同一个单位 ✓）
-uniform float uWaterBorderA;    // 浓度（0~1 ✓）
-uniform sampler2D uWaterKind;   // R8    每 pid 一格：0 = 不是水 / 2..5 = 那四类 ✓
-uniform int   uWaterKindW;      // 拍平宽度（跟 kindTex 同一套 ✓）
+uniform float uWaterBorderW;    // 粗细（格数，与其它边界同一个单位）
+uniform float uWaterBorderA;    // 浓度（0~1）
+uniform sampler2D uWaterKind;   // R8    每 pid 一格：0 = 不是水 / 2..5 = 那四类
+uniform int   uWaterKindW;      // 拍平宽度（与 kindTex 同一套）
 
-/* **国旗（剪贴蒙版）那一路**（2026-11-02 ✓ 用户要的「国旗地图」）
+/* 国旗（剪贴蒙版）
  *
- *   思路：**每个省份记一个"旗号"**（0 = 没旗 ✓），渲染时按旗号去图集里取色 ✓
- *   → 旗子天然被国土形状裁掉（不在这个旗号里的省根本不会走到这张表 ✓）
- *   → 头衔线 / 国名照旧压在上面 ✓ 因为它们画在颜色之后 ✓
+ *   每个省份记录一个旗号（0 = 没旗），渲染时按旗号取旗面颜色
+ *   → 旗子被国土形状裁掉（不在这个旗号里的省不会走到这张表）
+ *   → 头衔线 / 国名照旧压在上面，因为它们画在颜色之后
  *
- *   ⚠ 旗子按「色块」分组，不是按头衔 ✗ —— 一个色块能跨好几个头衔
- *     （涂色层 A 色 A 名 ✓ 见 app.js 的 rebuildPaintBlocks）→ 只能按 pid 记 ✓
+ *   旗子按色块分组，不按头衔 —— 一个色块能跨好几个头衔
+ *     （涂色层 A 色 A 名，见 app.js 的 rebuildPaintBlocks）→ 只能按 pid 记录
  */
 uniform sampler2D uFlagIdx;     // R8      pid → 旗号（0 = 没旗，1.. = 第几面）
-uniform int   uFlagIdxW;        // 拍平宽度（跟 kindTex 同一套 ✓）
+uniform int   uFlagIdxW;        // 拍平宽度（与 kindTex 同一套）
 uniform sampler2D uFlagSlots;   // RGBA32F 每面旗两格：矩形(x0,y0,x1,y1) / 图集uv(u0,v0,u1,v1)
 uniform int   uFlagSlotW;
-uniform sampler2DArray uFlagTex; // **一层一面旗**的数组纹理（2026-11-02 改成不封顶 ✓）
-                                  //   以前是 2048² 里 16 个格子 → 贴到第 17 面就没地方了 ✗
-                                  //   现在每面旗自己一层，层数按需长 ✓
-uniform int   uFlagOn;          // 0 = 整条让开（没贴任何旗时开销为零 ✓）
+uniform sampler2DArray uFlagTex; // 一层一面旗的数组纹理（层数按需增长）
+                                  //   每面旗各占一层，不再受图集格数限制
+uniform int   uFlagOn;          // 0 = 整条让开（没贴任何旗时开销为零）
 
-/* **「荒地 · 边界」那条线**（2026-10-17 ✓ 用户点名要的 ✓）
- *   原话："给荒地加上边界开关，这个负责的是**荒地与荒地之间**的边界，
- *          你之前做了水域-水域的边界，这个应该轻车熟路了吧"✓
- *   → 跟上面水域那条**同构**：只管"荒地 ↔ 荒地"的缝 ✗
- *     荒地挨着陆地 / 水的那一圈（外缘）**不归它** ✓ 照旧归本层头衔线 ✓
- *   ⚠ **它没有自己的纹理** ✗ —— 荒地读的是 「uKindTex」（身份标原样 ✓ 6 = 不可通行 ✓）
- *     那张本来就是每 pid 一格的 usampler2D ✓ 而且**一直绑着** ✓
- *     （对比：水域那条读 「uWaterKind」，因为"认不认得出是水"要算过一遍 ✓
- *       荒地不用算：kindMask 里 6 就是 6 ✓）
- *   ⚠ 独立一条通道：地区 / 势力 / 填色三个开关**都不管它** ✓
- *     跟水域那条一个规矩 —— "边界全关"也不影响它 ✓ 只认自己那个勾 ✓
- *   ⚠ 走**编辑层**（uEditTier ✓）跟别的边界同一层 ✓ */
+/* 「荒地 · 边界」那条线
+ *   与水域那条同构：只管"荒地 ↔ 荒地"的缝
+ *   荒地挨着陆地 / 水的外缘不归它，仍归本层头衔线
+ *   没有自己的纹理 —— 读的是 uKindTex（身份标原样，6 = 不可通行）
+ *     那张本来就是每 pid 一格的 usampler2D，而且一直绑着
+ *     （水域那条读 uWaterKind，因为"认不认得出是水"需要另算一遍；
+ *       荒地不用算：kindMask 里 6 就是 6）
+ *   独立通道：地区 / 势力 / 填色三个开关都不管它，
+ *     "边界全关"也不影响它，只认自己的开关
+ *   走编辑层（uEditTier），与别的边界同一层
+ */
 uniform int   uWasteBorderOn;
-uniform float uWasteBorderW;    // 粗细（格数 ✓）
-uniform float uWasteBorderA;    // 浓度（0~1 ✓）
+uniform float uWasteBorderW;    // 粗细（格数）
+uniform float uWasteBorderA;    // 浓度（0~1）
 
 in vec2 vMap;
 out vec4 outColor;
 
 const uint NONE = 65535u;
 
-// 地图矩形之外：什么都不画，只铺一层底色。
-// 不挡的话，视口一旦越界，采样会被 CLAMP_TO_EDGE 沿边缘拉成一条条横向色带。
+// 地图矩形之外：只铺一层底色。
+// 否则视口越界时，采样会被 CLAMP_TO_EDGE 沿边缘拉成横向色带。
 const vec3 OUTSIDE = vec3(0.035, 0.043, 0.052);
 
-/* ============ **归一化解码：16 位值读回来是两个通道** ============
+/* ============ 归一化解码：16 位值读回来是两个通道 ============
  *
- *  🔴 **为什么不再用整数纹理** ✗✗（2026-10-19，HOI4 那份报告 + 图形体检定的）
+ *  不再使用整数纹理（HOI4 报告 + 图形体检定位）
  *
  *     Adreno 616 + Chrome 132 上实测：
  *       「整数纹理采样: 读回 0，应该是 156」        ← R16UI + texelFetch 恒给 0
- *       「分块数组纹理: 读回 0 / 0 / 0」            ← R16UI 的数组纹理更是一层都采不出来
- *     于是每个像素拿到的省份 id 都是 0 → 整张图按 0 号地块上色 → **纯白 255,255,255**，
- *     而地名走 2D canvas，一点不受影响 ✓（用户看到的正是这个）
+ *       「分块数组纹理: 读回 0 / 0 / 0」            ← R16UI 数组纹理一层都采不出
+ *     于是每个像素的省份 id 都是 0 → 整张图按 0 号地块上色 → 纯白 255,255,255，
+ *     而地名走 2D canvas，不受影响。
  *
- *     这是**驱动/ANGLE 翻译层**的毛病，不是我们写错了 ✗ 换写法绕开才是正解：
- *     16 位值拆成 **R = 低字节 · G = 高字节**，用归一化 RG8 传（还是 2 字节/像素 ✓
- *     显存一分不多 ✗），着色器里 r×255 + g×255×256 还原 ✓
- *     8 位值用归一化 R8（跟 uBorderDepth 同一套 ✓ 各家最快路径）
+ *     这是驱动 / ANGLE 翻译层的问题，换写法绕开：16 位值拆成
+ *     R = 低字节 · G = 高字节，用归一化 RG8 传（仍是 2 字节/像素，
+ *     显存不增加），着色器里 r×255 + g×255×256 还原；
+ *     8 位值用归一化 R8（与 uBorderDepth 同一套，各家最快路径）。
  *
- *  ⚠ 采样一律 **NEAREST + texelFetch** ✗ —— 这些格子是枚举值，插值出来的小数毫无意义 ✓
- *  ⚠ 取整用 **加 0.5 再取整**（不是直接 int()）✗ —— 归一化反算有 ~1e-5 的误差，
- *    int() 是**朝零截断**，168/255*255 稍有偏小就变成 167 ✓ 整张图会慢慢错位 ✓
+ *  采样一律 NEAREST + texelFetch —— 这些格子是枚举值，插值无意义。
+ *  取整用加 0.5 再取整（不是直接 int()）：归一化反算有 ~1e-5 误差，
+ *    int() 朝零截断，168/255*255 稍有偏小就变成 167，整张图会逐渐错位。
  */
 
 /** R8 归一化取样 → 0..255 的整数 */
@@ -435,7 +420,7 @@ uint u16At(sampler2D t, ivec2 xy) {
   return lo + hi * 256u;
 }
 
-/** 数组纹理同理（分块路径 ✓） */
+/** 数组纹理同理（分块路径） */
 uint u16AtArr(sampler2DArray t, ivec3 xy) {
   vec4 c = texelFetch(t, xy, 0);
   uint lo = uint(c.r * 255.0 + 0.5);
@@ -445,7 +430,7 @@ uint u16AtArr(sampler2DArray t, ivec3 xy) {
 
 /** (省份, 层级) → 头衔序号。
  *
- *  归属表是**拍平成一维**存的（索引 = 层级 × 省份数 + 省份），不是二维的：
+ *  归属表拍平成一维存（索引 = 层级 × 省份数 + 省份），不是二维的：
  *  维多利亚3 有 4 万多个省份，拿「省份数 × 层级数」当纹理宽度会超掉显卡的
  *  MAX_TEXTURE_SIZE（常见是 16384），二维存根本传不上去。
  */
@@ -454,7 +439,7 @@ uint titleAt(uint pid, int tier) {
   return u16At(uTitleMap, ivec2(idx % uTitleMapW, idx / uTitleMapW));
 }
 
-/** 手绘层也是**拍平**存的（索引 = 省份，宽度压在 uPaintW 以内） */
+/** 手绘层也是拍平存的（索引 = 省份，宽度压在 uPaintW 以内） */
 vec4 paintOf(uint pid) {
   int i = int(pid);
   return texelFetch(uPaint, ivec2(i % uPaintW, i / uPaintW), 0);
@@ -465,27 +450,28 @@ uint paintLabelOf(uint pid) {
   return u16At(uPaintLabel, ivec2(i % uPaintW, i / uPaintW));
 }
 
-/** 这个地块属于哪一片海 / 荒地（0 = 不属于任何一片 ✓）
+/** 这个地块属于哪一片海 / 荒地（0 = 不属于任何一片）
  *
- *  跟 paintLabelOf 同一套**拍平**索引（宽度另给一个 uniform ✗ 万一以后两者不一样 ✓）
- *  ⚠ 这些表一律 texelFetch ✗ 不能拿 sampler 的插值去采它 ✓ */
+ *  与 paintLabelOf 同一套拍平索引（宽度另给一个 uniform，两者可能不同）
+ *  这些表一律 texelFetch，不能用 sampler 的插值采样
+ */
 uint hoverGroupAt(uint pid) {
   int i = int(pid);
   return u16At(uHoverGroup, ivec2(i % uHoverGroupW, i / uHoverGroupW));
 }
 
-/** 这个地块**最底层那个 pid 的身份** ✓（1 陆地 / 2 海 / 3 湖 / 4 河 / 5 不可通行海域 / 6 不可通行）
+/** 这个地块最底层那个 pid 的身份（1 陆地 / 2 海 / 3 湖 / 4 河 / 5 不可通行海域 / 6 不可通行）
  *
- *  ⚠ uKindOn == 0（老包没有 kindMask ✓）→ 一律返回 1（陆地）✓
- *     调用方那条覆盖就会让开 ✓ 画面跟以前一模一样 ✓
- *  ⚠ 归一化 R8 + texelFetch ✗（跟 hoverGroupAt 同一条规矩 ✓ 不能靠采样器插值 ✓） */
+ *  uKindOn == 0（老包没有 kindMask）→ 一律返回 1（陆地），调用方的覆盖逻辑让开
+ *  归一化 R8 + texelFetch（与 hoverGroupAt 同一规矩，不能靠采样器插值）
+ */
 int kindOf(uint pid) {
   if (uKindOn == 0) return 1;
   int i = int(pid);
   return u8At(uKindTex, ivec2(i % uKindW, i / uKindW));
 }
 
-/** 身份 → 类色 ✓（七行调色板里那五行：2..6 ✓ 由 JS 侧 applySettings() 灌进来 ✓） */
+/** 身份 → 类色（调色板里 2..6 那五行，由 JS 侧 applySettings() 传入） */
 vec3 natureColor(int k) {
   return uNature[clamp(k - 2, 0, 4)];
 }
@@ -494,33 +480,31 @@ vec3 natureColor(int k) {
 vec4 colorOfPid(uint pid) {
   uint tid = titleAt(pid, uTier);
   vec4 lc = texelFetch(uColorLut, ivec2(int(tid) % uLutW, int(tid) / uLutW), 0);
-  // 手绘在最上层：涂过的地直接返回它的颜色，浓度（uMix 只作用在头衔色上）
-  // 与它无关 —— 不管这一层此刻是伪头衔还是没有归属。
+  // 手绘在最上层：涂过的地直接返回它的颜色；uMix 只作用在头衔色上
+  // 与它无关 —— 不论这一层此刻是伪头衔还是没有归属。
   if (uShowPaint == 1) {
     vec4 pc = paintOf(pid);
     if (pc.a > 0.5) return vec4(pc.rgb, 1.0);
   }
 
-  /* 🔴🔴 **荒地：读最细层那个 wl_ 节点的 LUT** ✗✗（2026-10-17 重做 ✓）
+  /* 荒地：读最细层那个 wl_ 节点的 LUT
    *
-   *   荒地自动上色算出来的颜色写在**每块荒地自己的最细节点**上（wl_<pid> ✓）——
-   *   粗层那个荒地块是**同名几块共用**的（#impassable_c_3 那种 ✗），颜色会互相踩 ✗
-   *   → 这里按 uFineTier 查，**跟当前视图 / 粒度无关** ✓
+   *   荒地自动上色算出的颜色写在每块荒地自己的最细节点上（wl_<pid>）——
+   *   粗层的荒地块是同名几块共用的（#impassable_c_3 之类），颜色会互相覆盖
+   *   → 按 uFineTier 查，与当前视图 / 粒度无关
    *
-   *   ⚠ **必须排在 kind >= 2 那道类色判断之前** ✗✗（2026-10-17 实跑修的 ✓）
-   *     CK3 的荒地底层身份是 **kind = 6**（不可通行山地 ✓）→ 先判 kind 的话
-   *     会直接返回「不可通行区域」那个灰，自动色永远露不出来 ✓
-   *     （用户报的"取色/悬停都说上色成功，画面还是荒地色"正是这个 ✓）
+   *   必须排在 kind >= 2 的类色判断之前：
+   *     CK3 的荒地底层身份是 kind = 6（不可通行山地），先判 kind 会直接
+   *     返回"不可通行区域"的灰色，自动色永远露不出来。
    *
-   *   ⚠ 怎么知道"这一格是荒地" ✗：JS 侧 setWasteFixed() 把标记打在
-   *     **LUT 的 alpha 通道**上（荒地 = 255，其余 = 0 ✓ 那个通道别处没人用 ✓）
-   *     → 一次取样就够，不用多传一张纹理 ✓
-   *   ⚠ 也必须在 tid == NONE 那道早退**之前**查 ✗ ——
-   *     剧本层荒地本来就没有归属（titleAt 给 NONE ✓）
-   *   ⚠ 手绘层在上面已经先返回了 ✓（玩家直接涂的荒地仍然以涂色为准 ✓）
-   *   ⚠ 水不会误命中 ✓：水的 LUT alpha 是 0，查完会继续往下走 kind 那条 ✓
-   *   ⚠ 关掉「荒地自动上色」时 JS 会把这份 LUT 写回「不可通行区域」那个色 ✓
-   *     着色器这边**不用再判开关** ✓ */
+   *   判断"这一格是荒地"：JS 侧 setWasteFixed() 把标记打在 LUT 的 alpha 通道
+   *     （荒地 = 255，其余 = 0，该通道别处不用）→ 一次取样即可，不用多传纹理
+   *   也必须在 tid == NONE 的早退之前查 —— 剧本层荒地本来就没有归属
+   *   手绘层在上面已经先返回（直接涂的荒地仍以涂色为准）
+   *   水不会误命中：水的 LUT alpha 是 0，查完继续走 kind 那条
+   *   关掉「荒地自动上色」时 JS 会把这份 LUT 写回"不可通行区域"的色，
+   *     着色器这边不用再判开关
+   */
   {
     uint _fw = titleAt(pid, uFineTier);
     if (_fw != NONE) {
@@ -529,46 +513,45 @@ vec4 colorOfPid(uint pid) {
     }
   }
 
-  /* 🔴🔴 **按底层身份上色** ✗✗（2026-10-15 ✓ 用户要求 ✓）
-   *   用户原话："解决一下 EU5 的海洋不上色的问题……上不上色看的是**具体的最底层单位
-   *     属于什么东西**" ✓
-   *   → 这一格的底层 pid 只要是水 / 不可通行那几类（kind ≥ 2 ✓），**直接给类色** ✓：
-   *     跟它在哪一层、有没有片、有没有归属**都无关** ✓✓
-   *     （EU5 的脚本层海域本来是"无主 → 未上色灰"✗ 正是用户在报的那件事 ✓）
-   *   ⚠ **顺序**：手绘那层在上面 ✓（涂过的地上面已经原样返回 ✓
-   *     玩家涂色 / 涂出来的色块一个字节都不受影响 ✓）
-   *   ⚠ 荒地（alpha 标记）已经在上一步返回了 ✓ 这里只剩真正的水 / 老荒地 ✓
-   *   ⚠ kind == 1（陆地）**一律往下走老路** ✗：
-   *     无片（无主）→ uBackdrop / uUnpainted ✓、有片 → LUT 头衔色 + 浓度 ✓
-   *     脚本层有主地、地理层陆地头衔、国名色、边界全都不许受影响 ✓
-   *   ⚠ 老包（uKindOn == 0 → kindOf 恒为 1）→ 这一段永不命中 ✓ 行为不变 ✓ */
+  /* 按底层身份上色
+   *   这一格的底层 pid 只要是水 / 不可通行那几类（kind >= 2），直接给类色：
+   *     与它在哪一层、有没有片、有没有归属都无关
+   *     （EU5 的脚本层海域本来无主 → 未上色灰，正是要解决的问题）
+   *   顺序：手绘层在上面（涂过的地已经返回，涂色不受影响）
+   *   荒地（alpha 标记）已经在上一步返回，这里只剩真正的水 / 老荒地
+   *   kind == 1（陆地）一律往下走原逻辑：
+   *     无片（无主）→ uBackdrop / uUnpainted；有片 → LUT 头衔色 + 浓度
+   *     脚本层有主地、地理层陆地头衔、国名色、边界都不受影响
+   *   老包（uKindOn == 0 → kindOf 恒为 1）→ 这一段永不命中，行为不变
+   */
   int _kind = kindOf(pid);
   if (_kind >= 2) return vec4(natureColor(_kind), 1.0);
 
-  /* **没有归属的地块**（NONE）—— 两种情形给两种色 ✓（2026-10-13 用户定的 ✓）：
-   *   · **没开剧本**（uPaintOnly == 1，见它声明处）→ 显示**背景色** ✓
-   *     这时候整张图就是"还没上色的底"，跟背景一气呵成 ✓
-   *   · **开着剧本** → 显示设置里那项「未上色区域」✓
-   *     它跟背景色是**两项**（用户要求拆开 ✓）—— 默认背景 220、未上色 150 ✓
-   *   ⚠ 不是透明 ✗：透明露出来的是深色底，跟海、跟空地都分不清 ✓
-   *   （以前这里写死 150 灰、两种情况一个样 ✓）*/
+  /* 没有归属的地块（NONE）—— 两种情形给两种色：
+   *   · 没开剧本（uPaintOnly == 1，见它声明处）→ 显示背景色
+   *     整张图就是"还没上色的底"，与背景一致
+   *   · 开着剧本 → 显示设置里的「未上色区域」
+   *     它与背景色是两项（分开配置）—— 默认背景 220、未上色 150
+   *   不是透明：透明露出来的是深色底，与海、空地都分不清
+   */
   if (tid == NONE) {
     return vec4(uPaintOnly == 1 ? uBackdrop : uUnpainted, 1.0);
   }
   int t = int(tid);
-  vec4 c = lc;                      // 上面已经取过这张 LUT 了，别取第二遍
+  vec4 c = lc;                      // 上面已经取过这张 LUT 了，不取第二遍
 
-  // 头衔色在这里就按「浓度」淡掉 —— 手绘在上面那一步已经返回了，不受浓度影响。
-  // （早先浓度是在最外面统一 mix 的，于是连手绘一起淡掉。）
+  // 头衔色在这里按「浓度」淡掉 —— 手绘在上面那一步已经返回，不受浓度影响。
+  // 浓度不能在最外面统一 mix，否则手绘会一起被淡掉。
   return vec4(mix(uBackdrop, c.rgb, uMix), uShowTitles == 1 || t >= uRealTitles ? 1.0 : 0.0);
 }
 
 /** 地图像素 → 省份 id：老路一张整图，新路按块取（两者结果一致）
  *
- *  ⚠ 两条路都是**归一化纹理 + texelFetch + 手写解码** ✗（见上面 u16At 那段说明 ✓）
- *  ⚠ uProvScale > 1 时（只有"数组纹理都采不出来"的机器才 >1 ✓）：
- *     id 图是**缩着传**的，所以坐标要先除回去 ✓ 取整除法 = 最近邻 ✓
- *     省界会粗一点，但地图至少**能看、能涂、能悬停** ✓（总比纯白强 ✗）*/
+ *  两条路都是归一化纹理 + texelFetch + 手写解码（见 u16At 那段说明）
+ *  uProvScale > 1 时（只有"数组纹理都采不出"的机器才 >1）：
+ *     id 图是缩小上传的，坐标要先除回去；取整除法 = 最近邻
+ *     省界会粗一点，但地图仍可显示、涂色、悬停
+ */
 uint provAt(ivec2 ip) {
   if (uProvScale > 1) ip = ip / uProvScale;
   if (uUseTiles == 0) return u16At(uProv, ip);
@@ -577,27 +560,28 @@ uint provAt(ivec2 ip) {
   return u16AtArr(uProvArr, ivec3(l, t.y * uProvCols + t.x));
 }
 
-/** 这一格如果是国旗地盘，取旗面颜色 ✓（不是 → alpha = 0）
+/** 这一格如果是国旗地盘，取旗面颜色（不是 → alpha = 0）
  *
- *  ⚠ 必须在 colorOfPid **之后**定义（它要用 provAt / colorOfPid）✗
- *  ⚠ 矩形用**地图像素**写，不做归一化 —— 归一化在 16384 的图上精度不够 ✓ */
+ *  必须在 colorOfPid 之后定义（它要用 provAt / colorOfPid）
+ *  矩形用地图像素写，不做归一化 —— 归一化在 16384 的图上精度不够
+ */
 vec4 flagAt(uint pid, vec2 pos) {
   int i = int(pid);
   float fv = texelFetch(uFlagIdx, ivec2(i % uFlagIdxW, i / uFlagIdxW), 0).r;
   int f = int(fv * 255.0 + 0.5);
   if (f <= 0) return vec4(0.0);
-  /* 每面旗**三格**：矩形 / uv / 层号 ✓（以前是两格：矩形 + uv，图集里按格子算 ✓）*/
+  /* 每面旗占三格：矩形 / uv / 层号 */
   int b = (f - 1) * 3;
   vec4 rc = texelFetch(uFlagSlots, ivec2(b % uFlagSlotW, b / uFlagSlotW), 0);
   vec4 uv = texelFetch(uFlagSlots, ivec2((b + 1) % uFlagSlotW, (b + 1) / uFlagSlotW), 0);
   float lay = texelFetch(uFlagSlots, ivec2((b + 2) % uFlagSlotW, (b + 2) / uFlagSlotW), 0).r;
   vec2 sz = rc.zw - rc.xy;
   if (sz.x <= 0.5 || sz.y <= 0.5) return vec4(0.0);
-  /* 🔴 **uv 必须用连续坐标 pos**，不是格心（ip + 0.5）✗✗（2026-11-02 用户：
-   *   "国旗的分辨率被地图局限住了，我希望的是看到的国旗就是清晰的"）
-   *   用格心 → 每个地图像素里旗面是**一块纯色** ✓ 放大以后就是马赛克 ✓
-   *   用连续坐标 → 一个地图像素内部旗面照样渐变 ✓ 屏幕分辨率有多高、旗就有多细 ✓
-   *   （遮罩仍然按地图像素算 ✓ 旗子还是被国土形状裁掉 ✓）*/
+  /* uv 必须用连续坐标 pos，不能用格心（ip + 0.5）
+   *   用格心 → 每个地图像素里旗面是一块纯色，放大后呈马赛克
+   *   用连续坐标 → 一个地图像素内部旗面仍渐变，屏幕分辨率越高旗越细
+   *   （遮罩仍按地图像素算，旗子仍被国土形状裁掉）
+   */
   vec2 t = (pos - rc.xy) / sz;
   if (t.x < 0.0 || t.y < 0.0 || t.x > 1.0 || t.y > 1.0) return vec4(0.0);
   return vec4(texture(uFlagTex, vec3(mix(uv.xy, uv.zw, t), lay)).rgb, 1.0);
@@ -607,9 +591,10 @@ vec4 colorAt(ivec2 ip, vec2 pos) {
   ip = clamp(ip, ivec2(0), uMapSize - 1);
   uint pid = provAt(ip);
   vec4 c = colorOfPid(pid);
-  /* 国旗**盖住颜色**（用户 2026-11-02 定的：旗面完全盖住 ✓）——
-   * 但只盖填色，不盖边界线和名字 ✓ 那些在这之后画 ✓
-   * ⚠ pos 是**连续**坐标 ✗（不是格心 ✓）—— 旗面的清晰度全靠它 ✓ */
+  /* 国旗盖住颜色（旗面完全盖住）——
+   * 但只盖填色，不盖边界线和名字，那些在这之后画
+   * pos 是连续坐标（不是格心），旗面清晰度全靠它
+   */
   if (uFlagOn == 1) {
     vec4 f = flagAt(pid, pos);
     if (f.a > 0.5) c = f;
@@ -635,19 +620,18 @@ uint paintLabelAt(ivec2 ip) {
   return paintLabelOf(pidAt(ip));
 }
 
-/** 这个地块**是不是水**、是哪一类水 ✓（0 = 不是水 ✓ 2 海 / 3 湖 / 4 河 / 5 不可通行海域 ✓）
+/** 这个地块是不是水、是哪一类水（0 = 不是水；2 海 / 3 湖 / 4 河 / 5 不可通行海域）
  *
- *  ⚠ **算不出水陆的包**（没有 kindMask、也没有 #sea_ 那几把键 ✓ 老包 ✓）
+ *  算不出水陆的包（没有 kindMask、也没有 #sea_ 那几把键，老包）：
  *     那张表全 0、app 侧给的 waterBorderOn 也是 false → 一律返回 0
- *     → 水域那条通道整条退化成现状 ✓ 一个字节都不动 ✓
- *     （v0.30 的 GLSL ES 3.0：uniform 在**非一致控制流**里照样能读 ✗
- *       所以这个提前返回是纯优化 ✓ 不是必须的 ✓）
- *  ⚠ 整数纹理一律 texelFetch ✗（跟 kindOf / hoverGroupAt 同一条规矩 ✓）
- *  🔴 **位置很讲究** ✗✗ —— 它调 pidAt，所以在着色器里必须排在 pidAt **后面** ✓
- *     （我第一版顺手放在 natureColor 旁边 = 排到 pidAt 前头去了 ✓
- *      test_modes 那条"先用后定义"的断言当场报出来："缺前置声明: pidAt" ✓
- *      真跑起来就是**着色器编译失败 → 白屏** ✓ 那条断言救了一次 ✓）
- *     → 所以它跟 paintLabelAt 那几个**同一段**（都在 pidAt 之后 ✓）*/
+ *     → 水域通道整条退化，行为不变
+ *     （GLSL ES 3.0 的 uniform 在非一致控制流里照样能读，
+ *       所以这个提前返回是纯优化，不是必须的）
+ *  整数纹理一律 texelFetch（与 kindOf / hoverGroupAt 同一规矩）
+ *  位置要求：它调 pidAt，必须排在 pidAt 后面
+ *     （放错会报"缺前置声明: pidAt"，运行起来是着色器编译失败 → 白屏）
+ *     → 与 paintLabelAt 那几个同处一段（都在 pidAt 之后）
+ */
 uint waterAt(ivec2 q) {
   uint pid = pidAt(q);
   if (pid == 0u) return 0u;
@@ -655,25 +639,22 @@ uint waterAt(ivec2 q) {
   return uint(u8At(uWaterKind, ivec2(i % uWaterKindW, i / uWaterKindW)));
 }
 
-/** 这一格是水（且**算得出水陆**）✓ —— 判据就一句话，收在一处 ✓
- *  ⚠ 表全 0 时它恒 false → 老包上所有跟水有关的让位全都不生效 ✓ 观感不变 ✓ */
+/** 这一格是水（且算得出水陆）—— 判据收在一处
+ *  表全 0 时恒 false → 老包上所有跟水有关的让位都不生效，观感不变
+ */
 bool waterIs(ivec2 q) {
   return waterAt(q) != 0u;
 }
 
-/** 这一格**是不是荒地**（不可通行区域 ✓ 身份码 6 ✓）
+/** 这一格是不是荒地（不可通行区域，身份码 6）
  *
- *  🔴🔴 **2026-10-17：给荒地也开一条"荒地 ↔ 荒地"的边界通道** ✗✗
- *    用户原话："给荒地加上边界开关，这个负责的是荒地与荒地之间的边界，
- *              你之前做了水域-水域的边界，这个应该轻车熟路了吧"✓
- *
- *  ⚠ **它跟水域那条读的纹理本来就是同一张** ✗ ——
- *    水域那条读的是 「uWaterKind」（app 侧算的"认不认得出是水" 2..5 ✓）；
- *    荒地这条读 **「uKindTex」**（身份标原样 2..6 ✓）——
- *    **6 就在里面** ✓ 所以**不用新开纹理、不用新加 uniform** ✓
- *    （「uKindTex」 一直是绑着的 ✓ 见 JS 那边"它跟 kindTex 一样一直绑着"那段 ✓）
- *  ⚠ 判据收在这一处 ✗ —— 别在别处写 「kindOf == 6」 ✓
- *  ⚠ 「uKindOn == 0」（老包没这枚标 ✓）→ 它恒 false → 荒地那条整条不生效 ✓ 观感不变 ✓ */
+ *  荒地边界与水域边界读的纹理不同：
+ *    水域那条读 uWaterKind（app 侧算的"认不认得出是水" 2..5）
+ *    荒地这条读 uKindTex（身份标原样 2..6），6 就在里面
+ *    → 不用新开纹理、不用新加 uniform（uKindTex 一直绑着）
+ *  判据收在这一处，别在别处写 kindOf == 6
+ *  uKindOn == 0（老包没有这枚标）→ 恒 false → 荒地通道整条不生效，观感不变
+ */
 bool wasteIs(ivec2 q) {
   if (uKindOn == 0) return false;
   uint pid = pidAt(q);
@@ -685,9 +666,10 @@ bool wasteIs(ivec2 q) {
 /** 手绘层上两个像素算不算不同的块。
  *
  *  一个涂了一个没涂、涂的色不同 —— 都算不同块。
- *  **同色但标记不同也算** —— 这跟 JS 那边切手绘色块的规则必须一致
+ *  同色但标记不同也算 —— 这与 JS 那边切手绘色块的规则必须一致
  *  （rebuildPaintBlocks 也是"同色 + 同标记"才算一块），
- *  不然两块明明是两个标记、中间却没有线，看着就是一坨。 */
+ *  否则两块明明是两个标记、中间却没有线。
+ */
 bool paintDiffers(ivec2 a, ivec2 b) {
   vec4 pa = paintAt(a);
   vec4 pb = paintAt(b);
@@ -699,22 +681,21 @@ bool paintDiffers(ivec2 a, ivec2 b) {
   return paintLabelAt(a) != paintLabelAt(b);
 }
 
-/*: 沿一个方向**最多找多少格**。
+/* 沿一个方向最多找多少格。
  *
- * ⚠ 这个数**直接决定性能** ✗（用户报"边界很吃性能、缩放时特别卡"✓）：
- *   每个像素是**四个方向各走 R 步**找边界的，而 R 会跟着缩放涨 ——
- *   缩到全图时 uMapPerPx 能有几十，R 就顶到这个上限 ✗
- *   一帧的采样次数 ≈ 像素 × 4 × R（**现在只有一趟** ✓ 2026-11-05 之前是
- *   本层 / 填色 / 多级链最多 4 级 / 水域 / 荒地各跑一趟 ✗ 乘数能到 6 ✓）
- *   48 的时候：144 万像素 × 4 × 48 × 6 ≈ **十六亿次** ✗✗ 那就是卡顿的来源 ✓
+ * 这个数直接决定性能：
+ *   每个像素四个方向各走 R 步找边界，而 R 随缩放增大 ——
+ *   缩到全图时 uMapPerPx 能有几十，R 就顶到这个上限
+ *   一帧采样次数 ≈ 像素 × 4 × R；144 万像素、R = 48 时约 2.7 亿次采样，
+ *   边界开销主要在这里
  *
- * 12 为什么够：屏幕上一条线的**半宽最多就是这个数（像素）** ✓
- *   真要更粗的线，那是"缩得很小、线糊成一片"的视图 —— 那时候多走的那几十步
- *   在画面上根本分不出来 ✓ 拿这点精度换 4 倍速度，划算 ✓
+ * 12 足够：屏幕上一条线的半宽最多就是这个数（像素）。
+ *   更粗的线只出现在"缩得很小、线糊成一片"的视图里，
+ *   那时多走几十步在画面上分辨不出，用这点精度换 4 倍速度。
  */
 const int MAXR = 12;
 
-/** 两点的"原版色"（LUT 里那个头衔的颜色）✓ */
+/** 两点的原版色（LUT 里那个头衔的颜色） */
 vec3 lutColour(ivec2 ip) {
   uint tid = titleAt(pidAt(ip), uTier);
   if (tid == NONE) return vec3(-1.0);
@@ -722,61 +703,59 @@ vec3 lutColour(ivec2 ip) {
 }
 
 /* ============================================================================
- * **一趟射线：所有边界通道共用一次采样** ✓（2026-11-05 重构）
+ * 一趟射线：所有边界通道共用一次采样
  *
- * 重构前是"每条通道各跑一趟"✗ —— 本层头衔、填色、链上每一级、水域、荒地，
+ * 原先每条通道各跑一趟 —— 本层头衔、填色、链上每一级、水域、荒地，
  * 各有一套 rayDist*，各走 4 方向 × 最多 12 步：同一条缝最多被算五遍，
- * 同一个邻居格被采十几遍，通道之间还会抢同一条缝，只能靠"让开"补丁维持秩序 ✗
+ * 同一个邻居格被采十几遍，通道之间还会抢同一条缝，只能靠"让开"补丁维持秩序。
  *
- * 用户点破的正确结构（原话 ✓ 别改）：
- *   · "本质上所有的延伸边界都是最底层边界（例如 province）的子集"✓
- *   · "同一个边界，分成不同的段，开关只决定段的不透明度和粗细度以及是否显示"✓
- * → 所以"这条缝归谁"是一张**分类表**，不是五套并列的射线 ✓
+ * 正确结构：
+ *   · 所有延伸边界都是最底层边界（例如 province）的子集
+ *   · 同一个边界分成不同的段，开关只决定段的不透明度、粗细度和是否显示
+ * → "这条缝归谁"是一张分类表，不是五套并列的射线
  *
  * 现在只有一趟：每步只采一次，边采边把这条缝分进它挂着的每一段，
- * 每段各自记"这个方向上最近的一条" ✓ 四方向取最小 ✓（见 main 里那段 ✓）
+ * 每段各自记"这个方向上最近的一条"，四方向取最小（见 main 里那段）
  *
- * ⚠ 三条**用户定的**让开口径，一个都不能丢 ✗：
- *   ① 水 ↔ 水那条缝**任何层都归「水域 · 边界」**（2026-10-16 ✓）
- *      原话："水域边界开关负责且仅负责水域之间（海洋、湖泊、河流、
- *             不可通行水域）的边界"✓ 以及"剧本层：水↔水的缝任何层都归水域开关"✓
- *      理由是他给的："不存在一个水域能被涂色成为势力"✓
- *      → 本层线 / 填色 / 多级链在这一条上**一律让开** ✓
- *   ② 荒地 ↔ 荒地同理 → 归「荒地 · 边界」（2026-10-17 ✓）
- *   ③ **只让开"两边同类"那一条** ✗ —— 海岸线（水↔陆）、荒地外缘（荒地↔陆）
- *      照旧归本层线 ✓（用户点名要的）
- * ⚠ "让开"是**这一条缝不算、继续往外走** ✓ 不是"这个方向没了" ✗
- *   （跳过这条之后，外面可能还有一条真正归本段的缝 ✓ 以前踩过 ✓）
+ * 三条让开规则，一个都不能丢：
+ *   ① 水 ↔ 水那条缝任何层都归「水域 · 边界」
+ *      理由：不存在一个水域能被涂色成为势力
+ *      → 本层线 / 填色 / 多级链在这一条上一律让开
+ *   ② 荒地 ↔ 荒地同理 → 归「荒地 · 边界」
+ *   ③ 只让开"两边同类"那一条 —— 海岸线（水↔陆）、荒地外缘（荒地↔陆）
+ *      仍归本层线
+ * "让开"是这一条缝不算、继续往外走，不是"这个方向没了"
+ *   （跳过这条之后，外面可能还有一条真正归本段的缝）
  *
- * 🔴 两件**故意不做**的事（都踩过，别再捡回来）：
- *   · 「跳一步预筛」（先只采 ip+dir*R 那一点，头衔相同就说"这一向没缝"✗）
- *     它是个近似：比 R 格还窄的地块会被整段漏掉 ——
- *     用户报过的"涂了色 / 还原之后边界不更新"就是它 ✓
- *     一趟射线之后每步本来就要采样，预筛省下的那两三步不值这个风险 ✓
- *   · 「每段各截自己的半径」✗ —— 现在按最粗那一段走到底，
- *     细的各自在混色那步跟自己的半宽比 ✓（超出半宽算出来本来就是 0 ✓）
+ * 两件故意不做的事：
+ *   · 「跳一步预筛」（先只采 ip+dir*R 那一点，头衔相同就说"这一向没缝"）
+ *     是近似：比 R 格还窄的地块会被整段漏掉，
+ *     表现为涂色 / 还原之后边界不更新
+ *     一趟射线之后每步本来就要采样，预筛省下的两三步不值这个风险
+ *   · 「每段各截自己的半径」—— 现在按最粗那一段走到底，
+ *     细的各自在混色那步跟自己的半宽比（超出半宽算出来本来就是 0）
  * ========================================================================== */
 
-/** 屏幕上那一格显示的颜色 = LUT 原色（没涂时）✓ */
+/** 屏幕上那一格显示的颜色 = LUT 原色（没涂时） */
 vec3 shownColour(ivec2 ip) {
   return lutColour(ip);
 }
 
-/** 一格**在屏幕上**的样子：颜色 + 涂没涂 + 标记 ✓
+/** 一格在屏幕上的样子：颜色 + 涂没涂 + 标记
  *
- *  为什么要有这个"先算一次再比"的结构（用户要求的"维持矢量画法、只降压"✓）：
- *   射线循环里**起点那一侧从头到尾都没变** ✗ 可以前每步都把它重算一遍 ——
- *   paintAt + shownColour（里面还有 pidAt / titleAt）+ paintLabelAt
- *   一趟下来是 10 次左右的纹理采样 ✗✗ 而它 4 方向 × R 步 全在重复同一件事 ✓
- *   缩放时 R 一涨，这笔账就是卡顿的大头 ✓
- *   → 起点算一次（cellViewOf(ip) ✓），循环里每步只算对面那一格 ✓ **省一半** ✓
+ *  先算一次再比的结构：
+ *   射线循环里起点那一侧从头到尾都没变，不能每步重算 ——
+ *   paintAt + shownColour（内含 pidAt / titleAt）+ paintLabelAt
+ *   一趟下来约 10 次纹理采样，而 4 方向 × R 步都在重复同一件事；
+ *   缩放时 R 增大，这笔开销是卡顿的主要来源
+ *   → 起点算一次（cellViewOf(ip)），循环里每步只算对面那一格，省一半
  */
 struct CellView {
   vec3 col;       // 屏幕上的颜色（x < -0.5 = 这一格没颜色）
   bool painted;   // 玩家涂过没有
-  uint tid;       // **编辑层**的头衔序号（本层线 / 水域 / 荒地都用它 ✓）
+  uint tid;       // 编辑层的头衔序号（本层线 / 水域 / 荒地都用它）
   uint label;     // 标记编号
-  uint pid;       // 省份号（取 tid 时要用 ✓ 见 cellViewOf）
+  uint pid;       // 省份号（取 tid 时要用  见 cellViewOf）
 };
 
 CellView cellViewOf(ivec2 ip) {
@@ -791,33 +770,34 @@ CellView cellViewOf(ivec2 ip) {
 }
 
 /* @@MID_CUT_PAINTRAY_BEGIN@@ */
-/** 两格在**画面上**算不算"两种东西"（就是原来那个 shownDiffers 的判断 ✓ 一个字没改）*/
+  /** 两格在画面上算不算"两种东西"（沿用原 shownDiffers 的判断，逻辑未改） */
 bool viewsDiffer(CellView A, CellView B) {
-  /* **年份视图没开 → 未上色的省份之间，一律不划国家级边界** ✓
-   *   （用户定的 ✓ **不管颜色** ✗ —— 两个都没涂就是没线 ✓）
-   *   ⚠ 这一行必须在**最前面** ✓：
-   *     放到颜色比较后面的话，"颜色不同的两个没涂省份"照样会划一条 ✗ */
+  /* 年份视图没开 → 未上色的省份之间，一律不划国家级边界
+   *   （不管颜色 —— 两个都没涂就是没线）
+   *   这一行必须在最前面：
+   *     放到颜色比较后面的话，颜色不同的两个没涂省份照样会划一条 */
   if (uPaintOnly == 1 && !A.painted && !B.painted) return false;
   vec3 ca = A.col, cb = B.col;
-  if (ca.x < -0.5 && cb.x < -0.5) return false;  // 两边都没颜色（无主地）→ 不划 ✓
-  if (ca.x < -0.5 || cb.x < -0.5) return true;   // 一边有一边没有 → 划 ✓
+  if (ca.x < -0.5 && cb.x < -0.5) return false;  // 两边都没颜色（无主地）→ 不划
+  if (ca.x < -0.5 || cb.x < -0.5) return true;   // 一边有一边没有 → 划
 
-  if (distance(ca, cb) > 0.02) return true;      // **颜色不同 → 划**（国家之间 ✓）
-  /* 颜色相同 → **一律比标记** ✓ 三种情况一个不落（用户明确要求 ✓）
+  if (distance(ca, cb) > 0.02) return true;      // 颜色不同 → 划（国家之间）
+  /* 颜色相同 → 一律比标记（三种情况都要覆盖）
    *
-   * ⚠ 这里**只有一套编号** ✗ —— JS 那边 syncAllPaintLabels 给**每一块地**都写了标记：
-   *     涂过的地 = 你填的那个名 ✓
-   *     没涂的地 = **它自己原版的国名** ✓（**不是 0** ✗ —— 用户点醒的：没涂过的地方也有标记 ✓）
-   *   所以"原版那块地"和"你涂出来的那块地"**名字一样就是同一个编号** ✓
-   *   → 用自己的色 + 自己的名涂自己那块 → 两边同号 → **不划** ✓（本来就该这样 ✓）
+   * 这里只有一套编号 —— JS 那边 syncAllPaintLabels 给每一块地都写了标记：
+   *     涂过的地 = 填的那个名
+   *     没涂的地 = 它自己原版的国名（不是 0 —— 没涂过的地方也有标记）
+   *   所以"原版那块地"和"涂出来的那块地"名字一样就是同一个编号
+   *   → 用自己的色 + 自己的名涂自己那块 → 两边同号 → 不划
    */
   return A.label != B.label;
 }
 /* @@MID_CUT_PAINTRAY_END@@ */
 
-/** **一条线在某一格里的距离** ✓（b 是那 4 个边标记位：1 左 · 2 右 · 4 上 · 8 下 ✓）
- *  f 是片元在格内的小数 ✓ 所以 f.x 天然就是"到左边那条边的距离" ✓
- *  → **亚格精度是天然的，不需要插值、也不需要距离场** ✓（用户点破的：缝就是格子的边 ✓）*/
+/** 一条线在某一格里的距离（b 是那 4 个边标记位：1 左 · 2 右 · 4 上 · 8 下）
+ *  f 是片元在格内的小数，所以 f.x 天然就是"到左边那条边的距离"
+ *  → 亚格精度是天然的，不需要插值、也不需要距离场
+ */
 float edgeDist(uint b, vec2 f) {
   float d = 1e9;
   if ((b & 1u) != 0u) d = min(d, f.x);
@@ -835,27 +815,26 @@ void main() {
     return;
   }
 
-  // 4 点超采样。偏移必须按**屏幕**算（uMapPerPx = 一个屏幕像素占多少地图像素），
-  // 不能写成固定的地图像素 —— 那是个随缩放放大的坑：
-  // 放大到 18 倍时 0.25 个地图像素 = 4.5 个屏幕像素，四个点摊开跨 9 个像素，
-  // 两个色块之间就被平均出一条 9 像素宽的纯色混色带，越放大越糊。
+  // 4 点超采样。偏移必须按屏幕算（uMapPerPx = 一个屏幕像素占多少地图像素），
+  // 不能写成固定的地图像素 —— 否则放大到 18 倍时 0.25 个地图像素 = 4.5 个屏幕像素，
+  // 四个点摊开跨 9 个像素，两个色块之间会被平均出一条 9 像素宽的纯色混色带。
   // 锁在一个屏幕像素以内，接缝就永远只有一格过渡。
   //
   // 位置用 4 点旋转网格（RGSS）而不是正方形四角：斜边上过渡层次更多，
   // 不会出现"要么纯色要么 50%"的硬台阶。最大偏移 0.5 个屏幕像素。
-  // 导出整图时**关掉抗锯齿** ✓ —— 那时一个屏幕像素正好等于一个地图像素，
+  // 导出整图时关掉抗锯齿 —— 那时一个屏幕像素正好等于一个地图像素，
   // 四点超采样会把相邻两个色块的颜色平均出一条混色带，放大看就是"糊的区域"。
-  // 屏幕上不动（uNoAA=0），观感保持原样 ✓。
-  /* 🔴 **四个采样点落在同一个地图像素上时，只采一次** ✗✗（2026-10-19）
+  // 屏幕上不动（uNoAA=0），观感保持原样。
+  /* 四个采样点落在同一个地图像素上时，只采一次
    *
    *  两种时候四个点完全重合：
-   *    · uNoAA=1（pu 是 0）—— 整图 / 高清导出、降分辨率那条路 ✓
-   *    · **放大编辑**（地图一格 ≫ 屏幕一格）—— 平时绝大多数像素 ✓✓
-   *  以前每种都照样跑四遍 colorAt（每遍十来次纹理取样 ✓）→ 白烧三遍 ✓
+   *    · uNoAA=1（pu 是 0）—— 整图 / 高清导出、降分辨率那条路
+   *    · 放大编辑（地图一格 ≫ 屏幕一格）—— 平时绝大多数像素
+   *  否则每种都跑四遍 colorAt（每遍十来次纹理取样），白烧三遍
    *
-   *  ⚠ 只把同一个颜色**抄给 c1..c3**，下面那段合并算式**一个字不改** ✗
-   *    → 出来的值跟原来**逐位相同** ✓（不是"看起来差不多"✓）
-   *    → 边界上那几圈还是会走四采样的老路 ✓ 抗锯齿效果一点没丢 ✓ */
+   *  只把同一个颜色抄给 c1..c3，下面那段合并算式不改
+   *    → 结果与四遍采样逐位相同
+   *    → 边界上那几圈仍走四采样，抗锯齿效果不变 */
   float pu = uNoAA == 1 ? 0.0 : uMapPerPx;
   vec2 f0 = vMap + vec2( 0.5,      0.16667) * pu;
   vec2 f1 = vMap + vec2(-0.16667,  0.5    ) * pu;
@@ -894,32 +873,32 @@ void main() {
   // 不能写成"这个像素跟四邻不一样就涂黑" —— 分界线两侧的像素各自都满足条件，
   // 于是线变成两个地图像素宽、两边各占一格的一条半透明带子，放大了就是糊的。
   //
-  // 改成算**到分界线的距离**，再套一条宽度锁在设备像素上的抗锯齿斜坡：
+  // 改成算到分界线的距离，再套一条宽度锁在设备像素上的抗锯齿斜坡：
   // 屏幕上永远是同一条细实线，缩放多少都不变粗细。
-  // **无主地块也是一块地** ✗ —— 这道闸以前写的是「本格在编辑层有头衔」，
-  // 而"无主地"在编辑层拿到的正是 NONE，于是它的**整段边界计算全被跳过**：
+  // 无主地块也是一块地 —— 这道闸不能写成「本格在编辑层有头衔」，
+  // 而"无主地"在编辑层拿到的正是 NONE，于是它的整段边界计算全被跳过：
   //   · 国家 ↔ 无主地：只有国家那一半画得出线，另一半整段没有 →
-  //     看着就是"国家跟无主地之间没画边界"（用户报的 ✓）
+  //     看着就是"国家跟无主地之间没画边界"
   //   · 无主地 ↔ 海、无主地 ↔ 荒地：同理只有半边
-  // 该跳过的是**根本没有省份的地图底**（provAt = 0）✓ 无主地照样要算。
-  /* 🔴🔴 **精简版从这里切** ✗✗（2026-10-19 ✓ 见下面 makeLiteFragment）
+  // 该跳过的是根本没有省份的地图底（provAt = 0），无主地照样要算。
+  /* 精简版从这里切（见下面 makeLiteFragment）
    *
-   *  软件渲染（SwiftShader）那台机器会在这段边界射线上**链接失败** ——
-   *  报告里「上传到显卡 → 失败」花了 92 秒，就是 CPU 在硬啃这一坨循环 ✓
-   *  这段整块拿掉之后：颜色 / 涂色 / 悬停全都还在 ✓ 只少了**边界线** ✓
-   *  → 画面能用，比"打开就是一张报错屏"强一万倍 ✓
+   *  软件渲染（SwiftShader）会在这一段边界射线上链接失败 ——
+   *  报告里「上传到显卡 → 失败」花了 92 秒，即 CPU 在硬啃这一坨循环
+   *  这段整块拿掉之后：颜色 / 涂色 / 悬停都还在，只少了边界线
+   *  → 画面能用，比"打开就是一张报错屏"好得多
    *
-   *  ⚠ 两个标记**必须各占一行、周围不能多写别的** ✗ —— 切法是
-   *     「前半段 + 后半段」直接拼，靠的就是这两行的位置 ✓
-   *  ⚠ 切掉的是**一个完整的 if 块**（连同它的大括号 ✓），所以切完语法还是整的 ✓
-   *     切完会少掉 R / dTitle / ramp 这些只在块里用的变量 —— 它们本来就没出过块 ✓ */
+   *  两个标记必须各占一行、周围不能多写别的 —— 切法是
+   *     「前半段 + 后半段」直接拼接，依赖这两行的位置
+   *  切掉的是一个完整的 if 块（连同大括号），所以切完语法仍然完整
+   *     切完会少掉 R / dTitle / ramp 这些只在块里用的变量 —— 它们本来就没出过块 */
   /* @@LITE_CUT_BEGIN@@ */
-  if (pidAt(ip) != 0u) {    /* 🔴 精简版把**整个 if 块**切掉 ✓（从 @@LITE_CUT_BEGIN@@ 到 @@LITE_CUT_END@@）
-     *  块里那几个变量（R / dTitle / dPaint / ramp）全没出过块 ✓ 切完不留孤儿 ✓ */
-    /* ---- 半径：按**所有通道里最粗的那一条**算 ----
-     *  原来每段各算各的（R / Re / Rw / Rw2 ✓）；一趟射线之后只能有一个半径 ✓
-     *  → 取最粗的那条，保证没有一条线被裁掉；细的各自在混色那步判 ✓
-     *  ⚠ 线宽大于半径的线会被裁掉 ✗（所以必须取 max ✓）*/
+  if (pidAt(ip) != 0u) {    /* 精简版把整个 if 块切掉（从 @@LITE_CUT_BEGIN@@ 到 @@LITE_CUT_END@@）
+     *  块里那几个变量（R / dTitle / dPaint / ramp）都没出过块，切完不留孤儿 */
+    /* ---- 半径：按所有通道里最粗的那一条算 ----
+     *  每段各算各的（R / Re / Rw / Rw2）；一趟射线之后只能有一个半径
+     *  → 取最粗的那条，保证没有一条线被裁掉；细的各自在混色那步判
+     *  线宽大于半径的线会被裁掉，所以必须取 max */
     float _bMax = 0.0;
     if (uBorderTitle == 1) _bMax = max(_bMax, uBorderW);
     if (uBorderPaint == 1) _bMax = max(_bMax, uPaintBorderW);
@@ -933,7 +912,7 @@ void main() {
     int R = int(clamp(ceil(0.5 * uMapPerPx * (_bMax + 1.0)),
                            1.0, float(MAXR)));
 
-    /* 每一段各自记"这个方向上最近的一条缝" ✓ 没找到就是 1e9 ✓ */
+    /* 每一段各自记"这个方向上最近的一条缝"，没找到就是 1e9 */
     float dTitle = 1e9;
     float dPaint = 1e9;
     float dWater = 1e9;
@@ -941,10 +920,10 @@ void main() {
     float dEx[4];
     for (int i = 0; i < 4; i++) dEx[i] = 1e9;
 
-    /* **粗筛：一位定生死** ✓（加载时算好的那张"省界 ±2 格"轮廓位图 ✓）
-     *   bit 1 ⇒ 值得看一眼（跑射线）· bit 0 ⇒ **一辈子画不到线**，直接跳过 ✓
-     *   ⚠ 它跟"当前层 / 涂色"无关 ✗ 所以换层、涂色都**不用重算**这张图 ✓
-     *   ⚠ 没接上图时 _nearSeam 恒真 → 完全退回逐像素射线 ✓ 不会画错 ✓ */
+    /* 粗筛：一位定生死（加载时算好的"省界 ±2 格"轮廓位图）
+     *   bit 1 ⇒ 值得跑射线 · bit 0 ⇒ 不可能画到线，直接跳过
+     *   与当前层 / 涂色无关，换层、涂色都不用重算这张图
+     *   未接入该图时 _nearSeam 恒真 → 完全退回逐像素射线，不会画错 */
     bool _nearSeam = true;
     if (uBorderDepthOn == 1) {
       uint _cb = uint(texelFetch(uBorderDepth, ivec2(ip.x >> 3, ip.y), 0).r * 255.0 + 0.5);
@@ -952,12 +931,12 @@ void main() {
     }
 
     if (_nearSeam) {
-      /* 起点那一侧**只算一次** ✓（原来是每步重算，一趟下来十几次采样 ✓）*/
+      /* 起点那一侧只算一次（否则每步重算，一趟要十几次采样）*/
       CellView _A = cellViewOf(ip);
-      uint tSelf = _A.tid;          // 编辑层的头衔（本层线 / 水域 / 荒地共用 ✓）
+      uint tSelf = _A.tid;          // 编辑层的头衔（本层线 / 水域 / 荒地共用）
       bool _ipW = waterIs(ip);
       bool _ipX = wasteIs(ip);
-      /* 链上每一环"我自己这一侧"的头衔 —— 同样只算一次 ✓ */
+      /* 链上每一环自身一侧的头衔 —— 同样只算一次 */
       uint tEx[4];
       for (int i = 0; i < 4; i++) {
         tEx[i] = 0u;
@@ -973,33 +952,33 @@ void main() {
                   : di == 2 ? ivec2( 0, 1)
                             : ivec2( 0,-1);
         for (int k = 1; k <= MAXR; k++) {
-          int _d = k * _st;                    // 这一趟实际跨了多少格 ✓
+          int _d = k * _st;                    // 这一趟实际跨了多少格
           if (_d > R) break;
           ivec2 q = ip + ivec2(dir.x * _d, dir.y * _d);
-          /* 垂距：缝是横平竖直的，我们必定落在它那一格的跨度之内 ✓ 不用开方 ✓ */
+          /* 垂距：缝是横平竖直的，必定落在它那一格的跨度之内，不用开方 */
           float dl = dir.x != 0 ? (dir.x > 0 ? float(_d) - f.x : f.x + float(_d) - 1.0)
                                 : (dir.y > 0 ? float(_d) - f.y : f.y + float(_d) - 1.0);
-          /* ---- 这里是**唯一一次采样**，下面每一段都从它取信息 ✓ ---- */
+          /* ---- 这里是唯一一次采样，下面每一段都从它取信息 ---- */
           uint qpid = pidAt(q);
           uint qtid = titleAt(qpid, uEditTier);
-          /* ⚠ 这两个 && 是**性能开关**，别为了好读改成先算后判 ✗
-           *   「让开」只在**自己这侧**就是水/荒地时才有意义（pairW = _ipW && qW），
-           *   所以陆地像素（绝大多数）这里**一次采样都不做** ✓
-           *   —— 一趟射线不等于"每个像素都多采四次"，见下面 ④⑤ 各自的闸 ✓ */
+          /* 这两个 && 是性能开关，不要为了好读改成先算后判
+           *   「让开」只在自己这侧就是水/荒地时才有意义（pairW = _ipW && qW），
+           *   所以陆地像素（绝大多数）这里一次采样都不做
+           *   —— 一趟射线不等于"每个像素都多采四次"，见下面 ④⑤ 各自的闸 */
           bool qW = _ipW && waterIs(q);
           bool qX = _ipX && wasteIs(q);
-          bool pairW = qW;     // 水 ↔ 水：归「水域 · 边界」✓
-          bool pairX = qX;     // 荒地 ↔ 荒地：归「荒地 · 边界」✓
+          bool pairW = qW;     // 水 ↔ 水：归「水域 · 边界」
+          bool pairX = qX;     // 荒地 ↔ 荒地：归「荒地 · 边界」
 
-          /* ① **本层头衔线** —— 海岸线、荒地外缘、国界、无主地边界都是它 ✓
-           *   ⚠ 这里一个字都不许加"涂过就跳过"的闸 ✗ ——
-           *     地区边界根本不看玩家画了什么，加了闸会把地区边界一起吃没 ✓ */
+          /* ① 本层头衔线 —— 海岸线、荒地外缘、国界、无主地边界都是它
+           *   这里不能加"涂过就跳过"的闸 ——
+           *     地区边界不看涂色内容，加了闸会把地区边界一起吃没 */
           if (uBorderTitle == 1 && !pairW && !pairX && qtid != tSelf)
             dTitle = min(dTitle, dl);
 
           /* @@MID_CUT_PAINTRAY_BEGIN@@ */
-          /* ② **填色边界**：颜色 / 标记有一个不同就划 ✓ 判据全在 viewsDiffer 里 ✓
-           *   ⚠ 别在这儿重复实现 ✗ —— "填色边界不开时这条 pass 根本不跑" ✓ */
+          /* ② 填色边界：颜色 / 标记有一个不同就划，判据全在 viewsDiffer 里
+           *   不要在这儿重复实现；填色边界关闭时这条 pass 根本不跑 */
           if (uBorderPaint == 1 && !pairW && !pairX) {
             vec4 _pp = paintAt(q);
             CellView _B;
@@ -1013,33 +992,30 @@ void main() {
           /* @@MID_CUT_PAINTRAY_END@@ */
 
           /* @@MID_CUT_EXTRA_BEGIN@@ */
-          /* ③ **多级链**：这条缝**同时**挂在哪几级上 ✓（不是二选一 ✓）
-           *   ⚠ 上界必须是常量 4，用 break 收 ✗ —— 见下面混色那段的长注释 ✓ */
+          /* ③ 多级链：这条缝同时挂在哪几级上（不是二选一）
+           *   上界必须是常量 4，用 break 收 —— 见下面混色那段的长注释 */
           for (int ex = 0; ex < 4; ex++) {
             if (ex >= uExtraCount) break;
             if (uExtraShow[ex] == 0) continue;
             if (uExtraTier[ex] < 0) continue;
             if (pairW || pairX) continue;
             int Re = int(clamp(ceil(0.5 * uMapPerPx * (uExtraW[ex] + 1.0)), 1.0, float(MAXR)));
-            if (dl > float(Re)) continue;      // 超出这一环的半径就不必采了 ✓
+            if (dl > float(Re)) continue;      // 超出这一环的半径就不必采了
             if (titleAt(qpid, uExtraTier[ex]) != tEx[ex]) dEx[ex] = min(dEx[ex], dl);
           }
           /* @@MID_CUT_EXTRA_END@@ */
 
           /* @@MID_CUT_WATER_BEGIN@@ */
-          /* ④ **水域边界**：老代码（rayDistWater，gl.js:995）判据是
-           *   "**对面是水** 且 编辑层 tid 不同" —— 它**只查对面一侧** ✗
-           *   （函数头注释写的是"两侧都得是水"✓ 两者不一致，这次照代码搬 ✓
-           *    差别只在海岸线上：陆侧那半边也会被它画一条 ✓ 要不要改成
-           *    两侧都判，等用户拍板 —— 见 handover 里记的那条 ✓）
-           *   ⚠ 让开那两句跟它无关：水水缝让开的是 title / paint / extra ✓ */
+          /* ④ 水域边界：判据是"对面是水 且 编辑层 tid 不同" —— 只查对面一侧
+           *   差别只在海岸线上：陆侧那半边也会被它画一条
+           *   让开那两句跟它无关：水水缝让开的是 title / paint / extra */
           if (uWaterBorderOn == 1 && uWaterBorderA > 0.0 && qtid != tSelf && waterIs(q))
             dWater = min(dWater, dl);
           /* @@MID_CUT_WATER_END@@ */
 
           /* @@MID_CUT_WASTE_BEGIN@@ */
-          /* ⑤ **荒地边界**（跟水域那条一个模子 ✓ 只换了身份判据 ✓
-           *   同样**只查对面** ✓ 见上面那条注释 ✓）*/
+          /* ⑤ 荒地边界（与水域那条同构，只换了身份判据
+           *   同样只查对面）*/
           if (uWasteBorderOn == 1 && uWasteBorderA > 0.0 && qtid != tSelf && wasteIs(q))
             dWaste = min(dWaste, dl);
           /* @@MID_CUT_WASTE_END@@ */
@@ -1047,20 +1023,20 @@ void main() {
       }
     }
 
-    // 过渡带 ≈ 一个设备像素（**要提到外面**：下面多级边界那几圈也要用 ✗）
+    // 过渡带 ≈ 一个设备像素（要提到外面：下面多级边界那几圈也要用）
     float ramp = 0.5 * uMapPerPx;
     if (dTitle < 1e8) {
       float bw = 0.5 * uBorderW * uMapPerPx;     // 半宽
       float b  = 1.0 - smoothstep(bw - ramp, bw + ramp, dTitle);
       col = mix(col, vec3(0.035, 0.045, 0.06), b * uBorderA);
     }
-    /* **多级边界**：粒度那层之上，一层比一层粗（地区 → 国家）——
-     * 中间那些"年份"层跳过（不然 1618 + 省份 会冒出 1789 那条 ✗）。
+    /* 多级边界：粒度那层之上，一层比一层粗（地区 → 国家）——
+     * 中间那些"年份"层跳过（不然 1618 + 省份 会冒出 1789 那条）。
      *
-     * 🔴🔴 **上界必须是常量 4，用 break 收** ✗ —— 别改成 uniform ✓
-     *   规范上 GLSL ES 3.0 确实允许运行时上界 ✓ 但**手机驱动不认** ✗
-     *   → 着色器编译失败 → **整屏黑** ✓（用户报的"手机版黑屏"✓）
-     *   💡 取舍：**兼容性 > 编译速度** ✗ */
+     * 上界必须是常量 4，用 break 收 —— 不要改成 uniform
+     *   规范上 GLSL ES 3.0 允许运行时上界，但手机驱动不认
+     *   → 着色器编译失败 → 整屏黑
+     *   取舍：兼容性 > 编译速度 */
     /* @@MID_CUT_EXTRA_BEGIN@@ */
     for (int ex = 0; ex < 4; ex++) {
       if (ex >= uExtraCount) break;
@@ -1072,37 +1048,35 @@ void main() {
     }
     /* @@MID_CUT_EXTRA_END@@ */
     /* @@MID_CUT_PAINTRAY_BEGIN@@ */
-    /* ============ **涂色边界**（手绘色块之间 ✓）============
-     *  🔴 **压在所有政治边界之上**（2026-11-05 廿九定的显示优先级，原话：
-     *    「边界显示的规则是，（涂色+剧本）＞父级＞其他。」
-     *    「在显示有剧本时，涂色与剧本什么的边界最高…如果还开了父级开关，
-     *     那么你选的粒度的上位边界的优先级放中间。」）
-     *  → 底 → 顶：本层头衔（你选的粒度）→ 父级 → 剧本 → **涂色** ✓
-     *  剧本那一圈也在 uExtra* 里（app.js 把父级排在前、剧本排在后 ✓），
-     *  所以这里只要**排在多级链之后**，就是"涂色高过它们全部" ✓
+    /* ============ 涂色边界（手绘色块之间）============
+     *  压在所有政治边界之上，显示优先级为：
+     *    涂色 + 剧本 ＞ 父级 ＞ 其他；开启父级时，所选粒度的上位边界居中。
+     *  → 底 → 顶：本层头衔（所选粒度）→ 父级 → 剧本 → 涂色
+     *  剧本那一圈也在 uExtra* 里（app.js 把父级排在前、剧本排在后），
+     *  所以这里只要排在多级链之后，就是"涂色高过它们全部"
      *
-     *  ⚠ 永远用自己那套浓度/粗细（uPaintBorderW / uPaintBorderA）✓
-     *    不跟着本层那条走 —— 色块边界是"你画的线"，不是行政区划 ✗ */
+     *  永远用自己那套浓度/粗细（uPaintBorderW / uPaintBorderA）
+     *    不跟着本层那条走 —— 色块边界是画出来的线，不是行政区划 */
     if (dPaint < 1e8) {
       float bwp = 0.5 * uPaintBorderW * uMapPerPx;
       float bp  = 1.0 - smoothstep(bwp - ramp, bwp + ramp, dPaint);
       col = mix(col, vec3(0.035, 0.045, 0.06), bp * uPaintBorderA);
     }
     /* @@MID_CUT_PAINTRAY_END@@ */
-    /* ============ **水域边界**（水域 ↔ 水域 ✓ 2026-10-16）============
-     *  用户口径（原话见 handover §3.1 ✓）：水域边界开关**负责且仅负责**
-     *    「水域之间（海洋 / 湖泊 / 河流 / 不可通行海域）的边界」✓
-     *  海岸线（水 ↔ 陆）**不归它** ✗ —— 那条仍旧由本层头衔线画 ✓
+    /* ============ 水域边界（水域 ↔ 水域）============
+     *  水域边界开关负责且仅负责「水域之间（海洋 / 湖泊 / 河流 /
+     *    不可通行海域）的边界」
+     *  海岸线（水 ↔ 陆）不归它 —— 那条仍由本层头衔线画
      *
-     *  ⚠ 三级闸，一个都不能少 ✗：
-     *    ① uWaterBorderOn —— 用户那个勾（app 那边已把"勾了 + 这张图算得出水陆"AND 好 ✓）
-     *       它**不看** 地区 / 势力 / 填色 那三个开关 ✓（用户要的就是独立 ✓
-     *       所以"边界全关"时水域线**照样在** ✓ —— 想关就关自己那个勾 ✓）
-     *    ② uWaterBorderA > 0 —— 浓度拉到 0% = 那条线完全不画 ✓
-     *    ③ 射线要真找得到那条缝（下面 dWater < 1e8 ✓）
+     *  三级闸，一个都不能少：
+     *    ① uWaterBorderOn —— 开关（app 侧已把"勾了 + 这张图算得出水陆"AND 好）
+     *       它不看 地区 / 势力 / 填色 那三个开关（要的就是独立，
+     *       所以"边界全关"时水域线照样在，想关就关自己那个勾）
+     *    ② uWaterBorderA > 0 —— 浓度拉到 0% 即完全不画
+     *    ③ 射线要真找得到那条缝（下面 dWater < 1e8）
      *
-     *  ⚠ 旧那两条通道在水水缝上已经被让开了 ✓（见上面一趟射线里 pairW ✓）
-     *    → 同一条缝**只有一个出处** ✓ 不会"后画的赢" ✓ */
+     *  旧那两条通道在水水缝上已经让开（见上面一趟射线里 pairW）
+     *    → 同一条缝只有一个出处，不会"后画的赢" */
     /* @@MID_CUT_WATER_BEGIN@@ */
     if (uWaterBorderOn == 1 && uWaterBorderA > 0.0 && dWater < 1e8) {
       float bww = 0.5 * uWaterBorderW * uMapPerPx;
@@ -1110,15 +1084,13 @@ void main() {
       col = mix(col, vec3(0.035, 0.045, 0.06), bw2 * uWaterBorderA);
     }
     /* @@MID_CUT_WATER_END@@ */
-    /* ============ **荒地边界**（荒地 ↔ 荒地 ✓ 2026-10-17）============
-     *  用户原话："给荒地加上边界开关，这个负责的是**荒地与荒地之间**的边界，
-     *            你之前做了水域-水域的边界，这个应该轻车熟路了吧"✓
-     *  → 跟上面水域那段**一个模子** ✗ 只有三处不同：
-     *    ① uniform 名（uWasteBorder* ✓）
-     *    ② 判据（wasteIs ✓ —— 读的是 uKindTex 那张本来就绑着的身份标 ✓
-     *       **没有新纹理** ✓ 跟水域那条不同：水域要算过一遍才知道是不是水 ✓ 荒地不用 ✓）
-     *    ③ 让位那一句（一趟射线里 pairX ✓）
-     *  ⚠ 三级闸照样一个都不能少 ✗（On / A > 0 / 射线真找得到 ✓）*/
+    /* ============ 荒地边界（荒地 ↔ 荒地）============
+     *  与水域那段同构，只有三处不同：
+     *    ① uniform 名（uWasteBorder*）
+     *    ② 判据（wasteIs —— 读的是 uKindTex 那张一直绑着的身份标，
+     *       没有新纹理；水域要算过一遍才知道是不是水，荒地不用）
+     *    ③ 让位那一句（一趟射线里 pairX）
+     *  三级闸照样一个都不能少（On / A > 0 / 射线真找得到）*/
     /* @@MID_CUT_WASTE_BEGIN@@ */
     if (uWasteBorderOn == 1 && uWasteBorderA > 0.0 && dWaste < 1e8) {
       float bwq = 0.5 * uWasteBorderW * uMapPerPx;
@@ -1128,110 +1100,103 @@ void main() {
     /* @@MID_CUT_WASTE_END@@ */
   }
   /* @@LITE_CUT_END@@ */
-  /* 🔴 **这个右花括号属于上面那个 if (pidAt(ip) != 0u)** ✗ ——
-   *   它以前落在那一堆 dTitle / dPaint 声明后面，把 if **提前闭合**了 ✓
-   *   后果：射线那整段跑到块外 —— 连地图底色（provAt = 0）都去跑边界射线 ✗
-   *   为了让它还能编过，当时**又补了一份一模一样的声明**（R / dTitle / …）✓
-   *   → 一个 if 两个作用域、同一批名字两份、外加一个算完没人用的 Rall ✓
-   *   2026-10-12：把这个右花括号挪回它该在的位置（缩进本来就写着它在这儿 ✓），
-   *   删掉那份重复声明和死代码 ✓ **别再把它往上挪** ✗
-   *   ⚠ 还有：这段里**不许出现反引号** ✗ —— 整段着色器是 JS 模板字符串，
-   *    一个反引号就把文件截断（测试当场炸在模块加载上 ✓）*/
+  /* 这个右花括号属于上面那个 if (pidAt(ip) != 0u)。
+   *   上移会提前闭合 if，使射线整段跑到块外 —— 连地图底色（provAt = 0）
+   *   也会去跑边界射线，并且会迫使下面重复声明 R / dTitle 等变量。
+   *   位置由缩进标明，不要再把它往上挪。
+   *   注意：这段里不许出现反引号 —— 整段着色器是 JS 模板字符串，
+   *     一个反引号就会截断文件。*/
 
-  // 悬停**压暗**：整个头衔一起暗 ✓（用户要求：高亮 → 高暗）
-  // **亮**起来的是 **uEditTier** 那一级 ✓（用户要求：把"高暗"改回"高亮"✓）
-  // 暗下去的那块必须正好是"点下去会涂到的那块"，不然根本不知道会改到谁。
-  // 注意：**不看 uShowTitles**。关掉原版颜色之后图上是底色，
-  // 但悬停仍然要暗下去 —— 不然根本不知道会涂到哪一块。
+  // 悬停提亮：整个头衔一起提亮（高亮 → 更高亮）
+  // 亮起来的是 uEditTier 那一级
+  // 提亮的那块必须正好是"点下去会涂到的那块"，否则不知道会改到谁。
+  // 注意：不看 uShowTitles。关掉原版颜色之后图上是底色，
+  // 但悬停仍然要提亮 —— 否则不知道会涂到哪一块。
   if (uHoverGroupId != 0u) {
-    /* **同一片海**（或同一片荒地）整片一起亮 ✓（2026-10-13 用户要求：
-     *   "HOI4 的战略地图的高亮显示是海域一起来而不是分开，EU 同理"）
-     *   ⚠ 这一条现在**只有老包走** ✗ —— 那批包里全世界的海共用一个 #sea
-     *     （tid 相同 ✗ 按 tid 亮会把**全世界的海**一起点亮 ✓）所以 CPU 侧
-     *     按真名表编了组号 ✓（组号跟着**编辑层**那张水域名表走 ✓ 见 rebuildHoverGroups）
-     *   新包（每层一片 ✓）走的是下面 uHoverTid 那条：同一个 tid = 同一片 ✓
-     *   ⚠ 排在 uHoverPid 前面：有编组就按编组亮 ✓ 没编组才退回"只亮一格" ✓ */
+    /* 同一片海（或同一片荒地）整片一起亮
+     *   这一条只有老包走 —— 那批包里全世界的海共用一个 #sea
+     *     （tid 相同，按 tid 亮会把全世界的海一起点亮），所以 CPU 侧
+     *     按真名表编了组号（组号跟着编辑层那张水域名表走，见 rebuildHoverGroups）
+     *   新包（每层一片）走下面 uHoverTid 那条：同一个 tid = 同一片
+     *   排在 uHoverPid 前面：有编组就按编组亮，没编组才退回"只亮一格" */
     if (hoverGroupAt(pidAt(ip)) == uHoverGroupId) col = mix(col, vec3(1.0), 0.30);
   } else if (uHoverPid > 0) {
-    // 海/湖/荒地：只压暗光标底下这**一块**（老包那种共享伪节点退回这一条）
-    // ⚠ 现在这是**退路** ✓ —— 有编组表 / 有每层一片的包都走上面那两条 ✓
-    /* **悬停一律提亮** ✓（用户定的：低亮 → 高亮 ✓ 就是字面意思）
-     *   ⚠ 我中途自作聪明改成过"跟着底色走"（浅色压暗）✗ 用户又提了一次
-     *     → **不要自适应** ✗ 用户要的是提亮 ✓
-     *   💡 浅色地也不是问题：各省的色基本是中低亮度的饱和色 ✓
-     *     往白里混 0.30 一眼就看得出来 ✓ */
+    // 海/湖/荒地：只提亮光标底下这一块（老包那种共享伪节点退回这一条）
+    // 现在是退路 —— 有编组表 / 有每层一片的包都走上面那两条
+    /* 悬停一律提亮（就是字面意思）
+     *   不要自适应：按底色深浅决定压暗或提亮会让行为不稳定，统一提亮
+     *   浅色地也不是问题：各省的色基本是中低亮度的饱和色，
+     *     往白里混 0.30 一眼就看得出来 */
     if (int(pidAt(ip)) == uHoverPid) col = mix(col, vec3(1.0), 0.30);
   } else if (uHoverPaintOn == 1) {
-    // 整族变暗（"高暗"）：按**显示色 + 标记**认 —— 涂过的用手绘色，没涂的用原版色。
-    // 这样"取大清的颜色涂俄罗斯"之后，大清和俄罗斯会一起变暗 ✓
-    // 但**同色不同标记**是两块 ✗ → 标记也得对上（0 = 没涂，跟没涂的一起 ✓）
+    // 整族提亮：按显示色 + 标记认 —— 涂过的用手绘色，没涂的用原版色。
+    // 这样"取大清的颜色涂俄罗斯"之后，大清和俄罗斯会一起提亮
+    // 但同色不同标记是两块 → 标记也得对上（0 = 没涂，跟没涂的一起）
     vec4 hp = paintAt(ip);
     vec3 hc = hp.a > 0.5 ? hp.rgb : lutColour(ip);
     // 颜色对上之后：
-    //   · **没涂过的同色地** → 算同一族 ✓（它的名字来自原版 ✓，比如开局那块瓦窑堡 ✓）
-    //   · **涂过的** → 必须同一标记 ✓（同色不同标记是两块 ✗）
+    //   · 没涂过的同色地 → 算同一族（它的名字来自原版，比如开局那块瓦窑堡）
+    //   · 涂过的 → 必须同一标记（同色不同标记是两块）
     bool sameLabel = (paintLabelAt(ip) == uHoverLabel);
     if (hc.x > -0.5 && distance(hc, uHoverPaint) < 0.01 && sameLabel) {
-      col = mix(col, vec3(1.0), 0.30);              // 同样是提亮 ✓
+      col = mix(col, vec3(1.0), 0.30);              // 同样是提亮
     }
   } else if (uHoverTid != NONE) {
     uint h = pidAt(ip);
     if (h != 0u && titleAt(h, uEditTier) == uHoverTid) {
-      col = mix(col, vec3(1.0), 0.32);              // 整片稍微再亮一点，好认 ✓
+      col = mix(col, vec3(1.0), 0.32);              // 整片稍微再亮一点，好认
     }
   }
 
   outColor = vec4(col, 1.0);
 }`;
 
-/* ============ **精简版片元着色器**（2026-10-19 ✓ 链接失败时的保底）============
+/* ============ 精简版片元着色器（链接失败时的保底）============
  *
- *  为什么要有它 ✗✗：VIC3 那份报告 —— 软件渲染（SwiftShader）上这个着色器
- *  **链接失败**，而且光链接就烧了 92 秒 ✓ 真显卡几毫秒 ✓
- *  再让用户"去开硬件加速"是对的（错误屏已经这么说了 ✓），
- *  但**能画出来**永远比"看得懂报错"强 ✓
+ *  软件渲染（SwiftShader）上这个着色器可能链接失败，光链接就烧了 92 秒；
+ *  真显卡几毫秒。
+ *  能画出来永远比"看得懂报错"强。
  *
- *  做法：把主着色器里**唯一那个巨型段落**（逐像素跑边界射线，4 方向 × MAXR 步
- *  × 最多 6 条通道）整块切掉 ✓ 其余一个字不改 ✓
- *  切完剩下的：颜色 / 涂色 / 荒地 / 身份色 / 悬停高亮 —— **全都在** ✓
- *  少掉的就是边界线（那些线本来也要在放大时才好看 ✓）
+ *  做法：把主着色器里唯一那个巨型段落（逐像素跑边界射线，4 方向 × MAXR 步
+ *  × 最多 6 条通道）整块切掉，其余不动。
+ *  切完剩下的：颜色 / 涂色 / 荒地 / 身份色 / 悬停高亮 —— 全都在
+ *  少掉的就是边界线（那些线本来也要在放大时才好看）
  *
- *  ⚠ 切法靠两个标记行的位置（见 FRAG 里的 @@LITE_CUT_BEGIN/END@@ ✓）
- *  ⚠ 切完**还是同一份 uniform 名单** ✗ —— 少用的那几个照样要 getUniformLocation
+ *  切法靠两个标记行的位置（见 FRAG 里的 @@LITE_CUT_BEGIN/END@@）
+ *  切完还是同一份 uniform 名单 —— 少用的那几个照样要 getUniformLocation
  *    并每个都传值：GLSL 会把没用的 uniform 优化掉，位置是 null，
- *    传 null 在 WebGL 里是**静默 no-op** ✓ 不会报错 ✓
+ *    传 null 在 WebGL 里是静默 no-op，不会报错
  */
 function makeLiteFragment(src) {
   const a = src.indexOf('/* @@LITE_CUT_BEGIN@@ */');
   const b = src.indexOf('/* @@LITE_CUT_END@@ */');
-  if (a < 0 || b < 0 || b <= a) return null;      // 标记被人动过 → 宁可不给精简版 ✓
+  if (a < 0 || b < 0 || b <= a) return null;      // 标记被人动过 → 宁可不给精简版
   return src.slice(0, a) + src.slice(b);
 }
 
 /* ==========================================================================
- * **中间档着色器**（2026-10-27：Adreno 613 + vivo 浏览器）
+ * 中间档着色器（Adreno 613 + vivo 浏览器）
  *
- *  用户报告：手机版「地区边界」怎么调都看不见 ✓
- *  诊断报告写得明明白白：「完整着色器链接失败，已退到精简版（少了边界线）」✓
- *  也就是说不是开关 / 涂色 / 数据的问题 —— **完整着色器在这台机器上根本链接不过** ✓
+ *  诊断报告：「完整着色器链接失败，已退到精简版（少了边界线）」
+ *  即不是开关 / 涂色 / 数据的问题 —— 完整着色器在这台机器上根本链接不过
  *
- *  精简版为了保命把**整个边界块**都切了（连本层地区线也没了）✓
- *  但 Adreno 613 并不是"一点边界都算不了"：它是被完整版那一大坨
- *    「4 方向 × 12 步 × 最多 6 条通道」的射线循环拖垮的 ✓
- *  → 做两档**逐步减负**的中间版，按"能链上、画质尽量高"的顺序试：
+ *  精简版为了保命把整个边界块都切了（连本层地区线也没了）
+ *  但 Adreno 613 并非一点边界都算不了：它是被完整版那一大坨
+ *    「4 方向 × 12 步 × 最多 6 条通道」的射线循环拖垮的
+ *  → 做两档逐步减负的中间版，按"能链上、画质尽量高"的顺序试：
  *
- *    ① mid：保留本层头衔 / 填色 / **多级链**，只砍「水域」「荒地」两条独立通道 ✓
- *    ② border：再砍多级链，只留本层头衔 + 填色 ✓（地区边界就是这条）
- *    ③ lite：边界整块不要（最后保底）✓
+ *    ① mid：保留本层头衔 / 填色 / 多级链，只砍「水域」「荒地」两条独立通道
+ *    ② border：再砍多级链，只留本层头衔 + 填色（地区边界就是这条）
+ *    ③ lite：边界整块不要（最后保底）
  *
- *  ⚠ 三个版本都还是同一份 uniform 名单 ✓ 少用的由 GLSL 自己优化掉 ✓
- *  ⚠ 切块靠 @@MID_CUT_*@@ 标记；标记被动了就返回 null，宁可不给 ✓
+ *  三个版本都还是同一份 uniform 名单，少用的由 GLSL 自己优化掉
+ *  切块靠 @@MID_CUT_*@@ 标记；标记被动了就返回 null，宁可不给
  * ========================================================================== */
 
-/** 切掉 `@@MID_CUT_<name>_BEGIN/END@@` 之间的整段（**同名可以有好几对** ✓
- *  2026-11-05：一趟射线之后，一条通道的代码分成两处（循环里的判据 + 循环后的混色 ✓）
- *  → 同名标记各写一对，这里把**所有**出现的都切掉 ✓
- *  ⚠ 一对都找不到就是标记被人动过 → 返回 null，宁可不给这个变体 ✓ */
+/** 切掉 @@MID_CUT_<name>_BEGIN/END@@ 之间的整段（同名可以有好几对）
+ *  一趟射线之后，一条通道的代码分成两处（循环里的判据 + 循环后的混色）
+ *  → 同名标记各写一对，这里把所有出现的都切掉
+ *  一对都找不到就是标记被人动过 → 返回 null，宁可不给这个变体 */
 function cutAuxBlock(src, name) {
   const bMark = '/* @@MID_CUT_' + name + '_BEGIN@@ */';
   const eMark = '/* @@MID_CUT_' + name + '_END@@ */';
@@ -1249,8 +1214,8 @@ function cutAuxBlock(src, name) {
 }
 
 /** 中等着色器：多级边界还在，只砍水域 / 荒地两条独立通道
- *  ⚠ 2026-11-05 一趟射线之后，通道不再各有"射线函数"了 ✗ ——
- *    它们只是同一趟循环里的几个判据块 ✓ 切的就是那几个块 ✓ */
+ *  一趟射线之后，通道不再各有"射线函数"，只是同一趟循环里的几个判据块，
+ *  切的就是那几个块 */
 function makeMidFragment(src) {
   let out = cutAuxBlock(src, 'WATER');
   if (out == null) return null;
@@ -1268,8 +1233,8 @@ function makeBorderOnlyFragment(src) {
   return out;
 }
 
-/** 最简边界版：只留**本层头衔线**，连填色那一小段判据也砍掉
- *  —— 万一 border 档还链不上，至少地区 / 省份边界要能看见 ✓ */
+/** 最简边界版：只留本层头衔线，连填色那一小段判据也砍掉
+ *  —— 万一 border 档还链不上，至少地区 / 省份边界要能看见 */
 function makeTitleOnlyFragment(src) {
   let out = makeBorderOnlyFragment(src);
   if (out == null) return null;
@@ -1277,19 +1242,18 @@ function makeTitleOnlyFragment(src) {
   return out;
 }
 
-/** 上下文是不是**被浏览器收走了**（驱动重置 / 切后台 / 显存紧张 ✓）
+/** 上下文是不是被浏览器收走了（驱动重置 / 切后台 / 显存紧张）
  *
- * 🔴 **这条判断必须排在"编译失败"前面** ✗ —— 见过的那一幕（2026-10-16）：
- *   上下文在编译途中被收走 → `COMPILE_STATUS` 是 false、`getShaderInfoLog` 是 **null**
- *   → 报出来只有一句「着色器编译失败：null」✓
- *   于是所有人都去查着色器（查了半天什么都没问题）✗ 而真凶是上下文没了 ✓
- *   ⚠ 拿不到 isContextLost 的（老桩 / 假 GL）就当"没丢" ✓ 别把正常失败也吞了 */
+ *  这条判断必须排在"编译失败"前面：
+ *   上下文在编译途中被收走 → COMPILE_STATUS 是 false、getShaderInfoLog 是 null
+ *   → 只报一句「着色器编译失败：null」，会把排查方向引向着色器
+ *   注意：拿不到 isContextLost 的（老桩 / 假 GL）当作"没丢"，别把正常失败也吞了 */
 function ctxLost(gl) {
   try { return !!(gl.isContextLost && gl.isContextLost()); } catch (e) { return false; }
 }
 
-/** 显卡档案 —— 报错时**必须带上** ✗（不然只看得见"失败了"三个字，无从下手 ✓）
- *  优先用不打码的那个串（WEBGL_debug_renderer_info ✓ 各家都支持） */
+/** 显卡档案 —— 报错时必须带上（否则只看得见"失败了"三个字，无从下手）
+ *  优先用不打码的那个串（WEBGL_debug_renderer_info，各家都支持） */
 function gpuProfile(gl) {
   try {
     let gpu = '';
@@ -1302,10 +1266,10 @@ function gpuProfile(gl) {
   } catch (e) { return '（显卡档案没问出来）'; }
 }
 
-/** 编译/链接失败：分两种，各带各的话 ✓（`code` 给 app 那边认"要不要等上下文回来" ✓）
- *  · `CTX_LOST` —— 上下文被收走了，**等它回来重来一次就行** ✓（app.js 的 buildRenderer ✓）
- *  · `COMPILE` / `LINK` —— 真·着色器问题，带上驱动给的日志 + 显卡档案 ✓
- *  ⚠ 消息里**不许写"着色器加载失败"**这种笼统话 ✗ 要让看的人一眼知道该往哪儿查 ✓ */
+/** 编译/链接失败：分两种，各带各的话（code 给 app 那边认"要不要等上下文回来"）
+ *  · CTX_LOST —— 上下文被收走了，等它回来重来一次即可（app.js 的 buildRenderer）
+ *  · COMPILE / LINK —— 真的着色器问题，带上驱动给的日志 + 显卡档案
+ *  消息里不许写"着色器加载失败"这种笼统话，要让看的人一眼知道该往哪儿查 */
 function shaderErr(code, msg) {
   const e = new Error(msg);
   e.code = code;
@@ -1314,10 +1278,10 @@ function shaderErr(code, msg) {
 
 function compile(gl, type, src) {
   const label = type === gl.VERTEX_SHADER ? '顶点着色器' : '片元着色器';
-  /* 🔴 **先判上下文丢没丢** ✗✗（2026-10-17）
-   *   上下文一丢，`createShader` / `compileShader` 全是静默 no-op ✓
-   *   `getShaderParameter` 于是返回 false → 以前下一句就报"着色器编译失败" ✗
-   *   可着色器源码一个字都没问题 ✓ —— 这条就是管理员说的那种误报 ✔ */
+  /* 先判上下文丢没丢
+   *   上下文一丢，createShader / compileShader 全是静默 no-op
+   *   getShaderParameter 于是返回 false → 下一句就报"着色器编译失败"
+   *   可着色器源码本身没有任何问题 —— 这条会造成误报 */
   if (gl.isContextLost && gl.isContextLost()) {
     _setupFail('context-lost', `${label}编译前 WebGL 上下文已经丢了`, gl,
       { stageAt: 'compile-before' });
@@ -1333,7 +1297,7 @@ function compile(gl, type, src) {
     const log = String(gl.getShaderInfoLog(sh) || '').trim();
     const lost = !!(gl.isContextLost && gl.isContextLost());
     const ge = (gl.getError && gl.getError()) || 0;
-    try { gl.deleteShader(sh); } catch (e) { /* ✓ */ }
+    try { gl.deleteShader(sh); } catch (e) { /* 忽略删除失败 */ }
     // WebGL 的 CONTEXT_LOST_WEBGL = 0x9242、OUT_OF_MEMORY = 0x0505
     if (lost || ge === 0x9242) {
       _setupFail('context-lost', `${label}编译时 WebGL 上下文丢失`, gl,
@@ -1350,29 +1314,29 @@ function compile(gl, type, src) {
   return sh;
 }
 
-/* **纹理绑定的"代号"** ✓（2026-11-03）
+/* 纹理绑定的"代号"
  *
- *  render() 现在会记「第 N 号单元绑着哪张纹理」，下次一样就不重复绑 ✓
- *  可**绑纹理的不止 render()** ✗ —— 传块、换图、传国旗、探测纹理这些都在别处绑，
- *  而且都绑在"当前那个单元"上 → render 记的那本账就过期了 ✓
+ *  render() 会记「第 N 号单元绑着哪张纹理」，下次一样就不重复绑
+ *  但绑纹理的不止 render() —— 传块、换图、传国旗、探测纹理这些都在别处绑，
+ *  而且都绑在"当前那个单元"上 → render 记的那本账就过期了
  *
- *  所以：凡是 render() 之外的绑定，一律把代号 +1 ✓
- *  render() 每帧比一次代号，变了就把整本账撕掉重记 ✓（一次比较而已，可以忽略 ✓）
- *  ⚠ 不这么做的话，传块时顺手绑的那张块纹理会被当成"第 12 号单元还是那张占位纹理"
- *    → 下一帧跳过重绑 → 国旗那一路采到块纹理上 ✗（画面不会黑，但会错 ✓ 而且极难查 ✓）
+ *  所以：凡是 render() 之外的绑定，一律把代号 +1
+ *  render() 每帧比一次代号，变了就把整本账撕掉重记（一次比较而已，可忽略）
+ *  不这么做的话，传块时顺手绑的那张块纹理会被当成"第 12 号单元还是那张占位纹理"
+ *    → 下一帧跳过重绑 → 国旗那一路采到块纹理上（画面不会黑，但会错，极难查）
  */
 let GL_TEX_EPOCH = 0;
 
-/** 「没有分块数据」时那三个数的替身 ✓（做成常量 → 每帧不用再 new 一个对象 ✓）*/
+/** 「没有分块数据」时那三个数的替身（做成常量 → 每帧不用再 new 一个对象） */
 const NO_TILES = Object.freeze({ tileW: 1, tileH: 1, cols: 1 });
 
-/** 别处动过纹理绑定 → 代号 +1，让 render() 记的那本账作废 ✓（见上面那段）*/
+/** 别处动过纹理绑定 → 代号 +1，让 render() 记的那本账作废（见上面那段） */
 function glTexTouched() { GL_TEX_EPOCH++; }
 
 function makeTexture(gl, w, h, internal, format, type, data, filter) {
   const tex = gl.createTexture();
   gl.bindTexture(gl.TEXTURE_2D, tex);
-  glTexTouched();      // 绑在"当前单元"上 → render 的账过期 ✓
+  glTexTouched();      // 绑在"当前单元"上 → render 的账过期
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
@@ -1382,16 +1346,16 @@ function makeTexture(gl, w, h, internal, format, type, data, filter) {
 }
 
 /**
- * 挑一个「最省显存」的块尺寸 ✓（2026-10-17 手机丢上下文之后加的）
+ * 挑一个最省显存的块尺寸
  *
- *  为什么不能直接贴着上限开 ✗：
- *    · 贴 4096 → 9216 宽的图要 3×2 块，每块 4096² × 2 字节 = 33MB，合计 **192MB**；
- *    · 用 2048 → 5×3 = 15 块，合计 **120MB**（每块只有 8MB，但边角补零全浪费）；
- *    · 用 2304 → 4×2 = 8 块，合计 **85MB** —— 正好等于"整张图本身"的大小。
- *  所以这里把候选尺寸都算一遍总字节，挑**最小的那个**（并列取大块：层数少、上传次数少）。
+ *  不能直接贴着上限开：
+ *    · 贴 4096 → 9216 宽的图要 3×2 块，每块 4096² × 2 字节 = 33MB，合计 192MB；
+ *    · 用 2048 → 5×3 = 15 块，合计 120MB（每块只有 8MB，但边角补零全浪费）；
+ *    · 用 2304 → 4×2 = 8 块，合计 85MB —— 正好等于"整张图本身"的大小。
+ *  所以这里把候选尺寸都算一遍总字节，挑最小的那个（并列取大块：层数少、上传次数少）。
  *
- *  ⚠ 总显存的下限就是 mapW × mapH × 2 ✓（块只能比它大、不可能更小）
- *  ⚠ 层数还得 ≤ 2048（MAX_ARRAY_TEXTURE_LAYERS 的常见下限）✓
+ *  总显存的下限就是 mapW × mapH × 2（块只能比它大、不可能更小）
+ *  层数还得 ≤ 2048（MAX_ARRAY_TEXTURE_LAYERS 的常见下限）
  */
 function pickTileLayout(mapW, mapH, maxTex) {
   const cap = Math.max(256, Math.min(maxTex || 4096, 4096));
@@ -1414,8 +1378,8 @@ function pickTileLayout(mapW, mapH, maxTex) {
 
 export class MapRenderer {
   constructor(canvas, meta, opts) {
-    /* `opts.fastBoot` = "先拿低一档把图打出来，着色器后台再升级" ✓（2026-11-01）
-       启动路径传它；自检 / 导出用的临时渲染器不传，行为跟以前一模一样 ✓ */
+    /* opts.fastBoot = "先拿低一档把图打出来，着色器后台再升级"
+       启动路径传它；自检 / 导出用的临时渲染器不传，行为与不传时一致 */
     this._fastBoot = !!(opts && opts.fastBoot);
     this.canvas = canvas;
     this.meta = meta;
@@ -1435,24 +1399,24 @@ export class MapRenderer {
         null, { creationError: why });
     }
     this.gl = gl;
-    /* 🔴 **刚创建就可能已经是"丢的"** ✗✗（2026-10-17）
+    /* 刚创建就可能已经是"丢的"
      *   低端机 / 驱动刚重置 / 浏览器 GPU 进程正忙时，getContext 会先给一个
-     *   `isContextLost() === true` 的上下文 —— 之后所有 GL 调用静默 no-op ✓
-     *   不在这儿拦住的话，下面 `_build()` 会一路失败，最后被报成
-     *   "着色器编译失败" ✗（正是管理员查了半天的那个假线索 ✓） */
+     *   isContextLost() === true 的上下文 —— 之后所有 GL 调用静默 no-op
+     *   不在这儿拦住的话，下面 _build() 会一路失败，最后被报成
+     *   "着色器编译失败"（会误导排查） */
     if (gl.isContextLost && gl.isContextLost()) {
       _setupFail('context-lost', 'WebGL2 上下文创建后立刻丢失（显卡驱动 / 显存）', gl,
         { stageAt: 'after-create' });
     }
 
-    /* 显卡驱动重置 / 显存吃紧 / **手机切到后台** 时，浏览器会把整个 WebGL 上下文收走：
-     * 所有 GL 对象（着色器 / 缓冲 / 全部纹理）一起作废，之后每帧 GL 调用静默 no-op ✓
-     * 不 preventDefault 的话浏览器**不会再给 restored 事件**（等于放弃这个上下文）✗
-     * 所以接住它，并等 restored —— 那边把资源重建一遍（见下面的监听与 _build ✓）
-     * ⚠ 上下文丢着的时候**别画** ✗：画了也不上屏，还会把 GL 错误搅浑 ✓ */
+    /* 显卡驱动重置 / 显存吃紧 / 手机切到后台时，浏览器会把整个 WebGL 上下文收走：
+     * 所有 GL 对象（着色器 / 缓冲 / 全部纹理）一起作废，之后每帧 GL 调用静默 no-op
+     * 不 preventDefault 的话浏览器不会再给 restored 事件（等于放弃这个上下文）
+     * 所以接住它，并等 restored —— 那边把资源重建一遍（见下面的监听与 _build）
+     * 上下文丢着的时候别画：画了也不上屏，还会把 GL 错误搅浑 */
     this.ctxLost = false;
     this.onContextLost = null;
-    this.onContextRestored = null;      // 上下文回来了（app 那边要把数据重新喂一遍 ✓）
+    this.onContextRestored = null;      // 上下文回来了（app 那边要把数据重新喂一遍）
     this.onContextRestoreFailed = null;
 
     this.tier = 3;
@@ -1464,36 +1428,41 @@ export class MapRenderer {
     this.borderTitle = true;    // 头衔区域描边（和 borderPaint 互斥，由 UI 保证）
     this.borderPaint = false;
     this.paintOnly = false;
-    this.lowRes = false;         // resize() 里判定：这台机器我给降过分辨率（见它那段说明 ✓）
-    this.unpainted = [150 / 255, 150 / 255, 150 / 255];   // 「未上色区域」的颜色（无归属地块用 ✓）
+    this.lowRes = false;         // resize() 里判定：这台机器降过分辨率（见它那段说明）
+    /* 拖动/缩放期间的分辨率折扣
+     *   边界逐像素计算，一帧开销与画布像素数成正比。视角在动时 app.js 把它调成
+     *   0.7（像素数 ×0.49），手停下 250ms 再调回 1 并补画一帧
+     *   地名画在另一张 2D canvas 上，不受影响（拖动期间名字照样清楚）*/
+    this.motionScale = 1;
+    this.unpainted = [150 / 255, 150 / 255, 150 / 255];   // 「未上色区域」的颜色（无归属地块用）
     this.paintWidth = 1.7;      // 填色那条边界：默认取链上最粗那条的粗细（app 每帧给）
     this.paintAlpha = 1.0;      // 且实心
-    /* **水域边界**（2026-10-16 ✓ 用户定的：**自己一套**宽浓 ✓ 不沿用省份/地区那一档 ✓）
-     *   ⚠ 它跟"填色那条"是两回事 ✗：填色线是链上最粗那一级 ✓ 这条只管水域之间的缝 ✓
-     *   ⚠ `waterBorderOn` 由 app 每帧给（= 那个勾 **且** 这张图算得出水陆 ✓）
-     *     默认 true —— app 还没跑第一帧时（自检 / 早期那几帧）行为跟老版一致 ✓ */
+    /* 水域边界（自己一套宽浓，不沿用省份/地区那一档）
+     *   它与"填色那条"是两回事：填色线是链上最粗那一级，这条只管水域之间的缝
+     *   waterBorderOn 由 app 每帧给（= 那个勾 且 这张图算得出水陆）
+     *     默认 true —— app 还没跑第一帧时（自检 / 最初几帧）行为与不设时一致 */
     this.waterBorderOn = true;
     this.waterBorderW = 1.0;
     this.waterBorderA = 1.0;
-    /* 🔴 **荒地边界**（2026-10-17 ✓ 用户点名要的 ✓）
-     *   ⚠ app 侧必须把"那个勾 **且** 这张图有身份标"AND 好再写进来 ✓
-     *     （跟水域那条一个规矩 ✓ 不然老包上会画出一堆假缝 ✓）*/
+    /* 荒地边界
+     *   app 侧必须把"那个勾 且 这张图有身份标"AND 好再写进来
+     *     （与水域那条同一规矩，否则老包上会画出一堆假缝）*/
     this.wasteBorderOn = false;
     this.wasteBorderW = 1.0;
     this.wasteBorderA = 1.0;
-    // 分界线是两个可调的旋钮：粗细按**设备像素**算，所以缩放多少都是同一个粗细；
-    // 深浅就是往底色里混多少。想改观感改这两个数就行。
+    // 分界线是两个可调的旋钮：粗细按设备像素算，所以缩放多少都是同一个粗细；
+    // 深浅就是往底色里混多少。想改观感改这两个数即可。
     this.borderWidth = 1.35;    // 基准线宽（设备像素）：太粗就往小调
     this.borderStrength = 0.75;
-    // 基本底色 = (150,150,150)：**没填色的地区**（该层级没有头衔，或者你没涂过）
-    // 统一用这个灰，跟海面、边界都分得开。
+    // 基本底色 = (150,150,150)：没填色的地区（该层级没有头衔，或者没涂过）
+    // 统一用这个灰，与海面、边界都分得开。
     // 多级边界链（粒度那层之上，一层比一层粗；app 每帧填）
     this.extraCount = 0;
     this.extraTiers = new Int32Array([-1, -1, -1, -1]);
     this.extraWs = new Float32Array([1.8, 2.4, 3.0, 3.6]);
     this.extraShows = new Int32Array([0, 0, 0, 0]);
     this.extraAs = new Float32Array([1, 1, 1, 1]);   // 每级浓度（父级可 0.75）
-    // 兼容字段：等于链上第一条（老代码/测试看这几个 ✓）
+    // 兼容字段：等于链上第一条（老代码/测试看这几个）
     this.parentBorder = 0;
     this.parentTier = -1;
     this.parentWidth = 1.8;
@@ -1503,13 +1472,13 @@ export class MapRenderer {
     this.hoverTid = this.noTitle;
     this.hoverPaintOn = 0;
     this.hoverPaint = [0, 0, 0];
-    this.hoverPid = 0;                     // >0 = 只亮这一个地块 ✓
-    this.hoverLabel = 0;                   // 要高亮那一族的标记编号（0 = 没涂）✓
-    /* 「同一片海 / 同一片荒地」的**编组号表**（每 pid 一个 Uint16 ✓ 见 rebuildHoverGroups ✓）
-     *   0 = 不属于任何一片 → 退回 hoverPid 那条"只亮一格" ✓（老包 / CK3 没有水名表 ✓）*/
-    this.hoverGroupData = null;            // Uint16Array(numProvinces)（懒建：第一次悬停才算 ✓）
-    this.hoverGroupTier = null;            // 这份表是**哪一层**编的（换层要重建 ✓）
-    this.hoverGroupId = 0;                 // 这一帧要高亮的那一组（0 = 不按编组亮 ✓）
+    this.hoverPid = 0;                     // >0 = 只亮这一个地块
+    this.hoverLabel = 0;                   // 要高亮那一族的标记编号（0 = 没涂）
+    /* 「同一片海 / 同一片荒地」的编组号表（每 pid 一个 Uint16，见 rebuildHoverGroups）
+     *   0 = 不属于任何一片 → 退回 hoverPid 那条"只亮一格"（老包 / CK3 没有水名表）*/
+    this.hoverGroupData = null;            // Uint16Array(numProvinces)（懒建：第一次悬停才算）
+    this.hoverGroupTier = null;            // 这份表是哪一层编的（换层要重建）
+    this.hoverGroupId = 0;                 // 这一帧要高亮的那一组（0 = 不按编组亮）
     this.hoverGroupDirty = false;
     this.view = { x: 0, y: 0, w: this.mapW, h: this.mapH };
     this.lutW = meta.colorLutWidth || 256;
@@ -1522,30 +1491,30 @@ export class MapRenderer {
     this.noAA = false;        // 整图导出时置 true，关掉四点超采样（逐像素精确）
     this.showWaste = true;
     this.wasteGrey = [94 / 255, 94 / 255, 94 / 255];
-    /*: 哪些分块真的传进显存了（JS 缓存里有 ≠ 显存里有）✓ */
+    /*: 哪些分块真的传进显存了（JS 缓存里有 ≠ 显存里有） */
     this.uploadedTiles = new Set();
     this._ready = false;
 
-    /* **监听器要在 `_build()` 之前挂** ✗✗（2026-10-17）
-     *   显卡上下文有可能**在建渲染器的过程中**就丢 ✓
-     *   以前监听器挂在 `_build()` 后面 → 那一次丢失没人接住（也就没 preventDefault）
-     *   → 浏览器不再发 restored → 只能刷新 ✓（这正是"打开就莫名其妙失败"的一条真因） */
+    /* 监听器要在 _build() 之前挂
+     *   显卡上下文有可能在建渲染器的过程中就丢
+     *   监听器挂在 _build() 后面时，那一次丢失没人接住（也就没 preventDefault）
+     *   → 浏览器不再发 restored → 只能刷新（"打开就莫名其妙失败"的一条真因） */
     this._onCtxLost = (e) => {
-      /* preventDefault = "我们知道出事了，**请把它还回来**" ✓
-       * 不写这一句，浏览器认为没人管 → 永远不发 restored ✓ */
+      /* preventDefault 表示"这个事件由页面接管，请把它还回来"
+       * 不写这一句，浏览器认为没人管 → 永远不发 restored */
       if (e && e.preventDefault) e.preventDefault();
       this.ctxLost = true;
-      this.dirty = false;          // 丢着的时候别画：画什么都不会上屏 ✓
+      this.dirty = false;          // 丢着的时候别画：画什么都不会上屏
       if (this.onContextLost) this.onContextLost();
     };
-    /* 上下文回来了 —— **每一样 GL 资源都要重建**（WebGL 的规矩：对象全作废 ✓）
-     *   这里只管"跟上下文绑在一起"的那几样 ✓
-     *   纹理交给 app 重新喂（它手上才有省份 id / 归属表 / 笔迹 ✓ 见 onContextRestored ✓）*/
+    /* 上下文回来了 —— 每一样 GL 资源都要重建（WebGL 的规矩：对象全作废）
+     *   这里只管"跟上下文绑在一起"的那几样
+     *   纹理交给 app 重新喂（它手上才有省份 id / 归属表 / 笔迹，见 onContextRestored）*/
     this._onCtxRestored = () => {
-      if (!this._ready) return;   // 建到一半就抛出去的那个半成品不接 restored ✓
+      if (!this._ready) return;   // 建到一半就抛出去的那个半成品不接 restored
       try {
         this._build();
-        // 旧纹理的句柄全部作废：清成 null，render() 会一直等到数据重新喂完才画 ✓
+        // 旧纹理的句柄全部作废：清成 null，render() 会一直等到数据重新喂完才画
         this.provTex = null;
         this.titleTex = null;
         this.colorTex = null;
@@ -1560,7 +1529,7 @@ export class MapRenderer {
         this.paintDirty = true;
         this.lutDirty = true;
         this.dirty = true;
-        this.uploadedTiles.clear();    // 显存里的块全没了 → 记录也清（重新喂时逐块重记 ✓）
+        this.uploadedTiles.clear();    // 显存里的块全没了 → 记录也清（重新喂时逐块重记）
         if (this.onContextRestored) this.onContextRestored();
       } catch (err) {
         this.ctxLost = true;
@@ -1578,13 +1547,13 @@ export class MapRenderer {
       this._ready = true;
     } catch (err) {
       this._detachContextListeners();
-      /* 已经是分类好的错就原样往上抛 ✓；普通异常包成 `renderer` 类（别丢掉现场） */
+      /* 已经是分类好的错就原样往上抛；普通异常包成 renderer 类（别丢掉现场） */
       if (err instanceof RendererSetupError) throw err;
-      if (err && err.code) throw err;   // 老 shaderErr（CTX_LOST / COMPILE / LINK）原样给 app 认 ✓
+      if (err && err.code) throw err;   // 老 shaderErr（CTX_LOST / COMPILE / LINK）原样给 app 认
       _setupFail('renderer', '建渲染器时出错：' + ((err && err.message) || err), gl,
         { stageAt: 'build', cause: String((err && err.stack) || err) });
     }
-    /* ⚠ **建完再看一眼** ✗：有些驱动不抛错、只是把上下文悄悄收走 ✓ */
+    /* 建完再看一眼：有些驱动不抛错、只是把上下文悄悄收走 */
     if (this.ctxLost || (gl.isContextLost && gl.isContextLost())) {
       this._detachContextListeners();
       _setupFail('context-lost', '建渲染器时 WebGL 上下文丢失', gl,
@@ -1592,7 +1561,7 @@ export class MapRenderer {
     }
   }
 
-  /** 建失败了就把 canvas 上的两个监听摘掉 ✓（重试时不会再叠一份） */
+  /** 建失败了就把 canvas 上的两个监听摘掉（重试时不会再叠一份） */
   _detachContextListeners() {
     const c = this.canvas;
     if (!c || !c.removeEventListener) return;
@@ -1601,27 +1570,27 @@ export class MapRenderer {
   }
 
   /**
-   * 建"跟上下文绑在一起"的那几样：着色器 / uniform 位置 / VAO / 占位纹理 ✓
+   * 建"跟上下文绑在一起"的那几样：着色器 / uniform 位置 / VAO / 占位纹理
    *
-   * **可以重复调用** ✗ —— 上下文丢了又回来的时候要整个重建一遍 ✓
-   * （手机切后台再回来就是这么一条路：iOS / Android 都会把上下文收走 ✓）
-   * ⚠ 所以这里**不许碰**任何"用户的东西"（笔迹 / 颜色 / 视角）✗ 那些都在别处存着 ✓
+   * 可以重复调用 —— 上下文丢了又回来的时候要整个重建一遍
+   * （手机切后台再回来就是这么一条路：iOS / Android 都会把上下文收走）
+   * 注意：这里不许碰任何地图内容（笔迹 / 颜色 / 视角），那些都在别处存着
    */
   _build() {
     const gl = this.gl;
 
-    /* 🔴 **每个 sampler 都必须指向一张"完整纹理"** ✗ —— WebGL 的硬规矩 ✓
-     *   用户报：手机版黑屏、中心像素 [0,0,0]、**drawArrays 报 1282** ✓
-     *   根因：着色器里声明了 sampler2D uBorderDepth ✓ 而**手机上不建那张粗筛位图** ✗
-     *     → render 里走 else 分支，只把 uBorderDepthOn 设成 0 ✗
-     *       **纹理单元 9 上什么都没绑** → 采样器指向空 → 1282 → 整帧丢弃 → 全黑 ✓✓
-     *   规矩：**就算这一路根本不采样，也得绑一张完整纹理** ✗（1×1 就够 ✓）
-     *   ⚠ 电脑上没事是因为那张图建得出来、绑上了 ✓ → "电脑行手机不行"就是这么来的 ✓
-     *   ⚠ 这张占位纹理要**在 render 之前**就建好 ✗（这里最省事 ✓）*/
+    /* 每个 sampler 都必须指向一张完整纹理 —— WebGL 的硬规矩
+     *   手机版黑屏、中心像素 [0,0,0]、drawArrays 报 1282：
+     *   着色器里声明了 sampler2D uBorderDepth，而手机上不建那张粗筛位图
+     *     → render 里走 else 分支，只把 uBorderDepthOn 设成 0
+     *       纹理单元 9 上什么都没绑 → 采样器指向空 → 1282 → 整帧丢弃 → 全黑
+     *   规矩：就算这一路根本不采样，也得绑一张完整纹理（1×1 就够）
+     *   电脑上没事是因为那张图建得出来、绑上了 → "电脑行手机不行"就是这么来的
+     *   这张占位纹理要在 render 之前就建好（这里最省事）*/
     this.dummyTex = makeTexture(gl, 1, 1, gl.R8, gl.RED, gl.UNSIGNED_BYTE,
       new Uint8Array([0]), gl.NEAREST);
-    /* 国旗那张是**数组纹理**，关掉的时候也得绑一张完整的占位 ✓
-       （不绑 = 纹理不完整 → 整个画面黑 ✓ 这个坑 2026-10-17 踩过 ✓）*/
+    /* 国旗那张是数组纹理，关掉的时候也得绑一张完整的占位
+       （不绑 = 纹理不完整 → 整个画面黑）*/
     try {
       const dA = gl.createTexture();
       gl.bindTexture(gl.TEXTURE_2D_ARRAY, dA);
@@ -1634,49 +1603,49 @@ export class MapRenderer {
     } catch (e) { this.dummyArrTex = null; }
 
     const maxTex = gl.getParameter(gl.MAX_TEXTURE_SIZE);
-    /* ⚠ 上下文丢着的时候 **getParameter 给 null** ✓
-     *   —— 不拦的话下面那句会报"贴图上限只有 nullpx"，把人往"设备太小"上带 ✗
-     *   （真正的原因还是上下文没了 ✓ 先说清楚 ✓）*/
+    /* 上下文丢着的时候 getParameter 给 null
+     *   —— 不拦的话下面那句会报"贴图上限只有 nullpx"，把人往"设备太小"上带
+     *   （真正的原因还是上下文没了，先说清楚）*/
     if (ctxLost(gl)) {
       throw shaderErr('CTX_LOST', '建渲染器的时候显卡上下文已经被收走了（还没轮到编译着色器）');
     }
-    // **地图比"单张贴图上限"大时不再拒绝** ✓ —— setData 里会把它就地切成一块块贴图 ✓
+    // 地图比"单张贴图上限"大时不再拒绝 —— setData 里会把它就地切成一块块贴图
     // （手机 GPU 常见上限只有 4096 / 8192：CK3 9216×4608、EU5 8192×4096、
-    //   米勒投影 11680×5760 都塞不进一张 ✗ 以前这里直接抛错 → 整张图加载不出来 ✗）
-    // 只有小到连一块切片都放不下的设备才真的没救 ✓
+    //   米勒投影 11680×5760 都塞不进一张，直接抛错会导致整张图加载不出来）
+    // 只有小到连一块切片都放不下的设备才真的没救
     if (maxTex < 256) {
       _setupFail('texture-limit', `这个设备的贴图上限只有 ${maxTex}px，放不下任何地图切片。`,
         gl, { stageAt: 'limits', maxTex });
     }
     this.maxTex = maxTex;
 
-    /* 🔴 **先认一下"是不是软件渲染"** ✗✗（2026-10-18 用户报：VIC3 图链接失败）
+    /* 先认一下是不是软件渲染
      *
-     *  报告里 `渲染器 WebKit WebGL · GL WebGL 2.0 ()`、**没有 unmasked 显卡名** ✓
-     *  而「上传到显卡 → 失败」花了 **92 秒** —— 这是 SwiftShader（软件光栅器）
-     *  在拿 CPU 一点点啃这个巨大的片元着色器 ✓ 真显卡上几毫秒就完了 ✓
+     *  报告里 渲染器 WebKit WebGL · GL WebGL 2.0 ()、没有 unmasked 显卡名，
+     *  而「上传到显卡 → 失败」花了 92 秒 —— 这是 SwiftShader（软件光栅器）
+     *  在拿 CPU 一点点啃这个巨大的片元着色器；真显卡上几毫秒就完了
      *
-     *  典型成因：浏览器关掉了「使用硬件加速」/ 远程桌面 / 虚拟机 / 驱动被禁用 ✓
-     *  → 记下来，报错时**第一句就说这个** ✓ 不然用户照着"换浏览器"折腾半天也没用 ✓
+     *  典型成因：浏览器关掉了「使用硬件加速」/ 远程桌面 / 虚拟机 / 驱动被禁用
+     *  → 记下来，报错时第一句就说这个，否则会照着"换浏览器"折腾半天
      */
     this.softwareGL = detectSoftwareGL(gl);
 
-    /* ============ **链接：先试完整版，不行就退精简版** ✗✗（2026-10-19）============
+    /* ============ 链接：先试完整版，不行就退精简版 ============
      *
-     *  完整版里那块"逐像素边界射线"在软件渲染上会把编译器拖垮（92 秒 → 链接失败 ✓）
-     *  精简版把它切掉（见 makeLiteFragment ✓）—— **能显示地图**比什么都强 ✓
+     *  完整版里那块"逐像素边界射线"在软件渲染上会把编译器拖垮（92 秒 → 链接失败）
+     *  精简版把它切掉（见 makeLiteFragment）—— 能显示地图比什么都强
      *
-     *  ⚠ 只有**链接**失败才退精简版 ✗ —— 语法错 / 上下文丢了，换个着色器也一样坏 ✓
-     *  ⚠ 退成功之后 `this.liteShader = true` 要一路带进日志和报告 ✗
-     *     不然下次有人拿到报告，会以为"用户没开硬件加速"是唯一原因 ✓
+     *  只有链接失败才退精简版 —— 语法错 / 上下文丢了，换个着色器也一样坏
+     *  退成功之后 this.liteShader = true 要一路带进日志和报告，
+     *     否则拿到报告的人会以为"没开硬件加速"是唯一原因
      */
     const _linkTry = (fragSrc) => {
       const prog = gl.createProgram();
       if (!prog) return { prog: null, info: 'createProgram 给了 null', linkMs: 0 };
       gl.attachShader(prog, compile(gl, gl.VERTEX_SHADER, VERT));
       gl.attachShader(prog, compile(gl, gl.FRAGMENT_SHADER, fragSrc));
-      /* ⏱ **量一下链接花了多久** ✗✗（2026-10-18 用户报告：这一段花了 92 秒）
-       *  真显卡几毫秒，软件渲染一两分钟 —— 这个数本身就是"是不是用上显卡"的铁证 ✓ */
+      /* 量一下链接花了多久：真显卡几毫秒，软件渲染一两分钟 ——
+       * 这个数本身就是"是不是用上显卡"的证据 */
       const t0 = (typeof performance !== 'undefined' && performance.now)
         ? performance.now() : Date.now();
       gl.linkProgram(prog);
@@ -1684,21 +1653,21 @@ export class MapRenderer {
         ? performance.now() : Date.now()) - t0);
       if (gl.getProgramParameter(prog, gl.LINK_STATUS)) return { prog, info: '', linkMs: ms };
       const info = String(gl.getProgramInfoLog(prog) || '').trim();
-      try { gl.deleteProgram(prog); } catch (e) { /* ✓ */ }
+      try { gl.deleteProgram(prog); } catch (e) { /* 忽略 */ }
       return { prog: null, info, linkMs: ms };
     };
 
-    /* 🔴 **软件渲染不要先撞完整版** ✗✗（2026-11-01 实测）
+    /* 软件渲染不要先撞完整版
      *
-     *   没开硬件加速的机器上，「完整着色器链接」单这一项 **39 秒** ✓
-     *   （SwiftShader 现场编译；第二次打开只 43 ms，因为浏览器缓存了编译结果 ✓）
-     *   而它最后是**成功**的 —— 用户干等 40 秒才看到地图，还以为软件坏了 ✓
+     *   没开硬件加速的机器上，「完整着色器链接」单这一项 39 秒
+     *   （SwiftShader 现场编译；第二次打开只 43 ms，因为浏览器缓存了编译结果）
+     *   而它最后是成功的 —— 干等 40 秒才看到地图，会以为软件坏了
      *
-     *   软件渲染本来也画不快，完整版那块"逐像素边界射线"在它身上毫无收益 ✓
-     *   所以：认出来是软件渲染，就**直接从「最简边界」起步**（本层头衔的边界还在 ✓），
-     *   完整版留给真显卡 ✓
-     *   ⚠ 真显卡一个字都不变 ✗ —— 只有 detectSoftwareGL 说"是"才走这条 ✓
-     *   ⚠ `?shader=border` 这种地址参数可以手动指定档位（量性能 / 支持用 ✓）
+     *   软件渲染本来也画不快，完整版那块"逐像素边界射线"在它身上毫无收益
+     *   所以：认出来是软件渲染，就直接从「最简边界」起步（本层头衔的边界还在），
+     *   完整版留给真显卡
+     *   真显卡的行为不变 —— 只有 detectSoftwareGL 说"是"才走这条
+     *   ?shader=border 这种地址参数可以手动指定档位（量性能 / 支持用）
      */
     const _forcedTier = _shaderTierFromUrl();
     const _skipFull = _forcedTier ? (_forcedTier !== 'full') : (!!this.softwareGL || this._fastBoot);
@@ -1719,10 +1688,10 @@ export class MapRenderer {
     const _order = ['mid', 'border', 'title', 'lite'];
     const _chainStart = () => {
       if (_forcedTier) return Math.max(0, _order.indexOf(_forcedTier));
-      if (this.softwareGL || this._fastBoot) return 2;   /* title：边界还在，2.4 s ✓ */
+      if (this.softwareGL || this._fastBoot) return 2;   /* title：边界还在，2.4 s */
       return 0;     // 软件渲染直接落 title（border 那档 8.5 s，纯烧时间）
     };
-    /* 从第 startIdx 档起顺着往下试，谁先链成功就用谁 ✓ */
+    /* 从第 startIdx 档起顺着往下试，谁先链成功就用谁 */
     const _tryChain = (startIdx, why) => {
       for (let i = startIdx; i < _variants.length; i++) {
         const [tier, src, label] = _variants[i];
@@ -1736,7 +1705,7 @@ export class MapRenderer {
           try {
             console.warn('[gl] 用' + label + (why ? '（' + why + '）' : '')
               + '，链接 ' + lr.linkMs + ' ms ✓');
-          } catch (e) { /* ✓ */ }
+          } catch (e) { /* 忽略 */ }
           return lr;
         }
       }
@@ -1750,7 +1719,7 @@ export class MapRenderer {
           : (this.softwareGL ? '软件渲染' : '快速启动'))
           + '：先用「' + (_forcedTier || 'title') + '」把图打出来'
           + (this._fastBoot && !this.softwareGL && !_forcedTier ? '，完整版后台再升 ✓' : ' ✓'));
-      } catch (e) { /* ✓ */ }
+      } catch (e) { /* 忽略 */ }
       _r = _tryChain(_chainStart(), this.softwareGL ? '软件渲染（没用上显卡）' : '');
       linkMs = _r.linkMs || 0;
     } else {
@@ -1758,8 +1727,8 @@ export class MapRenderer {
       linkMs = _r.linkMs;
       linkLog = _r.info;
       if (!_r.prog) {
-        /* ⚠ **先问上下文再说着色器** ✗ —— 上下文被收走时 LINK_STATUS 也是 false ✓
-         *   这种"失败"等上下文回来重来一次就好了，报成链接失败会把人带偏 ✓ */
+        /* 先问上下文再说着色器 —— 上下文被收走时 LINK_STATUS 也是 false
+         *   这种"失败"等上下文回来重来一次就好了，报成链接失败会把人带偏 */
         if (ctxLost(gl)) {
           throw shaderErr('CTX_LOST', '着色器还没链接完，显卡上下文就被收走了'
             + '（切后台 / 显存紧张 / 驱动重置都会这样）');
@@ -1769,7 +1738,7 @@ export class MapRenderer {
           _setupFail('context-lost', '着色器链接时 WebGL 上下文丢失', gl,
             { stageAt: 'link', log: linkLog, glError: ge0, linkMs });
         }
-        /* 只有"像个真着色器问题"时才降档 ✗（显存不足再试只是白等 ✓） */
+        /* 只有"像个真着色器问题"时才降档（显存不足再试只是白等） */
         if (ge0 !== 0x0505) {
           const _why = linkLog || '（驱动没给日志）';
           const lr = _tryChain(0, _why);
@@ -1778,9 +1747,9 @@ export class MapRenderer {
       }
     }
     if (!_r.prog) {
-      /* ⚠ 日志**可能是空的** ✗（驱动内部报错时只给个 LINK_STATUS = false ✓）
+      /* 日志可能是空的（驱动内部报错时只给个 LINK_STATUS = false）
           那就把渲染器和版本一起带上 —— 否则报上来只有"链接失败"四个字，
-          根因（指令数超限 / 寄存器不够 / ANGLE 翻译不过）一点都看不出来 ✓ */
+          根因（指令数超限 / 寄存器不够 / ANGLE 翻译不过）一点都看不出来 */
       _setupFail('shader-link',
         linkLog ? '着色器链接失败：' + linkLog : '着色器链接失败（驱动没给日志）', gl,
         { stageAt: 'link', log: linkLog, glError: (gl.getError && gl.getError()) || 0, linkMs,
@@ -1791,8 +1760,8 @@ export class MapRenderer {
     this._installProgram(prog);
     this._linkMs = linkMs;
     this._linkLog = linkLog;
-    /* 数组纹理能不能采（真数据试一遍 ✓ 见 _probeArrTex）——
-     *   ⚠ 只在这里跑一次 ✗：上下文重建会再走一遍 _build ✓ 正好重测 ✓ */
+    /* 数组纹理能不能采（真数据试一遍，见 _probeArrTex）——
+     *   只在这里跑一次：上下文重建会再走一遍 _build，正好重测 */
     const _arr = this._probeArrTex();
     this.arrOk = _arr.ok;
     this.arrWhy = _arr.why || '';
@@ -1800,31 +1769,30 @@ export class MapRenderer {
 
     gl.disable(gl.DEPTH_TEST);
     gl.disable(gl.BLEND);
-    // 用**现在**的背景色，不是出厂色 —— 重建时别把用户改过的背景抹回默认 ✓
+    // 用当前的背景色，不是出厂色 —— 重建时别把调好的背景抹回默认
     gl.clearColor(this.backdrop[0], this.backdrop[1], this.backdrop[2], 1);
   }
 
   /**
-   * 把一套 program 装到渲染器上：uniform 位置 + 顶点数组 ✓
+   * 把一套 program 装到渲染器上：uniform 位置 + 顶点数组
    *
-   *  原来这一坨是直接写在 `_build()` 里的 ✗ —— 后台升级着色器时要能**再装一遍**，
-   *  所以抽出来 ✓（2026-11-01）
+   *  这段独立成函数：后台升级着色器时需要重新安装一遍
    */
   _installProgram(prog) {
     const gl = this.gl;
     this.prog = prog;
     this.uni = {};
-    /* **换了程序 → 每帧那本"上次发过什么"的账全作废** ✗✗
-     *   新程序的 uniform 全是默认值（0）✓ 旧账里记的"已经发过 1 了"是**别的程序**的 ✓
-     *   不清就会整帧沿用旧值 → 后台升级着色器之后画面全白/全黑 ✓（这条极难对出来 ✓）*/
+    /* 换了程序 → 每帧那本"上次发过什么"的账全作废
+     *   新程序的 uniform 全是默认值（0），旧账里记的"已经发过 1 了"是别的程序的
+     *   不清就会整帧沿用旧值 → 后台升级着色器之后画面全白/全黑（极难对出来）*/
     this._uCache = new Map();
-    /* **类色那一组要重发** ✗✗（2026-11-03）
-     *   `uNature[5]` 是**数组** uniform，新程序的默认值同样是全 0 ✓
-     *   它不走 `_uCache`（那本账一个 location 只记 4 个数 ✗ 装不下 15 个 float），
-     *   由 `natureDirty` 单独管 → 换程序必须置脏，否则后台升级完着色器
-     *   海/湖/河那几类立刻变黑（跟刚修的那个 bug 一模一样 ✓）*/
+    /* 类色那一组要重发
+     *   uNature[5] 是数组 uniform，新程序的默认值同样是全 0
+     *   它不走 _uCache（那本账一个 location 只记 4 个数，装不下 15 个 float），
+     *   由 natureDirty 单独管 → 换程序必须置脏，否则后台升级完着色器
+     *   海/湖/河那几类立刻变黑 */
     this.natureDirty = true;
-    this._texBound = null;      // 纹理那本账：交给 render() 第一次用时重建 ✓
+    this._texBound = null;      // 纹理那本账：交给 render() 第一次用时重建
     this._texEpoch = -1;
     for (const n of ['uView', 'uProv', 'uProvArr', 'uProvTiles', 'uProvCols', 'uUseTiles', 'uProvScale', 'uNoAA', 'uTitleMap', 'uColorLut', 'uPaint', 'uPaintLabel', 'uBorderDepth', 'uBorderDepthOn',
                      'uMapSize', 'uTitleMapW', 'uNumProvinces', 'uPaintW', 'uTier', 'uEditTier', 'uFineTier',
@@ -1838,8 +1806,8 @@ export class MapRenderer {
                      'uWaterBorderOn', 'uWaterBorderW', 'uWaterBorderA',
                      'uWaterKind', 'uWaterKindW',
                      'uFlagIdx', 'uFlagIdxW', 'uFlagSlots', 'uFlagSlotW', 'uFlagTex', 'uFlagOn',
-                     /* 🔴 **荒地边界那三根**（2026-10-17 ✓）——
-                      *   ⚠ 它**没有自己的纹理 uniform** ✗（读的是 uKindTex ✓ 见着色器那段 ✓）*/
+                     /* 荒地边界那三根 ——
+                      *   它没有自己的纹理 uniform（读的是 uKindTex，见着色器那段）*/
                      'uWasteBorderOn', 'uWasteBorderW', 'uWasteBorderA',
                      'uBackdrop']) {
       this.uni[n] = gl.getUniformLocation(prog, n);
@@ -1858,38 +1826,38 @@ export class MapRenderer {
   }
 
   /**
-   * 后台把着色器升级到完整版 ✓（2026-11-01）
+   * 后台把着色器升级到完整版
    *
-   *  为什么 ✗：完整版在入门独显/集显上**首次链接要 39 秒**（实测 AMD 610M + ANGLE；
-   *  浏览器缓存命中后只 43 ms）—— 让玩家干等 39 秒，等于"这软件坏了" ✓
-   *  现在先用低一档把图打出来（2 秒），再在后台编完整版，编好了**无缝换掉** ✓
+   *  完整版在入门独显/集显上首次链接要 39 秒（实测 AMD 610M + ANGLE；
+   *  浏览器缓存命中后只 43 ms）—— 干等 39 秒，等于"这软件坏了"
+   *  现在先用低一档把图打出来（2 秒），再在后台编完整版，编好了无缝换掉
    *
    *  两个要点：
-   *   · 有 `KHR_parallel_shader_compile` 就用它轮询 —— 编译在 GPU 进程里跑，
-   *     主线程 `await` 等，**界面不冻** ✓（没这个扩展就退回同步链接 ✓）
-   *   · 换 program 只在**画完一帧之后**（dirty 置真即可），旧纹理/数据一个不动 ✓
+   *   · 有 KHR_parallel_shader_compile 就用它轮询 —— 编译在 GPU 进程里跑，
+   *     主线程 await 等，界面不冻（没这个扩展就退回同步链接）
+   *   · 换 program 只在画完一帧之后（dirty 置真即可），旧纹理/数据一个不动
    *
    *  @returns {Promise<boolean>} 真的换上了没有
    */
   async upgradeShader() {
     if (this.upgrading || this.ctxLost) return false;
     if (this.shaderTier === 'full') return false;
-    /* 软件渲染就别升了 ✓ —— SwiftShader 编一遍要 45 秒，纯烧 CPU 换一点画质不值 ✓
-       （它本来也画不快，多级边界对它只是负担 ✓）*/
+    /* 软件渲染就别升了 —— SwiftShader 编一遍要 45 秒，纯烧 CPU 换一点画质不值
+       （它本来也画不快，多级边界对它只是负担）*/
     if (this.softwareGL) return false;
-    if (_shaderTierFromUrl()) return false;      // 手动指定档位时就别自作主张 ✓
+    if (_shaderTierFromUrl()) return false;      // 手动指定档位时就别自作主张
     this.upgrading = true;
     const gl = this.gl;
-    /* 🔴 **缺扩展时不许静默退出** ✗✗（2026-11-03 用户实测报告）
+    /* 缺扩展时不许静默退出
      *
-     *   原来这里：没有 `KHR_parallel_shader_compile` → 直接 return false，**一行日志都不打** ✓
-     *   Firefox 上正好命中 → 一直停在「最简边界（仅本层头衔）」，
-     *   国家之间的粗边界整片消失，诊断报告里却干干净净，查了很久 ✓
+     *   没有 KHR_parallel_shader_compile 时直接 return false、一行日志都不打，
+     *   会一直停在「最简边界（仅本层头衔）」，国家之间的粗边界整片消失，
+     *   诊断报告里却干干净净。
      *
-     *   现在：缺扩展就**同步**升（先打一条警告说明可能卡一下 ✓）。
-     *   真显卡缓存命中时是毫秒级，只有极冷的首次编译才会卡 ✓
+     *   现在：缺扩展就同步升（先打一条警告说明可能卡一下）。
+     *   真显卡缓存命中时是毫秒级，只有极冷的首次编译才会卡
      *
-     *   ⚠ 这个检查必须在 `gl` 拿到**之后** ✗（我第一版写在了前面，直接 ReferenceError ✓）*/
+     *   这个检查必须在 gl 拿到之后（写在前头会 ReferenceError）*/
     let parExt = null;
     try {
       parExt = (gl.getExtension && gl.getExtension('KHR_parallel_shader_compile')) || null;
@@ -1897,55 +1865,55 @@ export class MapRenderer {
     if (!parExt) {
       try {
         console.warn('[gl] 没有 KHR_parallel_shader_compile，改用同步升级（可能卡一下）✓');
-      } catch (e) { /* ✓ */ }
-      try { LOG.event('渲染升级', '无并行编译扩展，同步升一档'); } catch (e) { /* ✓ */ }
+      } catch (e) { /* 忽略 */ }
+      try { LOG.event('渲染升级', '无并行编译扩展，同步升一档'); } catch (e) { /* 忽略 */ }
     }
     const t0 = (typeof performance !== 'undefined' ? performance.now() : Date.now());
     try {
-      /* 依次试完整 → 中等 → 边界，取第一个链成功的；都不行就维持现状 ✓ */
+      /* 依次试完整 → 中等 → 边界，取第一个链成功的；都不行就维持现状 */
       const _rank = { lite: 0, title: 1, border: 2, mid: 3, full: 4 };
       const _now = _rank[this.shaderTier] == null ? 0 : _rank[this.shaderTier];
       let prog = null;
       let tier = '';
       for (const [t, src] of [['full', FRAG], ['mid', makeMidFragment(FRAG)], ['border', makeBorderOnlyFragment(FRAG)]]) {
         if (!src) continue;
-        if (_rank[t] <= _now) break;            // 不比现在好就别试了 ✓
+        if (_rank[t] <= _now) break;            // 不比现在好就别试了
         prog = await this._linkFullAsync(src, parExt);
         if (prog) { tier = t; break; }
       }
       const ms = Math.round(((typeof performance !== 'undefined' ? performance.now() : Date.now())) - t0);
-      /* 一档都没升上去也要留痕 ✗（2026-11-03：静默失败让用户以为是"地图坏了"）*/
+      /* 一档都没升上去也要留痕：静默失败会让人以为是"地图坏了" */
       if (!prog) {
         this.upgrading = false;
         try {
           console.warn('[gl] 后台升级没有更优档位可用，维持「' + this.shaderTier + '」✗');
-        } catch (e) { /* ✓ */ }
-        try { LOG.event('渲染升级', '没有更优档位，维持「' + this.shaderTier + '」'); } catch (e) { /* ✓ */ }
+        } catch (e) { /* 忽略 */ }
+        try { LOG.event('渲染升级', '没有更优档位，维持「' + this.shaderTier + '」'); } catch (e) { /* 忽略 */ }
         return false;
       }
-      if (this.ctxLost) { try { gl.deleteProgram(prog); } catch (e) { /* ✓ */ } this.upgrading = false; return false; }
+      if (this.ctxLost) { try { gl.deleteProgram(prog); } catch (e) { /* 忽略 */ } this.upgrading = false; return false; }
       const old = this.prog;
       const oldVao = this.vao;
       this._installProgram(prog);
-      try { if (old) gl.deleteProgram(old); } catch (e) { /* ✓ */ }
-      try { if (oldVao) gl.deleteVertexArray(oldVao); } catch (e) { /* ✓ */ }
+      try { if (old) gl.deleteProgram(old); } catch (e) { /* 忽略 */ }
+      try { if (oldVao) gl.deleteVertexArray(oldVao); } catch (e) { /* 忽略 */ }
       this.shaderTier = tier;
       this.liteShader = (tier === 'lite');
       this.liteWhy = '';
       this._linkMs = ms;
       this.dirty = true;
       this.upgrading = false;
-      try { console.log('[gl] 已后台升级着色器到「' + tier + '」（' + ms + ' ms）✓'); } catch (e) { /* ✓ */ }
+      try { console.log('[gl] 已后台升级着色器到「' + tier + '」（' + ms + ' ms）✓'); } catch (e) { /* 忽略 */ }
       return true;
     } catch (e) {
       this.upgrading = false;
-      try { console.warn('[gl] 后台升级着色器失败（继续用当前档 ✓）：' + ((e && e.message) || e)); } catch (e2) { /* ✓ */ }
+      try { console.warn('[gl] 后台升级着色器失败（继续用当前档 ✓）：' + ((e && e.message) || e)); } catch (e2) { /* 忽略 */ }
       return false;
     }
   }
 
-  /** 链接完整版；能并行就并行（轮询期间主线程是自由的 ✓），不能就同步 ✓
-   *  @param {any} parExt 上层已经取过的 KHR_parallel_shader_compile（null = 没有，走同步 ✓）*/
+  /** 链接完整版；能并行就并行（轮询期间主线程是自由的），不能就同步
+   *  @param {any} parExt 上层已经取过的 KHR_parallel_shader_compile（null = 没有，走同步）*/
   _linkFullAsync(fragSrc, parExt) {
     const gl = this.gl;
     const prog = gl.createProgram();
@@ -1958,15 +1926,15 @@ export class MapRenderer {
       : ((gl.getExtension && gl.getExtension('KHR_parallel_shader_compile')) || null);
     if (!ext) {
       const ok = gl.getProgramParameter(prog, gl.LINK_STATUS);
-      if (!ok) { try { gl.deleteProgram(prog); } catch (e) { /* ✓ */ } return Promise.resolve(null); }
+      if (!ok) { try { gl.deleteProgram(prog); } catch (e) { /* 忽略 */ } return Promise.resolve(null); }
       return Promise.resolve(prog);
     }
     return new Promise((resolve) => {
-      /* 🔴 **轮询必须有个尽头** ✗✗（2026-11-03 用户报告）
-       *   有的驱动/浏览器 `COMPLETION_STATUS_KHR` 永远不置真 →
-       *   这个 Promise 永不 resolve，`upgrading` 一直是 true → 后续每次升级都直接返回 ✗
-       *   表现就是"停在最简边界、且一个字日志都没有" ✓
-       *   现在：20 秒还没好就放弃这一档（并留一条警告 ✓）*/
+      /* 轮询必须有个尽头
+       *   有的驱动/浏览器 COMPLETION_STATUS_KHR 永远不置真 →
+       *   这个 Promise 永不 resolve，upgrading 一直是 true → 后续每次升级都直接返回
+       *   表现就是"停在最简边界、且一个字日志都没有"
+       *   现在：20 秒还没好就放弃这一档（并留一条警告）*/
       const t0 = (typeof performance !== 'undefined' && performance.now)
         ? performance.now() : Date.now();
       const poll = () => {
@@ -1976,8 +1944,8 @@ export class MapRenderer {
         try { done = !!gl.getProgramParameter(prog, ext.COMPLETION_STATUS_KHR); } catch (e) { done = true; }
         if (!done) {
           if (el > 20000) {
-            try { console.warn('[gl] 并行编译 20 秒没完成，放弃这一档 ✓'); } catch (e) { /* ✓ */ }
-            try { gl.deleteProgram(prog); } catch (e) { /* ✓ */ }
+            try { console.warn('[gl] 并行编译 20 秒没完成，放弃这一档 ✓'); } catch (e) { /* 忽略 */ }
+            try { gl.deleteProgram(prog); } catch (e) { /* 忽略 */ }
             resolve(null);
             return;
           }
@@ -1986,7 +1954,7 @@ export class MapRenderer {
         }
         let ok = false;
         try { ok = !!gl.getProgramParameter(prog, gl.LINK_STATUS); } catch (e) { ok = false; }
-        if (!ok) { try { gl.deleteProgram(prog); } catch (e) { /* ✓ */ } resolve(null); return; }
+        if (!ok) { try { gl.deleteProgram(prog); } catch (e) { /* 忽略 */ } resolve(null); return; }
         resolve(prog);
       };
       setTimeout(poll, 40);
@@ -1997,35 +1965,35 @@ export class MapRenderer {
     return [tid % this.lutW, Math.floor(tid / this.lutW)];
   }
 
-  /* ============ **跑一遍"这台机器的纹理到底能不能采"** ✗✗（2026-10-19）============
+  /* ============ 跑一遍"这台机器的纹理到底能不能采" ============
    *
-   *  为什么要实测、不能信能力查询 ✗：
-   *    HOI4 那台（Adreno 616）的图形体检里，R16UI 的 texelFetch 读回 **0**、
-   *    R16UI 的数组纹理三层**全是 0** —— 可 `MAX_ARRAY_TEXTURE_LAYERS` 报的是 2048 ✓
-   *    **能力查询说"有"，实际用起来是坏的** ✓ 这种驱动只能拿真数据试出来 ✓
+   *  为什么要实测、不能信能力查询：
+   *    HOI4 那台（Adreno 616）的图形体检里，R16UI 的 texelFetch 读回 0、
+   *    R16UI 的数组纹理三层全是 0 —— 可 MAX_ARRAY_TEXTURE_LAYERS 报的是 2048
+   *    能力查询说"有"，实际用起来是坏的，这种驱动只能拿真数据试出来
    *
-   *  所以：建一张 8×8、3 层的 **RG8** 数组纹理，塞几个已知的双字节值，
-   *  用一个 1×1 的离屏帧缓冲画一格、把采到的两个通道读回来比 ✓
-   *    · 对得上 → `arrOk = true`，分块路径照常走 ✓
-   *    · 对不上 → `arrOk = false`，setData 改走「整图缩小」那条（见 uProvScale ✓）
+   *  所以：建一张 8×8、3 层的 RG8 数组纹理，塞几个已知的双字节值，
+   *  用一个 1×1 的离屏帧缓冲画一格、把采到的两个通道读回来比
+   *    · 对得上 → arrOk = true，分块路径照常走
+   *    · 对不上 → arrOk = false，setData 改走「整图缩小」那条（见 uProvScale）
    *
-   *  ⚠ 用的是**离屏 FBO**，不碰主画布 ✗ —— 主画布这时候还没有地图，画上去只会闪一下 ✓
-   *  ⚠ 任何一步出岔子都**当成不支持**（保守 ✓）：顶多把 id 图缩着传，画面糙一点，
-   *    但**不会白屏** ✓ 反过来误判成支持，就是那台机器原样复发 ✓
+   *  用的是离屏 FBO，不碰主画布 —— 主画布这时候还没有地图，画上去只会闪一下
+   *  任何一步出岔子都当成不支持（保守）：顶多把 id 图缩着传，画面糙一点，
+   *    但不会白屏；反过来误判成支持，就是那台机器原样复发
    */
   _probeArrTex() {
     const gl = this.gl;
-    glTexTouched();      // 下面这一串会用 0 号单元传测试纹理 → render 的账过期 ✓
-    /* ⚠ **三态** ✗：'ok' 实测通过 / 'bad' 实测读回不对 / 'unknown' 这次探测做不了
-     *   —— 只有 'bad' 才改道（见 setData ✓）
-     *   探测本身做不成时**不许判坏** ✗：宁可维持老行为（分块照走 ✓），
-     *   也别因为"这台机器不支持离屏帧缓冲"就把画质无缘无故降一档 ✓
-     *   （自检桩里的假 GL 就是这种情况：FBO 状态取不到 ✓ 不能当成"驱动坏了" ✓）*/
+    glTexTouched();      // 下面这一串会用 0 号单元传测试纹理 → render 的账过期
+    /* 三态：'ok' 实测通过 / 'bad' 实测读回不对 / 'unknown' 这次探测做不了
+     *   —— 只有 'bad' 才改道（见 setData）
+     *   探测本身做不成时不许判坏：宁可维持老行为（分块照走），
+     *   也别因为"这台机器不支持离屏帧缓冲"就把画质无缘无故降一档
+     *   （自检桩里的假 GL 就是这种情况：FBO 状态取不到，不能当成"驱动坏了"）*/
     const out = { ok: 'unknown', why: '' };
     let tex = null, fb = null, rb = null, prog = null;
     try {
       const S = 8, L = 3;
-      /* 已知值：层 c 的 (1,1) 格 = 0x0100 + 44 + c*256？—— 直接用三组好认的数 ✓ */
+      /* 已知值：每层 (1,1) 格填入下面三组可分辨的双字节值 */
       const want = [[0x2C, 0x01], [0x91, 0x5B], [0x75, 0x75]];   // 300 / 23441 / 30069
       const data = new Uint8Array(S * S * L * 2);
       for (let l = 0; l < L; l++) {
@@ -2048,7 +2016,7 @@ export class MapRenderer {
       gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, 0, S, S, L,
         gl.RG, gl.UNSIGNED_BYTE, data);
 
-      /* 1×1 的离屏帧缓冲（RGBA8）—— 只画一格，只读一个像素 ✓ */
+      /* 1×1 的离屏帧缓冲（RGBA8）—— 只画一格，只读一个像素 */
       rb = gl.createTexture();
       gl.bindTexture(gl.TEXTURE_2D, rb);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
@@ -2119,7 +2087,7 @@ void main() {
       out.why = String((e && e.message) || e).slice(0, 120);
       return out;
     } finally {
-      /* 收摊：把状态还回去 ✓（上下文这时还没开始画地图，但也别留垃圾 ✓）*/
+      /* 收摊：把状态还回去（上下文这时还没开始画地图，但也别留垃圾）*/
       try {
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
         gl.bindVertexArray(null);
@@ -2127,23 +2095,22 @@ void main() {
         if (rb) gl.deleteTexture(rb);
         if (fb) gl.deleteFramebuffer(fb);
         if (prog) gl.deleteProgram(prog);
-        /* ⚠ **有次数上限** ✗✗ —— 这里原来写的是 while(getError() !== NO_ERROR)：
-         *   在自检桩那个假 GL 上，getError 永远返回 1、NO_ERROR 也返回 1（Proxy 给常数）✓
-         *   → 条件恒假？不，是恒真 → **死循环** ✓（真跑起来整台机器卡在开图那一步 ✓）
-         *   清错误码本来就只是"顺手打扫"，最多几个就够 ✓ */
+        /* 清错误码必须有次数上限：
+         *   自检桩的假 GL 上 getError 恒返回 1、NO_ERROR 也是 1（Proxy 给常数），
+         *   写成 while(getError() !== NO_ERROR) 会死循环，整机卡在开图那一步 */
         for (let i = 0; i < 8; i++) {
           if (gl.getError() === gl.NO_ERROR) break;
         }
-      } catch (e) { /* ✓ */ }
+      } catch (e) { /* 忽略 */ }
     }
   }
 
-  /* ============ **归一化编码的工具**（2026-10-19 ✓ 见 FRAG 开头那段说明）============
+  /* ============ 归一化编码的工具（见 FRAG 开头那段说明）============
    *
-   *  Uint16Array 在**小端**内存里就是一个元素两个字节 { 低字节, 高字节 } ✓
-   *  而 RG8 的 R 通道排在前、G 在后 ✓ —— 两者**逐字节同构** ✓
-   *  所以上传时**不用拆包、不用拷一份**，把它按字节看一眼直接喂给 GL 就行 ✓
-   *  （省掉的那次 40MB 拷贝，正好是手机上最容易出事的那个量级 ✗）
+   *  Uint16Array 在小端内存里就是一个元素两个字节 { 低字节, 高字节 }
+   *  而 RG8 的 R 通道排在前、G 在后 —— 两者逐字节同构
+   *  所以上传时不用拆包、不用拷一份，按字节看直接喂给 GL 即可
+   *  （省掉的那次 40MB 拷贝，正好是手机上最容易出事的量级）
    */
   static _bytesOf16(a, count) {
     if (!a) return null;
@@ -2151,7 +2118,7 @@ void main() {
     if (a instanceof Uint16Array) {
       return new Uint8Array(a.buffer, a.byteOffset, Math.min(a.length, count) * 2);
     }
-    // 普通数组 / 类型不对的：老实转一份 ✓
+    // 普通数组 / 类型不对的：老实转一份
     const out = new Uint8Array((count || a.length) * 2);
     const n = Math.min(a.length, count || a.length);
     for (let i = 0; i < n; i++) {
@@ -2162,12 +2129,12 @@ void main() {
     return out;
   }
 
-  /** 建一张 **RG8 归一化**的 2D 数组纹理（每层一块 = 每层一块省份 id），并上传第 0 层 */
+  /** 建一张 RG8 归一化的 2D 数组纹理（每层一块 = 每层一块省份 id），并上传第 0 层 */
   makeTileArray(tileW, tileH, layers, first) {
     const gl = this.gl;
     const tex = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D_ARRAY, tex);
-    glTexTouched();      // 绑在"当前单元"上 → render 的账过期 ✓
+    glTexTouched();      // 绑在"当前单元"上 → render 的账过期
     gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
@@ -2182,11 +2149,11 @@ void main() {
   }
 
   /**
-   * 从整张 id 数组里切一块、传给数组纹理的第 (r, c) 块 ✓（合成切块专用）
+   * 从整张 id 数组里切一块、传给数组纹理的第 (r, c) 块（合成切块专用）
    *
-   *  ⚠ 传过的直接返回 false（`uploadedTiles` 去重 ✓）—— 帧循环每帧都会问一遍，
-   *    不去重的话每帧白切 10MB 内存 + 白传一次 ✓
-   *  ⚠ 右/下边缘不足一块的地方补 0（= 无省份 ✓）
+   *  传过的直接返回 false（uploadedTiles 去重）—— 帧循环每帧都会问一遍，
+   *    不去重的话每帧白切 10MB 内存 + 白传一次
+   *  右/下边缘不足一块的地方补 0（= 无省份）
    *
    *  @returns {boolean} 真传上去了
    */
@@ -2215,7 +2182,7 @@ void main() {
     return this.uploadTile(layer, buf);
   }
 
-  /** 把某一块上传到数组纹理的第 layer 层（**RG8 归一化** ✓ 见上面 _bytesOf16） */
+  /** 把某一块上传到数组纹理的第 layer 层（RG8 归一化，见上面 _bytesOf16） */
   uploadTile(layer, data) {
     const gl = this.gl;
     if (!this.provArrTex || !this.tileInfo) return false;
@@ -2223,23 +2190,23 @@ void main() {
     const _t0 = performance.now();
     const n = this.tileInfo.tileW * this.tileInfo.tileH;
     gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.provArrTex);
-    glTexTouched();      // ⚠ 传块每帧都可能来一次 → 这条**必须**有 ✓（否则第 12 号单元那本账会错 ✓）
+    glTexTouched();      // 传块每帧都可能来一次 → 这条必须有（否则第 12 号单元那本账会错）
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
     gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, layer,
       this.tileInfo.tileW, this.tileInfo.tileH, 1,
       gl.RG, gl.UNSIGNED_BYTE, MapRenderer._bytesOf16(data, n));
-    this.uploadedTiles.add(layer);      // 传成功了才记 ✓（早退 false 的那条路不算 ✓）
+    this.uploadedTiles.add(layer);      // 传成功了才记（早退 false 的那条路不算）
     this.dirty = true;
-    /* 📊 性能指标（app.js 的 PERF）：这里只**累加**，frameBody 每帧读走并清零 ✓
-     *   合成切块 / tiles.json / 悬停拉块三条路都汇到这一个出口，量一处就够 ✓ */
+    /* 性能指标（app.js 的 PERF）：这里只累加，frameBody 每帧读走并清零
+     *   合成切块 / tiles.json / 悬停拉块三条路都汇到这一个出口，量一处就够 */
     this._perfTileMs = (this._perfTileMs || 0) + (performance.now() - _t0);
     return true;
   }
 
   /**
-   * 把**整张** id 图按块传进数组纹理 ✓
-   * 用在"设备上限装不下整图、我们当场切块"这条路上（没有 tiles.json ✓ 数据全在内存里 ✓）。
-   * 带 tiles.json 的按视野逐块喂，不走这里 ✓
+   * 把整张 id 图按块传进数组纹理
+   * 用在"设备上限装不下整图、按需就地切块"这条路上（没有 tiles.json，数据全在内存里）。
+   * 带 tiles.json 的按视野逐块喂，不走这里
    */
   uploadAllTiles(ids, layout) {
     const m = this.meta;
@@ -2249,7 +2216,7 @@ void main() {
       for (let c = 0; c < layout.cols; c++) {
         const x0 = c * layout.tileW;
         const y0 = r * layout.tileH;
-        buf.fill(0);                       // 右/下边缘不足一块的地方补 0（= 无省份 ✓）
+        buf.fill(0);                       // 右/下边缘不足一块的地方补 0（= 无省份）
         for (let y = 0; y < layout.tileH; y++) {
           const sy = y0 + y;
           if (sy >= m.mapHeight) break;
@@ -2265,26 +2232,25 @@ void main() {
   }
 
   /* ===================== 国旗（剪贴蒙版）=========================
-   *  2026-11-02 用户要的「国旗地图」：给一个色块贴一张旗，旗面拉满它的外接框，
-   *  被国土形状裁掉 —— 就是 PS 的剪贴蒙版 ✓
+   *  给一个色块贴一张旗，旗面拉满它的外接框，被国土形状裁掉 —— 剪贴蒙版
    *
    *  三张纹理：
-   *    · flagIdxTex   R8      pid → 旗号（0 = 没旗）✓ 换贴旗时重建
-   *    · flagSlotTex  RGBA32F 每面旗两格：矩形 / 图集 uv ✓ 拖拽时只重传这一张
-   *    · flagTexArr   RGBA8 数组纹理，**一层一面旗**（1024²/层）✓ 不封顶
+   *    · flagIdxTex   R8      pid → 旗号（0 = 没旗），换贴旗时重建
+   *    * flagSlotTex  RGBA32F 每面旗两格：矩形 / 图集 uv，拖拽时只重传这一张
+   *    · flagTexArr   RGBA8 数组纹理，一层一面旗（1024²/层），不封顶
    *
-   *  ⚠ 数据存在渲染器上（`this._flagMask` 等）✗ —— 上下文丢失重建后要**原样重传** ✓
-   *     不然用户切个后台回来旗子就没了 ✓
+   *  数据存在渲染器上（this._flagMask 等）—— 上下文丢失重建后要原样重传，
+   *     否则切个后台回来旗子就没了
    */
 
-  /** 每省一个旗号（Uint8Array(numProvinces)，0 = 没旗）✓ 换旗才重传 */
+  /** 每省一个旗号（Uint8Array(numProvinces)，0 = 没旗）换旗才重传 */
   setFlagMask(mask) {
     this._flagMask = mask || null;
     this._uploadFlagMask();
     this.dirty = true;
   }
 
-  /** 每面旗的 矩形 / uv / 层号（Float32Array(4*N*3)）✓ 拖拽时每帧都可能重传 */
+  /** 每面旗的 矩形 / uv / 层号（Float32Array(4*N*3)）拖拽时每帧都可能重传 */
   setFlagSlots(slots) {
     this._flagSlots = slots || null;
     this._uploadFlagSlots();
@@ -2292,7 +2258,7 @@ void main() {
     this.dirty = true;
   }
 
-  /** 每面旗一层（canvas 数组，1024²）✓ 加减旗 / 换图时重传 */
+  /** 每面旗一层（canvas 数组，1024²）加减旗 / 换图时重传 */
   setFlagLayers(layers) {
     this._flagLayers = layers || null;
     this._uploadFlagLayers();
@@ -2309,7 +2275,7 @@ void main() {
 
   _uploadFlagMask() {
     const gl = this.gl;
-    if (this.flagIdxTex) { try { gl.deleteTexture(this.flagIdxTex); } catch (e) { /* ✓ */ } this.flagIdxTex = null; }
+    if (this.flagIdxTex) { try { gl.deleteTexture(this.flagIdxTex); } catch (e) { /* 忽略 */ } this.flagIdxTex = null; }
     if (!this._flagMask) return;
     const n = this._flagMask.length;
     const lim = this.maxTex || gl.getParameter(gl.MAX_TEXTURE_SIZE);
@@ -2320,7 +2286,7 @@ void main() {
     this.flagIdxW = W;
     const tex = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, tex);
-    glTexTouched();      // 绑在"当前单元"上 → render 的账过期 ✓
+    glTexTouched();      // 绑在"当前单元"上 → render 的账过期
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, W, H, 0, gl.RED, gl.UNSIGNED_BYTE, buf);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
@@ -2333,7 +2299,7 @@ void main() {
 
   _uploadFlagSlots() {
     const gl = this.gl;
-    if (this.flagSlotTex) { try { gl.deleteTexture(this.flagSlotTex); } catch (e) { /* ✓ */ } this.flagSlotTex = null; }
+    if (this.flagSlotTex) { try { gl.deleteTexture(this.flagSlotTex); } catch (e) { /* 忽略 */ } this.flagSlotTex = null; }
     if (!this._flagSlots) return;
     const n = this._flagSlots.length / 4;      // 每格 4 个数
     const W = Math.max(1, Math.min(n, 64));
@@ -2343,7 +2309,7 @@ void main() {
     this.flagSlotW = W;
     const tex = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, tex);
-    glTexTouched();      // 绑在"当前单元"上 → render 的账过期 ✓
+    glTexTouched();      // 绑在"当前单元"上 → render 的账过期
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, W, H, 0, gl.RGBA, gl.FLOAT, buf);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
@@ -2352,22 +2318,22 @@ void main() {
     this.flagSlotTex = tex;
   }
 
-  /** 一层一面旗的数组纹理 ✓（不封顶：贴多少面就多少层）
+  /** 一层一面旗的数组纹理（不封顶：贴多少面就多少层）
    *
-   *  ⚠ 每层固定 1024²（RGBA8，约 4 MB + 三分之一 mipmap）——
-   *    小旗也占一层，图省事；层数由 app 侧的旗子数量决定 ✓
-   *  ⚠ 重传是"整张重建"✓：加减旗 / 换图都不频繁，重建一次几百毫秒，换来代码简单 ✓
+   *  每层固定 1024²（RGBA8，约 4 MB + 三分之一 mipmap）——
+   *    小旗也占一层，图省事；层数由 app 侧的旗子数量决定
+   *  重传是"整张重建"：加减旗 / 换图都不频繁，重建一次几百毫秒，换来代码简单
    */
   _uploadFlagLayers() {
     const gl = this.gl;
-    if (this.flagTexArr) { try { gl.deleteTexture(this.flagTexArr); } catch (e) { /* ✓ */ } this.flagTexArr = null; }
+    if (this.flagTexArr) { try { gl.deleteTexture(this.flagTexArr); } catch (e) { /* 忽略 */ } this.flagTexArr = null; }
     const L = this._flagLayers;
     if (!L || !L.length) return;
     const S = L[0].width || 1024;
     const levels = Math.floor(Math.log2(S)) + 1;
     const tex = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D_ARRAY, tex);
-    glTexTouched();      // 绑在"当前单元"上 → render 的账过期 ✓
+    glTexTouched();      // 绑在"当前单元"上 → render 的账过期
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
     gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
     gl.texStorage3D(gl.TEXTURE_2D_ARRAY, levels, gl.RGBA8, S, S, L.length);
@@ -2387,7 +2353,7 @@ void main() {
     const gl = this.gl;
     const m = this.meta;
 
-    // 诊断：纹理要多大、数据实际多长，只写进控制台（**别上屏** ✗ ——
+    // 诊断：纹理要多大、数据实际多长，只写进控制台（别上屏 ——
     // 正常走老路的地图也会经过这里，红框会把成品弄脏）
     {
       const need = m.mapWidth * m.mapHeight;
@@ -2397,56 +2363,44 @@ void main() {
     }
 
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 2);
-    // 走分块时**不建整图纹理** ✗ —— 16384×8192 的 R16UI 要 268MB 显存，
-    // 而且 uUseTiles=1 时这一路根本不会被采样，放一张 1×1 占位即可。
+    // 走分块时不建整图纹理：16384×8192 的 RG8 要 268MB 显存，
+    // 且 uUseTiles=1 时这一路不会被采样，放一张 1×1 占位即可。
     if (!tiles && provinceIds && provinceIds.length !== m.mapWidth * m.mapHeight) {
-      // 宁可**吵一声**也别静默出一张白图 ✗ —— 这一条就是今天白屏的根因：
+      // 宁可吵一声也别静默出一张白图  —— 这一条就是今天白屏的根因：
       // 数据对不上尺寸时 WebGL 只报一个 INVALID_OPERATION，画面却是全白。
       throw new Error(`省份 id 图和地图尺寸对不上：数据 ${provinceIds.length} 个，`
         + `需要 ${m.mapWidth * m.mapHeight} 个（${m.mapWidth}×${m.mapHeight}）`
         + `，而且没传分块清单 tiles ✗`);
     }
-    // **装不下就当场切块** ✓ 不依赖 tiles.json（单文件版没有那个清单 ✗）
-    // 切块走的是渲染器**本来就有的**那条分块通路（TEXTURE_2D_ARRAY ✓
-    // 电脑版那张 16384 的 EU5 就是这么跑的 ✓）→ 着色器 / 拾取 / 涂色全都不用改 ✓
-    // 只在"设备上限装不下这张图"时才生效 ✓ 电脑上什么都不变 ✓
+    // 装不下就当场切块，不依赖 tiles.json（单文件版没有该清单）。
+    // 切块复用渲染器已有的分块通路（TEXTURE_2D_ARRAY），着色器 / 拾取 / 涂色均无需改动；
+    // 仅在设备上限装不下整图时生效，桌面端行为不变。
     let layout = tiles || null;
     if (!layout && provinceIds) {
       const lim = this.maxTex || gl.getParameter(gl.MAX_TEXTURE_SIZE);
       if (m.mapWidth > lim || m.mapHeight > lim) {
-        /* 🔴 **块尺寸别贴着上限开** ✗（用户报：手机版黑屏，而电脑正常 ✓）
-         *   原来 tileW/tileH 直接取 lim（手机上 4096 ✓）✓
-         *   → 地图 5632×2048 被切成 **2 块 4096×4096** ✗
-         *     每层 = 4096×4096×2 字节 = **33MB** → 两层 **67MB 显存** ✓
-         *     再加 CPU 那份 buf（33MB）+ 省份数据（23MB）→ 手机直接爆 ✓
-         *     → 上下文丢失 / 纹理变坏 → **画面全黑** ✓
-         *   ⚠ 这条路**只有手机走** ✗（电脑上限 16384 > 5632 → 不切块 ✓）
-         *     所以电脑上永远测不出来 ✓ 这正是"电脑行、手机不行"的原因 ✓
-         *   💡 改成**按实际需要开**：一块 2048 是条舒服的线 ✓
-         *     同样这张图：2048 → 3 层 × 8MB = 24MB ✓（省 2.7 倍 ✓）
-         *     层数多一点反而更好：显存按**块**算，不用一次占满 ✓ */
-        /* 🔴 **块尺寸按"最省显存"挑** ✗✗（2026-10-17 手机丢上下文之后改的）
-         *   原来是贴着上限开（每块 2048）→ CK3 那张 9216×4608 要 15 块 =
-         *   **120MB** 显存，手机一次全传直接把 GPU 上下文顶丢了（用户白屏 ✓）。
-         *   现在挑总字节最小的那组：同一张图只要 8 块 = 85MB（= 整图大小）；
-         *   而且**不再一次全传**，交给帧循环按视野补（见 app.js 的懒上传 ✓）。
-         *   ⚠ 电脑上限 16384 > 图宽 → 根本不走这条路，一行都不变 ✓ */
+        /* 块尺寸按"总显存最小"挑，不贴着上限开。
+         *   贴上限开时，5632×2048 会切成两块 4096×4096：每层 33MB、两层 67MB，
+         *   再加 CPU 侧缓冲与省份数据，手机显存直接见底，
+         *   表现为上下文丢失、纹理损坏、画面全黑。
+         *   桌面上限 16384 > 图宽，不走这条路，故桌面上测不出来。
+         *   pickTileLayout 取总字节最小的一组：CK3 9216×4608 只需 8 块 ≈ 85MB（= 整图大小）。
+         *   切块后不再一次全传，由帧循环按视野逐块补（见 app.js 的懒上传）。
+         */
         layout = pickTileLayout(m.mapWidth, m.mapHeight, lim);
-        /* 🔴 **数组纹理采不出来就整条改道** ✗✗（2026-10-19 ✓ 见 _probeArrTex）
-         *   那台 Adreno 的体检：分块数组纹理三层**全读回 0** ✓
-         *   而它的贴图上限只有 4096 < 5632 → **必须**切块 → 切块全靠数组纹理 ✗
-         *   所以这种情况下切块这条路根本走不通 ✓ 只能把 id 图**缩着传**：
-         *     scale = ceil(最大边 / 上限)（5632 / 4096 → 2 ✓）
-         *     缩小后单张 2D 就能装下 ✓（2048×1024 而已 ✓ 显存更省 ✓）
-         *   省界会粗一格，但**地图能看、能涂、能悬停** ✓ 总比纯白强 ✗
-         *   ⚠ 只有**实测读回不对**才走 ✗（'bad' 才改道：探测做不成 / 正常手机都不动 ✓
-         *     正常手机 arrOk = 'ok'，一个字节都不变 ✓）*/
+        /* 数组纹理实测采不出来时整条改道（见 _probeArrTex）。
+         *   Adreno 那类驱动上分块数组纹理三层全读回 0，而贴图上限 4096 < 5632，
+         *   必须切块、切块又全靠数组纹理 → 该路径走不通。
+         *   退路：把 id 图缩着传，scale = ceil(最大边 / 上限)，缩小后单张 2D 即可装下
+         *   （5632×2048 → 2048×1024，显存更省），省界会粗一格，但地图仍可看、可涂、可悬停。
+         *   只在实测读回不对（'bad'）时改道；探测做不成或正常设备不动。
+         */
         if (this.arrOk === 'bad' && provinceIds) {
           const sc = Math.max(1, Math.ceil(Math.max(m.mapWidth, m.mapHeight) / lim));
           const sw = Math.max(1, Math.floor(m.mapWidth / sc));
           const sh = Math.max(1, Math.floor(m.mapHeight / sc));
           const small = new Uint16Array(sw * sh);
-          /* 每格取**块中心那一格**的值（取角上的话，边界会整体偏半块 ✓）*/
+          /* 每格取块中心那一格的值（取角上会让边界整体偏半块）*/
           const half = (sc - 1) >> 1;
           for (let y = 0; y < sh; y++) {
             const sy = Math.min(m.mapHeight - 1, y * sc + half);
@@ -2466,17 +2420,17 @@ void main() {
             if (typeof bootMark === 'function') {
               bootMark('id图缩' + sc + '倍' + sw + '×' + sh);
             }
-          } catch (e) { /* ✓ */ }
+          } catch (e) { /* 忽略 */ }
         } else {
           const _mb = (layout.cols * layout.rows * layout.tileW * layout.tileH * 2 / 1048576).toFixed(0);
           console.log(`贴图上限 ${lim}px 装不下 ${m.mapWidth}×${m.mapHeight}`
             + ` → 就地切成 ${layout.cols}×${layout.rows} 块（每块 ${layout.tileW}×${layout.tileH}，约 ${_mb}MB）`);
-          /* ⚠ 顺手写进"启动里程表" ✗ —— 用户手机上能直接看到走没走这条路 ✓ */
+          /* 同时写进启动里程，便于在设备上确认走了哪条路 */
           try {
             if (typeof bootMark === 'function') {
               bootMark('切块' + layout.cols + '×' + layout.rows + ' 每块' + layout.tileW + '×' + layout.tileH + ' 约' + _mb + 'MB');
             }
-          } catch (e) { /* ✓ */ }
+          } catch (e) { /* 忽略 */ }
         }
       }
     }
@@ -2491,39 +2445,37 @@ void main() {
         : makeTexture(gl, m.mapWidth, m.mapHeight, gl.RG8, gl.RG, gl.UNSIGNED_BYTE,
                       MapRenderer._bytesOf16(provinceIds, m.mapWidth * m.mapHeight), gl.NEAREST));
 
-    // 分块路径：数据目录带了 tiles.json ✓ 或者上面就地切了块 ✓
+    // 分块路径：数据目录带了 tiles.json  或者上面就地切了块
     this.tileInfo = layout || null;
     this.useTiles = layout ? 1 : 0;
-    // 「id 图缩着传」那条（数组纹理不可用 ✓ 见上面 arrOk 那段）——
-    //   uProvScale 由 render() 每帧传 ✓ 没走那条时恒 1（= 一步不缩 ✓）
+    // 「id 图缩着传」那条（数组纹理不可用，见上面 arrOk 一段）——
+    //   uProvScale 由 render() 每帧传；未走该路径时恒为 1
     this.provScale = this.provScale || 1;
     if (!this._smallIds) this.provScale = 1;
-    /* 🔴 **就地切的那条要留着整张 id 数组** ✗✗（2026-10-17）
-     *   以前这里一次 `uploadAllTiles` 全传（CK3 那张 = 120MB → 手机上下文丢了 ✓）
-     *   现在只留个**引用**（不复制，零额外内存 ✓），帧循环按视野逐块切、逐块传 ✓ */
+    /* 就地切块时保留整张 id 数组的引用（不复制，零额外内存），
+     *   由帧循环按视野逐块切、逐块传；一次全传会让 CK3 那张占 120MB 显存并丢失上下文 */
     this.synthIds = (layout && layout.synthetic) ? provinceIds : null;
-    // 数组纹理刚重建（每层都是全新的占位 0）→ 上传记录清空 ✓
-    // （synthetic 那条就地切的不受影响：紧接着 uploadAllTiles 会逐块传、逐块记 ✓）
+    // 数组纹理刚重建（每层都是占位 0）→ 上传记录清空
+    // （synthetic 就地切块不受影响：随后 uploadAllTiles 会逐块传、逐块记）
     this.uploadedTiles.clear();
     if (layout) {
       const first = new Uint16Array(layout.tileW * layout.tileH);
       this.provArrTex = this.makeTileArray(layout.tileW, layout.tileH,
         layout.cols * layout.rows, first);
-      // 就地切的那条：**不再一次全传** ✗✗（2026-10-17 —— 全传 = 120MB，手机当场丢上下文 ✓）
-      // 只先传「视野中央」那一块，保证第一帧不是空白；其余由帧循环按视野补 ✓
-      // （带 tiles.json 的那条也一样 —— app 会按视野逐块喂给 uploadTile ✓）
+      // 就地切块只先传视野中央那一块，保证第一帧不空白，其余由帧循环按视野补
+      // （带 tiles.json 的路径同样按视野逐块喂给 uploadTile）
       if (layout.synthetic) {
         this.uploadSyntheticTile(Math.floor(layout.rows / 2), Math.floor(layout.cols / 2));
       }
     } else {
-      // 没有分块数据时也建一张 1×1 的数组纹理 —— 采样器不完整的话，
-      // 有些驱动会直接报错（哪怕这一路根本没被采样）。uUseTiles 仍是 0 ✓。
+      // 没有分块数据时也建一张 1×1 数组纹理：采样器指向不完整纹理会报错，
+      // 即使这一路未被采样。uUseTiles 仍为 0。
       const one = new Uint16Array(1);
       this.provArrTex = this.makeTileArray(1, 1, 1, one);
     }
 
-    // 归属表：**拍平成一维**（索引 = 层级 × 省份数 + 省份）。
-    // 二维存（省份数 × 层级数）在维多利亚3 上会超 MAX_TEXTURE_SIZE —— 它 4 万多个省份。
+    // 归属表拍平成一维（索引 = 层级 × 省份数 + 省份）。
+    // 按二维（省份数 × 层级数）存会超 MAX_TEXTURE_SIZE —— 维多利亚3 有 4 万多个省份。
     const total = titlemap.length;
     const maxTex = gl.getParameter(gl.MAX_TEXTURE_SIZE);
     this.titleMapW = Math.max(1, Math.min(maxTex, 4096, total));
@@ -2534,15 +2486,14 @@ void main() {
       gl.RG, gl.UNSIGNED_BYTE,
       MapRenderer._bytesOf16(flat, this.titleMapW * tmRows), gl.NEAREST);
 
-    /* ⚠ **上下文恢复时会再调一次本函数** ✗（见 onContextRestored ✓）
-     *   —— 那时候 lutData / paintData 里装的是**用户已经涂好、调好的东西** ✓
-     *   无脑重建 = 把他的笔迹和荒地色全抹掉 ✓（正是"切个后台回来，涂的全没了" ✓）
-     *   所以：**尺寸对得上就留着**，只标个"要重传" ✓
-     *   （纹理本身照样重建 —— 旧的随上下文一起作废了 ✗）*/
+    /* 上下文恢复时会再调一次本函数（见 onContextRestored）——
+     *   lutData / paintData 里是已涂好、调好的内容，重建会全部抹掉。
+     *   尺寸对得上就保留，只标脏等待重传；纹理本身照旧重建（旧的随上下文作废）。
+     */
     this.lutH = Math.max(1, Math.ceil(m.numTitles / this.lutW));
     const _lutLen = this.lutW * this.lutH * 4;
     if (this.lutData && this.lutData.length === _lutLen) {
-      this.lutDirty = true;                 // 内容还在，重传一遍就行 ✓
+      this.lutDirty = true;                 // 内容还在，重传即可
     } else {
       this.lutData = new Uint8Array(_lutLen);
       for (let i = 0; i < m.numTitles; i++) {
@@ -2550,8 +2501,8 @@ void main() {
         this.lutData[i * 4] = c[0];
         this.lutData[i * 4 + 1] = c[1];
         this.lutData[i * 4 + 2] = c[2];
-        // alpha 现在当**荒地标记**用（setWasteland 会按 meta.wasteland 打 255），
-      // 默认 0 = 不是荒地。别处没人读这个通道 ✓
+        // alpha 通道用作荒地标记（setWasteland 按 meta.wasteland 置 255），
+      // 默认 0 = 非荒地；没有其他读取方。
       this.lutData[i * 4 + 3] = 0;
       }
     }
@@ -2559,15 +2510,14 @@ void main() {
     this.colorTex = makeTexture(gl, this.lutW, this.lutH, gl.RGBA8,
       gl.RGBA, gl.UNSIGNED_BYTE, this.lutData, gl.NEAREST);
 
-    // 手绘层：一个省份一格。**纹理要拍平**：宽度压在显卡上限以内，
-    // 维多利亚3 有 4 万多个省份，按 numProvinces 宽建纹理传不上去（上限常见 16384），
-    // 结果就是"填了色没反应"。JS 这边仍然按省份下标访问（pid*4），
-    // 只在上传时拍平成二维。
+    // 手绘层：一省一格。纹理需拍平：宽度压在显卡上限内，
+    // 维多利亚3 四万多个省份按 numProvinces 宽建纹理传不上去（上限常见 16384），
+    // 表现为填色无反应。JS 侧仍按省份下标访问（pid*4），仅上传时拍平成二维。
     this.paintW = Math.max(1, Math.min(maxTex, 4096, this.numProvinces));
     this.paintRows = Math.max(1, Math.ceil(this.numProvinces / this.paintW));
-    // 笔迹同理：**留着**（重建就等于把用户涂的东西全擦了 ✗）
+    // 笔迹同理：保留数据（重建会清掉已涂内容）
     if (this.paintData && this.paintData.length === this.numProvinces * 4) {
-      this.paintDirty = true;               // 重传在 flushPaint() 里 ✓
+      this.paintDirty = true;               // 重传在 flushPaint() 里
     } else {
       this.paintData = new Uint8Array(this.numProvinces * 4);
     }
@@ -2575,9 +2525,9 @@ void main() {
     this.paintTex = makeTexture(gl, this.paintW, this.paintRows, gl.RGBA8,
       gl.RGBA, gl.UNSIGNED_BYTE, this.paintFlat, gl.NEAREST);
 
-    // 手绘层对应的"标记编号"。描边要区分同色不同标记，颜色那张表塞不下了
-    // （RGB 是颜色、alpha 是"涂没涂"），所以单开一张表，一个省一格。
-    // **RG8 归一化** ✓（16 位 → 两个字节，见 FRAG 开头那段 ✓）
+    // 手绘层的标记编号：描边要区分同色不同标记，颜色表已占满
+    // （RGB 是颜色、alpha 是涂没涂），故单开一张表，一省一格。
+    // RG8 归一化（16 位拆两个字节，见 FRAG 开头一段）
     if (this.paintLabelData && this.paintLabelData.length === this.numProvinces) {
       this.paintDirty = true;
     } else {
@@ -2588,41 +2538,42 @@ void main() {
       gl.RG, gl.UNSIGNED_BYTE,
       MapRenderer._bytesOf16(this.paintLabelFlat, this.paintW * this.paintRows), gl.NEAREST);
 
-    /* **悬停编组表**（"同一片海"那种 ✓）—— 跟 paintLabel 同一套拍平写法 ✓
-     *   ⚠ 一定要建、一定要绑 ✗ —— 采样器指向一张**不完整**的纹理，整个 program
-     *     会被 WebGL 判成非法（手机黑屏那条根因就是它 ✓ 见 uBorderDepth 那段 ✓）
-     *   内容**留着**（上下文丢失时重建：表不用重算，重传一遍就行 ✓ 跟笔迹一个待遇 ✓）*/
+    /* 悬停编组表（"同一片海"）—— 与 paintLabel 同一套拍平写法。
+     *   必须建、必须绑：采样器指向不完整纹理会令整个 program 非法
+     *   （手机黑屏的根因，见 uBorderDepth 一段）。
+     *   内容保留：上下文丢失重建时无需重算，重传即可，与笔迹同等处理。
+     */
     if (this.hoverGroupData && this.hoverGroupData.length === this.numProvinces) {
-      this.hoverGroupDirty = true;         // 内容还在，重传在 flushPaint() 里 ✓
+      this.hoverGroupDirty = true;         // 内容还在，重传在 flushPaint() 里
     } else {
       this.hoverGroupData = new Uint16Array(this.numProvinces);
-      this.hoverGroupTier = null;          // 表没了 → 下次悬停按当前层重建 ✓
+      this.hoverGroupTier = null;          // 表没了 → 下次悬停按当前层重建
     }
     this.hoverGroupFlat = new Uint16Array(this.paintW * this.paintRows);
     this.hoverGroupTex = makeTexture(gl, this.paintW, this.paintRows, gl.RG8,
       gl.RG, gl.UNSIGNED_BYTE,
       MapRenderer._bytesOf16(this.hoverGroupFlat, this.paintW * this.paintRows), gl.NEAREST);
 
-    /* 🔴 **身份标纹理**（每 pid 一格：1 陆地 / 2 海 / 3 湖 / 4 河 / 5 不可通行海域 /
-     *   6 不可通行 ✓ 2026-10-15 ✓）—— 跟 hoverGroup 同一套拍平写法 ✓
-     *   ⚠ **一定要建、一定要绑** ✗ —— 采样器指向一张不完整纹理，整个 program 会被
-     *     WebGL 判成非法（手机黑屏那条根因就是它 ✓ 上面 hoverGroup 那段记着 ✓）
-     *   ⚠ 内容全 0（老包 / 还没灌）时 `uKindOn = 0` → 着色器整条让开 ✓
-     *   ⚠ 上下文丢失重建时**内容留着**（重传就行 ✓ 跟笔迹一个待遇 ✓）*/
+    /* 身份标纹理（每 pid 一格：1 陆地 / 2 海 / 3 湖 / 4 河 / 5 不可通行海域 /
+     *   6 不可通行）—— 与 hoverGroup 同一套拍平写法。
+     *   必须建、必须绑：采样器指向不完整纹理会令整个 program 非法。
+     *   内容全 0（旧包或未灌入）时 uKindOn = 0，着色器整条让开。
+     *   上下文丢失重建时内容保留，重传即可。
+     */
     if (!(this.kindData && this.kindData.length === this.numProvinces)) this.kindData = null;
     this.kindFlat = new Uint8Array(this.paintW * this.paintRows);
     this.kindTex = makeTexture(gl, this.paintW, this.paintRows, gl.R8,
       gl.RED, gl.UNSIGNED_BYTE, this.kindFlat, gl.NEAREST);
     this.kindDirty = true;
-    /* **「水域 · 边界」那张表**（每 pid 一格：0 = 不是水 / 2..5 = 那四类 ✓ 2026-10-16 ✓）
-     *   ⚠ 一定要建、一定要绑 ✗ —— 采样器指向一张不完整纹理，整个 program 会被
-     *     WebGL 判成非法（手机黑屏那条根因就是它 ✓ 见上面 kindTex / uBorderDepth 那两段 ✓）
-     *   ⚠ 内容全 0（老包 / 还没灌 ✓）→ 着色器的 waterIs 恒 false
-     *     → 水域那条通道 + 两条让位**一起退化成现状** ✓ 行为一丝不变 ✓
-     *   跟 kindTex **长得一样、判据也同源** ✓ 但**不是同一张** ✗：
-     *     kindMask 说的是"这一格最底层是什么"（含陆地 1 / 荒地 6 ✓）
-     *     这张说的是"**认不认得出它是水**"（认水走 waterKindByPid ✓
-     *       老包没 kindMask 时退回 `#` 开头的键前缀 ✓ 正是老包那条退路 ✓）*/
+    /* 「水域 · 边界」表（每 pid 一格：0 = 非水 / 2..5 = 四类水域）
+     *   必须建、必须绑：采样器指向不完整纹理会令整个 program 非法。
+     *   内容全 0（旧包或未灌入）→ 着色器的 waterIs 恒 false，
+     *   水域通道与两条让位一起退化，行为与未加该功能时一致。
+     *   与 kindTex 形状相同、判据同源，但不是同一张：
+     *     kindMask 表示"这一格最底层是什么"（含陆地 1 / 荒地 6）；
+     *     这张表示"能否认出是水"（认水走 waterKindByPid，
+     *       旧包无 kindMask 时退回 `#` 开头的键前缀）。
+     */
     if (!(this.waterKindData && this.waterKindData.length === this.numProvinces)) {
       this.waterKindData = null;
     }
@@ -2630,22 +2581,23 @@ void main() {
     this.waterKindTex = makeTexture(gl, this.paintW, this.paintRows, gl.R8,
       gl.RED, gl.UNSIGNED_BYTE, this.waterKindFlat, gl.NEAREST);
     this.waterKindDirty = true;
-    /* **七行里的五行类色**（2..6 → 海 / 湖 / 河 / 不可通行海域 / 不可通行 ✓）
-     *   出厂值就是 `build_data.py` 那份类色 ✓ 开图后由 app.js 按设置覆盖 ✓ */
+    /* 七行里的五行类色（2..6 → 海 / 湖 / 河 / 不可通行海域 / 不可通行）
+     *   出厂值取自 build_data.py 的类色表，开图后由 app.js 按设置覆盖
+     */
     this.natureFlat = this.natureFlat || new Float32Array([
-      32 / 255, 57 / 255, 92 / 255,        // 2 海洋 ✓
-      47 / 255, 110 / 255, 150 / 255,      // 3 湖泊 ✓
-      62 / 255, 136 / 255, 181 / 255,      // 4 河流 ✓
-      26 / 255, 46 / 255, 71 / 255,        // 5 不可通行海域 ✓
-      94 / 255, 94 / 255, 94 / 255,        // 6 不可通行区域 ✓
+      32 / 255, 57 / 255, 92 / 255,        // 2 海洋
+      47 / 255, 110 / 255, 150 / 255,      // 3 湖泊
+      62 / 255, 136 / 255, 181 / 255,      // 4 河流
+      26 / 255, 46 / 255, 71 / 255,        // 5 不可通行海域
+      94 / 255, 94 / 255, 94 / 255,        // 6 不可通行区域
     ]);
-    /* 换图 / 第一次上传：这一组得整段重发 ✓（见 render() 里 uNature 那段 ✓）*/
+    /* 换图 / 首次上传：这一组整段重发（见 render() 里 uNature 一段）*/
     this.natureDirty = true;
 
-    /* 🔴 **上传完再看一眼上下文** ✗（2026-10-17）
-     *   低端机 / 手机在 `texImage2D` 那一批调用里把显存吃爆时，上下文会**悄悄丢**：
-     *   所有调用静默成功返回，可显存里什么都没有 → 开图后一片空白 ✓
-     *   不在这里拦住，玩家看到的就是"打开是白的、日志却没有错" ✗ */
+    /* 上传后复查上下文：低端机 / 手机在 texImage2D 这批调用里耗尽显存时，
+     *   上下文会静默丢失 —— 调用全部"成功"返回，显存里却什么都没有，画面空白。
+     *   不在此处拦截，界面上表现为"打开是白的、日志却无错"。
+     */
     if (this.ctxLost || (gl.isContextLost && gl.isContextLost())) {
       _setupFail('context-lost', '上传地图数据时 WebGL 上下文丢失', gl,
         { stageAt: 'setData' });
@@ -2653,10 +2605,11 @@ void main() {
     this.dirty = true;
   }
 
-  /** 灌入**底层身份标**（meta.kindMask 解出来的 Uint8Array ✓ 每 pid 一字节 ✓）
+  /** 灌入底层身份标（meta.kindMask 解出的 Uint8Array，每 pid 一字节）
    *
-   *  ⚠ 长度对不上 / 传 null → 当"没有这枚标"（`uKindOn = 0`）✓ 老包行为一丝不变 ✓
-   *  ⚠ 只标脏 ✗ —— 真正上传在 `flushPaint()` 里一趟做完（`draw()` 每帧都调它 ✓）*/
+   *  长度对不上或传 null → 视作"没有这枚标"（uKindOn = 0），行为与旧包一致。
+   *  只标脏：真正上传在 flushPaint() 里一趟做完（draw() 每帧都调它）。
+   */
   setKindMask(bytes) {
     this.kindData = (bytes && this.numProvinces && bytes.length >= this.numProvinces)
       ? bytes : null;
@@ -2664,11 +2617,12 @@ void main() {
     this.dirty = true;
   }
 
-  /** 灌入**「认得出是水吗」那张表**（每 pid 一字节 ✓ 0 = 不是水 / 2..5 = 那四类 ✓）
+  /** 灌入「能否认出是水」表（每 pid 一字节：0 = 非水 / 2..5 = 四类水域）
    *
-   *  ⚠ 长度对不上 / 传 null → 当"这张图算不出水陆"（`waterIs` 恒 false ✓）
-   *    → 水域那条通道跟两条让位**一起让开** ✓ 老包 / 认不出水的图观感一丝不变 ✓
-   *  ⚠ 只标脏 ✗ —— 真正上传在 `flushPaint()` 里一趟做完（`draw()` 每帧都调它 ✓）*/
+   *  长度对不上或传 null → 视作"这张图算不出水陆"（waterIs 恒 false），
+   *    水域通道与两条让位一起让开，行为与旧包一致。
+   *  只标脏：真正上传在 flushPaint() 里一趟做完（draw() 每帧都调它）。
+   */
   setWaterKindMask(bytes) {
     this.waterKindData = (bytes && this.numProvinces && bytes.length >= this.numProvinces)
       ? bytes : null;
@@ -2676,11 +2630,12 @@ void main() {
     this.dirty = true;
   }
 
-  /** **七行里的五行类色**（[海, 湖, 河, 不可通行海域, 不可通行] ✓ 各 [r,g,b] 0~255 ✓）
+  /** 七行里的五行类色（[海, 湖, 河, 不可通行海域, 不可通行]，各 [r,g,b] 0~255）
    *
-   *  着色器按**底层身份**直接给这几类上色（见 kindOf / natureColor ✓）——
-   *  所以改设置 = 改这几个 uniform → 下一帧就变 ✓ **不用重烤包** ✓✓
-   *  ⚠ 陆地不在里面 ✗（它照旧走 LUT 头衔色 / 无主兜底 ✓）*/
+   *  着色器按底层身份直接给这几类上色（见 kindOf / natureColor），
+   *  因此改设置只改这几个 uniform，下一帧生效，无需重新烤包。
+   *  陆地不在其中（走 LUT 头衔色 / 无主兜底）。
+   */
   setNatureColors(list) {
     if (!list || list.length < 5 || !this.natureFlat) return;
     for (let i = 0; i < 5; i++) {
@@ -2695,8 +2650,8 @@ void main() {
 
   /** 改 LUT 里的一个像素。只写内存，真正上传在 flushLut() 里一次做完 */
   /**
-   * 多级边界链：list = [{tier, width, show}, …]（从最粗到最细都行，顺序无所谓）。
-   * 同时把老的 parent* 字段同步成链上**第一条**，老代码和测试继续能用 ✓。
+   * 多级边界链：list = [{tier, width, show, alpha}, …]（顺序不限）。
+   * 同时把旧的 parent* 字段同步为链上第一条，兼容旧调用与测试。
    */
   setExtraBorders(list) {
     this.extraCount = Math.min(list.length, 4);
@@ -2715,7 +2670,7 @@ void main() {
     this.dirty = true;
   }
 
-  /** 老接口：只设一条（保留，免得别处炸） */
+  /** 兼容接口：只设一条 */
   setParentBorder(tier, width) {
     this.setExtraBorders(tier >= 0 ? [{ tier, width: width || 1.8, show: true }] : []);
   }
@@ -2735,7 +2690,7 @@ void main() {
     if (!this.lutDirty) return;
     const gl = this.gl;
     gl.bindTexture(gl.TEXTURE_2D, this.colorTex);
-    glTexTouched();      // 绑在"当前单元"上 → render 的账过期 ✓
+    glTexTouched();      // 绑在"当前单元"上 → render 的账过期
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
     gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, this.lutW, this.lutH,
       gl.RGBA, gl.UNSIGNED_BYTE, this.lutData);
@@ -2755,8 +2710,8 @@ void main() {
   }
 
   /**
-   * 手绘层：记下这个省份的标记编号（0 = 没涂）。
-   * 描边靠它区分"同色但不同标记"的两块 —— 只看颜色的话它们中间不会有线。
+   * 手绘层：记录该省份的标记编号（0 = 未涂）。
+   * 描边靠它区分"同色但不同标记"的两块 —— 只看颜色时两者之间不会画线。
    */
   setPaintLabel(pid, id) {
     if (pid <= 0 || pid >= this.numProvinces) return;
@@ -2769,8 +2724,9 @@ void main() {
   /** 整张重传（53 KB，比逐个 texSubImage2D 快得多） */
   flushPaint() {
     const gl = this.gl;
-    /* ⚠ 这里每绑一次都得跟上面说一声 ✓ —— 五段上传都绑在"当前单元"上 ✓
-     *   漏一处就会让下一帧沿用"这张单元还绑着原来那张"的假账 ✓（见 GL_TEX_EPOCH ✓）*/
+    /* 每次绑定都要通知纹理账本 —— 五段上传都绑在"当前单元"上，
+     *   漏一处会让下一帧沿用错误的绑定记录（见 GL_TEX_EPOCH）
+     */
     if (this.paintDirty) {
       // 上传前拍平（按省份的连续内存 → 宽度受限的二维）
       this.paintFlat.set(this.paintData);
@@ -2788,8 +2744,8 @@ void main() {
         MapRenderer._bytesOf16(this.paintLabelFlat, this.paintW * this.paintRows));
       this.paintDirty = false;
     }
-    /* **身份标**（换图才动一次 ✓ 每 pid 一字节 ≈ 29 KB ✓）——
-     *   老包（没这枚标）→ 传全 0 → 着色器 `uKindOn = 0` 让开 ✓ */
+    /* 身份标（换图才动一次，每 pid 一字节 ≈ 29 KB）——
+     *   旧包（无此标）传全 0 → 着色器 uKindOn = 0 让开 */
     if (this.kindDirty) {
       if (this.kindData) this.kindFlat.set(this.kindData);
       else this.kindFlat.fill(0);
@@ -2800,8 +2756,8 @@ void main() {
         gl.RED, gl.UNSIGNED_BYTE, this.kindFlat);
       this.kindDirty = false;
     }
-    /* **水域表**（换图才动一次 ✓ 跟身份标同一套 ✓）——
-     *   老包 / 认不出水 → 传全 0 → 着色器 `waterIs` 恒 false → 整条让开 ✓ */
+    /* 水域表（换图才动一次，与身份标同一套）——
+     *   旧包 / 认不出水 → 传全 0 → 着色器 waterIs 恒 false，整条让开 */
     if (this.waterKindDirty) {
       if (this.waterKindData) this.waterKindFlat.set(this.waterKindData);
       else this.waterKindFlat.fill(0);
@@ -2812,7 +2768,7 @@ void main() {
         gl.RED, gl.UNSIGNED_BYTE, this.waterKindFlat);
       this.waterKindDirty = false;
     }
-    /* 悬停编组表**换层才动一次** ✓（EU5 40 KB 一趟 ✗ 每帧传是白烧 ✓）*/
+    /* 悬停编组表换层才动一次（EU5 约 40 KB，每帧传是白耗）*/
     if (this.hoverGroupDirty && this.hoverGroupData) {
       this.hoverGroupFlat.set(this.hoverGroupData);
       gl.bindTexture(gl.TEXTURE_2D, this.hoverGroupTex);
@@ -2826,59 +2782,52 @@ void main() {
   }
 
   /**
-   * **老包的"同一片海"编组** —— 2026-10-13 每层一片之后，这条只剩**兜底**用途 ✓
+   * 旧包的"同一片海"编组 —— 每层一片的包出现后，此表只剩兜底用途。
    *
-   *  每层一片的包里，**同一片 = 当前层那个 tid** ✓（`#sea_pr_57` 那种）
-   *  → 悬停那一段直接把 tid 交给着色器（uHoverTid ✓ 见 app.js 的 applyHoverHighlight ✓）
-   *    这一整套编组表就**用不上了** ✓
+   *  每层一片的包里，同一片 = 当前层那个 tid（`#sea_pr_57` 那种），
+   *  悬停段直接把 tid 交给着色器（uHoverTid，见 app.js 的 applyHoverHighlight），
+   *  整套编组表用不上。
    *
-   *  ⚠ 但**每层一片之前打的包**（packs 里还在发的那几张）里全世界的海
-   *    共用一个 `#sea`（tid 相同 ✗）—— 那批包按 tid 亮 = 全世界的海一起亮 ✗
-   *    所以留着它：非"每层一片"的键才走这一条 ✓（app.js 靠 isTierPieceKey 分流 ✓）
+   *  但每层一片之前的包（packs 里仍在发布的几张）中，全世界的海共用一个 `#sea`，
+   *  tid 相同 —— 按 tid 亮会让全世界的海一起亮，按 pid 又只能亮一格。
+   *  因此保留：非"每层一片"的键才走这一条（app.js 靠 isTierPieceKey 分流）。
    *
-   *  （下面这段是它当年的来历，仍然准确 ✓）
-   * **"同一片海"在渲染里本来没有 id** ✗ —— 全世界的海共用一个 `#sea` 伪头衔
-   * （tid 相同 ✓）→ 按 tid 亮 = 全世界的海一起亮 ✗；按 pid 又只能亮一格 ✗
-   *
-   * 所以在这儿按**当前视图层那张水域名表**给每一片海编个号：**同名 = 同一组** ✓
-   *   · 表来源跟海名标签**完全一套**（app.js 的 buildSeaLabelPoints ✓）：
-   *     `seaNamesByTier[this.tier]`，那一层没有就退回 `meta.seaNames`（合并口径 ✓）
-   *     → 地图上标着"波罗的海"的那一整片，悬停时也正好整片一起亮 ✓（对得上 ✓）
-   *   · **荒地顺手一起做** ✓（用户只说了海 ✗ 但荒地也是"共享伪节点"那一类 ✓
-   *     `meta.wastelandNames` 不分层 ✓ 所以荒地不跟着换层变 ✓）
-   *   · 组号：**1..N = 海 · N+1.. = 荒地 · 0 = 不属于任何一片** ✓
-   *     0 那批照旧走"只亮光标底下这一块"（老包 / CK3 没有水名表 ✓ 一点没变 ✓）
-   *   ⚠ Uint16 ✗ 不是 Uint8 —— EU5 最细层有 3635 片海，8 位装不下 ✓
-   *   ⚠ 只在**换层**时重建（毫秒级 ✓）—— 鼠标每划过一格都重建就是每帧几十 KB ✗
+   *  做法：按当前视图层的水域名表给每片海编号，同名 = 同一组。
+   *   · 表来源与海名标签完全一致（app.js 的 buildSeaLabelPoints）：
+   *     seaNamesByTier[this.tier]，该层为空则退回 meta.seaNames（合并口径），
+   *     地图上标着"波罗的海"的整片海，悬停时也整片一起亮。
+   *   · 荒地一并处理：meta.wastelandNames 不分层，不随换层变化。
+   *   · 组号：1..N = 海，N+1.. = 荒地，0 = 不属于任何一片；
+   *     0 的那批仍走"只亮光标底下这一块"（旧包 / CK3 无水名表，行为不变）。
+   *   · 用 Uint16 而非 Uint8：EU5 最细层有 3635 片海，8 位装不下。
+   *   · 只在换层时重建（毫秒级）；每次划过一格都重建会每帧传几十 KB。
    */
   rebuildHoverGroups() {
-    /* 🔴 **编组跟"编辑层"走，不是"视图层"** ✗✗
-     *   （2026-10-13 用户报："剧本模式悬停海域仍然为最高层"✓ 根因就在这一行）
-     *
-     *   原来取的是 `this.tier`（**视图层** ✗）——
-     *   而剧本模式里 `tier` 停在剧本层（0~2 ✓）→ `seaNamesByTier[剧本层]` 是 **null** ✗
-     *   → 退回 `meta.seaNames`（**合并口径 = 最粗那层** ✓）→ 整片海一起亮 ✓
-     *
-     *   用户要的（原话）：「**和无主地一样**，不开粒度就是最低层，开粒度就跟随粒度」✓
-     *   而"粒度"这件事项目里早就有现成的答案：**`editTier()`** ✓
-     *     · 没换粒度 → `editTier()` == 最细那层 → 海域组 = 最细层的一片（基本就是一块 ✓）
-     *     · 换了粒度 → `editTier()` 就是用户选的那层 → 跟着它 ✓
-     *   —— 跟普通地块 / 无主地的高亮完全是同一套口径 ✓（它们都在 `applyHoverHighlight` 里
-     *      用 `editTier()` 取 tid ✓ 见那边 ✓）
-     *   ⚠ `setEditTier()` 那边**不用**手动失效 ✗ —— 下面 `hoverGroupIdOf` 每次都比层号 ✓ */
+    /* 编组跟"编辑层"走，不是"视图层"。
+     *   取 this.tier（视图层）时，剧本模式里 tier 停在剧本层（0~2），
+     *   seaNamesByTier[剧本层] 为 null → 退回 meta.seaNames（合并口径 = 最粗层）
+     *   → 整片海一起亮。
+     *   期望口径与无主地一致：不开粒度就是最低层，开粒度就跟随粒度；
+     *   项目里对应的接口是 editTier()：
+     *     · 未换粒度 → editTier() == 最细层 → 海域组 = 最细层的一片（基本就是一块）
+     *     · 换了粒度 → editTier() 即所选层 → 跟随它
+     *   与普通地块 / 无主地的高亮同一口径（它们都在 applyHoverHighlight 里
+     *   用 editTier() 取 tid）。
+     *   setEditTier() 无需手动失效：下面 hoverGroupIdOf 每次都比层号。
+     */
     const tier = this.editTier | 0;
     this.hoverGroupTier = tier;
     const n = this.numProvinces | 0;
     const meta = this.meta || {};
     const bt = meta.seaNamesByTier;
-    /* ⚠ **那一层是 null = 这一层没名字** ✗（2026-10-14 用户点破的口径：
-     *   "每个水域不同的层级按游戏内容给名字……Hoi4 的省份级水域和地区级是
-     *    同一个东西，而且**没有名字**而已"✓）
-     *   → 别退回 `meta.seaNames`（那是**最粗那层**的口径 ✓ 拿它填细层
-     *     = 拿别层的名字充数 ✗ 编组也会跟着编错 ✗）
-     *   ⚠ 判据跟 app.js 的 `waterNameTable` **同一套** ✗（两处都改 ✓
-     *     gl.js 是独立模块、拿不到那个函数 ✓ 只好照抄这三行 ✓ 改一处记得改两处 ✓）
-     *   只有**压根没有这张分层表**（或者它比层数还短 = 老包 ✓）才退回 `meta.seaNames` ✓ */
+    /* 该层为 null = 这一层没有名字（每个水域按游戏内容命名；
+     *   HOI4 的省份级水域与地区级是同一个东西，只是没有名字）。
+     *   → 不退回 meta.seaNames（那是最粗层的口径，拿它填细层等于拿别层名字充数，
+     *     编组也会跟着编错）。
+     *   判据与 app.js 的 waterNameTable 同一套（两处都要改；
+     *     gl.js 是独立模块、拿不到该函数，故照抄这三行）。
+     *   只有压根没有分层表（或它比层数还短 = 旧包）才退回 meta.seaNames。
+     */
     const _nT = (meta.tiers && meta.tiers.length) || 0;
     const _hasBt = Array.isArray(bt) && _nT > 0 && bt.length >= _nT;
     const tbl = _hasBt ? (bt[tier] || null) : meta.seaNames;
@@ -2886,8 +2835,9 @@ void main() {
     const ids = new Uint16Array(n);
     if (tbl || wl) {
       let next = 1;
-      /* ⚠ 海先编、荒地后编 ✗ 而且**已经归过一片的地块不再改**（`ids[pid]` 非 0 就跳过 ✓）
-       *   两张表理论上不会重叠（水 / 荒地是两类地 ✗）—— 真重叠了以海为准 ✓ */
+      /* 海先编、荒地后编，且已归组的地块不再改（ids[pid] 非 0 就跳过）。
+       *   两张表理论上不重叠（水 / 荒地是两类地），真重叠时以海为准。
+       */
       const put = (map) => {
         if (!map) return;
         const byName = new Map();
@@ -2911,14 +2861,14 @@ void main() {
   }
 
   /**
-   * 这个地块属于哪一片海 / 荒地（0 = 不属于任何一片 ✓）—— 悬停那段（app.js）每换一格问一次 ✓
-   * ⚠ 换层之后**懒重建** ✗（第一次悬停那一下算 ✓ 不占切层的帧 ✓）
-   * ⚠ **新包（每层一片）压根不会问到这儿** ✗ —— 那边同一个 tid 就是同一片 ✓
-   *   只有老包、以及最细层逐块的荒地（`wl_<地块号>`）才走这条 ✓
+   * 该地块属于哪一片海 / 荒地（0 = 不属于任何一片）—— 悬停段（app.js）每换一格问一次。
+   * 换层后懒重建（第一次悬停时算，不占切层的帧）。
+   * 新包（每层一片）不会问到这儿：那边同一个 tid 就是同一片。
+   * 只有旧包、以及最细层逐块的荒地（`wl_<地块号>`）才走这条。
    */
   hoverGroupIdOf(pid) {
     if (!pid || pid >= this.numProvinces) return 0;
-    // ⚠ 比的是**编辑层** ✗（跟 rebuildHoverGroups 里取的那个必须一致 ✓ 见那边的注释 ✓）
+    // 比较的是编辑层（与 rebuildHoverGroups 里取的必须一致，见该处注释）
     if (this.hoverGroupTier !== (this.editTier | 0) || !this.hoverGroupData) this.rebuildHoverGroups();
     return this.hoverGroupData[pid] || 0;
   }
@@ -2928,9 +2878,9 @@ void main() {
   /**
    * 边界和悬停看哪一层。
    *
-   * 年份视图（1444/1618/1800）下允许跟 uTier 分开：颜色还是那年的归属色，
+   * 年份视图（1444/1618/1800）下允许与 uTier 分开：颜色仍是那年的归属色，
    * 但边界画到地区/省份的接缝上、悬停高亮也按那一级 —— 于是可以"看着 1444
-   * 的政治地图，按省份去改"。不换粒度时传的就是 tier，行为跟以前一模一样。
+   * 的政治地图，按省份去改"。不换粒度时传入的就是 tier，行为不变。
    */
   setEditTier(t) { this.editTier = t; this.dirty = true; }
   setFineTier(t) { this.fineTier = t; this.dirty = true; }
@@ -2938,23 +2888,16 @@ void main() {
   setShowPaint(v) { this.showPaint = !!v; this.dirty = true; }
 
   /**
-   * 标出哪些头衔是"荒地（不可通行）" —— 借用 LUT 的 **alpha** 通道：
-   * 荒地 = 255，其余 = 0。这个通道别处没人用（输出 alpha 是着色器里另算的），
-   * 拿来当"这是荒地"的标记，着色器一次取样就能判，不用多传一张纹理。
-   */
-  /** **荒地固定显示"它自己那份 LUT 色"** ✓（2026-10-17 ✓ 用户定的 ✓）
+   * 标出哪些头衔是"荒地（不可通行）"：借用 LUT 的 alpha 通道，
+   * 荒地 = 255，其余 = 0。该通道没有其他读取方（输出 alpha 由着色器另算），
+   * 因此无需额外纹理，一次取样即可判定。
    *
-   *  原话："**荒地不管什么视图都是荒地颜色**，就这样"✓
+   * 荒地始终显示 applyNatureColors() 里「不可通行区域」那一行的颜色，不随视图变化。
+   * 着色器须在 tid == NONE 的早退之前查这个标记，否则剧本层荒地
+   * 会被 uUnpainted(150) 覆盖。
+   * 与 setWasteland 写法相同，后者已无调用方。
    *
-   *  ⚠ 做法 ✗：把标记打在 **LUT 的 alpha 通道**上 ✓
-   *    着色器在 `tid == NONE` 那道早退**之前**先查它 ✓
-   *    （剧本层荒地永远没归属 → 不查就被 `uUnpainted`(150) 盖掉 ✗）
-   *  ⚠ **不再是"自动上色"那套** ✗ —— 那一套 2026-10-17 整个撤了 ✓
-   *    现在这份色就是 `applyNatureColors()` 按设置里「不可通行区域」那一行刷的 ✓
-   *  ⚠ 跟 `setWasteland` 那套没关系 ✗ —— 那个 2026-10-14 就退役了、没人调 ✓
-   *    所以 LUT 的 alpha 通道本来空着没人用 ✓ 拿它当这枚标记正好 ✓
-   *
-   *  @param {Iterable<number>} tids 要固定显示自己那份色的头衔（= 所有荒地节点 ✓）
+   * @param {Iterable<number>} tids 固定显示自身颜色的头衔（全部荒地节点）
    */
   setWasteFixed(tids) {
     const set = new Set(tids || []);
@@ -2983,13 +2926,12 @@ void main() {
   setBorderPaint(v) { this.borderPaint = !!v; this.dirty = true; }
 
   /**
-   * **导出前把悬停高亮临时哑掉** ✓（2026-10-17 用户报的：导出的图里莫名亮一块）
+   * 导出前临时关闭悬停高亮（导出的图里会莫名亮一块）。
    *
-   *  高亮是**画在着色器里的**（mix 到白 0.30）✗ 不是叠一层半透明框 ✓
-   *  → 导出时只要鼠标正停着，那一块就被"提亮"进 PNG 了 ✓ 图上永远带一块亮的 ✗
-   *  这里把几个悬停量整体清零，返回一个**恢复函数**；调用方导出完必须调它 ✓
-   *
-   *  ⚠ 只动"高亮"这一路 ✗ —— 悬停卡片、取色那些走 state ✓ 不受影响 ✓
+   *  高亮是画在着色器里的（mix 到白 0.30），不是叠加半透明框，
+   *  因此只要鼠标停在图上，那一块就会被提亮进 PNG。
+   *  这里把几个悬停量清零，返回恢复函数；调用方导出完必须调用它。
+   *  只动"高亮"这一路：悬停卡片、取色走 state，不受影响。
    */
   muteHoverForExport() {
     const save = {
@@ -3000,7 +2942,7 @@ void main() {
       paint: this.hoverPaint ? this.hoverPaint.slice() : null,
       label: this.hoverLabel,
     };
-    this.hoverTid = this.noTitle;      // NONE → 着色器那几路全不命中 ✓
+    this.hoverTid = this.noTitle;      // NONE → 着色器那几路全不命中
     this.hoverPid = 0;
     this.hoverGroupId = 0;
     this.hoverPaintOn = false;
@@ -3019,22 +2961,22 @@ void main() {
 
   setHover(tid) {
     const v = tid == null ? this.noTitle : tid;
-    if (this.hoverTid === v) return;        // 没换就别标脏 ✓（见下面 setHoverState 的说明）
+    if (this.hoverTid === v) return;        // 未变化就不标脏（见 setHoverState 的说明）
     this.hoverTid = v;
     this.dirty = true;
   }
 
   /**
-   * 悬停高亮那一组值**整体设一次**，而且**跟上一帧完全一样就不重画** ✓
+   * 悬停高亮那一组值整体设置一次，与上一帧完全相同则不重画。
    *
-   * 为什么非要比较：高亮是画在着色器里的（不是叠一层透明的框），所以
-   * "换高亮"= 整张图重跑一遍 fragment shader ✗
-   * 而鼠标在地图上划动时**每换一格**都会走到这儿 —— 划过一整片海、或者划过一个
-   * 大国家的许多省份时，高亮范围其实**一直没变**（还是那一片 / 还是那个国家）✓
-   * 以前 `setHover()` 无条件 `dirty = true` ✗ → 每个 mousemove 都白渲染一整张图 ✗
+   * 需要比较的原因：高亮画在着色器里（不是叠加透明框），
+   * "换高亮"= 整张图重跑一遍 fragment shader；
+   * 而鼠标划动时每换一格都会走到这儿 —— 划过一整片海、或划过
+   * 大国的许多省份时，高亮范围其实没变（还是那一片 / 还是那个国家）。
+   * setHover() 无条件置脏时，每个 mousemove 都会白渲染一整张图。
    *
-   * ⚠ 第 6 个参数是**「同一片海」那组号**（0 = 没编组 → 照旧只亮一格 ✓）——
-   *   老的 5 参调用照样能用（缺省就是 0 ✓ 行为一点没变 ✓）
+   * 第 6 个参数是「同一片海」的组号（0 = 未编组，照旧只亮一格）；
+   * 旧的 5 参调用仍然可用（缺省为 0，行为不变）。
    */
   setHoverState(hoverPid, paintOn, paint, label, tid, hoverGroup) {
     const t = (tid == null) ? this.noTitle : tid;
@@ -3065,18 +3007,18 @@ void main() {
     this.dirty = true;
   }
 
-  /** **边界深度图** ✓（CPU 侧算好的 —— 见 app.js 的 buildBorderDepth ✓）
-   *  R8UI ✓ 每格一个数 = "到最近那条缝的距离"（格 ✓ 0 = 紧挨着 ✓）
-   *  ⚠ NEAREST ✗ —— 它是整数枚举（粗筛门槛），插值出来的小数没有意义 ✓
-   *  ⚠ 跟 uProv / uTitleMap 同一套写法（整型纹理 + texelFetch ✓）不会引入新写法 ✓ */
+  /** 边界深度图（CPU 侧算好，见 app.js 的 buildBorderDepth）
+   *  R8 归一化，每格 1 字节 = 四路各 2 位等级（0 压在边界上 · 1 紧邻 · 2 更远）
+   *  NEAREST：整数枚举，插值无意义
+   *  与 uProv / uTitleMap 同为 texelFetch 取样，不引入新写法
+   */
   setBorderDepth(dist, w, h) {
     const gl = this.gl;
-    /* 🔴 **先看这张卡吃不吃得下** ✗ —— 用户报"手机版进地图黑屏、只剩地名" ✓
-     *   地名走 2D canvas ✗ 不受影响 → 所以问题在 WebGL 这边 ✓
-     *   手机的 MAX_TEXTURE_SIZE 常常只有 4096 ✗ 而地图宽 5632 ✓
-     *   超限时 texImage2D **不抛错**（只设个错误码 ✓）→ 纹理是坏的 → 后面全乱 ✓
-     *   → 索性**不上传**：borderDepthOn 保持 false → 着色器 on = 0 → 退回射线 ✓ 画得对 ✓
-     *   ⚠ 拿不到上限时按 16384 算（别因为读不到参数就把功能关了 ✓）*/
+    /* 先确认这张卡装得下 —— 手机 MAX_TEXTURE_SIZE 常为 4096，而地图宽 5632。
+     *   超限时 texImage2D 只置错误码、不抛异常，纹理是坏的，后续全乱；
+     *   → 索性不上传：borderDepthOn 保持 false，着色器 on = 0，退回射线，结果正确。
+     *   拿不到上限时按 16384 算，不因读不到参数而关闭功能。
+     */
     const _maxTex = (gl.getParameter && gl.getParameter(gl.MAX_TEXTURE_SIZE)) || 16384;
     if (w > _maxTex || h > _maxTex) {
       this.borderDepthOn = false;
@@ -3084,16 +3026,18 @@ void main() {
       return;
     }
     if (this.borderDepthTex) gl.deleteTexture(this.borderDepthTex);
-    /* **等级图**：R8UI ✓ 每格 1 字节 = **四路各 2 位**（0 压在边界上 · 1 紧挨着 · 2 更远 ✓）
-     *   用户点的：离边界 2 格和 3 格**没有区别** ✗ 都不画 ✓ 所以 2 位就够 ✓
-     *   它**只管排除**（这一路还要不要细算 ✓）· **画线仍旧走边掩码**（那里才有方向/亚格精度 ✓）
-     *   ⚠ NEAREST ✗ —— 等级是枚举，插值没有意义 ✓ */
-    /* ⚠ **用归一化 R8 而不是 R8UI** ✗ —— 整数纹理上传在某些驱动上会走
-     *   **格式转换的慢路** ✓ 而归一化 R8 是各家的最快路径 ✓
-     *   代价：texelFetch 出来是 0~1 的浮点 ✗ 着色器里 ×255 还原即可 ✓ */
+    /* 等级图：R8 归一化，每格 1 字节 = 四路各 2 位（0 压在边界上 · 1 紧邻 · 2 更远）
+     *   离边界 2 格与 3 格没有区别，都不画，2 位足够。
+     *   它只用于排除（这一路是否细算）；画线仍走边掩码（那里才有方向 / 亚格精度）。
+     *   NEAREST：等级是枚举，插值无意义。
+     */
+    /* 用归一化 R8 而非 R8UI：整数纹理上传在某些驱动上走格式转换的慢路，
+     *   归一化 R8 是各家的最快路径；代价是 texelFetch 得到 0~1 浮点，
+     *   着色器里 ×255 还原。
+     */
     this.borderDepthTex = makeTexture(gl, w, h, gl.R8, gl.RED, gl.UNSIGNED_BYTE, dist, gl.NEAREST);
-    this.borderDepthW = w;       // ⚠ 改签名时**必须一起来看函数体** ✗ 我漏过两次（w → bw → w）
-    this.borderDepthH = h;       //   → 抛 ReferenceError → 纹理压根没传上去（异步的，同步断言抓不到 ✗）
+    this.borderDepthW = w;       // 改参数名时必须同步函数体：名字写错会抛 ReferenceError，纹理传不上去
+    this.borderDepthH = h;       // （上传是异步的，同步断言抓不到这类错）
     this.borderDepthOn = true;
     this.dirty = true;
   }
@@ -3104,24 +3048,30 @@ void main() {
     const cssW = Math.max(1, this.canvas.clientWidth);
     const cssH = Math.max(1, this.canvas.clientHeight);
     let dpr = Math.min(window.devicePixelRatio || 1, 2);
-    /* **画布像素总数封顶** ✓（用户报的"电脑版非常卡"✓ 这条是主因）
+    /* 画布像素总数封顶（"电脑版非常卡"的主因）
      *
-     * 边界那几趟是**逐像素**算的，一帧的开销 ∝ 画布像素数 ✗
-     * 而 dpr 上限原来写死 2 ✗ —— 于是：
-     *   · 4K 屏（3840×2160）dpr 2 → 3840×2160×4 ≈ **3300 万像素** ✗✗
-     *   · Windows 缩放 125% / 150% 时 dpr 也已经到 1.25 / 1.5 ✗ 同样爆
-     *   · 手机（390×844）dpr 2 → 才 260 万 ✓
-     * 差了十几倍，这就是"手机不卡、电脑卡"的原因 ✓
+     * 边界那几趟逐像素计算，一帧开销 ∝ 画布像素数；
+     * dpr 上限写死 2 时：
+     *   · 4K 屏（3840×2160）dpr 2 → 3840×2160×4 ≈ 3300 万像素
+     *   · Windows 缩放 125% / 150% 时 dpr 已到 1.25 / 1.5，同样爆
+     *   · 手机（390×844）dpr 2 → 仅 260 万
+     * 相差十几倍，即"手机不卡、电脑卡"的来源。
      *
-     * 所以给总量封顶：超了就把 dpr 降下来（画面略糊一点，但那点糊换的是十几倍速度 ✓）。
-     * 下限 0.75 —— 再低就真糊了，宁可慢一点 ✗
-     * ⚠ 普通 1080p（1920×1080×1 ≈ 200 万）**稳稳在限额内** ✓ 一点不受影响 ✓
+     * 总量封顶：超了把 dpr 降下来（画面略糊，换来十几倍速度）。
+     * 下限 0.75，再低就糊得看不清。1080p（约 200 万像素）稳在限额内，不受影响。
      */
     const px = cssW * cssH * dpr * dpr;
     this.lowRes = false;
     if (px > MAX_CANVAS_PX) {
       dpr = Math.max(0.75, Math.sqrt(MAX_CANVAS_PX / (cssW * cssH)));
-      this.lowRes = true;                 // 记住"这台机器我给它降过" ✓ 见 render() 里那个抗锯齿
+      this.lowRes = true;                 // 记住降过采样，见 render() 里的抗锯齿开关
+    }
+    /* 拖动期间再打折 —— 见构造函数里 motionScale 一段。
+     *   折扣写在总量封顶之后，否则大屏上两次削减叠加，拖一次就糊成马赛克。
+     *   下限 0.5 同理：再低看不清国界。
+     */
+    if (this.motionScale > 0 && this.motionScale < 1) {
+      dpr = Math.max(0.5, dpr * this.motionScale);
     }
     const w = Math.max(1, Math.floor(cssW * dpr));
     const h = Math.max(1, Math.floor(cssH * dpr));
@@ -3132,26 +3082,26 @@ void main() {
     }
   }
 
-  /* ============ **每帧那九十多条 GL 调用：没变就别发** ✓（2026-11-03）============
+  /* ============ 每帧九十多条 GL 调用：值没变就不发 ============
    *
-   *  一帧 render() 固定要发多少条？`node tools/_bench_render.js EU4` 数过：
+   *  一帧 render() 固定发多少条？`node tools/_bench_render.js EU4` 实测：
    *    43 条 uniform1i + 13 条 activeTexture + 13 条 bindTexture + 10 条 uniform1f
-   *    + 其余向量几条 = **97 条** ✓
-   *  而拖动 / 缩放时**真正变的只有 uView 那 4 个数** ✗ 其余九十多条每次都一模一样 ✓
+   *    + 其余向量几条 = 97 条
+   *  拖动 / 缩放时真正变的只有 uView 那 4 个数，其余九十多条每次都一样。
    *
-   *  每条 JS→WebGL 的调用都要过一遍参数校验、再抄进命令缓冲 ✗
-   *  桌面上一条约 0.2~0.5 µs、手机（尤其 Adreno 那批）1~3 µs ✓
-   *  → 97 条 ≈ 桌面 0.02 ms / 手机 0.3 ms 左右，**每帧白烧** ✓
-   *    60 帧就是手机 18 ms —— "一拖就掉帧"里有一部分就是它 ✓
+   *  每条 JS→WebGL 调用都要过参数校验、抄进命令缓冲：
+   *    桌面约 0.2~0.5 µs、手机（尤其 Adreno 那批）1~3 µs
+   *  → 97 条 ≈ 桌面 0.02 ms / 手机 0.3 ms，每帧白耗；
+   *    60 帧即手机 18 ms，"一拖就掉帧"有一部分来自这里。
    *
-   *  做法：**上次发过的值存着，这次一样就整条跳过** ✓
-   *  ⚠ 只跳过"发同一个值"的调用 → 渲染结果**一个字节都不变** ✓（这点必须守住 ✓）
-   *  ⚠ 账本按 **location 对象**记 ✓ —— 换程序时 `_installProgram` 会整个清掉 ✓
-   *    （不清的话新程序会沿用旧程序"已经发过"的假账 → 整帧错色 ✓ 极难查 ✓）
-   *  ⚠ 纹理那本账另有代号兜底 ✓ 见 `GL_TEX_EPOCH` 那段 ✓
+   *  做法：缓存上次发出的值，相同则整条跳过。
+   *  只跳过"发同一个值"的调用 → 渲染结果一个字节都不变（必须守住）。
+   *  缓存按 location 对象记，换程序时 _installProgram 会整个清掉
+   *  （不清则新程序沿用旧程序的记录 → 整帧错色，极难排查）。
+   *  纹理另有代号兜底，见 GL_TEX_EPOCH 一段。
    */
 
-  /** 一个分量：跟上次一样就跳过 ✓（kind: 0=uniform1i · 1=uniform1f · 2=uniform1ui）*/
+  /** 一个分量：与上次相同则跳过（kind: 0=uniform1i · 1=uniform1f · 2=uniform1ui）*/
   _u1(loc, v, kind) {
     if (loc == null) return;
     const cache = this._uCache;
@@ -3163,8 +3113,8 @@ void main() {
     else gl.uniform1ui(loc, v);
   }
 
-  /** 二 / 三 / 四个分量：先逐个比、再决定发不发 ✓（kind: 0=2i · 1=3f · 2=4f）
-   *  ⚠ 值存在一个定长小数组里**就地改** ✗ 不是每帧 new 一个 ✓（不然 GC 抖回来 ✓）*/
+  /** 二 / 三 / 四个分量：先逐项比较再决定是否发送（kind: 0=2i · 1=3f · 2=4f）
+   *  值存在定长小数组里就地改，不每帧新建（避免 GC 抖动）*/
   _uN(loc, kind, a, b, c, d) {
     if (loc == null) return;
     const cache = this._uCache;
@@ -3183,8 +3133,8 @@ void main() {
     else gl.uniform4f(loc, a, b, c, d);
   }
 
-  /** 定长数组（`uExtraTier` 那四根，8 个）：逐元素比完再决定发不发 ✓
-   *  ⚠ 比的是**当前值**不是引用 ✗ —— app 那边是拿同一个数组就地改的 ✓ */
+  /** 定长数组（uExtraTier 那四根，8 个）：逐元素比完再决定是否发送
+   *  比较的是当前值而非引用 —— app 侧是拿同一个数组就地改的 */
   _uArr(loc, arr, n, isInt) {
     if (loc == null || !arr) return;
     const len = n | 0;
@@ -3199,18 +3149,18 @@ void main() {
     if (isInt) gl.uniform1iv(loc, arr); else gl.uniform1fv(loc, arr);
   }
 
-  /** 绑一个纹理单元：**同一单元已经绑着同一张** → activeTexture + bindTexture 全跳 ✓
-   *  ⚠ 代号变了（别处绑过）就把整本账撕掉重记 ✓ 见 `GL_TEX_EPOCH` 那段 ✓ */
+  /** 绑纹理单元：同一单元已绑同一张 → activeTexture + bindTexture 全跳
+   *  代号变了（别处绑过）就把整本记录清掉重记，见 GL_TEX_EPOCH 一段 */
   _tex(unit, target, tex) {
     if (this._texEpoch !== GL_TEX_EPOCH || !this._texBound) {
       this._texEpoch = GL_TEX_EPOCH;
       this._texBound = new Array(13).fill(null);
-      this._texUnit = -1;          // 别处可能 activeTexture 过 → 当前单元也不可信 ✓
+      this._texUnit = -1;          // 别处可能 activeTexture 过 → 当前单元也不可信
     }
     const gl = this.gl;
-    /* ⚠ **先看"这张是不是还绑着"，再决定要不要切单元** ✗✗
-     *   反过来写（先 activeTexture 再判）等于每帧把 13 个单元全切一遍 ✓
-     *   而"每次都要切"其实只因为上一次停在 12 号 ✓ 顺序一变就白切 13 条 ✓ */
+    /* 先判断"这张是否还绑着"，再决定是否切单元；
+     *   反过来写（先 activeTexture 后判断）等于每帧把 13 个单元全切一遍。
+     */
     if (this._texBound[unit] === tex) return;
     if (this._texUnit !== unit) { gl.activeTexture(gl.TEXTURE0 + unit); this._texUnit = unit; }
     gl.bindTexture(target, tex);
@@ -3218,26 +3168,24 @@ void main() {
   }
 
   render() {
-    /* 🔴 **逐帧体检**（只在手机上）✗ —— 用户报：手机版黑屏、中心像素 [0,0,0]、
-     *   出错码 **1282（GL_INVALID_OPERATION）** ✓
-     *   1282 是**异步**留下的：getError 返回的是"上一个还没被取走的错" ✓
-     *   所以光看一次不知道是谁干的 ✓ 这里画前清空、画后看看还剩什么 ✓
-     *   ⭐ 同时把**视口和画布尺寸**一起打出来 —— 我怀疑是"渲染器建的时候
-     *     画布才 300×150（canvas 默认尺寸 ✓）而后来的视口没跟上" ✓
-     *     → 画面被画进一个 300×150 的小角 → 屏幕其余地方全黑 ✓✓
-     * ⚠ 只在手机上打 ✗ 桌面不刷屏 ✓ */
-    /* 🔴 **排障探针：显式开关** ✓（地址后面加 `#diag` 再打开，见 app.js 的 bootMark ✓）
-     *   ⚠ 默认**关着** ✗ —— 下面那段 while 会把真实的 GL 错误**吃掉** ✓
-     *   以前写的是「innerWidth ≤ 900 就开」✗：手机上没有控制台，恰恰最需要真实错误码，
-     *   却偏偏在那儿被吞掉 ✓ 现在谁要排障谁自己打开 ✓ */
+    /* 逐帧体检（仅调试开关打开时）——
+     *   现象：手机黑屏、中心像素 [0,0,0]、错误码 1282（GL_INVALID_OPERATION）。
+     *   1282 是异步留下的：getError 返回"上一个尚未被取走的错"，
+     *   单看一次无法定位来源，故画前清空、画后看剩余错误，
+     *   同时打印视口与画布尺寸；视口未跟上画布时（例如渲染器建立时画布仍是
+     *   300×150 默认尺寸），画面会画进小角、其余全黑。
+     *   开关：地址后加 `#diag`（见 app.js 的 bootMark），默认关闭 ——
+     *   下面那段 while 会吞掉真实的 GL 错误，故不可按 innerWidth ≤ 900 自动开启：
+     *   手机没有控制台，恰恰最需要真实错误码。
+     */
     const _diag = (typeof window !== 'undefined') && !!window.__PDX_DIAG;
     if (_diag) {
       try {
         const g0 = this.gl;
-        while (g0.getError() !== g0.NO_ERROR) { /* 清空历史错误 ✓ 最多几次 */ }
-      } catch (e) { /* ✓ */ }
+        while (g0.getError() !== g0.NO_ERROR) { /* 清空历史错误 */ }
+      } catch (e) { /* 忽略 */ }
     }
-    if (this.ctxLost) return false;      // 上下文被收走了：画也不上屏，等它回来（见 restored ✓）
+    if (this.ctxLost) return false;      // 上下文被收走：不上屏，等它恢复（见 restored）
     if (!this.provTex) return false;
     this.flushPaint();
     this.flushLut();
@@ -3251,9 +3199,9 @@ void main() {
     gl.useProgram(this.prog);
     gl.bindVertexArray(this.vao);
 
-    /* **0~4 号单元**（顺序 / 单元号一个都不能动 ✓ 见文件头那几条着色器规矩 ✓）
-     *   ⚠ 这里不再直接 activeTexture + bindTexture ✗ —— `_tex()` 会先看
-     *     "这个单元上次绑的是不是同一张"，是就整条跳过 ✓（省下的正是每帧的固定开销 ✓）*/
+    /* 0~4 号单元（顺序 / 单元号不可改动，见文件头的着色器规矩）
+     *   不再直接 activeTexture + bindTexture：_tex() 先看"该单元上次绑的是不是同一张"，
+     *   是就整条跳过，省下的正是每帧的固定开销 */
     this._tex(0, gl.TEXTURE_2D, this.provTex);
     this._tex(1, gl.TEXTURE_2D, this.titleTex);
     this._tex(2, gl.TEXTURE_2D, this.colorTex);
@@ -3268,59 +3216,62 @@ void main() {
     this._tex(5, gl.TEXTURE_2D_ARRAY, this.provArrTex);
     this._u1(u.uProvArr, 5, 0);
 
-    // **悬停编组表：单元 6** ✓（"同一片海"那条路要用 ✓ 任何一层都绑着 —— 那张表一直存在 ✓）
+    // 悬停编组表：单元 6（"同一片海"那条路要用；任何一层都绑着，该表一直存在）
     this._tex(6, gl.TEXTURE_2D, this.hoverGroupTex);
     this._u1(u.uHoverGroup, 6, 0);
     this._u1(u.uHoverGroupW, this.paintW, 0);
 
-    /* **底层身份标：单元 7** ✓（"每格按底层身份上色"那条要用 ✓）
-     *   ⚠ 老包 / 没灌过 → kindData 为空 → `uKindOn = 0`，着色器整条让开 ✓ */
+    /* 底层身份标：单元 7（"每格按底层身份上色"那条要用）
+     *   旧包 / 未灌入 → kindData 为空 → uKindOn = 0，着色器整条让开 */
     this._tex(7, gl.TEXTURE_2D, this.kindTex);
     this._u1(u.uKindTex, 7, 0);
     this._u1(u.uKindOn, this.kindData ? 1 : 0, 0);
     this._u1(u.uKindW, this.paintW, 0);
-    /* ⚠ 没灌过自然色（老包 / 还没跑到）→ 这个 uniform 本来就没值可发 ✗
-     *   以前直接把 undefined 丢给 uniform3fv（会抛 TypeError）✓ 现在干脆跳过 ✓
+    /* 未灌入自然色（旧包 / 尚未跑到）时该 uniform 无值可发，
+     *   直接把 undefined 交给 uniform3fv 会抛 TypeError，故跳过。
      *
-     * 🔴 **这里原来只发了一个元素 —— 湖 / 河 / 不可通行海域 / 不可通行全黑** ✗✗
-     *   旧代码：`_uN(u.uNature, 1, natureFlat[0], natureFlat[1], natureFlat[2], 0)`
-     *   `_uN` 走的是 `gl.uniform3f` → **只写 uNature[0]** ✓
-     *   而 WebGL 规范里数组 uniform 没写到的元素**初值就是 0** ✗✗
-     *   → 着色器 `natureColor(k) = uNature[k-2]`（见 GLSL 那段 ✓）：
-     *     海(2)=uNature[0] 有值 ✓
-     *     湖(3)=uNature[1] / 河(4)=uNature[2] / 不可通行海域(5)=uNature[3] / 不可通行(6)=uNature[4]
-     *     全是 (0,0,0) → `vec4(0,0,0,1)` = 纯黑 ✓（用户报的"湖泊/河流/锁定海域一片黑"）
-     *   改法：**一次 `uniform3fv` 把 15 个 float 全发过去** ✓
-     *   ⚠ 别塞进 `_uCache` ✗ —— 那本账一个 location 只存 4 个数 ✓ 用单独的 `natureDirty` ✓
-     *   ⚠ 只在脏了才发 ✓ 平时那几个值一个字节都不变 ✓ */
+     * 数组 uniform 必须按实际长度发满：只用 gl.uniform3f 写 uNature[0]，
+     *   未写到的元素按 WebGL 规范取初值 0，湖 / 河 / 不可通行海域 / 不可通行
+     *   随之全黑：
+     *   → 着色器 natureColor(k) = uNature[k-2]（见 GLSL 一段）：
+     *     海(2)=uNature[0] 有值；
+     *     湖(3)=uNature[1] / 河(4)=uNature[2] / 不可通行海域(5)=uNature[3] /
+     *     不可通行(6)=uNature[4] 全为 (0,0,0) → vec4(0,0,0,1) = 纯黑
+     *     （"湖泊 / 河流 / 锁定海域一片黑"）。
+     *   做法：一次 uniform3fv 把 15 个 float 全部发出。
+     *   勿塞进 _uCache：那本账一个 location 只存 4 个数，用单独的 natureDirty；
+     *   只在脏了才发。
+     */
     if (this.natureFlat && this.natureDirty) {
       if (u.uNature) gl.uniform3fv(u.uNature, this.natureFlat);
       this.natureDirty = false;
     }
 
-    /* **「认得出是水吗」那张表：单元 8** ✓（「水域 · 边界」那条通道要用 ✓）
-     *   ⚠ 它跟 kindTex 一样**一直绑着** ✓ —— 表本身一直存在（内容可以是全 0 ✓）
-     *     `uWaterKindOn` 那个闸由 app 侧跟"这个勾"AND 好之后写进 waterBorderOn ✓
-     *     （着色器里只留一个闸，省得两个地方各判一遍 ✗ 见 handover §3.4 第 2 步 ✓）*/
+    /* 「能否认出是水」表：单元 8（「水域 · 边界」通道要用）
+     *   与 kindTex 一样一直绑着 —— 表本身一直存在（内容可以是全 0）。
+     *   uWaterKindOn 由 app 侧与"这个勾"取 AND 后写进 waterBorderOn，
+     *   着色器里只留一个闸，避免两处各判一遍（见 handover §3.4 第 2 步）。
+     */
     this._tex(8, gl.TEXTURE_2D, this.waterKindTex);
     this._u1(u.uWaterKind, 8, 0);
     this._u1(u.uWaterKindW, this.paintW, 0);
 
-    // **深度图：单元 9** ✓（纹理单元编号保持不变 ✓）
+    // 深度图：单元 9（纹理单元编号保持不变）
     if (this.borderDepthTex && this.borderDepthOn) {
       this._tex(9, gl.TEXTURE_2D, this.borderDepthTex);
       this._u1(u.uBorderDepth, 9, 0);
       this._u1(u.uBorderDepthOn, 1, 0);
     } else {
-      /* ⚠ **关掉也得绑** ✗ —— 光设 uBorderDepthOn=0 不够 ✓
-       *   着色器里那个 sampler 仍然存在 ✓ WebGL 会检查它指向的纹理完不完整 ✓
-       *   （这条就是手机黑屏的根 ✓ 踩过一次别再踩 ✓）*/
+      /* 关闭时也必须绑 —— 仅设 uBorderDepthOn=0 不够：
+       *   着色器里的 sampler 仍然存在，WebGL 会检查它指向的纹理是否完整
+       *   （手机黑屏的根因）。
+       */
       this._tex(9, gl.TEXTURE_2D, this.dummyTex);
       this._u1(u.uBorderDepth, 9, 0);
       this._u1(u.uBorderDepthOn, 0, 0);
     }
 
-    /* **国旗三张表：单元 10 / 11 / 12** ✓（关着也得绑一张 1×1 ✓ 否则纹理不完整 → 画面黑 ✓）*/
+    /* 国旗三张表：单元 10 / 11 / 12（关闭时也绑 1×1，否则纹理不完整 → 画面黑）*/
     if (this.flagOn && this.flagIdxTex && this.flagSlotTex && this.flagTexArr) {
       this._tex(10, gl.TEXTURE_2D, this.flagIdxTex);
       this._u1(u.uFlagIdx, 10, 0);
@@ -3353,30 +3304,31 @@ void main() {
     this._u1(u.uFineTier, this.fineTier, 0);
     this._u1(u.uShowTitles, this.showTitles ? 1 : 0, 0);
     this._u1(u.uShowPaint, this.showPaint ? 1 : 0, 0);
-    // 分块参数（没有分块数据时 useTiles=0 → 着色器走老路，跟以前等价 ✓）
-    /* ⚠ 以前这里每帧 new 一个 `{tileW:1,...}` ✗（没分块数据时）→ 白喂 GC ✓
-     *   改成模块级的一个常量对象（只读，谁也别改它 ✓）*/
+    // 分块参数（无分块数据时 useTiles=0 → 着色器走旧路，等价）
+    /* 用模块级常量对象，避免无分块数据时每帧新建 {tileW:1,...} 白喂 GC
+     *  （该对象只读，不要修改）*/
     const _ti = this.tileInfo || NO_TILES;
     this._uN(u.uProvTiles, 0, _ti.tileW, _ti.tileH, 0, 0);
     this._u1(u.uProvCols, _ti.cols, 0);
     this._u1(u.uUseTiles, this.useTiles || 0, 0);
-    // id 图缩着传时 >1（见 setData 里 arrOk 那段 ✓）；正常情况下恒 1 ✓
+    // id 图缩着传时 >1（见 setData 里 arrOk 一段）；通常恒 1
     this._u1(u.uProvScale, this._smallIds ? (this.provScale || 1) : 1, 0);
     this._u1(u.uMix, this.mix, 1);
     this._u1(u.uBorderTitle, this.borderTitle ? 1 : 0, 0);
     this._u1(u.uBorderPaint, this.borderPaint ? 1 : 0, 0);
     this._u1(u.uPaintOnly, this.paintOnly ? 1 : 0, 0);
-    // 「未上色区域」的颜色：无归属地块在开着剧本时的显示色 ✓
+    // 「未上色区域」的颜色：无归属地块在开着剧本时的显示色
     this._uN(u.uUnpainted, 1, this.unpainted[0], this.unpainted[1], this.unpainted[2], 0);
     this._u1(u.uBorderW, this.borderWidth, 1);
     this._u1(u.uPaintBorderW, this.paintWidth, 1);
     this._u1(u.uPaintBorderA, this.paintAlpha, 1);
-    /* **水域边界**（2026-10-16 ✓）—— 自己一套宽浓 ✓ 独立于那三个开关 ✓
-     *   ⚠ `waterBorderOn` 是布尔 → app 每帧给 ✓（它已经把"那个勾 + 算得出水陆"AND 好 ✓）*/
+    /* 水域边界：独立的一套宽 / 浓，独立于那三个开关
+     *   waterBorderOn 是布尔，由 app 每帧传入（它已把"这个勾 + 算得出水陆"取 AND）
+     */
     this._u1(u.uWaterBorderOn, this.waterBorderOn ? 1 : 0, 0);
     this._u1(u.uWaterBorderW, this.waterBorderW, 1);
     this._u1(u.uWaterBorderA, this.waterBorderA, 1);
-    /* 🔴 **荒地边界那三根**（2026-10-17 ✓ 跟水域一模一样的三行 ✓）*/
+    /* 荒地边界那三根，与水域同样的三行 */
     this._u1(u.uWasteBorderOn, this.wasteBorderOn ? 1 : 0, 0);
     this._u1(u.uWasteBorderW, this.wasteBorderW, 1);
     this._u1(u.uWasteBorderA, this.wasteBorderA, 1);
@@ -3404,26 +3356,24 @@ void main() {
     this._u1(u.uNoAA, (this.noAA || this.lowRes) ? 1 : 0, 0);
 
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-    /* 🔴 **逐帧体检**（只在手机上）✗ —— 用户报：手机版黑屏、中心像素 [0,0,0]、
-     *   出错码 **1282（GL_INVALID_OPERATION）** ✓
-     *   这里把"这一帧画的时候"的几个关键状态一起打出来：
-     *     · 画布 vs **视口**（我怀疑是视口没跟上画布 ✗）
-     *     · 画完之后的 GL 错误码（画前我清过 ✓ 所以这儿报的就是**这一帧**的 ✓）
-     *     · 采样用的那几张纹理有没有绑上 ✓
-     * ⚠ 只在手机上打 ✗ 桌面不刷屏 ✓ */
+    /* 逐帧体检（仅调试开关打开时）：打印这一帧画时的关键状态
+     *   · 画布 vs 视口
+     *   · 画完后的 GL 错误码（画前已清空，故此处报的就是这一帧的）
+     *   · 采样用的那几张纹理是否绑上
+     */
     if (_diag && typeof bootMark === 'function') {
       try {
         const cv1 = gl.canvas;
         const vp1 = gl.getParameter(gl.VIEWPORT) || [0, 0, 0, 0];
-        /* ⚠ 这里**不调 getError()** ✗ —— 它会把手头那个真实的 GL 错误取走，
-         *   别处（工单里最值钱的那一行）就再也看不见它了 ✓
-         *   ⚠ 曾经这段写的是 `vp[2]` / `err` —— 那两个变量随着逐帧探针停用一起没了 ✗
-         *   → 每次跑到这儿都是一句 ReferenceError（被 try 吞掉，看不出任何东西 ✓）
-         *   **别再把变量写成不存在的** ✗ */
+        /* 这里不调 getError()：它会取走手头那个真实的 GL 错误，
+         *   别处（工单里最值钱的那一行）就再也看不到它。
+         *   变量名必须与作用域内实际存在的标识符一致：引用了已移除的变量时，
+         *   每次执行都抛 ReferenceError，被 try 吞掉后什么也看不到。
+         */
         bootMark('帧:画布' + cv1.width + '×' + cv1.height
           + ' 视口' + vp1[2] + '×' + vp1[3]
           + ' 贴图' + (gl.isTexture(this.provTex) ? 'ok' : '坏'));
-      } catch (e) { /* ✓ */ }
+      } catch (e) { /* 忽略 */ }
     }
     this.dirty = false;
     return true;

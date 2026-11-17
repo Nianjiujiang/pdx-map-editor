@@ -52,8 +52,7 @@ MAPS = (
     #   ⚠ 只改**给人看的名字** ✗ —— 包 id（`pdx-vic3-vanilla`）与缓存目录
     #     （`data_vic3`）一律不动 ✓（那是数据 / 发布物的标识 ✓ 改了老包就接不上 ✓）
     ("vic3", "pdx-vic3-vanilla", "VIC3 原版", "data_vic3", "8192 × 3616"),
-    ("eu5", "pdx-eu5-vanilla", "EU5 原版", "data_eu5", "8192 × 4096"),
-    ("eu5full", "pdx-eu5-full", "EU5 原尺寸", "data_eu5_full", "16384 × 8192"),
+    ("eu5full", "pdx-eu5-full", "EU5 原版", "data_eu5_full", "16384 × 8192"),
 )
 
 #: 拼接顺序有讲究：log 最前（报错日志要在 app 跑之前就挂上 ✓），app 最后

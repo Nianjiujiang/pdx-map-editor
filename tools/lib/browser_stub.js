@@ -716,6 +716,11 @@ function ctx2d() {
       width: w, height: h, data: new Uint8ClampedArray(Math.max(1, w * h * 4)),
     }),
     globalCompositeOperation: 'source-over',
+    /* 渐变：调色器的 SV 方块 / 色相条要用（2026-11-07）✓
+     *   桩里缺这三个 → 手机自检一开调色器就 TypeError ✗ */
+    createLinearGradient: () => ({ addColorStop: noop }),
+    createRadialGradient: () => ({ addColorStop: noop }),
+    createPattern: () => ({}),
   };
   Object.defineProperty(o, 'font', {
     get() { return this._font || ''; },
@@ -1205,9 +1210,13 @@ var _PLIST = [
   'saveMapPrefs',
   'loadMapPrefs',
   'paintPids',
+  'paintUnitName',
   'paintPidsAsOne',
   'pickAt',
   'setBrush',
+  'setBrushLabel',
+  'brushCustomLabel',
+  'labelIdOf',
   'setTier',
   'setTool',
   'needsRestore',

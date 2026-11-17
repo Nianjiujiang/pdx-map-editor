@@ -3,93 +3,89 @@
  *
  * 单独一层 Canvas2D，盖在 WebGL 地图上面。两种画法：
  *
- *   draw()       常规：标当前层级的所有头衔，位置按各层的规则定（见 build_*.py），
- *                缩放百分比到了这一层的门槛才标。
+ *   draw()       常规：标当前层级的所有头衔，位置由各层的规则决定（见 build_*.py），
+ *                缩放百分比达到该层的门槛才标。
  *
  *   drawPoints() 常规模式下（头衔关、手绘开）用：只画传进来的那几个点。
- *                点是由调用方按**颜色**聚出来的 —— 见 app.js 的 paintedPoints()，
- *                因为玩家常常是吸了某个头衔的色去铺别的地方，
- *                这时候该显示的是"这个颜色原本属于谁"，不是地块本身属于谁。
+ *                点由调用方按**颜色**聚出来 —— 见 app.js 的 paintedPoints()。
+ *                玩家常常吸某个头衔的色去铺别处，此时该显示的是"这个颜色原本属于谁"，
+ *                而非地块本身属于谁。
  *
  * 裁剪按**文字包围盒**算：只要还有一部分落在视口里就画。
  *
- * ---------------------------------------------------------------- 为什么不卡了
+ * ---------------------------------------------------------------- 绘制开销与对策
  *
- * 这套东西每帧要把几百个地名画一遍（平移时相机一直在动，每帧都重画），
- * 三个开销按大小排：
+ * 每帧要画几百个地名（平移时相机一直在动，每帧都重画），开销按大小排：
  *
- * 1. **strokeText / fillText 现场栅格化汉字** —— 最贵的一步，尤其带描边（等于画两遍）。
- *    → 加了**字形贴图缓存**：同一段文字 + 同一个字号 + 同一个颜色只画一次到离屏
- *      canvas，之后每帧只 drawImage。平移时缩放不变，命中率几乎 100%。
- *      贴图按 devicePixelRatio 渲染，高分屏上不糊。
+ * 1. **strokeText / fillText 现场栅格化汉字** —— 最贵的一步，带描边时等于画两遍。
+ *    对策是**字形贴图缓存**：同一段文字 + 同一个字号 + 同一个颜色只画一次到离屏
+ *    canvas，之后每帧只 drawImage。平移时缩放不变，命中率接近 100%。
+ *    贴图按 devicePixelRatio 渲染，高分屏上不糊。
  *
- * 2. **ctx.font 一改就要重新解析 CSS 字体简写、重新选字体** —— 第二贵。
- *    而字号现在是跟着缩放连续变的，几乎每个标签都不一样，于是每个标签都要改一次。
- *    → 把字号吸附到一条 6% 的**几何阶梯**上（quantizeFont）。同一级共用一次 font，
- *      肉眼看不出差别。字号分桶之后，还要按桶从大到小画，保证大的在下面。
+ * 2. **ctx.font 每改一次都要重新解析 CSS 字体简写、重新选字体** —— 第二贵。
+ *    字号随缩放连续变化，几乎每个标签都不同，于是每个标签都要改一次。
+ *    对策是把字号吸附到一条 6% 的**几何阶梯**上（quantizeFont）。同一级共用一次
+ *    font，肉眼看不出差别。字号分桶之后按桶从大到小画，保证大的在下面。
  *
  * 3. **measureText** 每帧每个标签量一次宽度。
- *    → 量宽缓存按**量化后**的字号做 key，命中率从"几乎为 0"变成"几乎 100%"。
+ *    量宽缓存按**量化后**的字号做 key，命中率接近 100%。
  *
- * 还有一件小但很阴的：`canvas.clientWidth` 不能在标签循环里读 —— 读它会逼浏览器
- * 同步重排，几百次就是一场灾难。现在一帧只读一次，存在 this.cssW/cssH 里。
+ * 另有一处易忽略的开销：`canvas.clientWidth` 不能在标签循环里读 —— 读它会逼浏览器
+ * 同步重排，几百次就是一场灾难。一帧只读一次，存在 this.cssW / this.cssH 里。
  *
  * 每帧的临时数组（文本、坐标、字号）都挂在实例上复用，稳态下不产生垃圾。
  */
 
 import { RealmMaskSource, layoutMapName, mapNameParams } from './maplabels.js';
 
-/* 🔴 **P社式排版**（2026-10-22 ✓）
- *   `桌面/P社国名地图排版原理与实现.md` 那套：在版图里找基线 → 逐字贴着曲线摆 ✓
- *   具体算法在 `maplabels.js` ✓ 这边只负责：
- *     · 把省份图 / 归属表喂给排版器（`setRealmMask` ✓）
- *     · 按"这个标是国名还是地名"决定套不套（`mapNameMode` ✓）
- *     · 把排好的"每个字的位置 + 角度"画出来（字形贴图逐字旋转 ✓）
- *   ⚠ 排版结果**跟缩放无关** → 按（层 / 头衔 / 文字 / 字体 / 用户字号）缓存 ✓
- *     相机平移、放大缩小都不重算 ✓ 只有换层 / 改名 / 换字体 / 调字号才失效 ✓
+/* **P社式排版**
+ *   原理见 `桌面/P社国名地图排版原理与实现.md`：在版图里找基线，逐字贴着曲线摆。
+ *   具体算法在 `maplabels.js`，这边只负责：
+ *     · 把省份图 / 归属表喂给排版器（`setRealmMask`）
+ *     · 按"这个标是国名还是地名"决定套不套（`mapNameMode`）
+ *     · 把排好的"每个字的位置 + 角度"画出来（字形贴图逐字旋转）
+ *   排版结果**跟缩放无关**，按（层 / 头衔 / 文字 / 字体 / 字号倍率）缓存：
+ *   相机平移、放大缩小都不重算，只有换层 / 改名 / 换字体 / 调字号才失效。
  */
-const MAPNAME_REF = 100;          //: 量字用的参考字号（排版按比例缩 ✓）
-/* 🔴🔴 **地名不再按字号设门槛**（2026-10-23 用户：地名也要一律贴合版图）
- *   以前这里是 `MAPNAME_PLACE_MIN = 8`：屏幕字号不到 8px 就不排版、退回横着写 ✗
- *   → 缩到某一层刚出现时，小地块全横着，放大一点才变贴合 —— 画法跟着缩放变 ✗
- *   现在**一律排** ✓ 排版结果按（层 / 头衔 / 文字 / 字体 / 用户字号）缓存，
- *   跟缩放无关 → 一层的名字只付一次排版成本，之后放大缩小、拖动都是命中 ✓
- *   （实测单次 ~0.5ms；一屏地名最多几百个，只在那一层第一次出现时算一轮 ✓）
- *   ⚠ 试过"每帧限排几个、剩下的下一帧补" ✗ —— 一屏 188 个时会被拖成
- *     一帧只冒 20 个，看着像卡顿 ✓ 所以宁可一次算完 ✓ */
+const MAPNAME_REF = 100;          //: 量字用的参考字号（排版按比例缩放）
+/* **地名一律贴合版图，不按字号设门槛**
+ *   按屏幕字号决定是否排版，会让画法随缩放变化：某层刚出现时小地块全横着写，
+ *   放大一点才变贴合。
+ *   一律排版后，结果按（层 / 头衔 / 文字 / 字体 / 字号倍率）缓存，与缩放无关 ——
+ *   一层的名字只付一次排版成本，之后放大缩小、拖动都命中缓存。
+ *   （实测单次约 0.5ms；一屏地名最多几百个，只在那一层第一次出现时算一轮。）
+ *   注意：分帧限排（每帧排几个、剩下的下一帧补）会拖成一帧只冒出二十来个，
+ *   观感像卡顿，因此一次算完。 */
 
 
-//: 排版缓存最多存多少条（开局整层预热要装得下 ✓ 一条几十字节 ✓）
+//: 排版缓存最多存多少条（开局整层预热要装得下，一条几十字节）
 const LAYOUT_CACHE_MAX = 60000;
 
-//: 各层级从多少缩放百分比开始显示 —— 只是一层**兜底**：
-//: 真正用的门槛由 `computeLabelZoom()` 按**这张图自己的地块大小**算出来 ✓
-//: （以前每个游戏写死一套数，谁也没跟着地图尺寸走：EU5 半尺寸和原尺寸差了 2 倍，
-//:   门槛却一模一样 → 半尺寸那张的地名会提早一倍糊出来 ✗）
+//: 各层级从多少缩放百分比开始显示 —— 仅作**兜底**：
+//: 实际门槛由 `computeLabelZoom()` 按**这张图自己的地块大小**算出来，
+//: 不写死一套数（同一张图的半尺寸版本和原尺寸版本相差 2 倍，
+//: 门槛相同会让半尺寸那张的地名提前一倍变糊）。
 const MIN_ZOOM_PERCENT = [8, 30, 60, 120, 250];
 
 //: 细层的口径：门槛那一刻，这一层**中位地块**在屏幕上要多宽（CSS px）。
-//: 20px 是"保证不比以前那套写死值更晚"的临界值（用户要求：别放得更近）——
-//: 各图细层因此都比旧值早或持平：CK3 男爵领 250→63、EU4 省份 110→88、
-//: HOI4 省份 165→158、V3 省份 150→132、EU5 地点 240→129（原尺寸 65）。
-//: 觉得太早（CK3 那种上万块细层的图名字会碎）就调大：25 / 35 / 45 各是一档 ✓
+//: 20px 是"不晚于写死门槛"的临界值；各图细层据此得到的门槛：
+//: CK3 男爵领 63、EU4 省份 88、HOI4 省份 158、V3 省份 132、EU5 地点 129
+//: （原尺寸 65）。CK3 这类上万块细层的图名字会碎，可调大到 25 / 35 / 45。
 export const ARRIVE_SPAN = 20;
-//: 国名层（年份层；CK3 是最粗那层）**不设缩放门槛** ✓（2026-10-27 用户：
-//: "国名显示不要那个 20 门槛，无论手机版还是电脑版"）
-//: 原来按"整张图缩进 1600px 视口"算出一个 ~20% 的门槛 ✓
-//: 于是缩到 19% 时国名整层消失；用户要它一直出 ✓
-//: ⚠ 字号本身还有一道 4px 的可读性门槛（见 `_fontSize`）✓
-//:   缩得特别小的时候只有大国名够 4px，这是"别糊成一团"的底线，不是缩放门槛 ✓
+//: 国名层（年份层；CK3 是最粗那层）**不设缩放门槛**，任何缩放下都显示。
+//: 若按"整张图缩进 1600px 视口"折算，门槛约为 20%，缩到 19% 时整层就消失了。
+//: 字号另有一道可读性门槛（见 `_fontSize`）：缩得极小时只有大国名够大，
+//: 这是"不糊成一团"的底线，不是缩放门槛。
 const ZOOM_MIN = 4;
 const ZOOM_MAX = 800;
 
-/** 国名层数：有年份层就是年份层数；没有年份时最粗那层算国名 ✓ */
+/** 国名层数：有年份层就是年份层数；没有年份时最粗那层算国名 */
 function countryTierCount(meta) {
   const nEra = (meta && meta.eraDates && meta.eraDates.length) || 0;
   return nEra > 0 ? nEra : 1;
 }
 
-/** 把一份门槛表里的国名层**全部置 0** ✓（0 = 不设缩放门槛，不是"永不显示" ✓） */
+/** 把门槛表里的国名层**全部置 0**（0 = 不设缩放门槛，不是"永不显示"） */
 function zeroCountryGates(arr, meta) {
   const out = (arr || []).slice();
   const nCountry = countryTierCount(meta);
@@ -102,16 +98,15 @@ function zeroCountryGates(arr, meta) {
  *
  * 两条口径：
  *   · 细层：`100 × 70 / 这一层的中位地块跨度`（地图像素）——
- *     地块小的图（V3 的省份 15px、HOI4 的省份 12.6px）门槛自然就高 ✓
- *   · 国名层（`meta.eraDates` 那几层；没有年份时是最粗那层）：**= 0，不设缩放门槛** ✓
- *     （2026-10-27 用户："国名显示不要那个 20 门槛" ✓ 原来按整图视角算 ≈20% ✓）
+ *     地块小的图（V3 的省份 15px、HOI4 的省份 12.6px）门槛自然就高。
+ *   · 国名层（`meta.eraDates` 那几层；没有年份时是最粗那层）：**= 0，不设缩放门槛**。
  *
- * 拿 CK3 复算验证过：帝国/王国/公爵领/伯爵领/男爵领 = 12/30/61/119/221%，
- * 跟当年手调的 8/30/60/120/250% 基本一致 —— 说明这才是那套数背后的口径 ✓
+ * 用 CK3 复算：帝国/王国/公爵领/伯爵领/男爵领 = 12/30/61/119/221%，
+ * 与手调的 8/30/60/120/250% 基本一致 —— 两者是同一口径。
  *
  * @param {object} meta   meta.json 的内容（要 mapWidth / tiers / eraDates / 兜底 labelZoom）
  * @param {object} titles titles.json 的内容（要 tiers，以及**跟字号同一个来源**的面积：
- *                        `blockArea` 优先、退回 `area` —— EU5 的 `area` 是成员个数不是像素 ✗）
+ *                        `blockArea` 优先、退回 `area` —— EU5 的 `area` 是成员个数不是像素）
  */
 export function computeLabelZoom(meta, titles) {
   const areaArr = titles && (titles.blockArea || titles.area);
@@ -133,7 +128,7 @@ export function computeLabelZoom(meta, titles) {
   for (let t = 0; t < nT; t++) {
     let z;
     if (t < nCountry) {
-      z = 0;                                  // 国名：不设缩放门槛 ✓
+      z = 0;                                  // 国名：不设缩放门槛
     } else if (spans[t].length) {
       const arr = spans[t].sort((a, b) => a - b);
       const med = arr[arr.length >> 1];       // 中位数：一半地块够大就该上地名了
@@ -145,8 +140,8 @@ export function computeLabelZoom(meta, titles) {
       const fb = (meta.labelZoom && meta.labelZoom[t]) || MIN_ZOOM_PERCENT[t] || 30;
       z = fb;
     }
-    /* ⚠ 0 = 不设门槛，**不能**被 ZOOM_MIN 夹回去 ✗
-     *   以前统一 `Math.max(ZOOM_MIN, …)` → 国名层再怎么样也至少 4% ✓ */
+    /* 注意：0 = 不设门槛，**不能**被 ZOOM_MIN 夹回去 ——
+     * 统一写 `Math.max(ZOOM_MIN, …)` 会让国名层至少 4%。 */
     out[t] = z > 0 ? Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, Math.round(z))) : 0;
   }
   return out;
@@ -156,29 +151,29 @@ export function computeLabelZoom(meta, titles) {
 //: 逐字渲染中文明显更慢，标签一多就卡。
 const FONT_STACK = '"Microsoft YaHei", "PingFang SC", "Segoe UI", sans-serif';
 
-/* 🔴 **导入字体：地名和势力名各用各的** ✗✗（2026-10-20 ✓ 用户要求）
+/* **导入字体：地名和势力名各用各的**
  *
- *   两槽：`place`（地块名 / 海湖河荒地）和 `power`（势力名 = 剧本年份那几层 + 涂出来的色块）
- *   空串 = 用默认栈 ✓ 有值 = 那个族名排在最前面，后面照样接默认栈 ✓
- *     （导入的字体缺字时，浏览器会自己往后面的系统字体里找 ✓ 不会变成豆腐块 ✓）
+ *   两槽：`place`（地块名 / 海湖河荒地）和 `power`（势力名 = 剧本年份那几层 + 涂出来的色块）。
+ *   空串 = 用默认栈；有值 = 该族名排在最前面，后面照样接默认栈
+ *   （导入的字体缺字时，浏览器会往后面的系统字体里找，不会变成豆腐块）。
  *
- *   ⚠ **缓存全要带字体** ✗ —— 换字体之后如果不区分，
- *     量宽缓存和字形贴图还是旧字体那批 ✓ 画面就会新旧混着，像是没生效 ✓
- *     所以 `fontFor` / `measureCached` / `SpriteCache` 的键里都放进了族名 ✓
+ *   缓存键必须带字体身份：换字体后若不区分，量宽缓存和字形贴图仍是旧字体那批，
+ *   画面会新旧混着，像是没生效。因此 `fontFor` / `measureCached` / `SpriteCache`
+ *   的键里都放进了族名。
  */
 const FONT_FACE = { place: '', power: '' };
 
-/* 🔴 **位图字体**（2026-10-20 ✓ 用户："这个应该是可以攻克的"）
- *   TTF 那套靠 `document.fonts` 注册，位图字体（EU4 汉化那种 .fnt + .dds）走不了那条路 ✗
- *   只能自己逐字贴图 ✓ —— 这里存两槽 BitmapFont 实例（null = 没选 ✓）
- *   有值就**盖过** `FONT_FACE` ✓（同一个下拉里选中的是位图字体 ✓）
+/* **位图字体**
+ *   TTF 靠 `document.fonts` 注册，位图字体（EU4 汉化那种 .fnt + .dds）走不了那条路，
+ *   只能逐字贴图。这里存两槽 BitmapFont 实例（null = 没选）。
+ *   有值就**盖过** `FONT_FACE`（同一个下拉里选中的是位图字体）。
  *
- *   ⚠ 位图字体**没有矢量轮廓** ✗ —— 描边只能把同一个字偏移着多画几遍 ✓
- *     所以贴图缓存对位图字体更重要（每段字只铸一次 ✓）
+ *   位图字体**没有矢量轮廓**，描边只能把同一个字偏移着多画几遍，
+ *   因此贴图缓存对它更要紧（每段字只铸一次）。
  */
 const BITMAP = { place: null, power: null };
 
-/** 挂一套位图字体（传 null 取消 ✓）
+/** 挂一套位图字体（传 null 取消）
  *  @param {'place'|'power'} kind
  *  @param {object|null} bf BitmapFont 实例
  */
@@ -188,22 +183,22 @@ export function setLabelBitmap(kind, bf) {
   BITMAP[kind] = bf || null;
 }
 
-/** 现在挂的是哪套位图字体（自测用 ✓） */
+/** 当前挂的位图字体（自测用） */
 export function labelBitmap(kind) {
   return BITMAP[kind] || null;
 }
 
-/** 设置某一类的字体族名（传空串 = 回到默认 ✓）
+/** 设置某一类的字体族名（传空串 = 回到默认）
  *  @param {'place'|'power'} kind
  *  @param {string} family
  */
 export function setLabelFont(kind, family) {
   if (kind !== 'place' && kind !== 'power') return;
   FONT_FACE[kind] = String(family || '');
-  _dropFontTag(kind);          // 键里的字体身份变了 ✓ 缓存要跟着作废 ✓
+  _dropFontTag(kind);          // 键里的字体身份变了，缓存要跟着作废
 }
 
-/** 现在用的是哪套（给设置页回显 / 自测用 ✓） */
+/** 当前使用的字体族（给设置页回显 / 自测用） */
 export function labelFont(kind) {
   return FONT_FACE[kind] || '';
 }
@@ -215,29 +210,27 @@ function stackOf(kind) {
 }
 
 /**
- * 🔴 **字体的身份标签** —— 所有缓存键都要带上它 ✗✗
+ * **字体的身份标签** —— 所有缓存键都要带上它。
  *
- *  2026-10-20 用户报"字体选择根本没有生效" ✓ 根因就在这儿：
- *  量宽 / 字形贴图 / fontFor 三处当初只把 `kind`（place|power）编进键里，
- *  可 `kind` 是**固定的**（一类就一个值 ✓）—— 换字体键根本不变 ✓
- *  于是：旧字体量出来的宽度、旧字体栅格化的贴图，全都原封不动命中 ✓
- *  画面上自然一点变化都没有 ✓ 看着就像"选了没反应" ✗
+ *  量宽 / 字形贴图 / fontFor 三处若只把 `kind`（place|power）编进键里，
+ *  由于 `kind` 是**固定的**（一类就一个值），换字体后键不变，
+ *  旧字体量出的宽度、旧字体栅格化的贴图会原封不动命中，画面上看不出任何变化。
  *
- *  现在键里带两样：
- *    · `FONT_FACE[kind]` —— 导入的 TTF 族名（空 = 默认栈 ✓）
- *    · `BITMAP[kind].uid` —— 位图字体实例号（两套位图字体也可能同名 ✓）
+ *  键里带两样：
+ *    · `FONT_FACE[kind]` —— 导入的 TTF 族名（空 = 默认栈）
+ *    · `BITMAP[kind].uid` —— 位图字体实例号（两套位图字体也可能同名）
  */
 const _FONT_TAG = { place: null, power: null };
-/** 换字体 / 换位图字体时要把这张缓存作废 ✓（setLabelFont / setLabelBitmap 里清 ✓）*/
+/** 换字体 / 换位图字体时作废这份缓存（setLabelFont / setLabelBitmap 里清） */
 function _dropFontTag(kind) {
   if (kind) { _FONT_TAG[kind] = null; return; }
   _FONT_TAG.place = null; _FONT_TAG.power = null;
 }
 function fontTag(kind) {
   const k = (kind === 'power') ? 'power' : 'place';
-  /* 🔴 **缓存一下**（2026-10-23 体检）：它会进每一个缓存键，每帧上千次调用 ✗
-   *   以前每次现拼字符串 → 每帧上千个小字符串，纯 GC 压力 ✓
-   *   `_dropFontTag` 由 setLabelFont / setLabelBitmap 负责失效 ✓ */
+  /* 这份标签进每一个缓存键，每帧上千次调用，因此缓存起来：
+   * 现拼字符串会每帧产生上千个小字符串，纯属 GC 压力。
+   * 失效由 setLabelFont / setLabelBitmap 里的 `_dropFontTag` 负责。 */
   let t = _FONT_TAG[k];
   if (t === null) {
     const bf = BITMAP[k];
@@ -254,14 +247,13 @@ const LABEL_STROKE = 'rgba(0, 0, 0, 0.82)';
 
 //: 字号 = **这个头衔在屏幕上有多大** × 这个比例。
 //:
-//: 关键是它对缩放是**线性**的：放大两倍，屏幕上的地盘大两倍，字也就大两倍。
-//: 以前的写法是 `8 + log2(side) * 2` 再夹到 [9, 26] —— 对数是"放大一点、字大一点
-//: 点"，那个 26 的上限更是直接封顶，放到 4 倍字也不长了，于是地图越放越大、
-//: 字却越来越小气，这就是"缩放失真"。
+//: 它对缩放是**线性**的：放大两倍，屏幕上的地盘大两倍，字也就大两倍。
+//: 对数式写法（`8 + log2(side) * 2` 再夹到 [9, 26]）会让放大逐渐失效，
+//: 加上限封顶后，地图越放越大而字不再增长，即"缩放失真"。
 let FONT_RATIO = 0.18;
 
-//: 下限：再小就看不清了。只有很小的地块会碰到它（碰到时不线性，但总比一个
-//: 两像素高的名字强）。**没有上限** —— 上限正是失真的来源。
+//: 下限：再小就看不清了。只有很小的地块会碰到它（碰到时不再线性，但总比
+//: 一个两像素高的名字强）。**没有上限** —— 上限正是失真的来源。
 const MIN_FONT = 10;
 
 /** 设置页用：字号总倍率（1 = 默认 0.18） */
@@ -273,21 +265,19 @@ export function setFontScale(k) {
 /**
  * 各层的"显示门槛"：算出来比它小就整个不画。
  *
- * 只给**国名那层**留 2px 的可读底线（2026-10-27 试验：从 4px 降到 2px ✓
- *   用户："国名显示不要那个 20 门槛" —— 光去掉缩放门槛没用，
- *   真正卡住的是这道字号线：4px 时大部分国名要缩到 ~20% 才够大 ✓
- *   → 降到 2px 后，5% 全图视角也能先浮出几个最大国的名字 ✓
- *   ⚠ 再往下（0）会变成几百个 1px 蚂蚁字糊满屏，试验过，不可读 ✗）
+ * 只给**国名那层**留 2px 的可读底线。真正卡住国名的是这道字号线：
+ * 取 4px 时大部分国名要缩到约 20% 才够大，取 2px 后 5% 的全图视角
+ * 也能先浮出几个最大国的名字。再往下取 0 会变成几百个 1px 蚂蚁字糊满屏，不可读。
  * 地区 / 省份这些细层一律 **0 = 全显示**：
  * 它们各自有 meta.labelZoom 的缩放门（没到那个缩放整层都不出现），
- * 门一开就该把这一层全摆出来 —— 跟 CK3 伯爵领那套一样。
+ * 门一开就该把这一层全摆出来 —— 与 CK3 伯爵领一致。
  */
 const TIER_MIN_FONT = [2, 0, 0, 0, 0];
 
 /** 真正允许画出来的最小字号：字号阶梯从这里起步 */
 const MIN_DRAW = 4;
 
-/* 导出图里只收**大于 15px** 的名字（2026-10-27 用户要求）：
+/* 导出图里只收**大于 15px** 的名字：
  * 低倍率导出时 4–15px 的字在 PNG 里只剩一团灰，既不好认又拖慢导出；
  * 字号顺便取整，保证 canvas 按整像素栅格化，不会因为 15.4px 这种字号发虚。
  * 返回 0 = 这个字号不画。 */
@@ -304,12 +294,11 @@ const TIER_FONT_BOOST = [1, 1, 1, 1.2, 1.2];
 
 const MAX_LABELS = 4000;
 
-//: 候选上限，纯保险。**注意它跟 MAX_LABELS 不是一回事** ——
-//: 以前这里拿 MAX_LABELS 当候选上限，于是"只考虑面积最大的 4000 个"，
-//: CK3 有 11295 个男爵领，结果放到最大、视口里明明有三十几个，
-//: 却可能一个都进不了候选（实测随机挑位置有 20% 是这情况）——
-//: 看起来就是"男爵领名字放多大都看不见"。
-//: 现在这里只防病态数据，真正的限量在 _paint 里按**画出来的**数。
+//: 候选上限，纯保险。**跟 MAX_LABELS 不是一回事** ——
+//: 若拿 MAX_LABELS 当候选上限，就只考虑面积最大的 4000 个：CK3 有 11295 个男爵领，
+//: 放到最大、视口里明明有三十几个，也可能一个都进不了候选
+//: （随机挑位置实测约 20% 出现），表现为"男爵领名字放多大都看不见"。
+//: 这里只防病态数据，真正的限量在 _paint 里按**画出来的**数。
 const MAX_CANDIDATES = 30000;
 
 // ---------------------------------------------------------------- 字号阶梯
@@ -321,9 +310,9 @@ const SIZE_STEPS_MAX = 220;
 const SIZE_LADDER = [MIN_DRAW];
 const FONT_CACHE = new Map();
 
-/*: 每个标一帧要调一次 `quantizeFont`，几百个标就是几百次 `Math.log` ✗
- *  （2026-11-03 剖面：它在 `_paint` 里占到 6%）字号实际取值就那几十档 ✓
- *  按原值记一份结果就行 ✓ 表满了整个清掉（比逐条淘汰便宜得多，而且很快又会热回来）*/
+/*: 每个标一帧要调一次 `quantizeFont`，几百个标就是几百次 `Math.log`
+ *  （剖面里它在 `_paint` 中占 6%），而字号实际取值只有几十档。
+ *  按原值记一份结果；表满了整个清掉（比逐条淘汰便宜得多，很快又会热回来）。 */
 const QUANT_MEMO = new Map();
 const QUANT_MEMO_MAX = 8192;
 const LOG_STEP = Math.log(SIZE_STEP);
@@ -332,7 +321,7 @@ function quantizeFont(size) {
   if (!(size > MIN_DRAW)) return MIN_DRAW;
   const hit = QUANT_MEMO.get(size);
   if (hit !== undefined) return hit;
-  let k = Math.round(Math.log(size / MIN_DRAW) / LOG_STEP);   // 少算一次 log ✓
+  let k = Math.round(Math.log(size / MIN_DRAW) / LOG_STEP);   // 少算一次 log
   if (k < 0) k = 0;
   else if (k > SIZE_STEPS_MAX) k = SIZE_STEPS_MAX;
   let v = SIZE_LADDER[k];
@@ -346,8 +335,8 @@ function quantizeFont(size) {
 }
 
 /** 拼 `ctx.font` 用的字符串
- *  ⚠ 缓存键要带 **kind** ✗ —— 两套字体各缓存各的 ✓
- *     只按字号缓存的话，换字体之后拿到的是旧那套字符串 ✓
+ *  缓存键要带 **kind** 与字体身份，两套字体各缓存各的 ——
+ *  只按字号缓存的话，换字体之后拿到的是旧那套字符串。
  */
 function fontFor(size, kind) {
   const k = size.toFixed(1) + '|' + (kind || 'place') + '|' + fontTag(kind);
@@ -367,11 +356,11 @@ const WIDTH_CACHE = new Map();
 const WIDTH_CACHE_MAX = 20000;
 
 function measureCached(ctx, text, size, kind) {
-  /* 位图字体：宽度 = 各字 xadvance 之和 ✓ 不用 measureText（也没有东西可量 ✗）*/
+  /* 位图字体：宽度 = 各字 xadvance 之和，不用 measureText，也没有东西可量。 */
   const bf = BITMAP[kind];
   if (bf) return bf.measure(text, size);
-  /* ⚠ 键里要带**字体** ✗ —— 换了字体还命中旧宽度，
-   *   名字会按错的宽度居中 / 判断放不放得下 ✓ 看着就像"字体没生效" ✓ */
+  /* 键里要带**字体** —— 否则换了字体还命中旧宽度，
+   * 名字会按错的宽度居中 / 判断放不放得下，看起来像"字体没生效"。 */
   const key = size.toFixed(1) + '\u0000' + fontTag(kind) + '\u0000' + text;
   let w = WIDTH_CACHE.get(key);
   if (w === undefined) {
@@ -402,12 +391,10 @@ class SpriteCache {
    * @returns {{c:object,w:number,h:number,px:number}|null} null = 别贴了，现场画
    */
   get(text, size, color, dpr, tw, kind, bf) {
-    /* ⚠ 键里要带**字体** ✗ —— 贴图是栅格化好的像素，
-     *   不区分的话换字体之后屏幕上还是旧字形 ✓ 而且看起来"怎么换都没反应" ✓
-     *   位图字体再额外带上实例 uid ✓（两套位图字体也可能同名 ✓）*/
+    /* 键里要带**字体**：贴图是栅格化好的像素，不区分的话换字体后屏幕上还是旧字形，
+     * 看起来像"怎么换都没反应"。位图字体再额外带上实例 uid（两套也可能同名）。 */
     const fk = fontTag(kind);
-    /* dpr 必须进键 ✗：屏幕上是 2x 贴图，导出是 1x；混用会把 2x 贴图缩着画，
-       字就发糊（2026-10-27 用户反馈"字体有点糊" ✓） */
+    /* dpr 必须进键：屏幕上是 2x 贴图，导出是 1x；混用会把 2x 贴图缩着画，字就发糊。 */
     const dk = (Number(dpr) > 0 ? Number(dpr) : 1).toFixed(2);
     const key = dk + '|' + size.toFixed(1) + '|' + color + '|' + fk + '|' + text;
     const hit = this.map.get(key);
@@ -436,7 +423,7 @@ class SpriteCache {
     g.lineJoin = 'round';
     g.miterLimit = 2;
     if (bf) {
-      /* 位图字体：逐字贴 ✓ 描边靠"偏移着多画几遍"（它没有矢量轮廓 ✗）*/
+      /* 位图字体：逐字贴；描边靠"偏移着多画几遍"（它没有矢量轮廓）。 */
       bf.draw(g, text, w / 2, h / 2, size, color,
         { outline: Math.max(1, size * 0.09), stroke: LABEL_STROKE });
     } else {
@@ -462,18 +449,18 @@ class SpriteCache {
 
 // ---------------------------------------------------------------- 字形贴图（逐字）
 //
-// 🔴 **P社式排版是逐字画的**（每个字位置 / 角度都不同 ✓）——
-//   老的 `SpriteCache` 是"整段文字一张贴图" ✗ 那个转不了（一转整段一起转，就没曲线了 ✓）
-//   所以另开一套：**一个字一张贴图**，缓存键里带单字 ✓
+// **P社式排版是逐字画的**（每个字位置 / 角度都不同）。
+// `SpriteCache` 是"整段文字一张贴图"，整段一起转就没有曲线了，
+// 因此另开一套：**一个字一张贴图**，缓存键里带单字。
 //
-//   ⚠ 汉字名字重复率高（"大""王""国"到处都是）→ 命中率比整段贴图还高 ✓
-//   ⚠ 贴图里要留出**基线的位置**（`oy` ✓）：画的时候把"基线中心"对到曲线上的点，
-//     不是把整张图的中心对上去 ✗ —— 不然字会在曲线上下乱跳 ✓
+//   汉字名字重复率高（"大""王""国"到处都是），命中率比整段贴图还高。
+//   贴图里要留出**基线的位置**（`oy`）：画的时候把"基线中心"对到曲线上的点，
+//   不是把整张图的中心对上去 —— 否则字会在曲线上下乱跳。
 
-//: 逐字贴图的总预算（12 MB，比整段那套小一点 —— 它数量多 ✓）
+//: 逐字贴图的总预算（12 MB，比整段那套小 —— 它数量多）
 const GLYPH_BUDGET = 12 * 1024 * 1024;
 
-/** 量字用的公共 2D context（不画东西，只拿来 measureText ✓） */
+/** 量字用的公共 2D context（不画东西，只拿来 measureText） */
 let _scratch = null;
 function scratchCtx() {
   if (!_scratch) {
@@ -485,17 +472,17 @@ function scratchCtx() {
   return _scratch;
 }
 
-/** 取一段字的**字形度量**（都换算到 MAPNAME_REF 号字 ✓）
+/** 取一段字的**字形度量**（都换算到 MAPNAME_REF 号字）
  *
- *  ⚠ 老浏览器没有 `fontBoundingBoxAscent` ✗ → 退回 `actualBoundingBox*` →
- *    再退回"8 : 2 的近似"（测试桩只给 width ✓ 也得能跑 ✓）
+ *  浏览器没有 `fontBoundingBoxAscent` 时退回 `actualBoundingBox*`，
+ *  再退回"8 : 2 的近似"（测试桩只给 width 时也要能跑）。
  */
 function glyphMetrics(text, kind) {
   const chars = Array.from(String(text));
-  /* 🔴 **位图字体也要有度量**（2026-10-23 用户："导入的字体没法实现版图适应弯曲"）
-   *   位图字体没有 `measureText` 那套矢量框 ✗ 但 BMFont 自己带 lineHeight / base /
-   *   每字 xadvance ✓ 拿这些拼出一份"参考字号下的度量"就够了：
-   *   参考字号 = lineHeight，adv = 各字 xadvance，ascent/descent 按 base 拆 ✓ */
+  /* **位图字体也要有度量**
+   *  位图字体没有 `measureText` 那套矢量框，但 BMFont 自带 lineHeight / base /
+   *  每字 xadvance，用这些拼一份"参考字号下的度量"：参考字号 = lineHeight，
+   *  adv = 各字 xadvance，ascent/descent 按 base 拆。 */
   const bf = BITMAP[kind];
   if (bf) {
     const ref = Math.max(1, bf.lineHeight | 0);
@@ -532,27 +519,26 @@ class GlyphCache {
   constructor() {
     this.map = new Map();
     this.pixels = 0;
-    /* 🔴 **分组索引**（2026-11-03 剖面：`get` 一个函数吃掉一帧 self time 的 20%）
-     *   老键是 `dpr|字号|颜色|字体|字` 五段拼一条长串，**每个字**都要
-     *   `toFixed` 两次 + 五次拼接 + 一次长键 Map 查找 ✗
-     *   一帧几百个字形，全花在这上面 ✓
-     *   现在按「dpr+字体」→「字号+颜色」→「字」三层放，**同一次绘制里
-     *   前两层是恒定的**（`_drawGlyphRun` 一个 run 一个字号一个颜色 ✓）
-     *   → 快路只剩最深一层的短键查找 ✓
-     *   ⚠ 语义一点没变：同一组 (dpr, 字号, 颜色, 字体, 字) 仍然拿到同一张贴图 ✓
-     *     `this.map` 还是老键 → 老键，容量统计与淘汰顺序照旧 ✓ */
+    /* **分组索引**
+     *  把 `dpr|字号|颜色|字体|字` 五段拼成一条长串时，**每个字**都要两次 `toFixed`、
+     *  五次拼接加一次长键 Map 查找；一帧几百个字形全花在这上面
+     *  （剖面里 `get` 占一帧 self time 的 20%）。
+     *  改按「dpr+字体」→「字号+颜色」→「字」三层存放：同一次绘制里前两层恒定
+     *  （`_drawGlyphRun` 一个 run 一个字号一个颜色），快路只剩最深一层的短键查找。
+     *  语义不变：同一组 (dpr, 字号, 颜色, 字体, 字) 仍拿到同一张贴图；
+     *  `this.map` 仍用长键，容量统计与淘汰顺序照旧。 */
     this._idx = new Map();
-    this._own = new Map();      // 贴图 → {g1,g1key,ik,inner,ch}（淘汰时顺着它清索引 ✓）
+    this._own = new Map();      // 贴图 → {g1,g1key,ik,inner,ch}（淘汰时顺着它清索引）
     this._cur = null;           // 最近用到的内层表（快路）
-    /* 快路要比的四项 —— 存**原始值**（不是拼好的键 ✓）*/
+    /* 快路要比的四项 —— 存**原始值**（不是拼好的键） */
     this._gd = 0; this._gs = -1; this._gc = null; this._gk = null;
-    /* 慢路顺手算好的字符串键，插入时要用来写 `this.map` ✓ */
+    /* 慢路顺手算好的字符串键，插入时要用来写 `this.map` */
     this._dk = ''; this._sizeKey = ''; this._ft = '';
     this._cg1 = null; this._cg1key = ''; this._cik = '';
   }
 
-  /** 慢路：按 (字号, 颜色, dpr, 字体) 取到（没有就建）最深一层的表 ✓
-   *  一次 `_drawGlyphRun` 只走这一遍 —— 之后的字全走快路 ✓ */
+  /** 慢路：按 (字号, 颜色, dpr, 字体) 取到（没有就建）最深一层的表
+   *  一次 `_drawGlyphRun` 只走这一遍 —— 之后的字全走快路 */
   _group(size, color, dpr, kind) {
     const dk = dpr.toFixed(2);
     const ft = fontTag(kind);
@@ -570,16 +556,16 @@ class GlyphCache {
     return inner;
   }
 
-  /** 取一个字的贴图（基线位置写在 `ox` / `oy` 里 ✓）
+  /** 取一个字的贴图（锚点写在 `ox` / `oy` 里）
    * @returns {{c:object,w:number,h:number,ox:number,oy:number,px:number}|null}
    */
   get(ch, size, color, dpr, kind) {
-    /* 同 `SpriteCache`：屏幕贴图 / 导出贴图的 dpr 不同，不能共用一张 ✗ */
-    const sz = (size === size) ? size : -1;      // NaN 别进 memo（它跟谁都不相等 ✓）
+    /* 同 `SpriteCache`：屏幕贴图 / 导出贴图的 dpr 不同，不能共用一张 */
+    const sz = (size === size) ? size : -1;      // NaN 别进 memo（它跟谁都不相等）
     const dv = Number(dpr) > 0 ? Number(dpr) : 1;
-    /* 🔴 快路比的是**原始值**（数字 / 字符串引用），不是拼出来的键 ✗✗
-     *   一个 run 里 (字号, 颜色, dpr, 字体) 恒定 → 快路一次 `toFixed` 都不用算 ✓
-     *   （2026-11-03 实测：只在快路上省拼串、`toFixed` 还留着的话只快 1.24× ✗）*/
+    /* 快路比的是**原始值**（数字 / 字符串引用），不是拼出来的键：
+     * 一个 run 里 (字号, 颜色, dpr, 字体) 恒定，快路一次 `toFixed` 都不用算。
+     * （实测只省拼串而留着 `toFixed`，只有 1.24× 提升。） */
     let inner = this._cur;
     if (inner === null || this._gd !== dv || this._gs !== sz
         || this._gc !== color || this._gk !== kind) {
@@ -609,8 +595,8 @@ class GlyphCache {
       const old = this.map.get(oldest);
       this.pixels -= old.px;
       this.map.delete(oldest);
-      /* 索引里那条也得跟着走 ✗ 不然被淘汰下来的贴图还挂在索引上：
-       * 预算白算、下次还会拿到一张本该回收的 ✓ */
+      /* 索引里那条也得跟着删，否则被淘汰的贴图还挂在索引上：
+       * 预算白算，下次还会拿到一张本该回收的。 */
       const own = this._own.get(old);
       if (own) {
         this._own.delete(old);
@@ -618,7 +604,7 @@ class GlyphCache {
         if (own.inner.size === 0) {
           own.g1.delete(own.ik);
           if (own.g1.size === 0) this._idx.delete(own.g1key);
-          if (this._cur === own.inner) this._cur = null;   // 快路作废，下次重建 ✓
+          if (this._cur === own.inner) this._cur = null;   // 快路作废，下次重建
         }
       }
     }
@@ -639,14 +625,13 @@ class GlyphCache {
     g.fillStyle = color;
     g.fillText(ch, pad, pad + asc);
 
-    /* ⚠ 锚点放**贴图正中心** ✗ 不是"基线" ✗（2026-10-22 改）
-     *   文档 §3.6 的四边形是"中心在基线上、上下各 h/2"✓
-     *   所以字是**骑在曲线上的**，不是坐在曲线上 ✓
-     *   用基线锚点的话，字会整体偏高约 0.4em，贴图顶部容易顶出版图 ✓
-     *   ⚠ 高宽用的是**这个字号下的整行框**（fontBoundingBox 是字体级的 ✓
-     *     'a' 和 'g' 不会各算各的 ✓ 拉丁文的基线才对得齐 ✓）*/
+    /* 锚点放**贴图正中心**，不是"基线"：
+     * 文档 §3.6 的四边形是"中心在基线上、上下各 h/2"，所以字是**骑在曲线上的**，
+     * 不是坐在曲线上。用基线锚点的话，字会整体偏高约 0.4em，贴图顶部容易顶出版图。
+     * 高宽用**这个字号下的整行框**：fontBoundingBox 是字体级的，'a' 和 'g'
+     * 不会各算各的，拉丁文的基线才对得齐。 */
     const sprite = { c, w, h, ox: w / 2, oy: h / 2, px };
-    /* 两份都记：`map` 用老键（容量统计 / 淘汰顺序照旧 ✓），`_idx` 供下次快查 ✓ */
+    /* 两份都记：`map` 用长键（容量统计 / 淘汰顺序照旧），`_idx` 供下次快查。 */
     this.map.set(this._dk + '|' + this._sizeKey + '|' + color + '|' + this._ft + '|' + ch, sprite);
     inner.set(ch, sprite);
     this._own.set(sprite, { g1: this._cg1, g1key: this._cg1key, ik: this._cik, inner, ch });
@@ -658,9 +643,120 @@ class GlyphCache {
     this.map.clear();
     this._idx.clear();
     this._own.clear();
-    this._cur = null;          // 快路指向的表已经不在索引里了 ✗ 必须一起作废 ✓
+    this._cur = null;          // 快路指向的表已经不在索引里，必须一起作废
     this._gd = 0; this._gs = -1; this._gc = null; this._gk = null;
     this.pixels = 0;
+  }
+}
+
+// ---------------------------------------------------------------- 导出避让
+
+/* **导出避让**
+ * 屏幕那条路只画视口里那几十个标；导出是**整张图一次画完**，当前层的所有名字
+ * 一起落纸 —— 巨型贴合名（大洋 / 大洲，`lay.fs` 能到 1140px）的**字**正好压在
+ * 小名（岛屿 / 湖泊，15~50px）的**字**上。实测（EU4 原版 5632×2048、tier 13、
+ * 1× 导出）画出的 77 个名字里有 11 对字级相交。
+ * （`_fitGrow` 与此无关：grow>1 只在 `lay.fs*scale < 4` 时发生，那时最终字号 ≤ 4px，
+ *   必被 `exportFontPx` 的 15px 门槛丢掉，那种标一个字都画不出来。）
+ *
+ * 做法：**逐字的包围盒 + 贪心占位**
+ *   · 一条名字的"占地"不能用整条 AABB —— 贴合名是**弯的**（大洋沿着海盆走），
+ *     整条 AABB 会把半个海都圈进去，跟谁都算撞，白白丢掉一大堆好名字。
+ *   · 按 `lay.glyphs` 逐字算：宽 = `adv × size/fs`、高 = `size`、按 `g.angle` 转，
+ *     取**外接矩形**（`|hw·cos| + |hh·sin|`，不用造四个角）——
+ *     旋转 / 竖排 / 曲线几种情形都覆盖在内。
+ *   · 占位顺序：**势力名 / 涂色块名**（国名）最先，然后**字号大的先画**
+ *     （与屏幕上"势力名压在最上面"、"面积大的先画"同一口径；`fs` 本来就 ∝ √面积）。
+ *     大名字是整张图的骨架，小名字是细节；被大名字压住的小名字本来就**读不出来**，
+ *     丢它比丢大名字划算。
+ *   · 撞上的**后画者整条跳过**（不缩字、不挪位，字号口径固定）。
+ *
+ * 只在 `paintExport` 里使用；屏幕那条路不动（那边有视口裁剪、缩放门槛和帧预算，
+ * 导出是"一次画完、不看帧"的另一套）。
+ */
+
+/** 名字外面的**描边**也算占地
+ *  `_drawGlyphRun` 的描边 `lineWidth = max(1.3, size*0.14)`（`live` 那支）→
+ *  外半宽 0.07em；这里取 0.08em 再留一点余量，两个名字的描边就不会贴在一起。
+ *  取 0 也能"不相交"，但那只是**字面**上不相交，描边仍会挨上，而最终看图看到的是描边。
+ */
+const EXPORT_INK_PAD = 0.08;
+
+/** 一条贴合名在**输出坐标**里逐字的 AABB（转过的字取外接矩形）
+ *  @param {object} lay `_maybeLayout` 的排版结果
+ *  @param {number} size 最终字号（已量化、已过 15px 门槛）
+ *  @param {(g:object)=>{x:number,y:number}} origin 字心 → 输出坐标
+ *  @returns {Array<{x0:number,y0:number,x1:number,y1:number}>} 没有任何可见字时是空数组
+ */
+function exportGlyphBoxes(lay, size, origin) {
+  const out = [];
+  const gl = (lay && lay.glyphs) || null;
+  if (!gl || !gl.length || !(size > 0)) return out;
+  const k = size / (lay.fs > 0 ? lay.fs : size);
+  const pad = Math.max(1, size * EXPORT_INK_PAD);
+  for (let i = 0; i < gl.length; i++) {
+    const g = gl[i];
+    const ch = g && g.ch;
+    if (!ch || ch === ' ' || ch === '\u00a0') continue;
+    const q = origin(g);
+    if (!q) continue;
+    const hw = Math.max(1, (g.adv > 0 ? g.adv : lay.fs * 0.5) * k) * 0.5;
+    const hh = size * 0.5;
+    /* 角度三角值：`_drawGlyphRun` 会算好挂在字上；没有就现算（导出只跑一趟）。 */
+    const ca = g.cosa !== undefined ? g.cosa : (g.cosa = Math.cos(g.angle || 0));
+    const sa = g.sina !== undefined ? g.sina : (g.sina = Math.sin(g.angle || 0));
+    const ex = Math.abs(hw * ca) + Math.abs(hh * sa) + pad;
+    const ey = Math.abs(hw * sa) + Math.abs(hh * ca) + pad;
+    out.push({ x0: q.x - ex, y0: q.y - ey, x1: q.x + ex, y1: q.y + ey });
+  }
+  return out;
+}
+
+/**
+ * 导出避让用的**稀疏网格**：已被占的字框记进来，新来的一问就知道撞不撞。
+ *
+ * 每次导出 new 一个 —— 不缓存、不挂在实例上，导出结束就扔。
+ * 键用 `"cx,cy"` 拼串：导出**只跑一次**（不是每帧），图的是可读性，不是省那点拼串。
+ * 屏幕那条路的无串键写法见 `GlyphCache`，那边的要求不适用于这里。
+ * 格子边长只影响"多查几个框"，不影响结果 —— 命中还要再过一次精确相交。
+ */
+class PackGrid {
+  constructor(cell) {
+    this.cell = cell > 0 ? cell : 128;
+    this.map = new Map();
+    this.boxes = [];        // 摊平的字框：格子桶里存的是这里的下标
+  }
+  /** 这个字框跟已收下的有没有真相交（贴着边不算，差 1px 也不许）*/
+  hits(b) {
+    const c = this.cell;
+    const x0 = Math.floor(b.x0 / c), x1 = Math.floor(b.x1 / c);
+    const y0 = Math.floor(b.y0 / c), y1 = Math.floor(b.y1 / c);
+    for (let cx = x0; cx <= x1; cx++) {
+      for (let cy = y0; cy <= y1; cy++) {
+        const bucket = this.map.get(cx + ',' + cy);
+        if (!bucket) continue;
+        for (let i = 0; i < bucket.length; i++) {
+          const o = this.boxes[bucket[i]];
+          if (b.x0 < o.x1 && b.x1 > o.x0 && b.y0 < o.y1 && b.y1 > o.y0) return true;
+        }
+      }
+    }
+    return false;
+  }
+  /** 收下这个字框（占住它盖到的每一格）*/
+  add(b) {
+    const id = this.boxes.push(b) - 1;
+    const c = this.cell;
+    const x0 = Math.floor(b.x0 / c), x1 = Math.floor(b.x1 / c);
+    const y0 = Math.floor(b.y0 / c), y1 = Math.floor(b.y1 / c);
+    for (let cx = x0; cx <= x1; cx++) {
+      for (let cy = y0; cy <= y1; cy++) {
+        const key = cx + ',' + cy;
+        let bucket = this.map.get(key);
+        if (!bucket) { bucket = []; this.map.set(key, bucket); }
+        bucket.push(id);
+      }
+    }
   }
 }
 
@@ -677,18 +773,17 @@ export class LabelLayer {
     this.view = { x: 0, y: 0, w: 1, h: 1 };
     this.scale = 1;
     this.hover = null;
-    /* 🔴 **名字层的帧预算**（2026-10-23 改）
-     *   以前是"自适应上限 `_cap`"：慢了就永久少画一些，只有再次重画才慢慢涨回来 ✗
-     *   → 缩放停下后名字回不来，**得动一下鼠标触发重画才补齐** ✓（用户："鼠标移过去了再画"）
-     *   现在改成**按帧计时**：交互中只画 frameBudgetMs 那么多毫秒，
-     *   手一停（app 那边 250ms 定时器）预算恢复成 Infinity 并补画一帧 ✓ */
+    /* **名字层的帧预算**
+     *  交互中只画 frameBudgetMs 毫秒；手一停（app 那边 250ms 定时器）
+     *  预算恢复成 Infinity 并补画一帧。
+     *  不用"自适应上限"：那种做法在变慢时永久少画一些，缩放停下后名字回不来，
+     *  必须动一下鼠标触发重画才补齐。 */
     this.frameBudgetMs = Infinity;
     this._truncated = false;
     this.zoom = (meta && meta.labelZoom) || MIN_ZOOM_PERCENT;
-    /* 🔴 国名层不设缩放门槛（2026-10-27 用户："不要那个 20 门槛"）
-     *   `computeLabelZoom()` 已经给 0 了 ✓ 这里再兜一道：
-     *   老数据 / 别处直接传进来的 labelZoom 里国名层还可能是 20 ✓
-     *   ⚠ 0 = 不设门槛，不是"永不显示" ✗（`draw` / `paintExport` 判 `need == null` 才跳过）*/
+    /* 国名层不设缩放门槛。`computeLabelZoom()` 已给出 0，这里再兜一道：
+     * 外部传入的 labelZoom（旧格式）里国名层还可能是 20。
+     * 0 = 不设门槛，不是"永不显示"（`draw` / `paintExport` 判 `need == null` 才跳过）。 */
     {
       const _nCountry = countryTierCount(meta);
       for (let t = 0; t < _nCountry && t < this.zoom.length; t++) this.zoom[t] = 0;
@@ -696,28 +791,28 @@ export class LabelLayer {
     this.sprites = new SpriteCache();
     this.glyphs = new GlyphCache();
 
-    /* ---- P社式排版（见文件头那段 ✓）----
-     * `mode`: off = 老样子（横着写） / power = 只排国名 / both = 国名 + 大地名 ✓
-     * `source`: app.js 在开图之后塞进来的 `RealmMaskSource` ✓（null = 这张图不支持 ✓）
-     * `cache`: 排版结果（地图坐标 ✓ 跟缩放无关 ✓）
-     * `metrics`: 字形度量（一段文字量一次 ✓）
+    /* ---- P社式排版（见文件头那段）----
+     * `mode`: off = 横着写 / power = 只排国名 / both = 国名 + 大地名
+     * `source`: app.js 开图之后传进来的 `RealmMaskSource`（null = 这张图不支持）
+     * `cache`: 排版结果（地图坐标，跟缩放无关）
+     * `metrics`: 字形度量（一段文字量一次）
      */
     this.mapNameMode = 'both';
     this.mapNameParams = mapNameParams();
-    this.debug = false;             // 排版调试：画基线 / 字框 / 包围盒 / 质心 ✓
-    /* 也可以直接开：`pdx-map-editor.html#mapdebug`（不用进设置翻 ✓）*/
+    this.debug = false;             // 排版调试：画基线 / 字框 / 包围盒 / 质心
+    /* 也可以直接开：`pdx-map-editor.html#mapdebug`（不用进设置翻）*/
     this.debugHash = (typeof location !== 'undefined' && location.hash)
       ? /mapdebug/.test(String(location.hash)) : false;
     this.debug = this.debugHash;
     this.realmMask = null;
-    this.realmPos = null;          // 各省质心（涂色块估包围盒用 ✓）
+    this.realmPos = null;          // 各省质心（涂色块估包围盒用）
     this._layoutCache = new Map();
     this._metricsCache = new Map();
     this._layoutHits = 0;
     this._layoutMiss = 0;
-    /* 排版缓存的"代"（见 `_maybeLayout` 里那个点对象上的记忆）——
-     * `clearLayouts()` 一次 +1，点对象上记着的旧排版就全作废 ✓
-     * ⚠ 用整数比较，别拿 `_layoutCache.size` 当判据 ✗（LRU 会淘汰，size 不代表内容）*/
+    /* 排版缓存的"代"（见 `_maybeLayout` 里点对象上的记忆）——
+     * `clearLayouts()` 每调一次 +1，点对象上记着的旧排版就全作废。
+     * 必须用整数比较，不能拿 `_layoutCache.size` 当判据（LRU 会淘汰，size 不代表内容）。 */
     this._layGen = 0;
     // 一帧只读一次的视口尺寸（CSS px）
     this.cssW = canvas.clientWidth || 1;
@@ -730,16 +825,15 @@ export class LabelLayer {
     this._size = [];
     this._hot = [];
     this._color = [];   // 标签自带颜色（「国名取色」给的；空串 = 用默认米白）
-    this._layout = [];  // 这个标排好版了没（有就逐字画 ✓ 没有走老那套 ✓）
-    this._kind = [];    // 'power' | 'place' —— 字号/字体两条路的分类（跟 _fontSize 同一个口径 ✓）
+    this._layout = [];  // 这个标排好版了没（有就逐字画，没有走横排那套）
+    this._kind = [];    // 'power' | 'place' —— 字号/字体两条路的分类（跟 _fontSize 同一个口径）
     this._buckets = new Map();
     this._bucketKeys = [];
-    /* 🔴 **逐字绘制的壳子跨标复用** ✗✗（2026-11-03 第二批剖面）
-     *   原来 `_paintGlyphs` 每个标新建：一个 origin 闭包 + 一个 options 对象 +
-     *   一个 cull 对象 —— 一帧五百多个标就是 1500 多个短命对象，
-     *   剖面里 GC 占到 2.6%~6.9% ✓
-     *   现在一份壳子改字段 ✓ 顺手把 origin 的返回值也复用（一个字一个 `{x,y}`
-     *   更凶：一帧 1600 多个 ✓ 反正 `_drawGlyphRun` 拿到就立刻用掉、不留引用 ✓）*/
+    /* **逐字绘制的壳子跨标复用**
+     *  每个标新建 origin 闭包 + options 对象 + cull 对象时，
+     *  一帧五百多个标就是 1500 多个短命对象，剖面里 GC 占 2.6%~6.9%。
+     *  这里一份壳子改字段，origin 的返回值也复用（否则一个字一个 `{x,y}`，
+     *  一帧 1600 多个；`_drawGlyphRun` 拿到就立刻用掉、不留引用）。 */
     this._gPt = { x: 0, y: 0 };
     this._gOrg = { bx: 0, by: 0, vx: 0, vy: 0, s: 1, grow: 1, flat: true };
     this._gRun = { ctx: null, lay: null, size: 0, color: '', kind: '', dpr: 1,
@@ -758,8 +852,8 @@ export class LabelLayer {
         return r;
       };
     }
-    /* 每层一份「点对象」——**跨帧复用** ✓（`draw()` 用；见那里的大段注释）
-     * 只缓存对象壳子，字段每帧原地刷新 ✓ 所以换图 / 改名 / 换层都不会串味 ✓ */
+    /* 每层一份「点对象」——**跨帧复用**（`draw()` 用，见那里的注释）。
+     * 只缓存对象壳子，字段每帧原地刷新，所以换图 / 改名 / 换层都不会串味。 */
     this._ptCache = [];
 
     const area = titles.area || titles.provCount.map((n) => n * 3300);
@@ -772,10 +866,9 @@ export class LabelLayer {
     const nTier = (meta && meta.tiers && meta.tiers.length) || 5;
     // hideLabel: 只隐藏地名的节点（比如含岛屿的大西洋），照旧可涂
     const hideLabel = titles.hideLabel;
-    // 有几个“剧本/年份层”（国家层）：EU4 三层、HOI4 两层、V3 一层；
+    // 有几个"国家层"：EU4 三个年份层、HOI4 两个剧本、V3 一个；
     // CK3/EU5 没有剧本层 → 退化成 1（只有最粗那层吃门槛）。
-    // 有几个"国家层"：EU4 三个年份层、HOI4 两个剧本、V3 一个。
-    // **CK3 的帝国/王国/公爵领是封建头衔，不是国家**，EU5 现在也还没有归属层
+    // **CK3 的帝国/王国/公爵领是封建头衔，不是国家**，EU5 也没有归属层
     // —— 这两个模式给 0，界面上那个「国名」开关会直接藏掉。
     this.nEra = (meta && meta.eraDates && meta.eraDates.length) || 0;
     this.byTier = Array.from({ length: nTier }, () => []);
@@ -784,7 +877,7 @@ export class LabelLayer {
       if (lx[i] == null || ly[i] == null || !area[i]) continue;
       const t = titles.tiers[i];
       if (t < 0 || t >= this.byTier.length) continue;
-      if (hideLabel && hideLabel[i]) continue;   // 只隐藏地名（照旧可涂）  // 海/湖/河/山这类伪头衔不上地名
+      if (hideLabel && hideLabel[i]) continue;   // 只隐藏地名（照旧可涂）：海/湖/河/山这类伪头衔不上地名
       this.byTier[t].push(i);
     }
     for (const list of this.byTier) list.sort((a, b) => area[b] - area[a]);
@@ -799,25 +892,25 @@ export class LabelLayer {
     if (this.canvas.width !== w || this.canvas.height !== h) {
       this.canvas.width = w;
       this.canvas.height = h;
-      this.sprites.clear();           // 画布重建了，之前的贴图按尺寸分的，作废
-      this.glyphs.clear();            // 逐字那套同理 ✓
+      this.sprites.clear();           // 画布重建后，按尺寸缓存的贴图作废
+      this.glyphs.clear();            // 逐字那套同理
     }
   }
 
   /* ================================================================ P社式排版接口 */
 
   /**
-   * 把"版图从哪来"接进来（app.js 开图之后调一次 ✓）
+   * 把"版图从哪来"接进来（app.js 开图之后调一次）
    *
    * @param {object|null} o `{provinceIds,width,height,titleAt,noTitle,cell}`
-   *   传 null = 这张图不支持（分块地图 / 数据没齐）→ 全部退回老画法 ✓
+   *   传 null = 这张图不支持（分块地图 / 数据没齐）→ 全部退回横排画法
    */
   setRealmMask(o) {
     this.realmMask = (o && o.provinceIds && o.provinceIds.length > 1
       && o.titleAt) ? new RealmMaskSource(o) : null;
     this.realmPos = (o && o.provPos) || null;
-    /* 色块的"每省属于哪一块"（2026-10-23）—— 全图共用一张块号栅格 ✓
-     * ⚠ 涂色一变 `blockVer` 就变，这边看到版本变了会重建 ✓ 不用整份清缓存 ✓ */
+    /* 色块的"每省属于哪一块"—— 全图共用一张块号栅格。
+     * 涂色一变 `blockVer` 就变，版本变了会重建，不用整份清缓存。 */
     this.blockOf = (o && o.blockOf) || null;
     this.blockVerFn = (o && o.blockVer) || null;
     this._blockMask = null;
@@ -825,7 +918,7 @@ export class LabelLayer {
     this.clearLayouts();
   }
 
-  /** 块号栅格：没有就现建；`blockVer` 变了就重建（涂色之后 ✓） */
+  /** 块号栅格：没有就现建；`blockVer` 变了就重建（涂色之后） */
   _ensureBlockMask() {
     if (!this.blockOf || !this.realmMask || !this.realmMask.usable) return null;
     let ver = 0;
@@ -844,7 +937,7 @@ export class LabelLayer {
     return this._blockMask;
   }
 
-  /** 排版模式：off / power / both（设置页那个下拉 ✓ 每帧现读也行，这里存一份 ✓） */
+  /** 排版模式：off / power / both（设置页的下拉；每帧现读也行，这里存一份） */
   setMapNameMode(mode) {
     const m = (mode === 'off' || mode === 'power' || mode === 'both') ? mode : 'both';
     if (m !== this.mapNameMode) {
@@ -853,22 +946,22 @@ export class LabelLayer {
     }
   }
 
-  /** 排版参数（设置页/自测改参数之后调一下 ✓） */
+  /** 排版参数（设置页 / 自测改参数之后调一下） */
   setMapNameParams(over) {
     this.mapNameParams = mapNameParams(over);
     this.clearLayouts();
   }
 
-  /** 排版缓存作废（换层 / 换图 / 改名 / 换字体 / 调字号都要 ✓） */
+  /** 排版缓存作废（换层 / 换图 / 改名 / 换字体 / 调字号都要） */
   clearLayouts() {
     this._layoutCache.clear();
     this._metricsCache.clear();
     this._layoutHits = 0;
     this._layoutMiss = 0;
-    this._layGen = (this._layGen | 0) + 1;   // 点对象上那份记忆跟着作废 ✓
+    this._layGen = (this._layGen | 0) + 1;   // 点对象上那份记忆跟着作废
   }
 
-  /** 字号总倍率 —— 跟 `_fontSize` 同一个口径（势力名那块 / 地块名那块 ✓） */
+  /** 字号总倍率 —— 跟 `_fontSize` 同一个口径（势力名那块 / 地块名那块） */
   _userScale(tier = 0, layer = 0) {
     const _w = (typeof window !== 'undefined') ? window : null;
     const legacy = (_w && _w.__CK3_FONT_SCALE) || 1;
@@ -877,7 +970,7 @@ export class LabelLayer {
                    : ((_w && _w.__CK3_FONT_PLACE) || legacy);
   }
 
-  /** 一段字的度量（带缓存 ✓ 键里带字体 ✓） */
+  /** 一段字的度量（带缓存，键里带字体） */
   _textMetrics(text, kind) {
     const key = fontTag(kind) + '\u0000' + text;
     let m = this._metricsCache.get(key);
@@ -890,39 +983,35 @@ export class LabelLayer {
   }
 
   /**
-   * 给一个标排版（没有就现排 + 缓存 ✓）
+   * 给一个标排版（没有就现排 + 缓存）
    *
-   * @param {object} p 标（`{name,x,y,area,tier,layer,tid}` ✓）
+   * @param {object} p 标（`{name,x,y,area,tier,layer,tid}`）
    * @param {'power'|'place'} kind
-   * @param {number} size0 老算法算出来的屏幕字号（现在只留着兼容调用点 ✓ 不再拿它卡门槛）
+   * @param {number} size0 按面积算出的屏幕字号（只为兼容调用点，不参与门槛判断）
    * @returns {object|null|undefined} 排好的 {fs,glyphs,bbox,...} /
-   *   null = 这块地排不出来（走老画法） /
-   *   null = 这块地排不出来（走老画法 ✓）
+   *   null = 这块地排不出来（走横排画法）
    */
   _maybeLayout(p, kind, size0) {
     if (!p) return null;
     if (this.mapNameMode === 'off' || !this.realmMask || !this.realmMask.usable) return null;
     if (kind === 'place' && this.mapNameMode !== 'both') return null;
-    /* 🔴 **色块名（layer 2）也能套** ✗✗（2026-10-22 用户实拍："哪里有，根本没有"）
-     *   年份视图里的国名走的就是这条路（`paintedPoints` 按色块聚出来的）✗
+    /* **色块名（layer 2）也能套**
+     * 年份视图里的国名走的就是这条路（`paintedPoints` 按色块聚出来的）。
      *
-     * 🔴🔴 **色块的版图 = 那一组省，永远不看头衔** ✗✗（2026-10-23 用户纠正：
-     *   "为什么没涂的看头衔，那怎么行，别忽视旧秩序"）
-     *   旧秩序一直是：**画面上看到的这一国 = 同颜色 + 同名字的那一组省** ✓
-     *   头衔的完整范围跟画面上不一样（被占走的省显示成别人的颜色 ✗）——
-     *   拿头衔当版图，名字就会写到别的国家的色块上去 ✗
-     *   所以：**只要这一块带着省号集合，就用它当版图**，涂没涂一视同仁 ✓
-     *   这样"同样颜色范围"的两块，几何完全一样 → 名字也一样 ✓ */
-    /* 🔴 **位图字体也能贴合了**（2026-10-23 用户："导入的字体没法实现版图适应弯曲"）
-     *   以前这里一行 `if (BITMAP[kind]) return null;` 把位图字体全挡在门外 ✗
-     *   现在 `glyphMetrics` 会给位图字体拼一份度量（lineHeight / base / xadvance ✓），
-     *   绘制端再用 `bf.drawGlyph` 逐字旋转贴 ✓ 见 `_paintGlyphs` / `paintExport` ✓ */
+     * **色块的版图 = 那一组省，永远不看头衔**：
+     * 画面上看到的这一国 = 同颜色 + 同名字的那一组省；头衔的完整范围跟画面上不一样
+     * （被占走的省显示成别人的颜色），拿头衔当版图，名字就会写到别的国家的色块上。
+     * 所以只要这一块带着省号集合，就用它当版图，涂没涂一视同仁 ——
+     * 这样"同样颜色范围"的两块几何完全一样，名字也一样。 */
+    /* **位图字体也能贴合**
+     *  `glyphMetrics` 会给位图字体拼一份度量（lineHeight / base / xadvance），
+     *  绘制端再用 `bf.drawGlyph` 逐字旋转贴，见 `_paintGlyphs` / `paintExport`。 */
     const tid = p.tid;
     const name = String(p.name || '');
     if (!name) return null;
-    /* 用**哪一层**的版图查：色块名带 `mtier`（它自己那一层 ✓）；
-     * 普通头衔点就是 `p.tier` ✓。⚠ 别拿 `p.tier` 代替色块名 —— 它被写死成 0
-     * （字号/不透明度的分类口径），不是归属层 ✓ */
+    /* 用**哪一层**的版图查：色块名带 `mtier`（它自己那一层）；
+     * 普通头衔点就是 `p.tier`。不能拿 `p.tier` 代替色块名 —— 它被写死成 0
+     * （字号/不透明度的分类口径），不是归属层。 */
     const tier = (p.mtier != null) ? (p.mtier | 0) : (p.tier || 0);
     const us = this._userScale(p.tier || 0, p.layer || 0);
 
@@ -931,12 +1020,10 @@ export class LabelLayer {
     let maskTag = 'r';
     const needPidMask = p.layer === 2 && p.gid != null && p.gid >= 0 && !!this.blockOf;
     if (needPidMask) {
-      /* 🔴 **一张全图级的块号栅格**（2026-10-23 修卡顿）
-       *   上一版每块色块现搭一张小栅格、缓存 48 张 —— 一屏几十上百个色块，
-       *   等于每帧重搭一遍 → 卡爆 ✗
-       *   现在 app 直接把"每个省属于哪一块"（`blockOf`）给过来，
-       *   跟头衔栅格同一个做法：全图只建一张，所有色块共用 ✓
-       *   块号一变（涂色）→ 版本号变 → 重建一次 ✓ */
+      /* **一张全图级的块号栅格**
+       * 若每块色块现搭一张小栅格再缓存，一屏几十上百个色块等于每帧重搭一遍。
+       * app 直接给出"每个省属于哪一块"（`blockOf`），跟头衔栅格同一个做法：
+       * 全图只建一张，所有色块共用；块号一变（涂色）版本号变，重建一次。 */
       const bm = this._ensureBlockMask();
       if (!bm || !bm.usable) return null;
       mask = bm;
@@ -945,16 +1032,16 @@ export class LabelLayer {
     if (!mask || !mask.usable) return null;
     if (maskTag === 'r' && (tid == null || tid < 0)) return null;
 
-    /* 缓存键：**锚点按 1px 量化** ✓（同一个头衔的本土 + 殖民地各有一个标 ✓
-     *   它们要各排各的 ✓ 但每帧的质心有亚像素抖动，不量化就一帧都命中不了 ✓
-     *   ⚠ 别量化得太粗（32px）✗ —— 挨得近的两块殖民地会共用一条缓存，
-     *     第二个标会跑到第一个标的位置上 ✓ 1px 够区分、又稳 ✓）*/
+    /* 缓存键：**锚点按 1px 量化**（同一个头衔的本土 + 殖民地各有一个标，
+     * 它们要各排各的；每帧质心有亚像素抖动，不量化就一帧都命中不了。
+     * 量化得太粗（32px）会让挨得近的两块殖民地共用一条缓存，
+     * 第二个标跑到第一个标的位置上；1px 够区分、又稳。） */
     const gidKey = needPidMask ? (p.gid != null ? p.gid : -1) : -1;
-    /* 🔴 **键在点对象上缓存一份** ✗✗（2026-10-23 体检）
-     *   每一帧、每个标都要拼一次长键（六七个字符串拼接）—— 一屏上千个就是上千个小字符串 ✗
-     *   相机平移 / 缩放**不改变**构成键的各项（锚点在地图坐标里是定死的 ✓）→
-     *   把上次的键记在点对象上，逐项比一遍（数字 + 字符串引用比较，很便宜）✓
-     *   任何一项变了（换层 / 涂色 / 换字体 / 改名）才重拼 ✓ */
+    /* **键在点对象上缓存一份**
+     * 每帧每个标拼一次长键要六七个字符串拼接，一屏上千个就是上千个小字符串。
+     * 相机平移 / 缩放**不改变**构成键的各项（锚点在地图坐标里是定死的），
+     * 因此把上次的键记在点对象上，逐项比一遍（数字 + 字符串引用比较，很便宜），
+     * 任何一项变了（换层 / 涂色 / 换字体 / 改名）才重拼。 */
     const mver = needPidMask ? (this._blockMaskVer | 0) : -1;
     const idPart = needPidMask ? gidKey : (tid == null ? -1 : tid);
     const ft = fontTag(kind);
@@ -964,14 +1051,14 @@ export class LabelLayer {
     if (lk && lk.mver === mver && lk.tier === tier && lk.id === idPart
         && lk.rx === rx && lk.ry === ry && lk.us === us && lk.ft === ft && lk.name === name) {
       key = lk.key;
-      /* 🔴🔴 **排好的对象也记在点对象上** ✗✗（2026-11-03 第二批剖面）
-       *   上一轮只把"键"记在点对象上，键没变还得拿**长串键**去 Map 里查一次 ✗
-       *   一帧 2950 个候选（真画出来的才 524 个）→ 2950 次长串哈希 + 查表，
-       *   整帧自时间的第一名（18.4%）就是它 ✓ 可这些键在缩放 / 平移时**一个都没变** ✓
-       *   → 命中过一次就把 `lay` 一起记在 `lk` 上，下次键没变直接返回 ✓ 零查表 ✓
-       *   ⚠ **必须跟"代"比** ✗（`_layGen`：换字体 / 调字号 / 换图 / 改排版模式时
-       *     `clearLayouts()` 会 +1）—— 不然旧排版会一直用下去 ✓
-       *   ⚠ 计数照旧 +1 ✗（`_layoutHits` 是"查表命中"的口径，自测在盯它 ✓）*/
+      /* **排好的对象也记在点对象上**
+       * 只记"键"时，键没变仍要拿**长串键**去 Map 里查一次。一帧 2950 个候选
+       * （真画出来的才 524 个）就是 2950 次长串哈希 + 查表，占整帧自时间的第一名
+       * （18.4%），而这些键在缩放 / 平移时**一个都没变**。
+       * 命中过一次就把 `lay` 一起记在 `lk` 上，下次键没变直接返回，零查表。
+       * 必须跟"代"比（`_layGen`：换字体 / 调字号 / 换图 / 改排版模式时
+       * `clearLayouts()` 会 +1），否则旧排版会一直用下去。
+       * 计数照旧 +1（`_layoutHits` 是"查表命中"的口径，自测在盯它）。 */
       if (lk.gen === this._layGen) { this._layoutHits++; return lk.lay; }
     } else {
       key = (needPidMask ? 'b' : 'r') + mver + '|' + tier + '|' + idPart
@@ -981,7 +1068,7 @@ export class LabelLayer {
     const hit = this._layoutCache.get(key);
     if (hit !== undefined) {
       this._layoutHits++;
-      const m = p._lk;                       // 走到这儿它一定在（两个分支都保证 ✓）
+      const m = p._lk;                       // 走到这儿它一定在（两个分支都保证）
       if (m !== undefined && m !== null && m.key === key) { m.lay = hit; m.gen = this._layGen; }
       return hit;
     }
@@ -994,40 +1081,39 @@ export class LabelLayer {
         params: this.mapNameParams,
         curve: this.mapNameParams.curve,
       });
-    // 缓存上限：开局会**整层预热**（见 `warmPoint` ✓），名额要够装下几层 ✓
-    // 一条 = 几个字的 x/y/角度（几十字节）→ 6 万条约几 MB ✓
-    // ⚠ 失败（null）也要记，也要占名额 ✗ —— 不删的话失败条目会无限涨 ✓
+    // 缓存上限：开局会**整层预热**（见 `warmPoint`），名额要够装下几层。
+    // 一条 = 几个字的 x/y/角度（几十字节）→ 6 万条约几 MB。
+    // 失败（null）也要记、也要占名额，否则失败条目会无限涨。
     if (this._layoutCache.size >= LAYOUT_CACHE_MAX) {
       const oldest = this._layoutCache.keys().next().value;
       this._layoutCache.delete(oldest);
     }
-    this._layoutCache.set(key, lay || null);   // null 也缓存：省得每帧重试一遍必失败的 ✓
-    /* 包围盒中心：算一次存下来 ✓（`_paint` / `_paintGlyphs` / `drawPoints` 每帧
-     * 都要用它，原来每帧每个标除两次 —— 一帧几千个就是几千次白除 ✓）*/
+    this._layoutCache.set(key, lay || null);   // null 也缓存：省得每帧重试一遍必失败的
+    /* 包围盒中心：算一次存下来（`_paint` / `_paintGlyphs` / `drawPoints` 每帧
+     * 都要用，否则每帧每个标除两次，一帧几千个就是几千次白除）。 */
     if (lay && lay.bbox) {
       lay._cx = (lay.bbox.x0 + lay.bbox.x1) / 2;
       lay._cy = (lay.bbox.y0 + lay.bbox.y1) / 2;
     }
-    /* 刚排出来的也记到点对象上（下次连查表都省 ✓ 见上面那段注释）*/
+    /* 刚排出来的也记到点对象上（下次连查表都省，见上面的注释）。 */
     const _m = p._lk;
     if (_m !== undefined && _m !== null && _m.key === key) { _m.lay = lay || null; _m.gen = this._layGen; }
     return lay;
   }
 
   /**
-   * 预热一个标的排版（开局整层跑一遍时用 ✓）
+   * 预热一个标的排版（开局整层跑一遍时用）
    *
-   * 用户 2026-10-23："这些玩意没有重算的可能，开局的时候算完一遍就行了，定死了的"
-   * 排版结果只跟（层 / 头衔 / 文字 / 字体 / 用户字号）有关，**跟缩放无关** ✓
-   * 所以开局算完，之后放大缩小、平移动画全是查表 ✓
-   * ⚠ 换字体 / 调字号 / 改名会让缓存整份作废（`clearLayouts` ✓）→ 再由 app 重新预热 ✓
+   * 排版结果只跟（层 / 头衔 / 文字 / 字体 / 字号倍率）有关，**跟缩放无关**，
+   * 因此开局算完，之后放大缩小、平移动画全是查表。
+   * 换字体 / 调字号 / 改名会让缓存整份作废（`clearLayouts`），再由 app 重新预热。
    */
   warmPoint(p, kind) {
     if (!p || !p.name) return;
     this._maybeLayout(p, kind || 'place', 0);
   }
 
-  /** 调试角标：这一帧有多少标 / 多少同名重复 ✓ */
+  /** 调试角标：这一帧有多少标 / 多少同名重复 */
   _paintDebugHud(ctx, n, dup) {
     const dpr = this.dpr;
     ctx.save();
@@ -1044,7 +1130,7 @@ export class LabelLayer {
       + ` · 同名重复 ${dupN} · 缩放 ${(this.scale * 100).toFixed(0)}%`
       + ` · ${(this.lastMs || 0).toFixed(1)}ms`, 14, 14);
     ctx.restore();
-    /* 同名重复每秒在控制台提醒一次（F12 能看到是哪个名字 ✓）*/
+    /* 同名重复每秒在控制台提醒一次（F12 能看到是哪个名字）*/
     if (dupN) {
       const now = Date.now();
       if (!this._dupAt || now - this._dupAt > 1000) {
@@ -1056,8 +1142,8 @@ export class LabelLayer {
 
 
   /**
-   * 贴合排版在屏幕上太小时，整条名字要绕自己的中心放大多少倍（1 = 不放大 ✓）
-   * 口径就这一处：`_paintGlyphs` 按它画、`_paint` 按它算包围盒 ✓
+   * 贴合排版在屏幕上太小时，整条名字要绕自己的中心放大多少倍（1 = 不放大）
+   * 口径就这一处：`_paintGlyphs` 按它画、`_paint` 按它算包围盒
    */
   _fitGrow(lay) {
     const px = lay.fs * this.scale;
@@ -1066,17 +1152,17 @@ export class LabelLayer {
   }
 
   /**
-   * **逐字画一段排版结果** —— 屏幕和导出共用这一份（2026-10-23 体检：去重）
+   * **逐字画一段排版结果** —— 屏幕和导出共用这一份
    *
-   * 两边原来各写一遍（屏幕那份带视口裁剪、导出那份带倍率换算），
-   * 逻辑一样、只差坐标变换 → 收成一个出口，改一处两边都对 ✓
+   * 两边逻辑一样、只差坐标变换（屏幕那份带视口裁剪、导出那份带倍率换算），
+   * 收成一个出口，改一处两边都对。
    *
    * @param {object} o
-   *   `ctx` 目标 2D context / `lay` 排版结果 / `size` 字号（已经乘过倍率、已量化 ✓）
+   *   `ctx` 目标 2D context / `lay` 排版结果 / `size` 字号（已经乘过倍率、已量化）
    *   `color` 颜色 / `kind` 'power' | 'place'
-   *   `dpr` 设备像素比（屏幕传 this.dpr，导出传 1 ✓）
-   *   `origin(g)` 把某个字换算成目标坐标 → `{x,y}`（返回 null = 跳过这个字 ✓）
-   *   `cull` 可选 `{w,h}`：屏幕外跳过（导出不传 ✓）
+   *   `dpr` 设备像素比（屏幕传 this.dpr，导出传 1）
+   *   `origin(g)` 把某个字换算成目标坐标 → `{x,y}`（返回 null = 跳过这个字）
+   *   `cull` 可选 `{w,h}`：屏幕外跳过（导出不传）
    * @returns {number} 画了几个字
    */
   _drawGlyphRun(o) {
@@ -1089,10 +1175,9 @@ export class LabelLayer {
     const origin = o.origin;
     if (typeof origin !== 'function') return 0;
     const bfg = BITMAP[kind];
-    /* 高倍导出直接走实时矢量，不再从字形贴图里取样 ✓
-     *   （2026-10-27 用户："高倍下字体应该更清晰"）
-     *   贴图是按字号缓存再 drawImage 的，高倍下会有一次重采样；
-     *   实时 fillText 没有这一步，边缘更干净 ✓ 1× 仍走贴图，省时间 ✓ */
+    /* 高倍导出直接走实时矢量，不从字形贴图里取样：
+     * 贴图按字号缓存再 drawImage，高倍下会有一次重采样；
+     * 实时 fillText 没有这一步，边缘更干净。1× 仍走贴图，省时间。 */
     const live = !bfg && (o.exportText || size > SPRITE_MAX_FONT);
     if (live) {
       ctx.font = fontFor(size, kind);
@@ -1119,11 +1204,11 @@ export class LabelLayer {
         drawn++;
         continue;
       }
-      /* 🔴 **角度三角值记在字上** ✗✗（2026-11-03）
-       *   排版结果是**定死**的（`_maybeLayout` 那段注释：跟缩放无关 ✓），
-       *   每个字的角度一辈子不会变 —— 可原来每帧、每个字都要现算 cos/sin ✗
-       *   一帧五百多个标、一千六百多个字 = 三千多次三角函数（整帧自时间 10% 上下）✓
-       *   第一次算完挂 `cosa/sina`，之后直接读 ✓（字对象本来就活在布局缓存里 ✓）*/
+      /* **角度三角值记在字上**
+       * 排版结果是**定死**的（见 `_maybeLayout`：跟缩放无关），每个字的角度不会变；
+       * 每帧现算 cos/sin 的话，一帧五百多个标、一千六百多个字就是三千多次三角函数
+       * （整帧自时间 10% 上下）。第一次算完挂 `cosa/sina`，之后直接读
+       * （字对象本来就活在布局缓存里）。 */
       const cos = g.cosa !== undefined ? g.cosa : (g.cosa = Math.cos(g.angle));
       const sin = g.sina !== undefined ? g.sina : (g.sina = Math.sin(g.angle));
       ctx.setTransform(dpr * cos, dpr * sin, -dpr * sin, dpr * cos, dpr * q.x, dpr * q.y);
@@ -1142,19 +1227,19 @@ export class LabelLayer {
     return drawn;
   }
 
-  /** 把排好的字逐字画出来（屏幕用：带视口裁剪 + 太小时绕中心放大 ✓） */
+  /** 把排好的字逐字画出来（屏幕用：带视口裁剪 + 太小时绕中心放大） */
   _paintGlyphs(ctx, lay, view, color, kind) {
     const scale = this.scale;
     const sizePx = lay.fs * scale;
-    /* 连放大 4 倍都够不着 MIN_DRAW（< 1px）→ 那是真看不见了，不画 ✓ */
+    /* 连放大 4 倍都够不着 MIN_DRAW（< 1px）→ 真看不见了，不画 */
     if (!(sizePx * 4 >= MIN_DRAW)) return 0;
     const grow = this._fitGrow(lay);
     const size = quantizeFont(sizePx * grow);
-    /* 放大时绕**排版包围盒中心** ✓（不绕视口原点，否则名字会跑位 ✓）
-     * 中心在 `_maybeLayout` 里算好存下了（`lay._cx/_cy` ✓），老对象兜一手 ✓*/
+    /* 放大时绕**排版包围盒中心**（不绕视口原点，否则名字会跑位）。
+     * 中心在 `_maybeLayout` 里算好存下了（`lay._cx/_cy`），缺字段时现算。 */
     const bx = lay.bbox ? (lay._cx != null ? lay._cx : (lay.bbox.x0 + lay.bbox.x1) / 2) : null;
     const by = lay.bbox ? (lay._cy != null ? lay._cy : (lay.bbox.y0 + lay.bbox.y1) / 2) : null;
-    /* 壳子跨标复用 ✓（见构造里那段注释 —— 原来每标一个闭包 + 两个对象 ✓）*/
+    /* 壳子跨标复用（见构造函数里的注释） */
     const org = this._gOrg;
     org.bx = bx == null ? 0 : bx;
     org.by = by == null ? 0 : by;
@@ -1166,27 +1251,27 @@ export class LabelLayer {
     opt.color = color; opt.kind = kind; opt.dpr = this.dpr;
     opt.cull.w = this.cssW; opt.cull.h = this.cssH;
     const drawn = this._drawGlyphRun(opt);
-    // 画布变换已由 _drawGlyphRun 还原 ✓ 这里只要把文字对齐恢复成默认 ✓
+    // 画布变换已由 _drawGlyphRun 还原，这里只要把文字对齐恢复成默认
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     return drawn;
   }
 
   /**
-   * **排版调试层**（设置里勾「排版调试」才画 ✓）
+   * **排版调试层**（设置里勾「排版调试」才画）
    *
    * 画什么：
    *   · 青色框 = 这块地的**连通域包围盒**
-   *   · 红点   = 连通域**质心**（居中就对准它 ✓）
+   *   · 红点   = 连通域**质心**（居中就对准它）
    *   · 品红线 = 选中的那段"最长连续命中段"
-   *   · 黄线   = 实际基线折线（曲线化之后的 ✓）
-   *   · 绿框   = 每个字的四边形（宽 = advance、高 = 字号、按切线转 ✓）
+   *   · 黄线   = 实际基线折线（曲线化之后的）
+   *   · 绿框   = 每个字的四边形（宽 = advance、高 = 字号、按切线转）
    *
-   * 用户报"七零八落"时，看这张图就知道是**线乱了**还是**字没跟着线** ✓
+   * 名字位置异常时，看这张图就能区分是**线乱了**还是**字没跟着线**。
    */
   _paintLayoutDebug(ctx, lay, view, dup) {
     const s = this.scale, dpr = this.dpr;
-    /* 跟 `_paintGlyphs` 同一个放大口径：调试框必须画在**实际画出来的位置**上 ✓ */
+    /* 跟 `_paintGlyphs` 同一个放大口径：调试框必须画在**实际画出来的位置**上 */
     const gr = this._fitGrow(lay);
     const bcx = lay.bbox ? (lay.bbox.x0 + lay.bbox.x1) / 2 : 0;
     const bcy = lay.bbox ? (lay.bbox.y0 + lay.bbox.y1) / 2 : 0;
@@ -1282,7 +1367,7 @@ export class LabelLayer {
     this.view = view;
     this.scale = this.cssW / view.w;
     this.drawn = 0;
-    /* 这一帧里"贴合版图"和"老画法横排"各画了几个（调试角标要报 ✓）*/
+    /* 这一帧里"贴合版图"和"横排"各画了几个（调试角标要报）*/
     this.fitCount = 0;
     this.flatCount = 0;
 
@@ -1299,28 +1384,27 @@ export class LabelLayer {
    * 一个地块的字号：它在屏幕上占多大 × FONT_RATIO，细层级再乘一个倍率。
    * 屏幕尺寸 = √像素数 × 缩放，所以字号对缩放是线性的 —— 放大两倍字就大两倍。
    *
-   * **没有保底。** 算出来够不着 MIN_FONT 就返回 0，调用方直接**不画**这个地名。
-   * 以前是硬撑到 MIN_FONT，于是缩小时密密麻麻的小国名全挤在一起。
-   * 现在 MIN_FONT 是"够不够格显示"的门槛，不是下限。
+   * **没有保底。** 算出来够不着 MIN_FONT 就返回 0，调用方直接**不画**这个地名；
+   * 硬撑到 MIN_FONT 会让缩小时密密麻麻的小国名全挤在一起。
+   * MIN_FONT 是"够不够格显示"的门槛，不是下限。
+   *
+   * **字号分两类**：`__CK3_FONT_PLACE`（地块名）/ `__CK3_FONT_POWER`（势力名），
+   * 否则调大地名时国名会跟着一起大。
+   *
+   * 分类用现成的判据，不新造字段：
+   *    · `tier < nEra` = **时代层**（剧本 / 年份那几层的国名 / 势力名），
+   *      `open()` 和字号门槛用的就是它，同一个口径。
+   *    · `layer === 2` = **玩家涂出来的色块名**（`_paint` 里那个"玩家名"层，
+   *      见 drawPoints 里"地名 0 / 国名 1 / 玩家名 2"那段）。
+   *    · 其余（`tier >= nEra` 且不是色块）→ **地块名**（含海 / 湖 / 河 / 荒地名）。
+   *  `this.nEra` 构造时已从 meta.eraDates 取好，不需要再传进来。
+   *  两个开关都要留回退（内联产物 / 测试桩可能只设了旧键名）：
+   *  未设新键时退回 `__CK3_FONT_SCALE`，再退回 1。
+   *
+   * @param {number} pixels 面积（√ 之后就是边的像素数）
+   * @param {number} tier   这个点自己那一层（`open()` 拿它查缩放门槛）
+   * @param {number} layer  这个点画在哪一层（0 地名 / 1 国名 / 2 玩家名，缺省 0）
    */
-  /*  🔴🔴 **2026-10-17：字号拆成两个** ✗✗（用户："把字号分开两个，一个给地块，一个给势力"✓）
-   *
-   *  以前只有一个 `__CK3_FONT_SCALE` ✗ —— 调大地名，国名也跟着一起大 ✓ 两件事绑死 ✓
-   *  现在分成：`__CK3_FONT_PLACE`（地块名 ✓）/ `__CK3_FONT_POWER`（势力名 ✓）
-   *
-   *  ⚠⚠ **用现成的判据分这两类** ✗✗ —— 代码里本来就有，别新造字段 ✓
-   *    · `tier < nEra` = **时代层**（剧本 / 年份那几层的国名 / 势力名 ✓）
-   *      `open()` 和上面那道字号门槛**用的就是它** ✓ 同一个口径 ✓
-   *    · `layer === 2` = **玩家涂出来的色块名** ✓（`_paint` 里那个"玩家名"层 ✓
-   *      见 drawPoints 里"地名 0 / 国名 1 / 玩家名 2"那段 ✓）
-   *    · 其余（`tier >= nEra` 且不是色块）→ **地块名** ✓（含海 / 湖 / 河 / 荒地名 ✓）
-   *  ⚠ `this.nEra` 本来就在（构造时从 meta.eraDates 取 ✓）—— 别再传 `nEra` 进来 ✗
-   *  ⚠ **两个都要留回退** ✗ —— 老的内联产物 / 测试桩可能只设了旧那个名字 ✓
-   *    回退顺序：新名字 → 旧名字 `__CK3_FONT_SCALE` → 1 ✓
-   *    （"只设旧值"的环境行为**跟改造前一模一样** ✓ 不炸也不变 ✓）
-   *  @param {number} pixels 面积（√ 之后就是边的像素数 ✓）
-   *  @param {number} tier   这个点自己那一层（`open()` 拿它查缩放门槛 ✓）
-   *  @param {number} layer  这个点画在哪一层（0 地名 / 1 国名 / 2 玩家名 ✓ 缺省 0 ✓）*/
   _fontSize(pixels, tier = 0, layer = 0) {
     const side = Math.sqrt(Math.max(pixels || 1, 1)) * this.scale;
     const boost = TIER_FONT_BOOST[tier] || 1;
@@ -1328,15 +1412,14 @@ export class LabelLayer {
     const size = side * FONT_RATIO * boost * _userScale;
     // **只有最粗那一层（国名/大洲名）留一道可读底线**，其余层一律 0 = 全显示。
     // 不按下标查表：层数每个游戏不一样（EU5 有 6 层），查不到就会退回 MIN_FONT，
-    // 结果细层又被卡住 —— 统一成"第 0 层之外都全显示"就没这个问题。
+    // 细层又被卡住 —— 统一成"第 0 层之外都全显示"就没这个问题。
     // 0 层（国名）留一道**字号底线**：`√像素 × 缩放 × 0.18` 小于它就不画。
-    // （2026-10-27 用户："不要那个 20 门槛" → 4px 降到 **2px** ✓
-    //   4px 时 EU4 的 665 个国家大多要 ~20% 才够大 ✓ 降到 2px 后
-    //   10% 就能浮出二十来个、20% 上百个；再往下会糊成蚂蚁字 ✗）
-    // ⚠ 这里是"可读性底线"，不是缩放门槛 ✗ —— 缩放门槛已经全部置 0 ✓
+    // 取 4px 时 EU4 的 665 个国家大多要 ~20% 才够大；取 2px 后
+    // 10% 就能浮出二十来个、20% 上百个；再往下会糊成蚂蚁字。
+    // 这是"可读性底线"，不是缩放门槛 —— 缩放门槛已经全部置 0。
     // 「全部地名」只管"要不要隐藏"，**不改字号** —— 该多大就多大。
-    // （以前这里写成 Math.max(size, 8)，一勾上小于 8px 的地名全被放大，
-    //   看起来就是"勾了之后字号变了"。）
+    // （写成 Math.max(size, 8) 的话，一勾上小于 8px 的地名全被放大，
+    //   表现为"勾了之后字号变了"。）
     if (this.showAll) return size;
     const floor = tier < (this.nEra || 1) ? (TIER_MIN_FONT[0] ?? 4) : 0;
     return size < floor ? 0 : size;
@@ -1344,7 +1427,7 @@ export class LabelLayer {
 
   /** 把 this._text[0..n) 这批标签画出来（按字号分桶，每桶只设一次 font） */
   _paint(ctx, n, view) {
-    this._truncated = false;      // 这一帧到底有没有被预算截断（给自测 / 调试看 ✓）
+    this._truncated = false;      // 这一帧到底有没有被预算截断（给自测 / 调试看）
     const buckets = this._buckets;
     const keys = this._bucketKeys;
     for (const arr of buckets.values()) arr.length = 0;   // 数组留着复用，清内容
@@ -1387,7 +1470,7 @@ export class LabelLayer {
     const scale = this.scale;
     const sprites = this.sprites;
 
-    /* 调试模式：先数一遍同名标（同一个名字被几个标画了 ✓）*/
+    /* 调试模式：先数一遍同名标（同一个名字被几个标画了）*/
     let dup = null;
     if (this.debug) {
       dup = new Map();
@@ -1404,10 +1487,10 @@ export class LabelLayer {
       const half = size * 1.15 / 2;
       // 位置粗筛的余量：地名再长也不会超过 size * 8 的半宽（十几个汉字都够）
       const pad = size * 8;
-      /* 这一桶用什么字体：**按每个标自己的类别**（`_kind` ✓）——
-       * ⚠ 不能只看桶键里的层 ✗：年份层的国名是从"普通头衔点"那条路来的，
-       *   层号是 0（跟地名一样）✓ 可它该用「势力名」那套字体和字号 ✓
-       *   （`_fontSize` 早就是按 `tier < nEra` 分的 ✓ 这里只是把同一个口径补齐 ✓）*/
+      /* 这一桶用什么字体：**按每个标自己的类别**（`_kind`）。
+       * 不能只看桶键里的层：年份层的国名是从"普通头衔点"那条路来的，
+       * 层号是 0（跟地名一样），但它该用「势力名」那套字体和字号
+       * （`_fontSize` 一直按 `tier < nEra` 分，这里只是把同一个口径补齐）。 */
       let curKind = '', curSize = 0;
 
       const _p0 = (typeof performance !== 'undefined' ? performance.now() : Date.now());
@@ -1415,15 +1498,14 @@ export class LabelLayer {
       for (let _li = 0; _li < list.length; _li++) {
         const k = list[_li];
         if (this.drawn >= MAX_LABELS) break;
-        /* 🔴 **交互中按时间预算截断**（2026-10-23）
-         *   缩放 / 拖动时一屏名字可能画不完 —— 只画到 budget 毫秒就打住，
-         *   剩下的等"手停下来"那次全量重画补齐 ✓
-         *   ⚠ 不许把截断变成常态 ✗（以前的自适应上限就犯了这个错：
-         *     停下来也不补，得等下一次鼠标移动 ✓ 用户当场发现"移过去才画"）
-         * ⚠ **必须 `>=`，不许 `>`** ✗✗（2026-10-24 EU4 回归抓到的 ✓）：
-         *   排版提速后 16 个标画完 elapsed 还是 0，`0 > 0` 永远不成立 →
-         *   budget=0 也能一路画到底 ✗ 预算形同虚设 ✓ `>=` 恢复语义 ✓
-         *   （每 16 个才看一次钟是**故意的** ✓ 1 万个标逐个 now() 太贵 ✓）*/
+        /* **交互中按时间预算截断**
+         * 缩放 / 拖动时一屏名字可能画不完，只画到 budget 毫秒就打住，
+         * 剩下的等"手停下来"那次全量重画补齐。
+         * 截断不能变成常态：自适应上限就是在这里出问题 —— 停下来也不补，
+         * 得等下一次鼠标移动才画出来。
+         * **必须用 `>=`，不能用 `>`**：排版提速后 16 个标画完 elapsed 还是 0，
+         * `0 > 0` 永远不成立，budget=0 也能一路画到底，预算形同虚设；
+         * `>=` 恢复其语义。（每 16 个才看一次钟是**故意的**，1 万个标逐个 now() 太贵。） */
         if ((_li & 15) === 15 && Number.isFinite(_budget)
             && ((typeof performance !== 'undefined' ? performance.now() : Date.now()) - _p0) >= _budget) {
           this._truncated = true;
@@ -1435,17 +1517,17 @@ export class LabelLayer {
         const sy = (Y[k] - view.y) * scale;
         const kind = KINDS[k] || (layer >= 1 ? 'power' : 'place');
         // **标签可以自带颜色**（「国名取色」按钮给的，drawPoints 存进 _color）——
-        // 悬浮时仍旧用米黄，免得看不出鼠标在哪 ✓
+        // 悬浮时仍旧用米黄，免得看不出鼠标在哪
         const color = HOT[k] ? LABEL_FG_HOVER
           : (C[k] || LABEL_FG);
 
-        /* 🔴 排好版的：**逐字画**（每个字自己的位置 / 角度 ✓ 见 maplabels.js）*/
+        /* 排好版的：**逐字画**（每个字自己的位置 / 角度，见 maplabels.js）*/
         const lay = L[k];
         if (lay) {
           /* 太小会被 _paintGlyphs 绕中心等比放大 → 包围盒也得按放大后的算，
-           * 不然边缘上看得见的名字会被提前剔掉 ✓（口径见 `_paintGlyphs` ✓）*/
+           * 不然边缘上看得见的名字会被提前剔掉（口径见 `_paintGlyphs`）*/
           const gr = this._fitGrow(lay);
-          /* 中心在 `_maybeLayout` 里算好存下了（`lay._cx/_cy` ✓）—— 兜一手老对象 ✓*/
+          /* 中心在 `_maybeLayout` 里算好存下了（`lay._cx/_cy`）—— 缺字段时现算 */
           const cx = lay._cx != null ? lay._cx : (lay.bbox.x0 + lay.bbox.x1) / 2;
           const cy = lay._cy != null ? lay._cy : (lay.bbox.y0 + lay.bbox.y1) / 2;
           const bx0 = (cx - view.x) * scale - (cx - lay.bbox.x0) * scale * gr;
@@ -1455,14 +1537,14 @@ export class LabelLayer {
           if (bx1 < 0 || bx0 > cssW || by1 < 0 || by0 > cssH) continue;
           if (this._paintGlyphs(ctx, lay, view, color, kind) > 0) { this.drawn++; this.fitCount++; }
           if (this.debug) this._paintLayoutDebug(ctx, lay, view, dup);
-          curKind = '';               // 逐字画里可能改过 font，下一条重新设 ✓
+          curKind = '';               // 逐字绘制会改 font，下一条重新设
           continue;
         }
 
         // 先按位置粗筛，再量宽 —— 不然一帧要对上万个标签逐个 measureText
         if (sx < -pad || sx > cssW + pad || sy < -pad || sy > cssH + pad) continue;
 
-        /* 这一档有没有挂位图字体 ✓ 有就用它逐字贴，没有走原来的 fillText */
+        /* 这一档有没有挂位图字体：有就逐字贴，没有走 fillText */
         const bf = BITMAP[kind];
         if (!bf && (kind !== curKind || size !== curSize)) {
           ctx.font = fontFor(size, kind);
@@ -1482,7 +1564,7 @@ export class LabelLayer {
         if (sp !== null) {
           ctx.drawImage(sp.c, sx - sp.w / 2, sy - sp.h / 2, sp.w, sp.h);
         } else if (bf) {
-          /* 太大做不了贴图 → 现场逐字贴 ✓（描边照旧靠偏移 ✓）*/
+          /* 太大做不了贴图 → 现场逐字贴（描边照旧靠偏移）。 */
           bf.draw(ctx, text, sx, sy, size, color,
             { outline: Math.max(1, size * 0.09), stroke: LABEL_STROKE });
         } else {
@@ -1491,7 +1573,7 @@ export class LabelLayer {
           ctx.fillText(text, sx, sy);
         }
         this.drawn++;
-        this.flatCount++;        // 走老画法（横排）的 —— 调试角标要报 ✓
+        this.flatCount++;        // 走横排画法的 —— 调试角标要报
       }
     }
     if (this.debug) this._paintDebugHud(ctx, n, dup);
@@ -1506,9 +1588,8 @@ export class LabelLayer {
   draw(view, tier, hover = null) {
     const _t0 = (typeof performance !== 'undefined' ? performance.now() : Date.now());
     if (!this.enabled) { this.resize(); this.clear(); return; }
-    // **地名的显示门槛**：这一层要缩放到百分之多少才画 ✓（meta.labelZoom 给的）
-    // 用户觉得"要放很大才一起冒出来"太晚了 ✗ → 统一放宽一档：
-    // 这里乘一个系数，**越小越早出现** ✓ 想再宽/再紧就改这一个数 ✓
+    // **地名的显示门槛**：这一层要缩放到百分之多少才画（meta.labelZoom 给的）。
+    // 门槛统一放宽一档：这里乘一个系数，**越小越早出现**；想更宽或更紧就改这一个数。
     const LABEL_ZOOM_RELAX = 0.7;
     const raw = this.zoom[tier];
     const need = raw == null ? null : raw * LABEL_ZOOM_RELAX;
@@ -1537,25 +1618,25 @@ export class LabelLayer {
     const C = this._color || (this._color = []);
     const L = this._layout || (this._layout = []);
     const KINDS = this._kind || (this._kind = []);
-    /* 这一层全都要「贴合版图」吗？**一次判完，别逐点判** ✓
-     * `_maybeLayout` 头两行就是这两个闸，不成立时一律返回 null ✓
-     * 那种层（多数细层：`mapNameMode` 不是 both）以前每帧都要为**每个候选**
-     * 现造一个点对象再调进去、立刻被弹回来 —— 纯白跑 ✓ 见下面的大段注释 */
+    /* 这一层全都要「贴合版图」吗？**一次判完，别逐点判**。
+     * `_maybeLayout` 头两行就是这两个闸，不成立时一律返回 null。
+     * 那种层（多数细层：`mapNameMode` 不是 both）若逐点调进去会被立刻弹回来，
+     * 纯属白跑，见下面的注释。 */
     const _layoutOn = !(this.mapNameMode === 'off' || !this.realmMask || !this.realmMask.usable);
     const kind = (tier < (this.nEra || 1)) ? 'power' : 'place';
     const _layoutCan = _layoutOn && (kind === 'place' ? this.mapNameMode === 'both' : true);
-    /* 🔴 **点对象要跨帧复用**（2026-11-03 剖面：这段占一帧的 1/4）
-     *   以前每个候选每帧 `{ name, tid, x, y, area, tier, layer }` 现造一个 ✗
-     *   VIC3 最细层 4 万个候选 = 每帧 4 万个对象、GC 当场抖 ✗
-     *   更要命的是 `_maybeLayout` 的缓存键是**挂在点对象上的**（`p._lk`）✓
-     *   对象每帧都是新的 → `p._lk` 永远 undefined → 那份"键记忆化"**一次都没命中过** ✗
-     *   于是每帧、每个标都重拼一条六七段的长字符串 ✓（那才是真开销）
-     *   → 按层缓存一份点对象，字段原地改，`_lk` 就留得住了 ✓ */
+    /* **点对象要跨帧复用**（剖面里这段占一帧的 1/4）
+     * 每个候选每帧现造 `{ name, tid, x, y, area, tier, layer }`，
+     * VIC3 最细层 4 万个候选就是每帧 4 万个对象，GC 当场抖动。
+     * 更关键的是 `_maybeLayout` 的缓存键**挂在点对象上**（`p._lk`）：
+     * 对象每帧都是新的 → `p._lk` 永远 undefined → 那份"键记忆化"一次都没命中过，
+     * 于是每帧、每个标都重拼一条六七段的长字符串，那才是真开销。
+     * 按层缓存一份点对象，字段原地改，`_lk` 就留得住了。 */
     const PT = this._ptCache[tier] || (this._ptCache[tier] = []);
     const nEra = this.nEra || 1;
     let n = 0;
-    /* 索引循环，不用 `for...of` ✓ —— 这里一帧要走几万次，
-     * 迭代器那点开销在 4 万次上就是实打实的一截 ✓（数组语义完全一样 ✓）*/
+    /* 索引循环，不用 `for...of` —— 这里一帧要走几万次，
+     * 迭代器那点开销在 4 万次上就是实打实的一截（数组语义完全一样）。 */
     for (let k = 0, m = list.length; k < m; k++) {
       const i = list[k];
       // 这里**只防病态数据**，不用 MAX_LABELS 截 —— 先截就是把视口外的大块地
@@ -1572,9 +1653,9 @@ export class LabelLayer {
       T[n] = nm;
       X[n] = px;
       Y[n] = py;
-      /* P社式排版：年份层（`tier < nEra`）是国名，走"贴合版图" ✓
-       * ⚠ **排出来就一律按排好的画** ✗ 别按屏幕字号退回老画法 ——
-       *   那会让画法随缩放变化（用户 2026-10-23：「不想只有特定缩放下才那样」✓）*/
+      /* P社式排版：年份层（`tier < nEra`）是国名，走"贴合版图"。
+       * **排出来就一律按排好的画**，不按屏幕字号退回横排 ——
+       * 那会让画法随缩放变化。 */
       let lay = null;
       if (_layoutCan) {
         let p = PT[i];
@@ -1585,7 +1666,7 @@ export class LabelLayer {
           p.tier = tier; p.layer = 0;
         }
         lay = this._maybeLayout(p, kind, size);
-        /* 现在 `_maybeLayout` 只会给 对象 / null；留一手 undefined（以后要加预算法也接得住 ✓）*/
+        /* `_maybeLayout` 只返回 对象 / null；留一手 undefined（以后加预算逻辑也接得住）*/
         if (lay === undefined) continue;
       }
       S[n] = lay ? lay.fs * this.scale : size;
@@ -1602,9 +1683,6 @@ export class LabelLayer {
   /**
    * 直接画一组点（常规模式按颜色聚出来的那些色块）。
    * @param {Array<{name:string, x:number, y:number, area:number}>} points
-   */
-  /**
-   * 直接画一组点。
    * @param {number} [need] 这一层的缩放门槛（百分比）。缩放不到就整层不画 ——
    *   必须等 _begin(view) 之后判，那之后 this.scale 才是这一帧的。
    */
@@ -1625,24 +1703,24 @@ export class LabelLayer {
     const S = this._size;
     const HOT = this._hot;
     // 每个标签的"层"：地名 0 / 国名 1 / 玩家名 2。
-    // **必须按层分开排** ✗ —— _paint 是按字号分桶画的，桶大的先画（在下面），
+    // **必须按层分开排** —— _paint 是按字号分桶画的，桶大的先画（在下面），
     // 所以国名只要字号比地名小，就会被画到地名底下（入列顺序管不了它）。
     const LY = this._layer || (this._layer = []);
     let n = 0;
-    // 逐点的透明度（国名 0.6，其余 1）——必须在本函数里声明
+    // 逐点的透明度（势力名 / 地名各一档，缺省 0.5）——必须在本函数里声明
     const F = this._fade || (this._fade = []);
     // 每个点自带的颜色（「国名取色」给的）——没有就落默认色
     const C = this._color || (this._color = []);
-    // 这个标排好版了没 / 它是国名还是地名（见 `_maybeLayout` ✓）
+    // 这个标排好版了没 / 它是国名还是地名（见 `_maybeLayout`）
     const L = this._layout || (this._layout = []);
     const KINDS = this._kind || (this._kind = []);
     // 跟 draw() 一样先按视口粗筛：不然上万个候选里视口内的那几个
-    // 可能刚好排在 MAX_CANDIDATES 之外，整层就是空的（VIC3 4 万地块的坑）
+    // 可能刚好排在 MAX_CANDIDATES 之外，整层就是空的（VIC3 最细层 4 万个地块时如此）
     const padMap = Math.max(64, 900 / this.scale);
     const vx0 = view.x - padMap, vx1 = view.x + view.w + padMap;
     const vy0 = view.y - padMap, vy1 = view.y + view.h + padMap;
-    /* 这些东西**跟点无关**，以前写在循环里每点取一次 ✓ 挪出来 ✓
-     * （2026-11-03：`for...of` + 每点一个闭包 `open(p)`，在几百点/帧上也白花钱 ✓）*/
+    /* 这几项**跟点无关**，放在循环外只取一次
+     * （`for...of` + 每点一个闭包 `open(p)`，在几百点/帧上也白花钱）。 */
     const _nEra = this.nEra || 0;
     const _aC = this.alphaCountry == null ? 0.5 : this.alphaCountry;
     const _aP = this.alphaPlace == null ? 0.5 : this.alphaPlace;
@@ -1650,44 +1728,44 @@ export class LabelLayer {
       const p = points[pi];
       if (n >= MAX_CANDIDATES) break;
       if (!p.name) continue;
-      /* 这一层的缩放门槛（原来是闭包 `open(p)` ✓ 语义不变：没设门槛就一律画 ✓）*/
+      /* 这一层的缩放门槛（等价于闭包 `open(p)`；没设门槛就一律画）*/
       const pt = p.tier != null ? p.tier : 0;
       const zn = zoom[pt];
       if (zn != null && pct < zn) continue;
       if (!(p.x >= vx0 && p.x <= vx1 && p.y >= vy0 && p.y <= vy1)) continue;
-      /* ⚡ 三行写入挪到早筛之后 ✓（2026-11-03）——
-       *   58% 那档一帧 2950 个候选、扔掉 2400 多个，原来给每个要扔的都写三格数组 ✓
-       *   （`n` 只在最后 `n++`，中间 `continue` 掉的那些写了也是白写 ✓ 顺序不影响 ✓）*/
-      /* ⚠ 第三个参数是**层**（0 地名 / 1 国名 / 2 玩家名 ✓）——
-       *   字号分"地块 / 势力"两类就靠它 + tier（见 `_fontSize` 那段 ✓）
-       *   别新造字段 ✗ 这个 `layer` 本来就是每个点自带的 ✓ */
+      /* 三行写入放在早筛之后：
+       * 58% 那档一帧 2950 个候选、扔掉 2400 多个，给每个要扔的都写三格数组是白写
+       * （`n` 只在最后 `n++`，中间 `continue` 掉的那些写了也没用，顺序不影响结果）。 */
+      /* 第三个参数是**层**（0 地名 / 1 国名 / 2 玩家名）——
+       * 字号分"地块 / 势力"两类就靠它 + tier（见 `_fontSize` 那段）。
+       * 不用新造字段，这个 `layer` 本来就是每个点自带的。 */
       const size0 = this._fontSize(p.area, p.tier || 0, p.layer || 0);
       if (size0 <= 0) continue;
-      /* 这个标是什么（字号那套早就在用同一个判据 ✓ 见 `_fontSize`）：
-       *   tier < nEra = 剧本 / 年份那几层的**势力名** ✓
-       *   layer === 2 = 玩家涂出来的色块名（也算势力名 ✓）
-       *   其余 = 地块名 ✓ */
+      /* 这个标是什么（字号那套用的是同一个判据，见 `_fontSize`）：
+       *   tier < nEra = 剧本 / 年份那几层的**势力名**
+       *   layer === 2 = 玩家涂出来的色块名（也算势力名）
+       *   其余 = 地块名 */
       const kind = ((p.tier || 0) < _nEra || p.layer === 2) ? 'power' : 'place';
-      /* P社式排版：**国名地名一律试** ✓（2026-10-23 起地名不再按字号设门槛 ✗）
+      /* P社式排版：**国名地名一律试**（地名不按字号设门槛）。
        * 真排不出来（分块地图 / 名字塞不进 / 位图字体）→ `lay` 为 null →
-       * 下面老老实实走老那套（含 p.w 限宽 ✓）
-       * ⚠ **整份 `p` 传进去** ✗ 别只挑几个字段 —— 色块名的
-       *   `singleTid` / `paintedAny` / `mtier` 就在里面（国名能不能套全靠它们 ✓）*/
+       * 下面走横排那套（含 p.w 限宽）。
+       * **整份 `p` 传进去**，别只挑几个字段 —— 色块名的
+       * `singleTid` / `paintedAny` / `mtier` 就在里面（国名能不能套全靠它们）。 */
       let lay = this._maybeLayout(p, kind, size0);
-      /* 现在 `_maybeLayout` 只会给 对象 / null；留一手 undefined（以后要加预算法也接得住 ✓）*/
+      /* `_maybeLayout` 只返回 对象 / null；留一手 undefined（以后加预算逻辑也接得住）*/
       if (lay === undefined) continue;
-      /* 🔴🔴 **排好版了、可这一帧压根不在屏幕上 → 别进名单** ✗✗（2026-11-03 第二批）
-       *   候选池是按 `padMap = max(64, 900/scale)` 捞的（那个余量是给"锚点在视口外、
-       *   字伸进来"那些名字留的 ✓ **不许删** ✓ —— `_paint` 里也有一句同样的警告 ✓）。
-       *   可 58% 那档一帧捞进 2950 个、真正画出来的才 524 个 ✗
-       *   剩下 2400 个全要排在 `_paint` 的分桶里 + 每桶空转一遍（整帧自时间第二名 ✓）。
-       *   判据跟 `_paint` 里那段**一字不差**（放大倍率 `_fitGrow` 也算进去了 ✓），
-       *   只是把"肯定一个像素都不画"的提前扔掉 → 画出来的东西**一个不多一个不少** ✓
-       *   ⚠ 只拿**已经排好版**的点判 ✗ 没排出来（null）的走老画法，
-       *     它的位置判据在 `_paint` 里（`pad = size*8` 那套 ✓）→ 原样留着 ✓ */
+      /* **排好版了、可这一帧压根不在屏幕上 → 不进名单**
+       * 候选池按 `padMap = max(64, 900/scale)` 捞（那个余量是给"锚点在视口外、
+       * 字伸进来"的名字留的，**不许删**，`_paint` 里也有同样的提醒）。
+       * 58% 那档一帧捞进 2950 个、真正画出来的才 524 个，
+       * 剩下的 2400 个全要排在 `_paint` 的分桶里并每桶空转一遍（整帧自时间第二名）。
+       * 判据跟 `_paint` 里那段**一字不差**（放大倍率 `_fitGrow` 也算进去了），
+       * 只把"肯定一个像素都不画"的提前扔掉 → 画出来的东西**不多不少**。
+       * 只对**已经排好版**的点判：没排出来（null）的走横排画法，
+       * 其位置判据在 `_paint` 里（`pad = size*8` 那套），保持原样。 */
       if (lay && lay.bbox) {
         const _fs = lay.fs * this.scale;
-        if (!(_fs * 4 >= MIN_DRAW)) continue;        // 连放大 4 倍都够不着 → 真看不见 ✓
+        if (!(_fs * 4 >= MIN_DRAW)) continue;        // 连放大 4 倍都够不着 → 真看不见
         const _gr = this._fitGrow(lay);
         const _s = this.scale;
         const _cx = lay._cx != null ? lay._cx : (lay.bbox.x0 + lay.bbox.x1) / 2;
@@ -1701,19 +1779,19 @@ export class LabelLayer {
       T[n] = p.name;
       X[n] = p.x;
       Y[n] = p.y;
-      /* **排出来就按排好的画** ✓（同 `draw()` 那段：别按屏幕字号切回横平竖直 ✓）
-       *   名字不超出自己的版图（`p.w` 限宽）只在**没排出来**时才管 ——
-       *   排出来的宽度是版图里量出来的，本来就塞得下 ✓ */
+      /* **排出来就按排好的画**（同 `draw()` 那段：不按屏幕字号切回横平竖直）。
+       * 名字不超出自己的版图（`p.w` 限宽）只在**没排出来**时才管 ——
+       * 排出来的宽度是版图里量出来的，本来就塞得下。 */
       let size = lay ? lay.fs * this.scale : size0;
       if (!lay && p.w > 0) {
         const need = String(p.name).length * size;        // 这些字大约要多宽（汉字方块 ≈ 字号）
         const room = p.w * this.scale * 0.92;             // 版图里能用的宽度
         if (need > room) {
-          // **最多只缩到自然字号的 7 成** ✓ 别压得太死 ✗
-          // 以前是 size × (room/need)，一句话也不留余地 —— 名字比版图宽三倍，
-          // 字号就被砍成三分之一，砍到底还有 5px 的硬地板，结果就是蚂蚁字 ✓
-          // 现在：宁可让长名字压出版图一点点（反正底下没有别的东西挡着），
-          // 也不许它缩到看不清 ✓ 真要更狠更松，就调下面这个 0.7 ✓
+          // **最多只缩到自然字号的 7 成**，别压得太死。
+          // 按 size × (room/need) 算的话，名字比版图宽三倍，字号就被砍成三分之一，
+          // 砍到底还有 5px 的硬地板，结果就是蚂蚁字。
+          // 宁可让长名字压出版图一点点（底下没有别的东西挡着），也不许它缩到看不清；
+          // 要更狠或更松就调下面这个 0.7。
           const SHRINK_FLOOR = 0.7;
           size = Math.max(size0 * SHRINK_FLOOR, size * (room / need));
         }
@@ -1723,17 +1801,15 @@ export class LabelLayer {
       LY[n] = p.layer || 0;
       L[n] = lay;
       KINDS[n] = kind;
-      /* **所有名字一律 50% 不透明** ✓（用户要求：地名和国名都要 ✓）
-       *   半透的好处是底下的填色 / 边界还看得见 ✓
-       * **两档可调**（用户定的：设置里 25 / 50 / 75 / 100 ✓）——
-       * **分法是按"层"**（2026-10-16 用户定的 ✓）：
-       *   · `tier < nEra`（剧本 / 年份那几层）= **势力名** → 「势力名称不透明度」✓
-       *     **玩家涂出来的色块名也归这档** ✗（drawLabels 给它们 `tier: 0` ✓）
-       *   · `tier >= nEra`（地区 / 省份 / 地点，"真正的"地名）= **地名** → 「地名不透明度」✓
-       *   ⚠ 跟 drawLabels 里那条分层口径必须一致 ✗ 错一处就没法单独调 ✓
-       *     （以前画面上叫"色块名"的那批一律压进地名档 ✗ →
-       *      剧本层的国名全跟着「地名不透明度」走，「势力名称」那根滑条怎么拖都没反应 ✓）
-       *   ⚠ 这里只有 **this.nEra** ✗（那个自由变量 nEra 在模块顶上，类里取不到 ✓）*/
+      /* **名字默认 50% 不透明**，半透可以看见底下的填色 / 边界。
+       * **两档可调**（设置里 25 / 50 / 75 / 100），**分法按"层"**：
+       *   · `tier < nEra`（剧本 / 年份那几层）= **势力名** → 「势力名称不透明度」
+       *     **玩家涂出来的色块名也归这档**（drawLabels 给它们 `tier: 0`）
+       *   · `tier >= nEra`（地区 / 省份 / 地点，"真正的"地名）= **地名** → 「地名不透明度」
+       * 必须跟 drawLabels 里那条分层口径一致，错一处就没法单独调 ——
+       * 若把"色块名"那批一律压进地名档，剧本层的国名就会跟着「地名不透明度」走，
+       * 「势力名称」那根滑条怎么拖都没反应。
+       * 这里只能用 **this.nEra**（模块顶部的自由变量 nEra 在类里取不到）。 */
       F[n] = (_nEra > 0 && (p.tier || 0) < _nEra) ? _aC : _aP;
       C[n] = p.color || '';   // 「国名取色」：带着自己那族的颜色画
       n++;
@@ -1743,19 +1819,19 @@ export class LabelLayer {
   }
 
   /**
-   * **整图导出时把名字画上去**（2026-10-23 用户要的）
+   * **整图导出时把名字画上去**
    *
-   * 整图导出是分块渲染再拼起来的，标签层根本没参与 ✓ 以前导出来的大图没有字 ✗
-   * 这里按**导出尺寸**重画一遍：排版结果都在地图像素里（跟缩放无关 ✓），
-   * 所以只要把每个字的坐标 × 导出倍率就能画 ✓ 不用重排 ✓
+   * 整图导出是分块渲染再拼起来的，标签层不参与，导出的图里就没有字。
+   * 这里按**导出尺寸**重画一遍：排版结果都在地图像素里（跟缩放无关），
+   * 只要把每个字的坐标 × 导出倍率就能画，不用重排。
    *
-   * 哪些名字上：**完全听显示区那几个开关**（`drawLabels` 已经按开关筛过一轮 ✓）
-   * 不需要另加"导出带不带名字"的开关 ✓（用户定的 ✓）
+   * 哪些名字上：**完全听显示区那几个开关**（`drawLabels` 已按开关筛过一轮），
+   * 不另设"导出带不带名字"的开关。
    *
    * @param {CanvasRenderingContext2D} ctx 输出画布的 2D context
    * @param {Array} points `drawLabels(view, true)` 抓到的那份名单
    * @param {number} scale 导出倍率（输出像素 / 地图像素）
-   * @param {number} gateScale 决定"这一层名字出不出来"的缩放比（= 整图视角的倍率 ✓）
+   * @param {number} gateScale 决定"这一层名字出不出来"的缩放比（= 整图视角的倍率）
    * @param {{x:number,y:number,w:number,h:number}} [rect] 只画这块地图区域（缺省 = 整张）
    * @returns {number} 画了几个名字
    */
@@ -1767,16 +1843,16 @@ export class LabelLayer {
     const rh = rect && Number.isFinite(rect.h) ? Math.max(0, rect.h) : Infinity;
     if (rect && !(rw > 0 && rh > 0)) return 0;
     const oldScale = this.scale;
-    /* 借 this.scale 给 `_fitGrow` / `_fontSize` 用（画完立刻还回去 ✓）*/
+    /* 借 this.scale 给 `_fitGrow` / `_fontSize` 用（画完立刻还回去）*/
     this.scale = scale;
     const nEra = this.nEra || 0;
     const zoom = this.zoom || [];
     const hasLayout = this.mapNameMode !== 'off' && this.realmMask && this.realmMask.usable;
     /* 整张导出时这里会跑几千上万个地名：
-       · 原点换算提成一个函数，别每个名字都新建一个闭包 ✓
-       · 对齐 / 基线 / 圆角只设一次，每个名字只改 alpha ✓
-       · 不再每个名字 save/restore 一次状态栈 ✓
-       （下面 finally 统一把 alpha / 对齐 / 变换恢复干净 ✓） */
+       · 原点换算提成一个函数，不为每个名字新建闭包
+       · 对齐 / 基线 / 圆角只设一次，每个名字只改 alpha
+       · 不为每个名字 save/restore 一次状态栈
+       （下面 finally 统一把 alpha / 对齐 / 变换恢复干净） */
     const origin = (g) => ({
       x: (g.x - ox) * scale,
       y: (g.y - oy) * scale,
@@ -1786,55 +1862,108 @@ export class LabelLayer {
     ctx.lineJoin = 'round';
     let drawn = 0;
     try {
+      /* ================================================================
+       * ① 先摊候选：字号 / 颜色 / **字框**都算好，画之前还要过一道避让
+       *   （整张图一次画完，弯的大洋名会压在小名上，见上面那一节）
+       * ================================================================ */
+      const cand = [];
       for (const p of points) {
         if (!p || !p.name) continue;
         if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) continue;
-        /* 框选导出：只画落在区域里的名字 ✓ 坐标再平移到输出画布左上角 ✓ */
+        /* 框选导出：只画落在区域里的名字，坐标再平移到输出画布左上角 */
         if (p.x < ox || p.x > ox + rw || p.y < oy || p.y > oy + rh) continue;
         const t = p.tier != null ? (p.tier | 0) : 0;
-        /* 层的门槛按"整图视角"判（跟屏幕上那套一致 ✓ 只是倍率换成整图 ✓）*/
+        /* 层的门槛按"整图视角"判（跟屏幕上那套一致，只是倍率换成整图）*/
         const need = zoom[t];
         if (need != null && gateScale * 100 < need) continue;
         const isPower = (p.tier || 0) < nEra || p.layer === 2;
         const kind = isPower ? 'power' : 'place';
-        const alpha = isPower
-          ? (this.alphaCountry == null ? 0.5 : this.alphaCountry)
-          : (this.alphaPlace == null ? 0.5 : this.alphaPlace);
         const lay = hasLayout ? this._maybeLayout(p, kind, 0) : null;
-        ctx.globalAlpha = alpha;
+        let size;
+        let boxes;
         if (lay) {
-          /* 逐字画：**跟屏幕同一个出口** ✓（2026-10-23 体检去重）
-           * 只有坐标变换不一样：导出是"地图坐标 × 倍率"，没有视口偏移 ✓ */
-          /* 门槛统一按**最终输出字号**算：15px 就是 15px，不随倍率变成 45px ✓
-           *   （2026-10-27 用户："都按 15px 来"）
-           *   高倍下字更大、再用实时矢量绘制，清晰度靠渲染质量，不靠抬门槛 ✓ */
-          const size = exportFontPx(quantizeFont(lay.fs * scale * this._fitGrow(lay)));
+          /* 门槛统一按**最终输出字号**算：15px 就是 15px，不随倍率变成 45px。
+           * 高倍下字更大、再用实时矢量绘制，清晰度靠渲染质量，不靠抬门槛。 */
+          size = exportFontPx(quantizeFont(lay.fs * scale * this._fitGrow(lay)));
           if (!size) continue;
+          /* 逐字算占地：弯名 / 竖排 / 转过的字都算得准（整条 AABB 会假撞）。 */
+          boxes = exportGlyphBoxes(lay, size, origin);
+        } else {
+          /* 横排画法也一样：按最终输出字号过 15px 门槛 */
+          size = exportFontPx(this._fontSize(p.area, p.tier || 0, p.layer || 0) * scale);
+          if (!size) continue;
+          const pad = Math.max(1, size * EXPORT_INK_PAD);
+          const hw = Math.max(1, measureCached(ctx, p.name, size, kind)) * 0.5 + pad;
+          const hh = size * 0.5 + pad;
+          const tx = (p.x - ox) * scale;
+          const ty = (p.y - oy) * scale;
+          boxes = [{ x0: tx - hw, y0: ty - hh, x1: tx + hw, y1: ty + hh }];
+        }
+        cand.push({
+          p, lay, size, kind, boxes, color: p.color || LABEL_FG, power: isPower,
+          alpha: isPower
+            ? (this.alphaCountry == null ? 0.5 : this.alphaCountry)
+            : (this.alphaPlace == null ? 0.5 : this.alphaPlace),
+        });
+      }
+
+      /* ================================================================
+       * ② 贪心占位：**势力名 / 涂色块名最先占**（国名是这张图的主语，
+       *   屏幕上它们也是最后画、压在最上面的；分桶键 `layer*100000` 那套）
+       *   然后是**字号大的先占**；同字号再按 tier 升序；最后按名单原序
+       *   （名单原序本来就是面积降序，见 `placePointsInView`，排序是稳的）
+       * ================================================================ */
+      const keep = new Uint8Array(cand.length);
+      const order = new Array(cand.length);
+      for (let i = 0; i < cand.length; i++) order[i] = i;
+      order.sort((a, b) => ((cand[b].power ? 1 : 0) - (cand[a].power ? 1 : 0))
+        || (cand[b].size - cand[a].size)
+        || ((cand[a].p.tier | 0) - (cand[b].p.tier | 0))
+        || (a - b));
+      const grid = new PackGrid(128);
+      for (let i = 0; i < order.length; i++) {
+        const c = cand[order[i]];
+        let hit = false;
+        for (let j = 0; j < c.boxes.length && !hit; j++) hit = grid.hits(c.boxes[j]);
+        if (hit) continue;
+        keep[order[i]] = 1;
+        for (let j = 0; j < c.boxes.length; j++) grid.add(c.boxes[j]);
+      }
+
+      /* ================================================================
+       * ③ 按名单原顺序画：叠放次序保持不变
+       *   只是被挤掉的那几条不画；颜色 / 字体 / 描边 / 字号全走原路
+       * ================================================================ */
+      for (let i = 0; i < cand.length; i++) {
+        if (!keep[i]) continue;
+        const c = cand[i];
+        const p = c.p;
+        ctx.globalAlpha = c.alpha;
+        if (c.lay) {
+          /* 逐字画：**跟屏幕同一个出口**，只有坐标变换不同 ——
+           * 导出是"地图坐标 × 倍率"，没有视口偏移。 */
           this._drawGlyphRun({
-            ctx, lay, size, kind, color: p.color || LABEL_FG, dpr: 1, origin,
+            ctx, lay: c.lay, size: c.size, kind: c.kind, color: c.color, dpr: 1, origin,
             exportText: scale > 1,
           });
         } else {
-          /* 排不出来 / 关掉了贴合 → 老画法：横着写在锚点上 ✓
-           * 🔴 **字体要跟屏幕上同一套** ✗✗（2026-10-23 用户："导出的字体为什么都是默认"）
-           *   屏幕上这里是两条路：挂了**位图字体**就 `bf.draw`，否则才 `fillText` +
-           *   当前字体栈 ✓ 导出这一版只写了后者 → 用了位图字体的图，导出就退回默认字体 ✗
-           *   → 照抄屏幕那条判据 ✓ 位图字体直接用 ✓ */
-          /* 老画法也一样：按最终输出字号过 15px 门槛 ✓ */
-          const size = exportFontPx(this._fontSize(p.area, p.tier || 0, p.layer || 0) * scale);
-          if (!size) continue;
-          const bf = BITMAP[kind];
-          const color = p.color || LABEL_FG;
+          /* 排不出来 / 关掉了贴合 → 横排画法：横着写在锚点上
+           * **字体要跟屏幕上同一套**：屏幕上这里是两条路 —— 挂了**位图字体**就
+           * `bf.draw`，否则才 `fillText` + 当前字体栈。导出只写后者的话，
+           * 用了位图字体的图导出就退回默认字体，因此照抄屏幕那条判据。 */
+          const bf = BITMAP[c.kind];
+          const tx = (p.x - ox) * scale;
+          const ty = (p.y - oy) * scale;
           if (bf) {
-            bf.draw(ctx, p.name, (p.x - ox) * scale, (p.y - oy) * scale, size, color,
-              { outline: Math.max(1, size * 0.09), stroke: LABEL_STROKE });
+            bf.draw(ctx, p.name, tx, ty, c.size, c.color,
+              { outline: Math.max(1, c.size * 0.09), stroke: LABEL_STROKE });
           } else {
-            ctx.font = fontFor(size, kind);
-            ctx.lineWidth = Math.max(1.3, size * 0.14);
+            ctx.font = fontFor(c.size, c.kind);
+            ctx.lineWidth = Math.max(1.3, c.size * 0.14);
             ctx.strokeStyle = LABEL_STROKE;
-            ctx.fillStyle = color;
-            ctx.strokeText(p.name, (p.x - ox) * scale, (p.y - oy) * scale);
-            ctx.fillText(p.name, (p.x - ox) * scale, (p.y - oy) * scale);
+            ctx.fillStyle = c.color;
+            ctx.strokeText(p.name, tx, ty);
+            ctx.fillText(p.name, tx, ty);
           }
         }
         drawn++;
@@ -1844,7 +1973,7 @@ export class LabelLayer {
       ctx.globalAlpha = 1;
       ctx.textAlign = 'left';
       ctx.textBaseline = 'alphabetic';
-      this.scale = oldScale;      // 一定要还回去 ✓ 不然屏幕上的字号全变 ✗
+      this.scale = oldScale;      // 一定要还回去，不然屏幕上的字号全变
     }
     return drawn;
   }

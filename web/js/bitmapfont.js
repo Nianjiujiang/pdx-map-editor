@@ -1,25 +1,25 @@
 /**
- * 位图字体（BMFont `.fnt` + DDS 字图集）—— 2026-10-20
+ * 位图字体（BMFont `.fnt` + DDS 字图集）
  *
- * 为什么要它：欧陆风云4 的中文模组**全是位图字体**，一个 TTF 都不带。
+ * 用途：欧陆风云4 的中文模组全部使用位图字体，不带 TTF。
  *   `gfx/fonts/zh-hans-16.fnt` + `zh-hans-16.dds`：
- *     · `.fnt` = 标准 BMFont 文本格式（每个字在图集里的位置 / 前进宽度 ✓）
- *     · `.dds` = DXT5（BC3）块压缩，那张 2048×3840，跟 fnt 的 scaleW/scaleH 对得上
- *   想把那些模组的字体也用起来，只能自己解出来、按 xadvance 逐字画 ✓
+ *     · `.fnt` = 标准 BMFont 文本格式（每个字在图集内的位置与前进宽度）
+ *     · `.dds` = DXT5（BC3）块压缩，尺寸 2048×3840，与 fnt 的 scaleW/scaleH 一致
+ *   使用这些模组的字体需自行解码，并按 xadvance 逐字绘制。
  *
- * ⚠ DXT5 的**字形在 alpha 通道里**（白色字 + 透明底 ✓）——
- *   合成时用 alpha 当墨量、颜色由调用方给 ✓ 同一套图集能当任意颜色用 ✓
+ * DXT5 的**字形位于 alpha 通道**（白色字 + 透明底）：
+ *   合成时以 alpha 作为墨量、颜色由调用方指定，同一套图集可用于任意颜色。
  *
- * 🔴 **不整张解码，按字取** ✗✗（2026-10-20）
- *   `zh-hans-map.dds` 是 6400×8192 —— 整张解成 RGBA 要 **187 MB** ✗
- *   但 DXT5 是**块压缩**，随便翻开哪一块都不依赖前面的数据 ✓
- *   → 用到哪个字，就只解**盖住它的那几块**（一个汉字 16×18 顶多 5×5 个块 ✓）
- *   → 每个字铸成一张小 canvas 存起来 ✓ 整张字体占多少内存只跟"用到几个字"有关 ✓
+ * **不整张解码，按字取值**：
+ *   `zh-hans-map.dds` 尺寸 6400×8192，整张解成 RGBA 需 **187 MB**；
+ *   DXT5 为块压缩，每块可独立解码。
+ *   → 使用某个字时只解**覆盖该字图像的块**（一个 16×18 的汉字最多涉及 5×5 个块）
+ *   → 每个字铸成一张小 canvas 缓存；内存占用只与**实际用到的字数**有关
  */
 
 /* ================================================================ .fnt */
 
-/** BMFont 里一行的 `k=v` 对（值可能带引号 ✓） */
+/** BMFont 一行的 `k=v` 键值对（值可能带引号） */
 function _kv(line) {
   const out = {};
   const re = /(\w+)=("([^"]*)"|\S+)/g;
@@ -112,7 +112,7 @@ export function ddsInfo(buf) {
 }
 
 /**
- * 解**一小块矩形**（懒解的核心 ✓）
+ * 解**一小块矩形**（按需解码的核心）
  * @returns {{rgba:Uint8ClampedArray,width:number,height:number}|null}
  */
 export function decodeRect(buf, info, rx, ry, rw, rh) {
@@ -138,7 +138,7 @@ export function decodeRect(buf, info, rx, ry, rw, rh) {
     return { rgba: out, width: rw, height: rh };
   }
 
-  /* 块压缩：算出盖住这块矩形的是哪几块 ✓ 只解这些 ✓ */
+  /* 块压缩：先求出覆盖该矩形的块范围，只解这些块 */
   const bb = info.blockBytes;
   const bw = Math.ceil(info.width / 4);
   const bx0 = Math.floor(rx / 4), by0 = Math.floor(ry / 4);
@@ -171,7 +171,7 @@ export function decodeRect(buf, info, rx, ry, rw, rh) {
   return { rgba: out, width: rw, height: rh };
 }
 
-/** 整张解（自测 / 小图集用；大图集别调它 ✗ 会吃几百 MB） */
+/** 整张解码（自测 / 小图集适用；大图集请勿调用，可能占用数百 MB 内存） */
 export function decodeDDS(buf) {
   const info = ddsInfo(buf);
   if (!info) return null;
@@ -179,17 +179,17 @@ export function decodeDDS(buf) {
   return r ? { width: r.width, height: r.height, rgba: r.rgba, format: info.format } : null;
 }
 
-/** 解一个 4×4 块 → rgb(16×3) + alpha(16) */
+/** 解码一个 4×4 块 → rgb(16×3) + alpha(16) */
 function _decodeBlock(dv, off, format, rgb, alpha) {
   const isDXT5 = format === 'DXT5';
-  /* 🔴 **DXT3 也要认** ✗✗（2026-10-20 ✓ 用户："字体里面那个是选中会退回默认"）
-   *   字体库里「简中地图字体-颜真卿多宝塔碑体」那份就是 **DXT3**
-   *   （6400×4800，字形全在 alpha 里）—— 当初只写了 DXT1/DXT5，
-   *   `ddsInfo` 直接返回 null → 选中就退回默认 ✓
+  /* **需支持 DXT3**：
+   *   字体库中的「简中地图字体-颜真卿多宝塔碑体」为 **DXT3**
+   *   （6400×4800，字形全在 alpha 通道）；若仅实现 DXT1/DXT5，
+   *   `ddsInfo` 返回 null，选中该字体会回退到默认字体。
    *
    *   DXT3 = BC2：
-   *     前 8 字节 = alpha，**每像素 4 位**（不是 DXT5 那种 8 字节插值表 ✓）
-   *     后 8 字节 = 色块，跟 DXT1 一样，但**永远走四色插值**（没有 1 位透明那套 ✓）
+   *     前 8 字节 = alpha，**每像素 4 位**（DXT5 为 8 字节插值表）
+   *     后 8 字节 = 色块，与 DXT1 相同，但**始终使用四色插值**（无 1 位透明模式）
    */
   const isDXT3 = format === 'DXT3';
   let p = off;
@@ -218,8 +218,8 @@ function _decodeBlock(dv, off, format, rgb, alpha) {
   const g1 = ((c1 >> 5) & 63) * 255 / 63 | 0;
   const b1 = (c1 & 31) * 255 / 31 | 0;
 
-  /* ⚠ 色块这里只是占位 —— 字形完全来自 alpha ✓
-   *   （Paradox 的字图集是白字透明底 ✓ 色块基本都是白的）*/
+  /* 色块仅作占位：字形完全来自 alpha 通道
+   *   （Paradox 的字图集为白字透明底，色块基本为白色）*/
   const pal = [
     [r0, g0, b0], [r1, g1, b1],
     [(r0 + r1) >> 1, (g0 + g1) >> 1, (b0 + b1) >> 1], [0, 0, 0],
@@ -251,7 +251,7 @@ function _decodeBlock(dv, off, format, rgb, alpha) {
       if (shift > 5) v |= aBits[byteI + 1] << (8 - shift);
       alpha[i] = aPal[v & 7];
     } else if (isDXT3) {
-      /* 每像素 4 位：低半字节 = 偶数号像素 ✓ 0..15 × 17 铺满 0..255 ✓ */
+      /* 每像素 4 位：低半字节对应偶数号像素；0..15 × 17 映射到 0..255 */
       const byteI = i >> 1;
       const nib = (i & 1) ? ((aNib[byteI] >> 4) & 0xF) : (aNib[byteI] & 0xF);
       alpha[i] = nib * 17;
@@ -263,28 +263,27 @@ function _decodeBlock(dv, off, format, rgb, alpha) {
 
 /* ================================================================ 字体对象 */
 
-/** 每个实例一个 uid —— 贴图缓存靠它区分"换没换字体" ✓ */
+/** 每个实例一个 uid，贴图缓存据此判断字体是否更换 */
 let _FONT_UID = 0;
 
 /**
- * 一套位图字体：`fnt` 元数据 + 图集原始字节 + 用到过的字
+ * 一套位图字体：`fnt` 元数据 + 图集原始字节 + 已解码的字形
  *
- * ⚠ 字体**出厂尺寸固定**（fnt 里的 lineHeight）✗
- *   要画多大都得按 `size / lineHeight` 缩放 ✓ 缩小会糊一点点，
- *   这是位图字体天生如此 —— 但游戏里本来就是这么显示的 ✓
+ * 字体**固有尺寸固定**（fnt 中的 lineHeight）；
+ *   任意字号均按 `size / lineHeight` 缩放，缩小后会有轻微模糊，
+ *   这是位图字体的固有特性，与游戏内显示一致。
  */
 export class BitmapFont {
   /**
-   * 🔴 **一个字体可以有好几页** ✗✗（2026-10-20 ✓ 用户：
-   *   "CN_mapfont_0 / CN_mapfont_1 这俩要合一起才能用，不然一半一半的"）
+   * **一个字体可包含多页**：
    *
-   *   BMFont 的图集有上限 ✓ 汉字多了装不下 ✓
-   *   于是**同一个字体被拆成好几对 `.fnt` + `.dds`** ✓
-   *   模组那边就是 CN_mapfont_0 装 4718 个字、CN_mapfont_1 装 2168 个 ✓
-   *   只喂一对 → 另一半字全变空白 ✓ 看着就是"缺字"
+   *   BMFont 图集有尺寸上限，汉字较多时无法容纳，
+   *   因此**同一字体被拆成多对 `.fnt` + `.dds`**。
+   *   模组中 CN_mapfont_0 含 4718 个字、CN_mapfont_1 含 2168 个；
+   *   仅加载一对会导致另一半字显示为空白（缺字）。
    *
-   *   ⚠ 老的单页签名必须继续能用 ✗ —— 两种入参都认：
-   *     数组 = 多页；两个参数 = 单页 ✓
+   *   单页签名需继续兼容，两种入参均支持：
+   *     数组 = 多页；两个参数 = 单页
    *
    * @param {string|Array<{fnt:string,dds:ArrayBuffer}>} fntText
    * @param {ArrayBuffer} [ddsBytes]
@@ -302,19 +301,19 @@ export class BitmapFont {
       if (!info || !meta.chars.size) continue;
       this.pages.push({ meta, dds, info });
     }
-    /* 兼容老字段：meta / dds / info 都指向第一页 ✓ */
+    /* 兼容字段：meta / dds / info 均指向第一页 */
     const first = this.pages[0];
     this.meta = first ? first.meta : parseFnt('');
     this.dds = first ? first.dds : null;
     this.info = first ? first.info : null;
     this.ok = this.pages.length > 0;
     this.uid = ++_FONT_UID;
-    /** 码点 → 小 canvas（懒铸 ✓） */
+    /** 码点 → 小 canvas（按需生成） */
     this._glyphs = new Map();
     this._canvas = null;
   }
 
-  /** 跨页找字 ✓ */
+  /** 跨页查找字形 */
   _find(cp) {
     for (const pg of this.pages) {
       const g = pg.meta.chars.get(cp);
@@ -323,16 +322,16 @@ export class BitmapFont {
     return null;
   }
 
-  /** 显示名（fnt 里的 face ✓） */
+  /** 显示名（fnt 中的 face） */
   get face() { return this.meta.face || ''; }
 
-  /** 出厂行高（判缩放用 ✓） */
+  /** 固有行高（用于计算缩放） */
   get lineHeight() { return this.meta.lineHeight || this.meta.size || 16; }
 
-  /** 取一个字的**原始数据**（没有就现解 ✓）
+  /** 取一个字的**原始数据**（未缓存时即时解码）
    *  @returns {{w:number,h:number,adv:number,xoff:number,yoff:number,rgba:Uint8ClampedArray}|null}
-   *  ⚠ 这里**不碰 canvas** ✗ —— 纯数据，Node 里也能测 ✓
-   *    要画的时候才由 `_canvasFor` 铸成 canvas ✓ */
+   *  此方法**不创建 canvas**，仅返回纯数据，可在 Node 中测试；
+   *    绘制时由 `_canvasFor` 生成 canvas。 */
   glyph(cp) {
     const hit = this._glyphs.get(cp);
     if (hit !== undefined) return hit;
@@ -342,7 +341,7 @@ export class BitmapFont {
       this._glyphs.set(cp, null);
       return null;
     }
-    /* ⚠ **要用那一页自己的图集** ✗ —— 拿第一页去解第二页的坐标会解出乱码方块 ✓ */
+    /* **必须使用该字形所在页的图集**：用第一页解第二页的坐标会得到错乱方块 */
     const r = decodeRect(found.pg.dds, found.pg.info, g.x, g.y, g.w, g.h);
     if (!r) { this._glyphs.set(cp, null); return null; }
     const out = { w: g.w, h: g.h, adv: g.adv, xoff: g.xoff, yoff: g.yoff, rgba: r.rgba };
@@ -350,7 +349,7 @@ export class BitmapFont {
     return out;
   }
 
-  /** 一段文字在某个字号下的宽度（CSS px ✓）*/
+  /** 一段文字在指定字号下的宽度（CSS px）*/
   measure(text, size) {
     const scale = size / this.lineHeight;
     let w = 0;
@@ -362,17 +361,17 @@ export class BitmapFont {
   }
 
   /**
-   * 把一段文字画到 ctx 上（**居中**：x 是中心、y 是垂直中心 ✓ 跟 fillText 那套对齐 ✓）
+   * 把一段文字画到 ctx 上（**居中**：x 为水平中心、y 为垂直中心，与 fillText 对齐）
    * @param {CanvasRenderingContext2D} ctx
    * @param {string} text
    * @param {number} x 中心 x
    * @param {number} y 中心 y
    * @param {number} size 字号（CSS px）
    * @param {string} color
-   * @param {{outline?:number}} [opt] outline = 描边粗细（0 = 不描 ✓）
+   * @param {{outline?:number,stroke?:string}} [opt] outline = 描边粗细（0 = 不描边）；stroke = 描边颜色
    */
   draw(ctx, text, x, y, size, color, opt) {
-    /* ⚠ 描边半径取整（`_outlineFor` 用整数格膨胀 ✓ 见那里说明 ✓）*/
+    /* 描边半径取整（`_outlineFor` 按整数格膨胀，详见该处说明）*/
     const s = String(text || '');
     if (!s) return;
     const scale = size / this.lineHeight;
@@ -381,43 +380,40 @@ export class BitmapFont {
     const top = y - lineH / 2;
     const outline = Math.max(0, Math.round((opt && opt.outline) || 0));
 
-    /* 🔴 **描边 = 对 alpha 做膨胀，不是把字形复制几遍** ✗✗
-     *   （2026-10-20 ✓ 用户："他的描边方式是把字的每个偏旁复制到原本位置的上下左右，非常诡异"）
+    /* **描边 = 对 alpha 做膨胀**，而非重复绘制字形：
+     *   按偏移 4 个方向各画一遍会在笔画密集处产生**四重重影**，小字号下尤为明显。
      *
-     *   原来那版图省事：同一个字偏移 4 个方向各画一遍 ✓
-     *   笔画之间本来就挨着，一偏就是**四条重影** ✓ 小字上尤其明显 ✗
-     *
-     *   现在改成正路：
-     *     ① 把字形的 alpha 按半径 r **取邻域最大值**（morphological dilate ✓）
-     *        —— 结果是一圈**实心外扩**，跟真实描边一个意思 ✓
-     *     ② 这层用描边色填，铺在字底下 ✓
-     *     ③ 再把字形本体盖上去 ✓
-     *   膨胀是逐像素算的，只跟字形有关 → 按 (字形, 颜色, 半径) 缓存 ✓
-     *   r 用**字形像素**算：屏幕上的粗细 ÷ 缩放 ✓ 这样放大时描边不会跟着变粗 ✓
+     *   改用形态学膨胀：
+     *     ① 将字形 alpha 按半径 r **取邻域最大值**（morphological dilate），
+     *        得到一圈**实心外扩**，即为描边
+     *     ② 以描边色填充该层，铺在字形下方
+     *     ③ 再绘制字形本体
+     *   膨胀逐像素计算，仅与字形相关 → 按 (字形, 颜色, 半径) 缓存
+     *   r 以**字形像素**为单位：屏幕粗细 ÷ 缩放，放大时描边比例不变
      */
     const strokeColor = (opt && opt.stroke) || 'rgba(0, 0, 0, 0.82)';
-    /* ⚠ 半径**减半再向上取整** ✗✗（2026-10-20 ✓ 用户先报"变细一半"、再报"粗了"）
-     *   拿真字体量过：同样 `outline = size × 0.09` 参数下
-     *     · 老的"偏移 4 次"：描边实心 2761 px
-     *     · 新的"膨胀 r 全半径"：6284 px —— 粗了一倍多 ✓
-     *   原因是几何上不一样：偏移只往**四个方向**各长一份，
-     *   膨胀是**整个圆盘**往外长，同样的半径覆盖面积大得多 ✓
-     *   → 半径取一半，两种做法的视觉粗细才基本对齐（量完在 3000 px 上下 ✓）
-     *   `ceil` 保留：位图字被缩放得厉害，宁可多半个像素也别少 ✓ */
+    /* 半径**减半后向上取整**：
+     *   以真实字体实测，相同 `outline = size × 0.09` 参数下
+     *     · 偏移 4 次：描边实心面积 2761 px
+     *     · 全半径膨胀：6284 px，约粗一倍
+     *   原因在于几何差异：偏移只向**四个方向**各扩一份，
+     *   膨胀按**整个圆盘**外扩，相同半径覆盖面积更大
+     *   → 半径取一半，使两种做法的视觉粗细接近（实测约 3000 px）
+     *   `ceil` 保留：位图字体缩放幅度较大，宁可多半个像素
+     */
     const rGlyph = this._outlineRadius(scale, outline);
     this._run(ctx, s, x - total / 2, top, scale, color, rGlyph, strokeColor);
   }
 
   /**
-   * **屏幕上的描边粗细 → 字形像素半径**（2026-10-23）
+   * **屏幕描边粗细 → 字形像素半径**
    *
-   * 🔴 这个换算必须**只有一处** ✗✗（用户报："导入的 TFR 字体，放大之后描边放大 N 多倍"）
-   *   原因：`size × 0.09` 是**屏幕像素**，可膨胀是在**字形像素**上做的。
-   *   不除缩放的话，放大 10 倍 = 半径也大 10 倍 → 每个字变成一块黑方砖 ✓
-   *   以前只有 `draw()` 那条路做了换算，逐字贴（`drawGlyph`）漏了 ✓
-   *   → 抽到这里，两条路共用 ✓ 以后加路径也不会再漏 ✓
+   * 该换算必须**集中在一处**：`size × 0.09` 为**屏幕像素**，
+   *   而膨胀在**字形像素**上进行；若不除以缩放，
+   *   放大 10 倍时半径同样放大 10 倍，字形会变成实心黑块。
+   *   `draw()` 与逐字贴（`drawGlyph`）两条路径共用此换算，避免遗漏。
    *
-   * ⚠ 半径**减半再向上取整**（见 `draw()` 里那段量测：膨胀比偏移粗一倍多 ✓）
+   * 半径**减半后向上取整**（见 `draw()` 中的量测：膨胀比偏移约粗一倍）。
    */
   _outlineRadius(scale, outline) {
     return outline > 0
@@ -425,15 +421,15 @@ export class BitmapFont {
       : 0;
   }
 
-  /** 一格里逐字贴（penX 是左端 ✓）
-   *  r > 0 时先垫一层膨胀出来的描边 ✓ */
+  /** 一行内逐字绘制（penX 为左端）
+   *  r > 0 时先绘制膨胀得到的描边层 */
   _run(ctx, text, penX, lineTop, scale, color, r, strokeColor) {
     let px = penX;
     for (const ch of text) {
       const g = this.glyph(ch.codePointAt(0));
       if (g) {
         if (r > 0) {
-          /* 描边层比字形大一圈：往外扩 r 个字形像素 ✓ 所以绘制原点也要往左上挪 r ✓ */
+          /* 描边层比字形大一圈：外扩 r 个字形像素，绘制原点需相应向左上偏移 r */
           ctx.drawImage(this._outlineFor(g, strokeColor, r),
             px + (g.xoff - r) * scale, lineTop + (g.yoff - r) * scale,
             (g.w + r * 2) * scale, (g.h + r * 2) * scale);
@@ -446,19 +442,19 @@ export class BitmapFont {
   }
 
   /**
-   * 描边层：把字形 alpha **向外膨胀 r 个像素**，再染成描边色 ✓
-   * 膨胀 = 每个像素取周围 (2r+1)² 个邻域里 alpha 的最大值 ✓
-   * （通俗说：只要附近有笔画，这一格就算"有墨"，于是整体往外长出一圈 ✓）
+   * 描边层：将字形 alpha **向外膨胀 r 个像素**，再染成描边色
+   * 膨胀 = 每个像素取周围 (2r+1)² 邻域内 alpha 的最大值；
+   * 即邻域内存在笔画时该像素视为有墨，整体向外扩展一圈。
    */
   _outlineFor(g, color, r) {
     if (!this._outlineCache) this._outlineCache = new Map();
-    /* 🔴 **半径必须先取整** ✗✗（2026-10-23 用户："描边不知道去哪了"）
-     *   调用方传的是 `size × 0.09`（小数，比如 1.3）——
-     *   膨胀采样是 `for (dy = -r; dy <= r; dy++)`，r 是小数时
-     *   `sy = y0 + dy` 全落在非整数像素上，读 `src[(row+sx)*4+3]` 拿到 undefined
-     *   → best 恒为 0 → 画出来的整圈 alpha 都是 0 → **看起来就是没有描边** ✗
-     *   （整数路径 / 老字体碰巧没踩到，位图字体这条路一用就秃 ✓）
-     *   顺带也让缓存键稳定（1.3 / 1.35 不会再各铸一张 ✓）*/
+    /* **半径必须先取整**：
+     *   调用方传入 `size × 0.09`（小数，如 1.3）；
+     *   膨胀采样为 `for (dy = -r; dy <= r; dy++)`，r 为小数时
+     *   `sy = y0 + dy` 落在非整数像素上，读取 `src[(row+sx)*4+3]` 得到 undefined，
+     *   导致 best 恒为 0、整圈 alpha 为 0，描边不可见。
+     *   取整同时使缓存键稳定（1.3 与 1.35 共用同一缓存）。
+     */
     const rr = Math.max(1, Math.round(r || 0));
     let m = this._outlineCache.get(g);
     const key = color + '|' + rr;
@@ -473,7 +469,7 @@ export class BitmapFont {
 
     for (let y = 0; y < H; y++) {
       for (let x = 0; x < W; x++) {
-        /* 邻域取最大 alpha —— 注意坐标要减 r 换回字形自己的格子里 ✓ */
+        /* 邻域取最大 alpha；坐标需减去 r 换算回字形自身网格 */
         let best = 0;
         const y0 = y - rr, x0 = x - rr;
         for (let dy = -rr; dy <= rr && best < 255; dy++) {
@@ -489,10 +485,9 @@ export class BitmapFont {
         }
         const i = (y * W + x) * 4;
         d[i] = 255; d[i + 1] = 255; d[i + 2] = 255;
-        /* ⚠ 描边要**实心** ✗（2026-10-20 ✓ 用户："描边变细一半"）
-         *   只取邻域最大 alpha 的话，外圈那半像素还是字形的抗锯齿灰 ✓
-         *   看着就比原来那套"偏移重画"细一截 ✓
-         *   → 乘个增益再夹到 255，让外圈一样实 ✓ 同时保留一点羽化不扎眼 ✓ */
+        /* 描边需**实心**：
+         *   仅取邻域最大 alpha 时，外圈仍是字形的抗锯齿灰阶，视觉上偏细；
+         *   → 乘以增益后夹到 255，使外圈实心，同时保留少量羽化。 */
         d[i + 3] = best <= 0 ? 0 : Math.min(255, Math.round(best * 2.2));
       }
     }
@@ -506,21 +501,19 @@ export class BitmapFont {
     return cv;
   }
 
-  /** 把一块字形数据染成目标色、铸成 canvas（按 字形+颜色 缓存 ✓）*/
   /**
-   * **画单个字**：以 (x,y) 为中心、按 angle 旋转 —— 给"版图贴合"用 ✓
-   * （2026-10-23 用户："导入的字体没法实现版图适应弯曲"）
+   * **绘制单个字**：以 (x,y) 为中心，按 angle 旋转，用于版图贴合排版
    *
-   * `draw()` 是把一整段横着排；贴合排版是每个字有自己的位置和转角 ✗
-   * 所以这里单独开一个"画一个字"的出口：字形由自己的图集贴图来，
-   * 描边用同一套 alpha 膨胀（`_outlineFor` ✓），只是外面多套了一层旋转 ✓
+   * `draw()` 按整段横向排列；贴合排版中每个字有独立的位置与转角，
+   * 因此单独提供单字绘制入口：字形取自所属图集，
+   * 描边复用同一套 alpha 膨胀（`_outlineFor`），外层增加旋转变换。
    */
   drawGlyph(ctx, ch, x, y, size, angle, color, outline, strokeColor) {
     const g = this.glyph(String(ch || '').codePointAt(0));
     if (!g || !g.w || !g.h) return false;
     const scale = size / this.lineHeight;
-    /* ⚠ 描边半径要换算成**字形像素**（见 `_outlineRadius` 的说明 ✓
-     *   以前这里直接拿屏幕像素当半径 → 放大后每个字变成一块黑方砖 ✓）*/
+    /* 描边半径需换算为**字形像素**（见 `_outlineRadius` 的说明；
+     *   直接使用屏幕像素会导致放大后字形变成实心黑块）*/
     const r = this._outlineRadius(scale, outline);
     const w = g.w * scale, h = g.h * scale;
     ctx.save();
@@ -535,6 +528,7 @@ export class BitmapFont {
     return true;
   }
 
+  /** 将字形数据染成目标色并生成 canvas（按 字形+颜色 缓存）*/
   _canvasFor(g, color) {
     if (!this._tintCache) this._tintCache = new Map();
     let m = this._tintCache.get(g);
@@ -559,10 +553,10 @@ export class BitmapFont {
 }
 
 /**
- * 把一段字按位图画出来 —— **纯数据版**，不碰 canvas ✓
+ * 按位图字体计算一段文字的排版 —— **纯数据版**，不创建 canvas
  *
- * 给自检用：能核对"每个字落在哪、前进多少"，不用造 canvas ✓
- * 真渲染走 `BitmapFont.draw`（那个才有 canvas ✓），但两者的排版口径是同一套 ✓
+ * 用于自检：核对每个字的落点与前进宽度，无需 Canvas。
+ * 实际渲染由 `BitmapFont.draw` 完成，两者使用同一套排版规则。
  *
  * @returns {Array<{cp:number,x:number,y:number,w:number,h:number}>} 每个字的落点
  */
@@ -571,7 +565,7 @@ export function layoutRun(bf, text, size) {
   const scale = size / bf.lineHeight;
   const total = bf.measure(s, size);
   const lineH = bf.lineHeight * scale;
-  let px = -total / 2;                    // 相对中心 ✓
+  let px = -total / 2;                    // 相对中心
   const top = -lineH / 2;
   const out = [];
   for (const ch of s) {

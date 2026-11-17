@@ -1668,7 +1668,9 @@ const factory = new Function(
        *   ⚠ 但**两根都得在**（地块一根 `set-labelap`、势力一根 `set-labelac` ✓
        *     拆两块之后少一根 = 有一类名字调不了不透明度 ✓）*/
       ok('两块各有一根「不透明度」（地块 = labelap · 势力 = labelac ✓）',
-         (HTML.match(/<span>不透明度<\/span>/g) || []).length === 2
+         /* 表头带说明问号时是 `<span>不透明度<span class="help-q">?</span></span>` ✓
+          *   —— 问号是后来加的（晦涩设置统一挂小问号 ✓），别把整根滑条算丢 ✓ */
+         (HTML.match(/<span>不透明度(?:<span class="help-q"[^>]*>\?<\/span>)?<\/span>/g) || []).length === 2
          && /id="set-labelap"/.test(HTML) && /id="set-labelac"/.test(HTML)
          && !/国名不透明度/.test(HTML) && !/势力名称不透明度/.test(HTML));
       ok('滑条旁边有当前值提示（跟「名字上限」同一套 ✓）',

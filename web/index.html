@@ -2,25 +2,24 @@
 <html lang="zh-CN" data-skin="vz">
 <head>
 <meta charset="utf-8">
-  <!-- 主题先定，免得白底闪一下（2026-10-20 ✓） -->
+  <!-- 先应用主题，避免页面加载时白底闪烁。 -->
   <script>try{
-  /* 皮肤：默认走新皮（data-skin="vz"）；`?skin=classic` 当场退回原来那套 ✓
-     （只是摘掉属性 —— 老样式本来就一直在文件里 ✓ 方便两版对照看）*/
+  /* 皮肤：默认启用 data-skin="vz"；带 ?skin=classic 时移除该属性，改用经典外观。
+     经典样式仍保留在文件中，便于两版对照。 */
   if(!/[?&]skin=classic\b/.test(location.search||'')){}else{document.documentElement.removeAttribute('data-skin');}
   if(localStorage.getItem('pdx-theme')==='light')document.documentElement.setAttribute('data-theme','light');
 }catch(e){}</script>
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<!-- 构建戳：单文件版由 build_standalone.py 改写成打包时间；
-     开发版固定 dev（启动页显示「开发版」）✓
-     ⚠ **别用 document.lastModified 当版本戳** ✗ —— 单文件 / 某些浏览器里它会是当前时间 ✓ -->
+<!-- 构建戳：单文件版由 build_standalone.py 改写为打包时间，开发版固定为 dev（启动页显示「开发版」）。
+     不要用 document.lastModified 作为版本戳：单文件版及部分浏览器中它等于当前时间。 -->
 <meta name="pdx-build" content="dev">
-<!-- 版本号（2026-11-01 加）：启动页那颗「检查更新」拿它跟 GitHub 最新 release 的 tag 比 ✓
-     涨版本**只改这一行** ✓ —— 构建戳是时间，比不了大小 ✓ -->
+<!-- 版本号：启动页「检查更新」用它对比 GitHub 最新 release 的 tag，升级版本只需改这一行。
+     构建戳是时间，无法比较大小。 -->
 <meta name="pdx-version" content="1.11.1">
 <title>悖论制图</title>
 <script>
-// 双击 index.html 打开时浏览器是 file:// 协议，ES module 会被 CORS 拦掉，
-// 与其让控制台刷一堆看不懂的报错，不如直接说清楚该怎么办。
+// 以 file:// 协议打开时，浏览器会因 CORS 拦截 ES module；
+// 此处直接给出提示，避免控制台出现报错。
 if (location.protocol === 'file:') {
   document.addEventListener('DOMContentLoaded', function () {
     document.body.innerHTML =
@@ -49,15 +48,10 @@ if (location.protocol === 'file:') {
 <div id="app">
 
   <header class="toolbar">
-    <!-- 🔴🔴 **2026-10-21：侧栏按钮挪到顶栏最左** ✗✗
-         用户原话："侧栏按钮移动到上方栏最左边"
-         → 它原来住在右边那排（挨着「教程」✓）✓ 跟「文件 / 设置」挤在一块 ✗
-         → 现在**顶栏第一个**，连标题都在它右边 ✓
-         ⚠ 它管的是"左边那条栏" ✓ 所以放在左边，方向上也对 ✓
-         ⚠ 手机版这个按钮是 `display: none` ✓（见 mobile_css.txt ✓）-->
-    <!-- ⚠ **不写 `title`** ✗（2026-10-22 ✓ 用户："移除鼠标悬停时的那种提示"）
-         浏览器原生 tooltip（那个方框）样式跟这套界面完全不是一路 ✓ 而且会盖住界面 ✓
-         功能照样有：`aria-label` 给读屏 ✓ 按钮本身的样子就够说明问题 ✓ -->
+    <!-- 侧栏按钮：顶栏第一个元素，控制左侧栏。
+         手机版中该按钮为 display: none（见 mobile_css.txt）。 -->
+    <!-- 不设置 title 属性：浏览器原生 tooltip 的样式与界面不一致，且会遮挡界面。
+         无障碍信息由 aria-label 提供。 -->
     <button class="btn ghost" id="btn-sidebar" type="button"
             aria-controls="sidebar" aria-expanded="true" aria-label="收起 / 展开左侧栏">☰</button>
 
@@ -66,12 +60,9 @@ if (location.protocol === 'file:') {
       <span class="brand-text">悖论制图</span>
     </div>
 
-    <!-- 🔴 **剧本 / 地理分成两块** ✗✗（2026-10-19 ✓ 用户要求）
-          剧本层可能有上百个（风云世纪两千年 116 个 ✓）——
-          全摆成按钮的话顶栏就没法看了 ✗
-          → 剧本收进**下拉栏**，地理层照旧摆按钮 ✓
-      ⚠ `data-role="era"` 是剧本那几个，`data-role="tier"` 只放地理层 ✓
-        （`refreshTierButtons()` 和快捷键都按这个分开 ✓） -->
+    <!-- 剧本与地理分层：剧本层可能有上百个，收进下拉栏；地理层保持按钮排列。
+         data-role="era" 标识剧本项，data-role="tier" 仅标识地理层，
+         refreshTierButtons() 与快捷键按此区分。 -->
     <div class="tool-group" id="era-group" hidden>
       <span class="group-label">剧本</span>
       <div class="era-drop" id="era-dd">
@@ -91,19 +82,15 @@ if (location.protocol === 'file:') {
       <div class="segmented" data-role="tool"></div>
     </div>
 
-    <!-- 🔴 **顶栏折叠**（2026-10-19 ✓ 用户要求"手机版的栏加一个收起折叠功能"✓）
-         只在窄屏出现（`#toolbar-fold` 在 `max-width: 1200px` 里才 display:flex ✓）
-         收起来时把**工具那一排**藏掉，视图 / 剧本 / 文件都还留着 ✓ -->
+    <!-- 顶栏折叠：仅在窄屏出现（#toolbar-fold 在 max-width: 1200px 下为 display:flex）。
+         收起时隐藏工具那一排，视图 / 剧本 / 文件保留。 -->
     <button id="toolbar-fold" type="button" aria-expanded="true">
       <span class="fold-label">收起</span><span class="fold-caret">▴</span>
     </button>
 
-    <!-- **教程 + 署名：紧跟在左侧工具栏右边** ✓（用户要求）
-         ⚠ `author-row` 这个**容器 id 得留着** ✗ —— 手机版按它找（`$('author-row')`）
-           搬进「设置」面板；换成别的名字那边就搬不到了 ✓ -->
+    <!-- 教程 + 署名：紧跟在左侧工具栏右边。
+         author-row 容器 id 必须保留：手机版按 $('author-row') 查找并搬进「设置」面板。 -->
     <div class="tool-group actions" id="help-row">
-      <!-- ⚠ 「☰ 侧栏」**不在这儿了** ✗ 已挪到顶栏最左（见 header 开头那条注释 ✓）
-           这里原来放着它 ✓ 2026-10-21 按用户要求换位置 ✓ -->
       <button class="btn ghost" id="btn-tutorial">教程</button>
       <div class="tool-group actions" id="author-row">
         <a class="btn ghost" id="btn-author">永夜廿九</a>
@@ -118,51 +105,36 @@ if (location.protocol === 'file:') {
       <button class="btn ghost" id="btn-redo" disabled>↷</button>
     </div>
 
-    <!-- 🔴🔴 **2026-10-21：电脑版「主菜单」按钮删掉了** ✗✗
-         用户原话："主菜单按钮在电脑版也删掉，用原有的 esc 代替即可"
-         → 那个按钮原来在这儿（`#btn-home` ✓）✓ 现在只留 **Esc** ✓
-         ⚠ 逻辑**一个字没动** ✗ `app.js` 里的 `goHome()` 还在 ✓
-           Esc 那条监听还调它 ✓（连"回主菜单前先存进暂存区"也在 ✓）
-           只是**少了那个按钮** ✓ 想再放回来：把 `<button id="btn-home">` 加回去就行 ✓
-         ⚠ 手机版那边**不搬这个按钮**（它本来就在顶栏里、手机顶部有「← 返回」✓）
-           删掉之后手机版不受影响 ✓ 那边按的是 `#mob-topbar` 里的返回 ✓
-    -->
+    <!-- 主菜单入口：电脑版由 Esc 触发 app.js 的 goHome()（回主菜单前先存入暂存区）；
+         手机版使用 #mob-topbar 中的「← 返回」。 -->
     <div class="tool-group actions" id="home-row" hidden></div>
 
-    <!-- **「文件」：顶栏最右边** ✓（用户要求：导入 / 导出 / 清除都收进这一个菜单 ✓）
-         ⚠ 容器 id 必须还是 export-row、菜单还是 export-menu ✗ ——
-           手机版按这两个 id 找（`move(gIO, $('export-row'))`，再把 export-menu 的子项摊平 ✓）
-           所以这里**既没改名、也没动手机版**，而导入 / 清除放进菜单里之后，
-           手机版的「文件」面板会自动一起带上它们 ✓ -->
+    <!-- 「文件」菜单：顶栏最右，保存地图、导入 / 导出涂色方案、导出整图与日志都收在此。
+         容器 id 必须为 export-row、菜单为 export-menu：手机版按这两个 id 查找
+         （move(gIO, $('export-row'))，并摊平 export-menu 的子项）。 -->
     <div class="tool-group actions" id="export-row">
       <button class="btn ghost" id="btn-export">文件 ▾</button>
       <div class="dropdown" id="export-menu" hidden>
-        <!-- ⚠ **地图包不在这儿导** ✗（2026-10-20 ✓ 用户："地图包不要在进入里面的时候导入"）
-             `.pdxmap` 只在**选图页**导（主菜单 → 选地图 → 底部那个按钮，或者直接拖进去）✓
-             这一项是**涂色存档**（.json）✓ 名字写清楚，别让人误会 ✓ -->
-        <!-- 🗺 **保存地图**（2026-10-24 ✓）：起个名存进浏览器仓库，选图页统一管理 ✓ -->
+        <!-- 地图包不在此导入：.pdxmap 只在选图页导入（选图页底部的导入按钮，或直接拖入）。
+             此处导入的是涂色存档（.json）。 -->
+        <!-- 保存地图：起名后存入浏览器仓库，由选图页统一管理。 -->
         <button class="btn ghost" id="btn-project">保存地图</button>
+        <button class="btn ghost" id="btn-load-map">加载地图</button>
         <button class="btn ghost" id="btn-import">导入涂色方案</button>
-        <!-- 导出涂色方案 .json：不进仓库、直接下载一份 ✓ -->
+        <!-- 导出涂色方案 .json：不写入仓库，直接下载。 -->
         <button class="btn ghost" id="btn-export-project">导出涂色方案</button>
         <button class="btn ghost" id="btn-png">导出窗口</button>
-        <!-- **整图 / 高清 / 局部都从一个口出**（2026-10-27 用户要求合并 ✓）
-             点开先选规格（0.5× / 1× / 2× / 3×），再选范围（全图 / 框选）✓
-             原来的「导出高清地图」按钮已经并进来，不再单独露出 ✓ -->
+        <!-- 整图 / 高清 / 局部导出统一入口：点开后先选倍率（0.5× / 1× / 2× / 3×），
+             再选范围（全图 / 框选）。 -->
         <button class="btn ghost" id="btn-png-full">导出整图</button>
-        <!-- 出毛病时把这一份发给作者就行 ✓（日志模块是 js/log.js，比 app.js 先加载 ✓） -->
+        <!-- 导出日志：故障时提供给作者。日志模块为 js/log.js，先于 app.js 加载。 -->
         <button class="btn ghost" id="btn-log">导出日志</button>
       </div>
     </div>
-    <!-- 设置：顶栏**最右**（2026-10-20 ✓ 用户："设置按钮改成上方栏的最右边，在文件按钮的右边"）
-         🔴 **2026-10-21：从「设置」两个字改成齿轮** ✗
-            （用户："电脑版的设置按钮也改成一个齿轮样式吧"）
-         ⚠ 只剩图标 → **必须留 `title` + `aria-label`** ✗
-           不然鼠标悬停不知道这是什么、读屏软件也念不出来 ✓
-         ⚠ 齿轮写成 `&#x2699;&#xFE0E;`：**后面那个 U+FE0E 是"文字呈现"选择符** ✓
-           不加的话 Windows / iOS 会把它当 emoji 渲染成**彩色大图标** ✓
-           跟顶栏那排无色图标（☰ ← ▾）格格不入 ✗ 加上才是单色字形 ✓
-         ⚠ 手机版不用它（顶栏整条 `display:none` ✓ 底部有自己的「设置」✓）-->
+    <!-- 设置按钮：顶栏最右，仅保留图标，必须保留 aria-label。
+         齿轮写作 &#x2699;&#xFE0E;：U+FE0E 为文字呈现选择符，
+         缺少时 Windows / iOS 会渲染为彩色 emoji。
+         手机版不使用此按钮（顶栏整条 display:none，底部另有「设置」）。 -->
     <div class="tool-group actions" id="settings-row">
       <button class="btn ghost gear-btn" id="btn-settings" type="button"
               aria-label="设置">&#x2699;&#xFE0E;</button>
@@ -176,20 +148,12 @@ if (location.protocol === 'file:') {
       <section class="panel" id="display-panel">
         <div class="panel-head"><h2>显示</h2></div>
         <div class="tool-group actions stack">
-    <!-- 🔴🔴 **显示区各组的排法**（2026-10-16 用户定的 ✓ 全体统一）：
-         **边界 → 名称 → 颜色 →（父级边界 / 只在「地块」那组 ✓）** ✓
-         ⚠ 以前是「颜色 / 边界 / 名称」（照 v1.8 那套排的 ✗）——
-           用户 2026-10-16 点名改成这个顺序 ✓ 各组一致 ✓ 缺的项跳过 ✓
-         🔴 **2026-10-17：「剧本」那一整组删了** ✗（用户："三个开关已经没什么用了"✓）
-            剧本颜色固定开、剧本边界固定关、剧本名称本来就跟「势力 · 名称」同一个状态 ✓
-            → 下面只剩「地块 / 势力 / 水域 / 荒地」四组 ✓ -->
+    <!-- 显示区各组统一按「边界 → 名称 → 颜色 →（父级边界，仅地块组）」排列，缺项跳过。
+         现有地块 / 势力 / 水域 / 荒地四组。 -->
     <div class="tool-group" id="region-group">
-      <!-- 🔴 **2026-10-16 用户定的：这组叫「地块」** ✗（原来是「地区」✓）
-           原话："显示设置那边的地区也改为地块"✓
-           ⚠ **只改这个显示标签** ✗ —— `id="region-group"` 与里面那三个开关的 id
-             一律不动 ✓（`applyGameUI` 按 id 显示/隐藏这一组 ✓ 改了它就失效 ✓）
-           ⚠ 跟设置页「边界」栏那个「地区」小标题**不是一回事** ✗ ——
-             那个说的是行政区划那一级（父级链 ✓ 用户 2026-10-16 确认保留 ✓）-->
+      <!-- 「地块」仅是本组的显示标签。id="region-group" 及内部三个开关的 id 不可改动：
+           applyGameUI 按 id 显示 / 隐藏本组。
+           设置页「边界」栏的「地区」小标题含义不同，指行政区划层级（父级链）。 -->
       <span class="group-label">地块</span>
       <label class="switch">
         <input type="checkbox" id="show-region-border" checked>
@@ -203,8 +167,8 @@ if (location.protocol === 'file:') {
         <input type="checkbox" id="show-region-color">
         <span>颜色</span>
       </label>
-      <!-- **父级边界排最后** ✓ —— 它不是"三件套"之一 ✗
-           是个**附加档**（只管上面那一级画不画 ✓ 见 syncParentBorder ✓） -->
+      <!-- 父级边界排在最后：它不属于「边界 / 名称 / 颜色」三件套，而是附加开关，
+           控制上一级边界是否绘制（见 syncParentBorder）。 -->
       <label class="switch" id="parent-border-row">
         <input type="checkbox" id="show-parent-border">
         <span>父级边界</span>
@@ -212,17 +176,14 @@ if (location.protocol === 'file:') {
     </div>
 
     <div class="tool-group">
-      <!-- 🔴 **2026-10-17：这组从「填色」改名「势力」** ✓（用户原话："把显示区的
-           涂色两个字改成势力"✓）
-           ⚠ 只改**显示标签** ✗ —— 里面三个 id（show-border-paint / show-labels-paint /
-             show-paint）一律不动 ✓ 它们是玩家涂色层的老接口，改名会牵一大片 ✓ -->
+      <!-- 「势力」为本组的显示标签。内部三个 id（show-border-paint / show-labels-paint /
+           show-paint）保持不变：它们是涂色层的既有接口，改名会牵连多处。 -->
       <span class="group-label">势力</span>
       <label class="switch">
         <input type="checkbox" id="show-border-paint" checked>
         <span>边界</span>
       </label>
-      <!-- 势力自己的「名称」开关 —— 任何一代游戏这一组都在 ✓
-           （「剧本」那组已经删了，现在这里是势力名称唯一的入口 ✓） -->
+      <!-- 势力名称的开关入口。 -->
       <label class="switch">
         <input type="checkbox" id="show-labels-paint" checked>
         <span>名称</span>
@@ -234,25 +195,12 @@ if (location.protocol === 'file:') {
 
     </div>
 
-    <!-- 🔴 **水域那一组**（2026-10-16 用户点名的 ✓ 见 handover §3.1）
-         ⚠ 只有**边界 / 名称**两条 ✗ —— 「颜色」那个勾**不给** ✓
-           （用户原话："水域不加入关于颜色的开关，只有关于边界和名称的开关"✓）
-         🔴🔴 **两个都默认「不勾」** ✗✗（2026-10-17 用户改的 ✓
-           原话："默认关闭水域边界、名称"✓
-           2026-10-16 那版两个都是勾上的 ✓ 理由曾是"默认观感完全不变"✓
-           现在反过来了 ✓ → 开图时水域之间那些缝**不画**、水名**不出** ✓
-           想看得自己勾 ✓ **HTML 这里不许再写 `checked`** ✗
-             （去掉它 = 开图前那几百毫秒界面就跟状态一致 ✓
-              开图后 `applyGameUI` 还会照 `state` 再刷一遍 ✓ 两道都对得上 ✓））
-         ⚠ 位置**必须排在「地块 / 势力」之后** ✗✗ ——
-            `tutorial.js` 的 `firstNamedSwitch()` 取的是"界面上**第一个**文字含「名称」的开关"✓
-            插到前面去的话，教程那一步会改指水域 ✓（顺序敏感，别挪 ✗）
-           （「剧本」那组已经删了：现在第一个含「名称」的是「地块」组 ✓）
-         ⚠ 口径（用户原话）：
-           "水域边界开关负责且仅负责**水域之间**（海洋、湖泊、河流、不可通行水域）
-            的边界的显示或隐藏。水域名称开关同理。
-            同时受管理的这些东西**不再受地区边界、地区名称的管理**。"✓
-           → 海岸线（水 ↔ 陆）**不归它** ✓ 照旧由「地块 / 势力 · 边界」管 ✓ -->
+    <!-- 水域组：只有「边界 / 名称」两项，不设「颜色」。
+         两项默认不勾选，HTML 中不得写 checked；打开地图后 applyGameUI 会按 state 刷新。
+         必须排在「地块 / 势力」之后：tutorial.js 的 firstNamedSwitch() 取界面上第一个
+         含「名称」的开关，提前会让教程那一步改指水域。
+         水域边界只负责水域之间（海洋、湖泊、河流、不可通行水域）的显示，水域名称同理；
+         海岸线（水 ↔ 陆）不归它管，仍由「地块 / 势力 · 边界」控制。 -->
     <div class="tool-group" id="water-group">
       <span class="group-label">水域</span>
       <label class="switch">
@@ -265,27 +213,14 @@ if (location.protocol === 'file:') {
       </label>
     </div>
 
-    <!-- 🔴 **荒地那一组**（2026-10-17 用户要的 ✓）
-         原话（先要名称）："显示区加一行，关于荒地的名称开关"✓
-         原话（再要边界）："给荒地加上边界开关，这个负责的是**荒地与荒地之间**的边界，
-                            你之前做了水域-水域的边界，这个应该轻车熟路了吧"✓
-         → 所以现在是**两条**：边界 + 名称 ✓
-           **边界** = 荒地 ↔ 荒地之间的缝 ✓（挨着陆地 / 水的那一圈外缘**不归它** ✗
-             照旧归「地块 · 边界」/「势力 · 边界」✓ 跟水域那条一个口径 ✓）
-           **名称** = 荒地自己的名字（`wl_*` / `#wasteland*` / 未编进州里的陆地 ✓）
-             它跟「地块 · 名称」**各管各的** ✓（荒地有自己的开关之后，
-               关掉「地块 · 名称」不该把荒地名一起带走 ✓ 这一条 2026-10-17 改的 ✗
-               在那之前荒地名是跟着「地块 · 名称」走的 ✓）
-         🔴 **2026-10-17 追加「自动上色」** ✗✗（用户点名要的 ✓）
-           开：按周边陆地最低地块的颜色加权，严格过半才给这块荒地 ✓
-           关：全部回退设置里「不可通行区域」那个色 ✓
-           ⚠ 它不是"荒地颜色"那个勾 ✗ —— 那个仍然在设置页里管所有地形类色 ✓
-             这一条只管"自动算出来的那份归属色" ✓
-         ⚠ **三个都默认不勾** ✗（2026-10-17 用户定的：自动上色也默认关闭 ✓
-           想要上色自己勾 ✓ 别在 HTML 里写 checked ✓）
-         ⚠ 顺序 **边界 → 名称 → 自动上色** ✓（跟别组一个排法 ✓）
-         ⚠ 位置排在「水域」之后 ✓ —— `tutorial.js` 的 `firstNamedSwitch()`
-           取的是"第一个含「名称」的开关"= `#show-power-names` ✓ 这边怎么排都不影响 ✓ -->
+    <!-- 荒地组：边界 + 名称 + 自动上色。
+         边界仅负责荒地 ↔ 荒地之间的缝隙；紧邻陆地 / 水域的外缘仍归
+         「地块 · 边界」/「势力 · 边界」，与水域口径一致。
+         名称控制荒地自身的名字（wl_* / #wasteland* / 未编入州里的陆地），
+         与「地块 · 名称」相互独立：关闭「地块 · 名称」不会带走荒地名。
+         自动上色开启时按周边陆地最低地块颜色加权，严格过半才上色；关闭时回退为
+         设置中的「不可通行区域」色，且不改变地形配色。
+         三项默认不勾选，HTML 中不写 checked；顺序为 边界 → 名称 → 自动上色。 -->
     <div class="tool-group" id="waste-group">
       <span class="group-label">荒地</span>
       <label class="switch">
@@ -302,16 +237,17 @@ if (location.protocol === 'file:') {
       </label>
     </div>
 
-    <!-- 🔴 **清除按钮搬到显示区**（2026-10-17 用户定的 ✓）
-         「清除全部」= 原来的 `resetAll()`（全部涂色 + 撤销栈）
-         「清除荒地」= 只动手绘层里的荒地块 + 关掉自动上色、刷回荒地灰
-         ⚠ id `btn-reset` 不许改 ✗ —— app.js 的处理器和自检都按它找 ✓ -->
+    <!-- 清除按钮：btn-reset 执行 resetAll()（全部涂色与撤销栈）；
+         btn-clear-waste 仅清除手绘层中的荒地块，并关闭自动上色、刷回荒地灰。
+         btn-reset 的 id 不可改动：app.js 的处理器与自检都按它查找。 -->
     <div class="tool-group" id="clear-group">
       <span class="group-label">清除</span>
       <button class="btn ghost" id="btn-reset" type="button"
              >清除全部</button>
       <button class="btn ghost" id="btn-clear-waste" type="button"
              >清除荒地</button>
+      <button class="btn ghost" id="btn-apply-era" type="button"
+             >运用剧本涂色</button>
     </div>
 
         </div>
@@ -321,19 +257,11 @@ if (location.protocol === 'file:') {
       <section class="panel">
         <div class="panel-head">
           <h2>当前颜色</h2>
-          <!-- ⚠ **原来这儿有个提示**（`#brush-target`，写「1789 · 涂抹」那种）✗
-               2026-10-17 用户："红框框的部分去掉"✓ → 整个 span 拿掉了 ✓
-               ⚠ 配套在 app.js：`updateBrushTarget()` 那个函数和它的三处调用**一起删了** ✗
-                 （函数体就一句 `$('brush-target').textContent = …` ✓
-                  光删 HTML 会让它每帧去写一个 null ✗ 那种"留着半条线"的最难查 ✓
-                  ——见 `setTool` / `applyEditTier` / `选工具` 那三处 ✓）
-               → 想知道"这一笔按哪一级涂"看**层级按钮**那排就够 ✓（那儿本来就亮着 ✓） -->
         </div>
         <div class="brush">
           <div class="swatch big" id="brush-swatch"></div>
-          <!-- 点色块不再直接弹系统取色器 ✗（2026-10-24 用户定的 ✓）：
-               弹的是下面这个**二级菜单** —— 里面自己选：去 RGB 拾色器调，
-               或从调色板 / 最近使用里挑一个 ✓ -->
+          <!-- 点击色块不直接打开系统取色器，而是弹出下方二级菜单：
+               可进入 RGB 拾色器，或从调色板 / 最近使用中选择。 -->
           <input type="color" id="brush-color" class="swatch-input" aria-label="取色">
           <div class="brush-fields">
             <label>HEX <input type="text" id="brush-hex" maxlength="7" spellcheck="false" autocomplete="off"></label>
@@ -346,19 +274,17 @@ if (location.protocol === 'file:') {
               <input type="text" id="brush-label" spellcheck="false" autocomplete="off" placeholder="请输入文本">
             </label>
           </div>
-          <!-- 🎨 **色块的二级菜单**（点大色块弹出 ✓）：
-               「自定义颜色」= 系统 RGB 拾色器随便调 ✓；
-               收藏 / 最近使用 = **圆角方块**，左键直接用作画笔色、右键删 ✓；
-               收藏行末尾的 ＋ 块 = 把当前颜色收进调色板 ✓ -->
+          <!-- 色块二级菜单：自定义颜色打开系统 RGB 拾色器；
+               收藏与最近使用为圆角方块，左键用作画笔色、右键删除；
+               收藏行末尾的 ＋ 把当前颜色收进调色板。 -->
           <div class="brush-menu" id="brush-menu" hidden>
             <button type="button" class="brush-menu-custom" id="brush-menu-custom">自定义颜色</button>
             <div class="brush-menu-cap">调色板</div>
             <div class="palette palette-fav" id="palette-fav"></div>
             <div class="brush-menu-cap brush-menu-cap-row"><span>最近使用</span><button type="button" class="btn ghost" id="btn-clear-recent">清空</button></div>
             <div class="palette" id="palette"></div>
-            <!-- 🎨 **色标（ColorBrewer，2026-11-02）**
-                 就一排排颜色，**一行八个** ✓ 点一下 = 当前颜色；右键 = 收进调色板 ✓
-                 数值来自 Cynthia Brewer 的 ColorBrewer 2.0，版权与许可见 THIRD-PARTY-NOTICES.md -->
+            <!-- 色标（ColorBrewer）：每行八个颜色，点击设为当前颜色，右键收进调色板。
+                 数值来自 Cynthia Brewer 的 ColorBrewer 2.0，版权与许可见 THIRD-PARTY-NOTICES.md。 -->
             <div class="brush-menu-cap">色标</div>
             <div class="brw-strip" id="brewer-strip"></div>
           </div>
@@ -367,14 +293,20 @@ if (location.protocol === 'file:') {
           <span id="label-pick-hint">这个颜色在数据里归好几个头衔，挑一个当标记：</span>
           <select id="label-select"></select>
         </div>
-        <!-- 🔴 **「取色后切到」搬到侧栏了**（2026-10-20 ✓ 子代理方案）
-             它管的是**当前颜色 / 取色**这件事的一部分，跟设置里那四组
-             （底色·地形 / 边界线 / 名称 / 图例）都不搭 ✓
-             原来它待在「其他」里 —— 那个组名该消失，这就是理由 ✓ -->
-        <label class="set-row" id="picktool-row"><span>取色后切到</span>
+        <!-- 「取色后切到」属于当前颜色 / 取色功能，故放在侧栏，
+             不归入设置的四组（底色·地形 / 边界线 / 名称 / 图例）。 -->
+        <label class="set-row" id="picktool-row"><span>取色后切到<span class="help-q" tabindex="0" role="button" aria-label="说明" data-help="右键或长按从地图吸取颜色后&#10;自动切换到哪个工具">?</span></span>
           <select id="set-picktool">
             <option value="paint">涂抹</option>
             <option value="fill">填色</option>
+          </select>
+        </label>
+        <!-- 涂色限制：「上色+标记」同时写入颜色与标记名；
+             「仅上色」只改颜色，已有标记保持不动，标记为空的格子补上画笔名。 -->
+        <label class="set-row" id="paint-limit-row"><span>涂色限制<span class="help-q" tabindex="0" role="button" aria-label="说明" data-help="上色+标记：涂色的同时为涂色区命名&#10;仅上色：只改变涂色区域的颜色">?</span></span>
+          <select id="set-paint-limit">
+            <option value="both">上色+标记</option>
+            <option value="color">仅上色</option>
           </select>
         </label>
       </section>
@@ -394,14 +326,18 @@ if (location.protocol === 'file:') {
           <h2 id="hdr-search">查找头衔</h2>
           <span class="hint" id="search-count"></span>
         </div>
-        <!-- autocomplete=off：**别让浏览器把它当"要记的表单"** ✗
-             以前没有这一条，Chrome 就把你打过的词存进「保存的信息」，
-             下次一点搜索框就弹那个白色下拉（"荒谬法律""Kurds" …）——
-             那不是我们画的界面，是浏览器的自动填充。
-             顺带：那个下拉开着时按回车，浏览器会拿它当"选中建议"，
-             跟"回车跳第一条结果"撞车 ✓ 关掉就都安静了。 -->
+        <!-- autocomplete=off：避免浏览器把搜索框当作需保存的表单字段，
+             否则会弹出自动填充下拉，并可能把回车解释为选中建议，
+             与「回车跳第一条结果」冲突。 -->
         <input type="search" id="search" placeholder="" autocomplete="off"
                spellcheck="false" autocorrect="off" autocapitalize="off">
+        <!-- 跨剧本搜国家：仅搜索国家 TAG（countryTags），不跨剧本搜索地区 / 省份。
+             服务模式查询其他 data_*/meta.json，单文件版查询内嵌的其他地图；
+             「电脑里装了」指该地图出现在选图清单中。 -->
+        <label class="search-xgame">
+          <input type="checkbox" id="search-cross-game">
+          <span>搜索其他地图包</span>
+        </label>
         <div class="results" id="results">
           <p class="empty">支持中文名、英文名、c_/d_/k_/e_ 开头的 key</p>
         </div>
@@ -412,17 +348,16 @@ if (location.protocol === 'file:') {
     <main class="stage" id="stage">
       <canvas id="map"></canvas>
       <canvas id="overlay"></canvas>
-      <!-- 地图上的图例：位置跟着四角/自定义走，拖它可移动，右下角把手缩放 ✓
-           样式和导出共用同一套 drawLegend，所见即所得 ✓ -->
+      <!-- 地图图例：位置随四角 / 自定义设置，可拖动移动，右下角把手缩放。
+           样式与导出共用 drawLegend，所见即所得。 -->
       <div class="legend-overlay" id="legend-overlay" hidden tabindex="0"
            role="group" aria-label="地图图例：拖动移动，右下角缩放，方向键微调，Shift 加方向键缩放">
         <canvas id="legend-canvas"></canvas>
         <span class="legend-resize" id="legend-resize" aria-hidden="true"></span>
       </div>
-      <!-- 整图导出的「框选一部分」：盖在地图上的透明选择层 ✓
-           只在框选期间显示；不框选时完全不挡鼠标 ✓
-           框选按绘图软件那套来：拖出框 → 八个把手调大小 → 框里拖动挪位置 →
-           尺寸角标 + 取消 / 重选 / 确定 ✓ -->
+      <!-- 整图导出的框选层：盖在地图上的透明选择层，仅在框选期间显示，
+           不框选时完全不挡鼠标。拖出框 → 八个把手调大小 → 框内拖动移位 →
+           尺寸角标 + 取消 / 重选 / 确定。 -->
       <div class="export-pick-layer" id="export-pick-layer" hidden>
         <div class="export-pick-box" id="export-pick-box" hidden>
           <span class="export-pick-handle h-nw" data-handle="nw"></span>
@@ -450,9 +385,8 @@ if (location.protocol === 'file:') {
       <div class="toast" id="toast" hidden></div>
 
       <div class="boot" id="boot">
-        <!-- 拖拽提示层（2026-11-03）：拖文件进窗口时整页压暗 + 一句话 ✓
-             平时 hidden（选图页平时必须干干净净 ✓），dragover 期间由 app.js 打开 ✓
-             ⚠ 这里只写"松手会发生什么"，不放任何要玩家点的按钮 ✓ -->
+        <!-- 拖拽提示层：拖入文件时整页压暗并显示提示，平时 hidden，
+             dragover 期间由 app.js 打开。此处只说明松手后的行为，不放任何按钮。 -->
         <div class="drop-mask" id="drop-mask" hidden>
           <div class="drop-tip">松手就开始导入</div>
           <div class="drop-sub">地图包 .pdxmap / .zip，涂色方案 .json</div>
@@ -461,68 +395,54 @@ if (location.protocol === 'file:') {
           <div class="boot-title" id="boot-title">悖论制图</div>
 
           <div class="map-pick" id="map-pick" hidden>
-            <div class="map-pick-hint">选一张地图</div>
-            <!-- 🗺 **二分起步页**（2026-10-24 ✓ 用户定的）：两个大块，点谁进谁 ——
-                 「地图」= 底图卡片，「涂色」= 仓库里存过的地图 ✓
-                 ⚠ 卡片在打开时就已经渲染进 #map-pick-list ✓（隐藏只是视觉层 ✓）
-                   自测 / 调优工具程序化点卡片不受影响 ✓ -->
-            <!-- 🗺 **主菜单分段按钮**（2026-10-24 ✓ 用户定的）：上排两个页签，
-                 点谁下面显示谁 ✓ 默认「地图包」✓ -->
+            <div class="map-pick-hint" id="map-pick-hint">选一张地图</div>
+            <!-- 主菜单分段按钮：上排两个页签（开始创作 / 读取地图），点选切换下方内容，
+                 默认「开始创作」。卡片在打开时即渲染进 #map-pick-list，hidden 仅影响视觉，
+                 自测 / 调优工具程序化点卡片不受影响。 -->
             <div class="pick-tabs" id="pick-tabs">
               <button class="pick-tab on" id="pick-tab-maps" type="button">开始创作</button>
               <button class="pick-tab" id="pick-tab-store" type="button">读取地图</button>
             </div>
-            <!-- 一张图都没有的时候（轻量版第一次打开就是这样）说清楚下一步干嘛 ✓
-                 有卡片了 app.js 会把它藏起来 ✓ -->
+            <!-- 地图清单为空时显示引导文案；有卡片后 app.js 会将其隐藏。 -->
             <div class="map-empty" id="map-empty" hidden>
               请点击下方按钮导入，或将 .pdxmap 文件直接拖进这一页。
             </div>
             <div class="map-pick-list" id="map-pick-list"></div>
             <div class="map-actions" id="map-actions">
               <button class="map-import" id="map-import">＋ 导入地图包…</button>
-              <!-- 「下载地图包」（2026-11-01 用户要的：跟导入**一分为二**、各占原来一半宽 ✓）
-                   点它去 GitHub 最新 release 抓 .pdxmap 的下载链接 ✓
-                   ⚠ 仓库页（读取地图）里**藏起来** ✗ —— 那边导入的是涂色方案，不是地图包 ✓ -->
+              <!-- 「下载地图包」：前往 GitHub 最新 release 获取 .pdxmap 下载链接。
+                   在「读取地图」页中隐藏，因为那边导入的是涂色方案而非地图包。 -->
               <button class="map-import map-fetch" id="map-fetch" type="button">⤓ 下载地图包</button>
               <input type="file" id="map-store-import" accept=".json,application/json" hidden>
             </div>
-            <!-- 下载面板：平时 hidden 且**里面是空的** ✓ 点「下载地图包」才填 ✓
-                 （自检里那条"入口下面平时不摆说明文字"盯的就是这个位置 ✓） -->
-            <!-- 这行平时**是空的** ✗ —— 只有"这台浏览器存不下东西"的时候才跳出来警示
-                 （"刷新就没了"那句必须让玩家看见，所以位置留着 ✓） -->
+            <!-- 下载面板：平时 hidden 且内容为空，点击「下载地图包」后才填充
+                 （自检项「入口下面平时不摆说明文字」检查此处）。 -->
+            <!-- 提示行平时为空，仅在浏览器无法持久化存储时显示警示
+                 （「刷新就没了」必须可见，故保留位置）。 -->
             <div class="map-import-hint" id="map-import-hint" hidden></div>
             <div class="map-msg" id="map-msg" hidden></div>
           </div>
 
-          <!-- ⚠ **这里原来有个「⋯」管理小面板** ✗（四个按钮：导出备份 / 删除 / 关闭 + 标题）
-               2026-10-12 起「导出备份 / 删除」两个动作**直接长在卡片上**了 ✓
-               面板连元素带样式整个拆掉 —— 留一堆没人引用的死 markup 只会
-               （a）让"页面上还有没有那个面板"那条自检一直是红的 ✓
-               （b）哪天谁又给它接上线，"关不掉"那个坑原样回来 ✓
-               （2026-10-17 那条线合并回来时把这段 markup 带回来了 ✗ 现在再删一次 ✓）
-               ⚠ **注释里也别写出那个 id / 类名** ✗ —— 自检是按字面量扫整份 HTML 的，
-                 连注释一起抓（这条规矩别处也踩过 ✓）-->
+          <!-- 注意：自检按字面量扫描整份 HTML（含注释），
+               新增注释不得写出会被自检命中的 id / 类名。 -->
 
           <div id="boot-progress">
             <div class="boot-step" id="boot-step">正在准备…</div>
             <div class="boot-bar"><i id="boot-bar"></i></div>
           </div>
 
-          <!-- 署名：谁做的、去哪找人。href 由 app.js 按 AUTHOR 填（换主页只改那一处 ✓）
-               🔴 **分两行**（2026-10-17 用户："那些字挤在一起很难看"）：
-                   第一行 作者 + 主页；第二行 导出诊断报告 + 版本戳 ✓ -->
+          <!-- 署名：第一行为作者与主页（href 由 app.js 按 AUTHOR 填充，更换主页只改该处），
+               第二行为导出诊断报告与版本戳。 -->
           <div class="boot-author">
             <div class="boot-author-row">
               <span>永夜廿九 制作</span>
               <a class="boot-author-link" id="author-link" target="_blank" rel="noopener">B 站主页 →</a>
             </div>
             <div class="boot-author-row boot-author-row-split">
-              <!-- 版本戳在**左**、导出按钮在**右**（2026-10-17 用户定的 ✓）
-                   ⚠ 接线在 log.js 里，**不在 app.js** ✗ —— 编辑器自己没起来时，
-                     app.js 里的入口根本挂不上，而那时正是最需要日志的场合 ✓ -->
-              <!-- 版本戳 + 「检查更新」（2026-11-01 用户点名要的：就摆在版本号旁边，
-                   发现新版**直接抓 release 的下载链接**，不跳网页 ✓）
-                   接线在 app.js 的 bindAuthorLinks() 里 ✓ -->
+              <!-- 版本戳在左、导出按钮在右。接线在 log.js 而非 app.js：
+                   编辑器未启动时 app.js 的入口无法挂载，而那时正需要日志。 -->
+              <!-- 版本戳与「检查更新」：发现新版本时直接获取 release 的下载链接，不跳转网页；
+                   接线在 app.js 的 bindAuthorLinks()。 -->
               <span class="boot-ver-wrap">
                 <span class="boot-ver" id="boot-ver"></span>
                 <button class="boot-update-btn" id="btn-check-update" type="button">检查更新</button>
@@ -537,15 +457,32 @@ if (location.protocol === 'file:') {
 
   </div>
 
-  <!-- 选文件只认 .pdxmap / .zip（别的一律拒，见 pack.js 的校验器）
-       ⚠ `application/octet-stream` **必须留着** ✗（2026-10-12 用户报的"手机上选不中 pdxmap"）：
-         `.pdxmap` 是自定义扩展名，系统不认 → 类型就是 `application/octet-stream` ✓
-         安卓的文件选择器**按 MIME 过滤**，不列它就把 `.pdxmap` 灰掉 ✓
-         （手机版还会在 bindMobile 里把过滤整个放开，见 mobile/mobile_js.txt ✓）
-       ⚠ 这一行是**从 10-12 的备份还原时补回来的** ✗ —— 那个底子比它早几个钟头 ✓
-       ⚠ `multiple` 也要留着 ✗（2026-10-12 用户要求：**多个包一起导入** ✓）-->
+  <!-- 选文件只接受 .pdxmap / .zip（其他由 pack.js 的校验器拒绝）。
+       application/octet-stream 必须保留：.pdxmap 是自定义扩展名，系统识别为
+       application/octet-stream，安卓文件选择器按 MIME 过滤，缺少它会把 .pdxmap 置灰
+       （手机版在 bindMobile 中放开过滤，见 mobile/mobile_js.txt）。
+       multiple 用于一次导入多个包。 -->
   <input type="file" id="pack-file"
          accept=".pdxmap,.zip,application/zip,application/octet-stream" multiple hidden>
+
+  <!-- 自写调色器：所有 input[type=color] 的点击在捕获阶段由 app.js 拦截，
+       面板只负责「选色 → 写回 input → 派发 input/change」。 -->
+  <div class="color-pop" id="color-pop" hidden role="dialog" aria-label="取颜色">
+    <div class="cp-head">
+      <span>取颜色</span>
+      <button type="button" class="cp-x" id="color-pop-close" aria-label="关闭">✕</button>
+    </div>
+    <div class="cp-main">
+      <canvas id="color-pop-sv" width="236" height="160"></canvas>
+      <canvas id="color-pop-hue" width="18" height="160"></canvas>
+    </div>
+    <div class="cp-foot">
+      <span class="cp-preview" id="color-pop-preview"></span>
+      <input class="cp-hex" id="color-pop-hex" spellcheck="false" maxlength="7" autocomplete="off" aria-label="十六进制颜色">
+      <button class="btn" type="button" id="color-pop-ok">确定</button>
+    </div>
+    <div class="cp-presets" id="color-pop-presets"></div>
+  </div>
 
   <footer class="statusbar">
     <span id="status-meta">—</span>
@@ -556,50 +493,30 @@ if (location.protocol === 'file:') {
   </footer>
 
 </div>
-<!-- 报错日志：**必须排在 app.js 前面** —— 编辑器自己没起来的时候，
-     它是唯一还能记录现场的东西 ✓（普通脚本，挂 window.PDXLOG；见 js/log.js） -->
+<!-- 报错日志：必须先于 app.js 加载——编辑器未能启动时，它仍是唯一能记录现场的模块
+     （普通脚本，挂载 window.PDXLOG；见 js/log.js）。 -->
 <script src="js/log.js"></script>
 <script src="js/tutorial.js"></script>
 <script type="module" src="js/app.js"></script>
 
-  <!-- 二级设置页（右上角「设置」开） -->
+  <!-- 二级设置页：由右上角「设置」打开。 -->
   <!-- ============================================================ 设置
-       🔴 **2026-10-20 全面重做**（用户："全方面遵循子代理方案"）
-
-       重做的出发点只有一句话：**用户站在地图前面，不是站在配置面板前面** ✓
-         · 改成**不带遮罩的右侧抽屉** —— 拖滑条时地图一直看得见、还能平移 ✓
-           （原来是一块 1120×660 的模态框 + 62% 黑遮罩 → 改一下、关掉、看一眼、再打开 = 盲调 ✗）
-         · 四组按**画布的绘制顺序**排：底色·地形 → 边界线 → 名称 → 图例 ✓
-           原来的「颜色 / 边界 / 名字 / 其他」是按补丁批次长的 ✗
-           "其他"这个组名必须消失 —— 一个组的名字如果叫"其他"，说明它不该是一个组 ✓
-         · 边界 10 根滑条 → 一张 **5×2 矩阵**（行=对象，列=线宽/不透明度）✓
-           表头只出现一次 → 滚动时不会再出现"不知道属于谁的边界不透明度" ✓
-         · 名称同样矩阵化：行=地块名/势力名，列=字号/不透明度/数量 ✓
-           **字体作为第四列**（原来单开一个"字体"块，把刚建立的"按对象分块"又拆散了 ✗）
-         · 离散量用**离散控件**：线宽 6 档 → 步进器；不透明度 5 档 → 分段条 ✓
-           20 档的"数量"也走步进器（原来滑条 5.9px 一档，点一下就跳 ✓）
-         · **"不限"是独立开关**，不再是滑条最右那一格 ✓
-           （内部仍写 `labelMax = 21`，兼容老存档与 `labelMaxValue()` ✓）
-
-       ⚠ **所有既有 id 一个都没删** ✓ —— `app.js` 的绑定、`test_modes` 的清单全按 id 走 ✓
-         变的是控件**类型**（range → 步进器 / 分段条），不是 id ✓ -->
+       不带遮罩的右侧抽屉：调整时地图始终可见、可平移。
+       四组按画布绘制顺序排列：底色·地形 → 边界线 → 名称 → 图例。
+       边界为 5×2 矩阵（行 = 对象，列 = 线宽 / 不透明度），表头只出现一次；
+       名称为矩阵（行 = 地块名 / 势力名，列 = 字号 / 不透明度 / 数量），字体另设一组。
+       离散量使用步进器或分段条；「不限」为独立开关
+       （内部仍写 labelMax = 21，兼容既有存档与 labelMaxValue()）。
+       所有既有 id 均保留：app.js 的绑定与 test_modes 的清单按 id 走。 -->
 
   <div class="modal drawer" id="settings" hidden>
     <div class="modal-box set-box">
 
-      <!-- 四组分页（桌面）：窄屏铺不开四栏，改成标签切页 ✓
-           ⚠ `data-group` 是给 `mobile_js` 认页用的 ✗ 别再用中文标题正则 ✓ -->
-      <!-- 🔴🔴 **2026-10-22：白天/黑夜挪到设置面板的「顶部」** ✗✗
-           （用户："电脑的晨昏按钮应该放在设置的上面（参考手机版）"）
-           → 手机版那套是：面板最上面一行「界面 … ☀ 白天」✓
-             在标签行**上面**、在内容**外面** ✓ 换页不会跟着滚走 ✓
-           → 桌面照抄这个结构 ✓ 位置也一样：**在 `.set-tabs` 之前** ✓
-
-           ⚠ **只搬家，不改 id、不改类** ✗
-             `app.js` 是按 `$('btn-theme')` 取元素挂 onclick 的 ✓
-             手机的 `mobile_js.txt` 也按 `#btn-theme` 把它搬进自己的 `.mob-theme-bar` ✓
-             id 一改，两边一起断 ✓
-           ⚠ 它原来在「其他」页（`data-group="legend"`）里当一行设置 ✓ 已经挪走 ✓ -->
+      <!-- 四组分页：窄屏铺不开四栏，改为标签切页。
+           data-group 供 mobile_js 识别页面，勿改用中文标题正则匹配。 -->
+      <!-- 白天 / 黑夜位于设置面板顶部、标签行之上、内容之外，切换分页时不会滚走。
+           id 与类名不可改动：app.js 按 $('btn-theme') 绑定点击，
+           手机版由 mobile_js 将 #btn-theme 移入 .mob-theme-bar。 -->
       <div class="set-theme-row">
         <span class="set-theme-lab">界面</span>
         <button class="theme-btn" id="btn-theme" type="button">☾ 夜间</button>
@@ -611,28 +528,22 @@ if (location.protocol === 'file:') {
         <button class="set-tab" type="button" data-group="label">名称</button>
         <button class="set-tab" type="button" data-group="legend">图例</button>
         <span class="set-tabs-sp"></span>
-        <!-- 🔴🔴 **2026-10-21：白天/黑夜按钮挪进「其他」页** ✗✗（用户点名）
-             原话："晨昏按钮放在设置的【其他】页面" ✓
-             ⚠ 2026-10-22 又按用户要求挪回面板顶部了（见 `.set-theme-row`）✓
-             现在这一页只剩图例，标签也跟着叫「图例」✓ -->
         <button class="set-x" id="set-close" type="button">×</button>
       </div>
 
       <div class="set-grid" id="set-grid" data-active="color">
 
         <!-- ================= ① 底色 · 地形 =================
-             用户在图上最先看到的是"颜色" ✓ 所以它是第一组 ✓
-             ⚠ 原来的「空白区域」改叫**底图背景** ✓ —— 它其实是整张画布的底（renderer.backdrop）✓
-               跟"无主地"（有地无主）完全是两件事，两个词原来都像"没画的地方" ✗
-             ⚠ 色块旁边补 HEX ✓ —— #B4B4B4 和 #969696 并排看几乎一样，
-               文字上才分得开 ✓ -->
+             颜色是地图上最直观的信息，故列为第一组。
+             「底图背景」指整张画布的底色（renderer.backdrop），与「无主地」（有地无主）
+             是两件事；色块旁标注 HEX，因 #B4B4B4 与 #969696 并排时几乎无法区分。 -->
         <section class="set-col" data-group="color">
           <div class="set-sub">底色</div>
           <label class="set-row"><span class="set-l">底图背景</span><span class="set-v" id="v-set-bg"></span><input type="color" id="set-bg"></label>
           <label class="set-row"><span class="set-l">无主地</span><span class="set-v" id="v-set-unpainted"></span><input type="color" id="set-unpainted"></label>
           <div class="set-sub">地形</div>
           <label class="set-row"><span class="set-l">不可通行区域</span><span class="set-v" id="v-set-impass"></span><input type="color" id="set-impass"></label>
-          <!-- 水域四项的次序是用户定的：由小到大 —— 河最细、海最大、不可通行海域是屏障 ✓ -->
+          <!-- 水域四项按范围由小到大排列：河流、湖泊、海洋、不可通行海域。 -->
           <label class="set-row"><span class="set-l">河流</span><span class="set-v" id="v-set-river"></span><input type="color" id="set-river"></label>
           <label class="set-row"><span class="set-l">湖泊</span><span class="set-v" id="v-set-lake"></span><input type="color" id="set-lake"></label>
           <label class="set-row"><span class="set-l">海洋</span><span class="set-v" id="v-set-sea"></span><input type="color" id="set-sea"></label>
@@ -640,17 +551,15 @@ if (location.protocol === 'file:') {
         </section>
 
         <!-- ================= ② 边界线 =================
-             5 行 × 2 列。行 = 对象，列 = 线宽 / 不透明度 ✓
-             各类管哪条线（**常驻在界面上** ✗ 不再只写在注释里）：
-               省份 = 本层那条线（海岸线 / 海内细缝都归它）
-               地区 = 父级链   势力 = 国家·剧本那一圈
-               水域 = 只管水与水之间   荒地 = 只管荒地与荒地之间
-             ⚠ 「水域 / 荒地」的粗细默认**不生效** —— 得先在侧栏「显示」里打开
-               那两条边界 ✓ 面板底下会挂一句提示 + 跳转 ✓
-               原来拖了没反应，是这两个开关默认关着 ✓ -->
+             5 行 × 2 列：行 = 对象，列 = 线宽 / 不透明度。
+             省份 = 本层那条线（海岸线 / 海内细缝均归它）；
+             地区 = 父级链；势力 = 国家 · 剧本那一圈；
+             水域 = 仅水与水之间；荒地 = 仅荒地与荒地之间。
+             「水域 / 荒地」的线宽需先在侧栏「显示」中打开对应边界才生效，
+             面板底部会给出提示与跳转。 -->
         <section class="set-col" data-group="border">
           <div class="mx">
-            <div class="mx-head"><span></span><span>线宽</span><span>不透明度</span></div>
+            <div class="mx-head"><span></span><span>线宽<span class="help-q" tabindex="0" role="button" aria-label="说明" data-help="这类边界线的粗细&#10;数值越高则边界越明显&#10;地区边界请打开父级边界开关&#10;水域与不可通行区域边界请打开对应的开关">?</span></span><span>不透明度<span class="help-q" tabindex="0" role="button" aria-label="说明" data-help="这类边界线的浓度&#10;数值越高则边界越明显">?</span></span></div>
             <div class="mx-row"><span class="mx-name">省份</span>
               <div class="ctl-step" id="set-w-prov" data-range="0.5,3,0.5" data-fmt="w"></div>
               <div class="ctl-seg" id="set-pa" data-steps="0,25,50,75,100" data-fmt="pct"></div>
@@ -672,19 +581,16 @@ if (location.protocol === 'file:') {
               <div class="ctl-seg" id="set-waste-a" data-steps="0,25,50,75,100" data-fmt="pct"></div>
             </div>
           </div>
-          <!-- ⚠ 这两行是**给 JS 用的占位**（`app.js` 按 id 直接 style.display）——
-               老的"一行宽度 + 一行不透明度"结构被矩阵合并了，
-               但显示/隐藏那两处判断还按 id 找 ✓ 所以留一对隐藏的空壳 ✓ -->
+          <!-- 两个隐藏占位：app.js 按 id 直接设置 style.display；
+               矩阵化后显示 / 隐藏判断仍按这两个 id 查找，故保留空壳。 -->
           <div id="set-waste-w-row" hidden></div>
           <div id="set-waste-a-row" hidden></div>
           <div class="set-note" id="border-off-note" hidden></div>
         </section>
 
         <!-- ================= ③ 名称 =================
-             行 = 地块名 / 势力名，列 = 字号 / 不透明度 / 数量 / 字体 ✓
-             顺序按用户定的：**字号 → 不透明度 → 数量** ✓
-             ⚠ 数量下面挂了常驻说明：这是"**每个头衔**最多画几个"✓
-               以前只写"上限"，用户理解成"全图最多 12 个名字"✗ -->
+             行 = 地块名 / 势力名，列 = 字号 / 不透明度 / 数量，字体在其后单独设置。
+             顺序为字号 → 不透明度 → 数量。数量指每个头衔最多绘制几个，不是全图总数。 -->
         <section class="set-col" data-group="label">
           <div class="mx mx-name">
             <div class="mx-head"><span></span><span>字号</span><span>不透明度</span></div>
@@ -692,17 +598,17 @@ if (location.protocol === 'file:') {
               <div class="ctl-step" id="set-fontplace" data-range="0.5,3,0.1" data-fmt="mul"></div>
               <div class="ctl-seg" id="set-labelap" data-steps="25,50,75,100" data-fmt="pct"></div>
             </div>
-            <div class="mx-row mx-row2"><span class="mx-name"></span><div class="mx-count"><span class="mx-count-l">数量</span><div class="ctl-step" id="set-labelplacemax" data-range="1,20,1" data-fmt="count"></div><label class="mx-unl"><input type="checkbox" id="set-labelplacemax-unlimited">不限</label></div>
+            <div class="mx-row mx-row2"><span class="mx-name"></span><div class="mx-count"><span class="mx-count-l">数量<span class="help-q" tabindex="0" role="button" aria-label="说明" data-help="同一地块的名称的最多绘制的数量">?</span></span><div class="ctl-step" id="set-labelplacemax" data-range="1,20,1" data-fmt="count"></div><label class="mx-unl"><input type="checkbox" id="set-labelplacemax-unlimited">不限</label></div>
             </div>
             <div class="mx-row"><span class="mx-name">势力名</span>
               <div class="ctl-step" id="set-fontpower" data-range="0.5,3,0.1" data-fmt="mul"></div>
               <div class="ctl-seg" id="set-labelac" data-steps="25,50,75,100" data-fmt="pct"></div>
             </div>
-            <div class="mx-row mx-row2"><span class="mx-name"></span><div class="mx-count"><span class="mx-count-l">数量</span><div class="ctl-step" id="set-labelmax" data-range="1,20,1" data-fmt="count"></div><label class="mx-unl"><input type="checkbox" id="set-labelmax-unlimited">不限</label></div>
+            <div class="mx-row mx-row2"><span class="mx-name"></span><div class="mx-count"><span class="mx-count-l">数量<span class="help-q" tabindex="0" role="button" aria-label="说明" data-help="同一势力的名称的最多绘制的数量">?</span></span><div class="ctl-step" id="set-labelmax" data-range="1,20,1" data-fmt="count"></div><label class="mx-unl"><input type="checkbox" id="set-labelmax-unlimited">不限</label></div>
             </div>
           </div>
-          <!-- 两个旧的值提示位：现在的数值由步进器自己显示 ✓
-               但 `_open()` / `buildSliderTips()` 还按 id 找它们 → 留空壳 ✓ -->
+          <!-- 两个隐藏占位：数值由步进器显示，但 _open() 与 buildSliderTips()
+               仍按 id 查找，故保留空壳。 -->
           <span class="hint" id="set-labelmax-v" hidden></span>
           <span class="hint" id="set-labelplacemax-v" hidden></span>
 
@@ -713,18 +619,16 @@ if (location.protocol === 'file:') {
           <label class="set-row"><span class="set-l">势力名</span>
             <select id="set-font-power"><option value="">默认</option></select>
           </label>
-          <!-- 🔴 **P社式排版**（2026-10-22 ✓）
-               在版图里找基线，再逐字贴着曲线摆（见 js/maplabels.js ✓）
-               `both` = 国名 + 大地名（默认 ✓ 用户要的就是这个观感）—
-               地名太小的时候仍然横着写（排了也看不清 ✓） -->
-          <label class="set-row"><span class="set-l">版图贴合</span>
+          <!-- 版图贴合：在版图内寻找基线，逐字沿曲线排布（见 js/maplabels.js）。
+               both = 国名 + 地名（默认）；地名过小时仍横排。 -->
+          <label class="set-row"><span class="set-l">版图贴合<span class="help-q" tabindex="0" role="button" aria-label="说明" data-help="开启后名称会根据版图进行变形或旋转">?</span></span>
             <select id="set-mapname">
               <option value="both">国名 + 地名</option>
               <option value="power">仅国名</option>
               <option value="off">关闭</option>
             </select>
           </label>
-          <!-- 调试：画基线 / 字框 / 包围盒 / 质心（见 labels.js 的 _paintLayoutDebug ✓） -->
+          <!-- 排版调试：绘制基线 / 字框 / 包围盒 / 质心（见 labels.js 的 _paintLayoutDebug）。 -->
           <label class="set-row"><span class="set-l">排版调试</span>
             <input type="checkbox" id="set-mapname-debug">
           </label>
@@ -733,26 +637,20 @@ if (location.protocol === 'file:') {
             <button class="btn ghost" id="btn-font-del" type="button">删除</button>
             <button class="btn ghost" id="btn-font-clear" type="button">清空</button>
           </div>
-          <!-- 预览：两行，各用各的字体 ✓（原来只画一个，改"地块名"时预览纹丝不动 ✗）
-               ⚠ 画布**不许同时写死 width/height 和 CSS height** ✗
-                 原来 260×40 的位图被 CSS 压到 207 宽 → 字被横向压扁 0.8 ✓ -->
+          <!-- 预览分两行，各用各的字体。画布不可同时写死 width/height 与 CSS 高度：
+               否则位图被压缩，文字会横向变形。 -->
           <div class="set-row preview-row"><span class="set-l">预览</span>
             <canvas id="font-preview" width="260" height="64"></canvas>
           </div>
-          <!-- 状态行默认收起来（2026-10-20 ✓ 用户："这个功能冗余了"）—— 元素留着，JS 照常写，只是不占版面 ✓ -->
+          <!-- 状态行默认隐藏：元素保留供 JS 写入，但不占版面。 -->
           <div class="set-row" hidden><span class="set-l"></span><span class="hint" id="font-status">还没导入任何字体</span></div>
           <input type="file" id="font-file" hidden multiple
                  accept=".ttf,.otf,.woff,.woff2,.fnt,.dds,font/ttf,font/otf,font/woff,font/woff2">
         </section>
 
-        <!-- ================= ④ 其他（图例 + 界面主题）=================
-             🔴 **2026-10-27：改叫「图例」**（标签也跟着改 ✓）
-             主题按钮早搬去面板顶部了，这一栏现在**只剩图例** ✓
-             再叫「其他」等于把唯一的功能藏进一个不收件箱 ✗ -->
+        <!-- ================= ④ 图例 =================
+             主题按钮已移至面板顶部，本栏仅含图例设置；分组标题省略，标签本身即「图例」。 -->
         <section class="set-col" data-group="legend">
-          <!-- ⚠ **「白天 / 黑夜」不在这儿了** ✗（2026-10-22 挪到面板顶部，见 `.set-theme-row`）
-               这里曾经有一行 `label.theme-row` + `#btn-theme` ✓ 已搬走 ✓
-               分组标题也去掉了：标签已经叫「图例」，再写一个小标题是重复 ✓ -->
 
           <label class="set-row"><span class="set-l">显示图例</span><input type="checkbox" id="set-legend"></label>
           <label class="set-row"><span class="set-l">标题</span><input type="text" id="set-legend-title" maxlength="60" placeholder="留空就不显示标题" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"></label>
@@ -845,9 +743,8 @@ if (location.protocol === 'file:') {
 
       </div>
 
-      <!-- 底栏：全局的东西都收在这儿 ✓ 「恢复默认」不再混在"其他"栏里 ✓
-           ⚠ 它会清掉字体选择（`SET_DEFAULTS` 里有 fontFace*）→ 必须 confirm 并说明 ✓
-             原来无提示、无确认，还越界清了别的 ✓ -->
+      <!-- 底栏：全局设置集中于此。「全部恢复默认」会清除字体选择
+           （SET_DEFAULTS 中含 fontFace*），需确认并说明。 -->
       <div class="set-foot">
         <span class="set-dirty" id="set-dirty">已改动 0 项</span>
         <button class="btn ghost" id="set-reset-group" type="button" hidden>恢复本组</button>
@@ -856,7 +753,7 @@ if (location.protocol === 'file:') {
     </div>
   </div>
 
-  <!-- 改名小弹窗（改名工具点了之后开） -->
+  <!-- 改名小弹窗：点击改名工具后打开。 -->
   <div class="modal" id="rename" hidden>
     <div class="modal-box rename-box">
       <div class="modal-head"><h2>改名</h2></div>
@@ -868,11 +765,14 @@ if (location.protocol === 'file:') {
     </div>
   </div>
 
-  <!-- 🗺 存入地图仓库的小弹窗（文件 ▾ → 存入地图仓库）—— 保存时得起个名 ✓ -->
+  <!-- 地图仓库弹窗（文件 ▾ → 保存地图 / 加载地图）：
+       两种模式共用同一套列表；保存模式可点已有存档覆盖，加载模式点一下即选中。 -->
   <div class="modal" id="save-map" hidden>
-    <div class="modal-box rename-box">
-      <div class="modal-head"><h2>存入地图仓库</h2></div>
+    <div class="modal-box rename-box store-box">
+      <div class="modal-head"><h2 id="save-map-title">保存地图</h2></div>
+      <div class="store-hint" id="save-map-hint" hidden></div>
       <input type="text" id="save-map-name" class="rename-input" placeholder="请输入文本" autocomplete="off" maxlength="40">
+      <div class="store-list" id="save-map-list"></div>
       <div class="rename-foot">
         <button class="btn ghost" id="save-map-cancel">取消</button>
         <button class="btn" id="save-map-ok">保存</button>
@@ -880,9 +780,8 @@ if (location.protocol === 'file:') {
     </div>
   </div>
 
-  <!-- 🖼 **导出整图**（文件 ▾ → 导出整图）
-       倍率（0.5× / 1× / 2× / 3×）、分辨率（宽高）和范围（全图 / 框选）都在这里选，
-       导出时同一块地方换成进度条 ✓ -->
+  <!-- 导出整图（文件 ▾ → 导出整图）：倍率（0.5× / 1× / 2× / 3×）、
+       分辨率（宽高）与范围（全图 / 框选）在此选择，导出时同一区域替换为进度条。 -->
   <div class="modal" id="export-map" hidden>
     <div class="modal-box export-box" role="dialog" aria-modal="true" aria-labelledby="export-map-title">
       <div class="modal-head">

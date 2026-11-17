@@ -1,15 +1,15 @@
 /**
- * 极简 ZIP 打包。
+ * 极简 ZIP 打包与读取。
  *
- * ``makeZip`` 是 store 模式（不压缩），给 CK3 那种几 KB 的文本 mod 用，
- * 而且是同步的 —— 单文件版（file:// 直接双击）也能导出，不用后端接口。
+ * ``makeZip`` 为 store 模式（不压缩），用于 CK3 等仅数 KB 的文本 mod；
+ * 该函数是同步的，单文件版（file:// 直接打开）也可导出，无需后端接口。
  *
- * ``makeZipAsync`` 多走一道 deflate-raw，给 EU4 那种要塞一张 34 MB
- * provinces.bmp 的 mod 用。浏览器自带 CompressionStream，不用引库。
+ * ``makeZipAsync`` 额外使用 deflate-raw，用于 EU4 等需包含 34 MB
+ * provinces.bmp 的 mod。压缩依赖浏览器内置的 CompressionStream，不引入外部库。
  *
- * 下半截是**读**（``readZip``）：导入地图包（.pdxmap）用。
- * 它只信**中央目录**，按需解压单条，不把整包摊进内存 ✗
- * —— EU5 原尺寸那张图解压后光省份图就 268 MB ✓（见 docs/导入式地图-策划.md）
+ * 下半部分为**读取**（``readZip``）：用于导入地图包（.pdxmap）。
+ * 只信任**中央目录**，按需解压单个条目，不将整包读入内存
+ * —— EU5 原尺寸地图的省份图仅解压后即 268 MB。
  */
 
 const CRC_TABLE = (() => {
@@ -32,17 +32,15 @@ const u16 = (v) => [v & 0xFF, (v >> 8) & 0xFF];
 const u32 = (v) => [v & 0xFF, (v >> 8) & 0xFF, (v >> 16) & 0xFF, (v >>> 24) & 0xFF];
 
 /**
- * 把一堆「条目」拼成一个 zip（本地头 + 数据 + 中央目录 + 结尾记录）。
+ * 将一组「条目」拼成一个 zip（本地头 + 数据 + 中央目录 + 结尾记录）。
  *
- * store 和 deflate 两条路**只有方法号和体积两个数字不一样** ✓，
- * 布局一模一样 —— 所以这里只写一遍，两个入口都调它 ✓
- * （以前是两份逐行重复的拼装代码 ✗：改一处地址算错就整包打不开，
- *   而两份代码里只改一份是最容易犯的错 ✓）
+ * store 与 deflate 两条路径**只有方法号和体积两个数值不同**，
+ * 布局完全一致，因此只保留一份拼装逻辑，两个入口均调用此函数。
  *
  * @param {Array<{name: Uint8Array, data: Uint8Array, body: Uint8Array,
  *                method: number, crc: number}>} items
- *        data = 原始字节（中央目录里记"解压后多大"）
- *        body = 真正写进去的字节（store 时就是 data，deflate 时是压过的）
+ *        data = 原始字节（中央目录记录"解压后大小"）
+ *        body = 实际写入的字节（store 时即 data，deflate 时为压缩后数据）
  */
 function assembleZip(items) {
   const parts = [];
@@ -82,7 +80,7 @@ function assembleZip(items) {
   return out;
 }
 
-/** 文件名/内容统一成字节（字符串就按 UTF-8 编） */
+/** 文件名 / 内容统一转为字节（字符串按 UTF-8 编码） */
 function asBytes(v) {
   return typeof v === 'string' ? new TextEncoder().encode(v) : v;
 }
@@ -98,7 +96,7 @@ export function makeZip(files) {
   }));
 }
 
-/** deflate-raw；浏览器不支持就返回 null，调用方退回 store */
+/** deflate-raw；浏览器不支持时返回 null，调用方回退到 store */
 async function deflateRaw(bytes) {
   if (typeof CompressionStream === 'undefined') return null;
   try {
@@ -110,10 +108,10 @@ async function deflateRaw(bytes) {
 }
 
 /**
- * 带压缩的版本（小文件仍然走 store —— 压了反而更大）。
+ * 带压缩的版本（小文件仍走 store —— 压缩后反而更大）。
  *
  * @param {Array<{name: string, data: string|Uint8Array}>} files
- * @param {(msg: string) => void} [onStep] 进度回调，大文件时给用户一个交代
+ * @param {(msg: string) => void} [onStep] 进度回调，用于报告大文件的处理进度
  * @returns {Promise<Uint8Array>} zip 字节
  */
 export async function makeZipAsync(files, onStep) {
@@ -122,7 +120,7 @@ export async function makeZipAsync(files, onStep) {
     const f = files[i];
     if (onStep) onStep(`打包 ${i + 1}/${files.length}：${f.name}`);
     const data = asBytes(f.data);
-    // 小于 4KB 的东西压了反而更大（deflate 的头就有几十字节）→ 直接 store
+    // 小于 4KB 的数据压缩后反而更大（deflate 头部即有数十字节），直接 store
     let method = 0;
     let body = data;
     if (data.length >= 4096) {
@@ -137,26 +135,26 @@ export async function makeZipAsync(files, onStep) {
 /* ============================================================================
  * 读 zip（导入地图包用）
  *
- * 四条硬规矩，都是为了"陌生人给的包不许弄坏我们"：
+ * 四项约束，用于防止外部包造成破坏：
  *
- *   ① **只信中央目录** ✓ —— 本地头里的长度字段可以是假的，中央目录是唯一权威；
- *      本地头只用来定位数据起点，顺便核对签名（签名不对 = 偏移是坏的，立刻拒）
- *   ② **单条按需解压** ✓ —— 整包进内存是最容易被"压缩炸弹"打死的做法 ✗
- *      调用方拿 stream() 自己一块块读，读到多少算多少
- *   ③ **不认识的一律拒** ✗ —— 加密 / zip64 / 分卷 / 没见过的压缩方式，
- *      宁可报错也不要猜（猜错的表现是"某张图渲染出鬼东西"，比报错难查十倍）
- *   ④ **重名条目直接拒** ✗ —— 两个同名条目 + 我们只查其中一个的 hash，
- *      就是"校验过了但用的是另一份"的经典漏洞
+ *   ① **只信任中央目录** —— 本地头中的长度字段可能不可靠，中央目录是唯一权威；
+ *      本地头仅用于定位数据起点，并核对签名（签名不符说明偏移损坏，立即拒绝）
+ *   ② **单条目按需解压** —— 整包读入内存易受"压缩炸弹"攻击；
+ *      调用方通过 stream() 分块读取，读多少算多少
+ *   ③ **未知格式一律拒绝** —— 加密 / zip64 / 分卷 / 未支持的压缩方式
+ *      一律报错，不做猜测（猜测错误会表现为图像渲染异常，难以排查）
+ *   ④ **重名条目直接拒绝** —— 两个同名条目且仅校验其中一个的哈希，
+ *      会形成"校验通过但使用另一份"的漏洞
  *
- * CRC 不在这儿验：导入端会按 manifest 的 sha256 逐个核（那才是防篡改的那道），
- * 再算一遍 CRC 纯属白烧一遍 CPU ✗（EU5 原尺寸那包 540 MB 解压量）
+ * CRC 不在此处校验：导入端按 manifest 的 sha256 逐项核对（防篡改的主要手段），
+ * 再次计算 CRC 只会重复消耗 CPU（EU5 原尺寸包解压量达 540 MB）
  * ========================================================================== */
 
 const SIG_EOCD = 0x06054b50;
 const SIG_CD = 0x02014b50;
 const SIG_LOCAL = 0x04034b50;
 
-//: 尾部最多看 64 KB + 22：EOCD 的注释字段最长 65535 ✓
+//: 尾部最多检查 64 KB + 22 字节：EOCD 注释字段最长为 65535
 const EOCD_TAIL = 65557;
 
 function u16le(b, o) { return b[o] | (b[o + 1] << 8); }
@@ -173,7 +171,7 @@ export class ZipEntry {
   constructor(o) {
     this.name = o.name;
     this.method = o.method;
-    this.size = o.size;                 // 解压后多大（**声明值**，不信它，只用来算进度）
+    this.size = o.size;                 // 解压后大小（**声明值**，不可信，仅用于进度估算）
     this.compressedSize = o.compressedSize;
     this.offset = o.offset;             // 本地头在文件里的位置
   }
@@ -181,7 +179,7 @@ export class ZipEntry {
 }
 
 /**
- * 一个只读的 zip。**别直接 new**，用 readZip(blob)。
+ * 只读 zip。**不要直接 new**，请使用 readZip(blob)。
  */
 export class ZipFile {
   constructor(blob, list) {
@@ -201,7 +199,7 @@ export class ZipFile {
     if (typeof DecompressionStream === 'undefined') {
       throw new Error('这个浏览器版本过旧，无法解压地图包，请更新到较新的 Chrome / Edge / Firefox。');
     }
-    // 本地头的 name/extra 长度**可能和中央目录不一样**，所以得现读一遍 ✓
+    // 本地头的 name/extra 长度**可能与中央目录不同**，需重新读取
     const head = await sliceBytes(this.blob, e.offset, 30);
     if (head.length < 30 || u32le(head, 0) !== SIG_LOCAL) {
       throw new Error(`「${name}」定位不到数据（这个包坏了）`);
@@ -214,7 +212,7 @@ export class ZipFile {
     return raw.pipeThrough(new DecompressionStream('deflate-raw'));
   }
 
-  /** 整条读出来。maxBytes 传了就边读边数，超了立刻中止（炸弹防线）✓ */
+  /** 读取完整条目。指定 maxBytes 时边读边计数，超限立即中止（防压缩炸弹） */
   async bytes(name, maxBytes) {
     const out = [];
     let got = 0;
@@ -224,7 +222,7 @@ export class ZipFile {
       if (done) break;
       got += value.length;
       if (maxBytes && got > maxBytes) {
-        try { await reader.cancel(); } catch (err) { /* 取消失败无所谓，反正要抛了 */ }
+        try { await reader.cancel(); } catch (err) { /* 取消失败可忽略（随后即抛出） */ }
         throw new Error(`「${name}」超过上限（${maxBytes} 字节）`);
       }
       out.push(value);
@@ -259,7 +257,7 @@ export class ZipFile {
       out.push(value);
       got += value.length;
     }
-    try { await reader.cancel(); } catch (err) { /* 同上 */ }
+    try { await reader.cancel(); } catch (err) { /* 取消失败可忽略 */ }
     const buf = new Uint8Array(Math.min(got, n));
     let p = 0;
     for (const c of out) {
@@ -273,10 +271,10 @@ export class ZipFile {
 }
 
 /**
- * 读一个 zip（Blob / File 都行）。
+ * 读取一个 zip（Blob / File 均可）。
  *
- * 分卷、zip64、加密、未知压缩方式**在这里就拒** ✓ —— 校验器只看"内容对不对"，
- * 结构性的坏东西不该漏到那一层去判断。
+ * 分卷、zip64、加密、未知压缩方式**在此处即拒绝** —— 校验器只检查内容是否正确，
+ * 结构性错误不应交由该层判断。
  *
  * @param {Blob} blob
  * @returns {Promise<ZipFile>}
@@ -307,11 +305,11 @@ export async function readZip(blob) {
   if (nAll === 0xFFFF || cdSize === 0xFFFFFFFF || cdOff === 0xFFFFFFFF) {
     throw new Error('地图包使用了暂不支持的 zip64 格式，请换用常规方式重新打包');
   }
-  /* ⚠ **结尾记录必须正好顶到文件末尾** ✗（2026-10-19 变异测试）
-   *   注释字段是 zip 的最后一段 ✓ 所以 EOCD 后面只该是注释、然后就是 EOF
-   *   只判"不超过"的话，**注释里塞一个假签名**也会被当成真的 ✗
-   *   （从尾巴往回扫第一次就扫到它 ✓ 然后按假的中央目录去读 ✓ 轻则报错、重则读到别处）
-   *   反过来：真的 EOCD + 注释正好占满尾部 → 这个等式成立 ✓ 不影响任何正常包 ✓ */
+  /* **结尾记录必须恰好结束于文件末尾**：
+   *   注释字段位于 zip 的最后，因此 EOCD 之后只应为注释，随后即 EOF。
+   *   若只判断"不超过"，**注释中伪造的签名**也会被当作真实记录
+   *   （从尾部倒序扫描会首先命中该签名，随后按伪造的中央目录读取，轻则报错，重则读取错误位置）。
+   *   反之，真实 EOCD 加注释恰好占满尾部时等式成立，不影响正常包。 */
   if (at + 22 + commentLen !== tail.length) {
     throw new Error('地图包不完整（文件可能被截断）');
   }

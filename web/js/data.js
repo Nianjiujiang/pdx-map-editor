@@ -1,27 +1,26 @@
 /**
  * 数据装载。
  *
- * 三种模式：
- *   * 走本地服务时，从 /data/ 拉文件；
- *   * 单文件版（双击 HTML 直接开）时，数据已经内嵌在页面里，
- *     放在 window.__CK3_EMBEDDED__，这里解出来就行；
- *   * **导入进来的地图包**（存在 IndexedDB 里，见 packstore.js）——
- *     包里放的就是 data_xxx/ 里那些文件，所以解码逻辑一个字都不用改 ✓
+ * 三种数据来源：
+ *   * 本地服务：从 /data/ 读取文件；
+ *   * 单文件版（双击 HTML 直接打开）：数据内嵌在页面中，
+ *     位于 window.__CK3_EMBEDDED__，此处解析取出；
+ *   * 导入的地图包（存于 IndexedDB，见 packstore.js）：
+ *     包内文件与 data_xxx/ 同名同格式，解码逻辑无需区分来源。
  *
- * 二进制都是 Python 那边压过的，用 DecompressionStream 直接解，
- * 省掉几百 MB 的中间态。
+ * 二进制由 Python 侧预先压缩，这里用 DecompressionStream 直接解，
+ * 省去数百 MB 的中间数据。
  */
 
 import { getFileBytes } from './packstore.js';
 
-//: 数据目录。启动时由玩家选一张，默认第一张
+//: 数据目录。启动时选定一张地图，默认第一张
 export let DATA = '/data';
 
 export function setDataDir(dir) {
   DATA = dir;
-  /* 三个来源互斥（见下面那段说明）—— 走目录就得把内嵌那份和包都让开 ✗
-     原来这里只清了 PACK，没清 EMB_MAP：单文件版里调一次 setDataDir，
-     读到的还是**内嵌**那份（全量版）或者干脆是空的（轻量版）✓ */
+  /* 三个来源互斥：切到目录模式时必须同时清空内嵌数据与地图包，
+     否则单文件版读到的仍是内嵌那份（轻量版则为空）。 */
   EMB_MAP = null;
   PACK = null;
 }
@@ -31,11 +30,11 @@ const EMB = (typeof window !== 'undefined') ? window.__CK3_EMBEDDED__ : null;
 //: 内嵌的那几张（轻量版是空对象）
 const EMB_MAPS = (EMB && EMB.maps) ? EMB.maps : null;
 
-/*: 单文件版默认选中的那套（boot 会立刻用 setEmbeddedMap 换成玩家选的那张）
-    ⚠ **空对象也是真值** ✗ —— 轻量版（2026-10-12 起默认）里 `{maps:{}}` 长这样，
-    要是当成"有内嵌数据"，每次取字节都会去解一份空数据，
-    报出来是 atob 的 "The string to be decoded is not correctly encoded" ✓
-    所以这里必须判"真有 map"才算数 ✓ */
+/*: 单文件版默认选中的那套（boot 会随即用 setEmbeddedMap 切换成选定的那张）。
+    空对象也是真值：轻量版的内嵌数据为 `{maps:{}}`，若误判为"有内嵌数据"，
+    每次取字节都会去解一份空数据，最终抛出 atob 的
+    "The string to be decoded is not correctly encoded"。
+    因此必须确认确实存在 map。 */
 let EMB_MAP = (EMB_MAPS && Object.keys(EMB_MAPS).length) ? (EMB_MAPS.vanilla || null) : null;
 
 export function setEmbeddedMap(key) {
@@ -50,21 +49,21 @@ export function setEmbeddedMap(key) {
 /* ============================================================================
  * 第三种来源：导入进来的地图包
  *
- * 包里的文件跟 data_xxx/ 里同名同格式（见 docs/导入式地图-策划.md）✓
- * 所以这里**只多一层"取字节"的路**，解压和解析全走原来那两行 ✓
+ * 包内文件与 data_xxx/ 同名同格式，这里只多一层取字节的路径，
+ * 解压与解析仍复用同一套代码。
  *
- * 三个来源必须互斥：两边都"有数据"的话，读到的是哪一份就说不清了 ✗
- * （所以 setDataDir / setEmbeddedMap / setPackMap 互相把对方清掉）
+ * 三个来源必须互斥，否则无法确定读到的是哪一份数据
+ * （setDataDir / setEmbeddedMap / setPackMap 互相清空对方）。
  * ========================================================================== */
 
-//: 当前选中的**实例键**（= 库里那条记录的键，见 packstore.js）；null = 走内嵌或服务器
-//: ⚠ 不是作者写的 manifest.id ✗ —— 同一个包可以导入好几份，各自是一张独立的图 ✓
+//: 当前选中的实例键（即库中记录的键，见 packstore.js）；null 表示走内嵌或服务器
+//: 不是作者填写的 manifest.id：同一个包可导入多份，每份是一张独立的图
 let PACK = null;
 
 /** 切到"导入的某一份图"（参数是实例键） */
 export function setPackMap(key) {
   PACK = key ? String(key) : null;
-  if (PACK) EMB_MAP = null;      // 包优先：内嵌那份让开 ✓
+  if (PACK) EMB_MAP = null;      // 包优先：内嵌数据让位
 }
 
 /** 现在读的是不是导入的包 */
@@ -82,7 +81,7 @@ async function packJson(name) {
 }
 
 /**
- * .bin 那几份的原始字节（**zlib 压过的**，还没解压）：三个来源走同一条路 ✓
+ * .bin 文件的原始字节（zlib 压缩，未解压）：三个来源共用同一路径
  * @param {string} name    文件名
  * @param {string} embKey  内嵌版里对应的字段名
  */
@@ -96,6 +95,21 @@ async function rawBytes(name, embKey, onProgress) {
 export function embeddedMapKeys() {
   if (!EMB || !EMB.maps) return [];
   return Object.keys(EMB.maps);
+}
+
+/**
+ * 单文件版里另一张地图的 meta（不切换当前图，只取其 countryTags）
+ *
+ * 跨剧本搜国家只读取该图的 meta，不涉及其地图数据。
+ * 服务模式不走这里，直接 fetch 对应地图的 meta.json（见 app.js 的 _xgLoad）
+ */
+export function embeddedMeta(key) {
+  const m = EMB_MAP_OF(key);
+  return m ? (m.meta || null) : null;
+}
+function EMB_MAP_OF(key) {
+  if (!EMB || !EMB.maps) return null;
+  return EMB.maps[key] || null;
 }
 
 export const isEmbedded = () => !!EMB;
@@ -129,7 +143,7 @@ async function fetchBytes(url, onProgress) {
   return out;
 }
 
-/*: base64 → 原始字节 ✓（内嵌版、以及 meta 里那几份拍平数据都用它 ✓）*/
+/*: base64 → 原始字节（内嵌版及 meta 中拍平的数据均使用） */
 export function b64ToBytes(b64) {
   const bin = atob(b64);
   const out = new Uint8Array(bin.length);
@@ -149,14 +163,14 @@ export async function decompress(bytes, format) {
 export const api = {
   async meta() {
     if (PACK) {
-      /* stashKey 一律按**这一份**定死 ✓ ——
-         **涂色暂存**按 mapKeyOf(meta) 分"哪一张图"存（见 app.js），
-         而这个 key 的优先级高于"按尺寸拼"的那个。
-         一个包可以导入好几份（导入只增不改），所以键必须落到**实例**上：
-         两份同名图各涂各的 ✓；作者在 meta 里随手填个 stashKey 也抢不走这个键 ✓
-         包里的 meta 是作者写的，让他填一个就跟原版共用一份涂色、两张图互相涂花 ✗
-         ⚠ **设置 / 最近颜色不看这个键** ✗ —— 它们按 `meta.game` 分
-         （同款游戏共用一份，见 app.js 的 prefsKeyOf ✓）*/
+      /* stashKey 固定按这一份实例计算：
+         涂色暂存按 mapKeyOf(meta) 区分是哪一张图（见 app.js），
+         本键优先级高于按尺寸拼接的键。
+         同一个包可导入多份（导入只增不改），因此键必须落到实例上：
+         两份同名图各自独立；meta 中自带的 stashKey 也不会覆盖此键，
+         否则会与原版共用一份涂色数据，两张图互相污染。
+         设置与最近颜色不使用此键，它们按 `meta.game` 区分
+         （同款游戏共用一份，见 app.js 的 prefsKeyOf）*/
       const m = await packJson('meta.json');
       return Object.assign({}, m, { stashKey: 'pack:' + PACK });
     }
@@ -170,15 +184,14 @@ export const api = {
     return JSON.parse(new TextDecoder().decode(buf));
   },
 
-  /** 9216×4608 的省份 id 图，解出来是 Uint16Array */
-  /** 数据目录里有 tiles.json 吗（原尺寸那套是分块的，就不用下整张 id 图了 ✗） */
+  /** 数据目录里是否存在 tiles.json（原尺寸数据分块，无需下载整张 id 图） */
   async tileManifest() {
-    // 单文件版 / 地图包：数据在本地，fetch 在 file:// 下必然失败 ✗
+    // 单文件版 / 地图包：数据在本地，file:// 协议下 fetch 必然失败
     if (PACK) {
       try {
         return await packJson('tiles.json');
       } catch (e) {
-        return null;                    // 没分块的包是常态，不是错误 ✓
+        return null;                    // 没有分块数据是常态，不是错误
       }
     }
     if (EMB_MAP && EMB_MAP.tiles) return EMB_MAP.tiles.manifest;

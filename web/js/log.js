@@ -1,47 +1,46 @@
 /**
- * 报错日志 —— 出事了至少留下现场，玩家导出一个 txt 发过来就行
+ * 报错日志：记录故障现场，可导出为 txt 提交。
  *
- * 为什么**单独一个文件、还排在 app.js 前面**：
- *   它要能在"编辑器自己坏了"的时候照样工作 ✓
- *   塞进 app.js 的话，app.js 一旦没加载起来、或者早期就抛，日志跟着一起没了 ✗
- *   —— 而那正好是最需要现场的场合 ✓ 所以它是普通脚本（不走 ES module），
- *   只往 window 上挂一个 PDXLOG 给 app.js 用 ✓
+ * 单独成文件并排在 app.js 之前：编辑器自身故障时仍能工作。
+ * 若并入 app.js，app.js 加载失败或早期抛错时日志会一并失效，
+ * 而那正是最需要现场的时机。因此它是普通脚本（不使用 ES module），
+ * 仅在 window 上挂载 PDXLOG 供 app.js 使用。
  *
- * 收三样东西：
+ * 记录三类信息：
  *   ① 错误：window.onerror / 未处理的 Promise / console.error / console.warn
- *   ② 轨迹：启动、选图、导出、导入、清除…（"出问题前最后干了什么"比栈还管用）
- *   ③ 环境：这是哪一版文件、什么浏览器、当时在看哪张图的哪一层
+ *   ② 轨迹：启动、选图、导出、导入、清除等操作（故障前最后一步往往比栈更有用）
+ *   ③ 环境：版本、浏览器、当前查看的地图与图层
  *
- * 界面**几乎一个像素都不碰** ✓：顶栏按钮在 app.js 那边接线；
- * 唯一一处是启动页那颗「导出诊断报告」—— 它必须在 app.js 没起来时也能用，
- * 所以由本文件绑一个已经存在的按钮（不创建 DOM、不改布局 ✓）
+ * 不创建或改动界面：顶栏按钮在 app.js 中接线；
+ * 唯一例外是启动页的「导出诊断报告」按钮，它必须在 app.js 未启动时也能使用，
+ * 因此由本文件绑定现有按钮（不创建 DOM、不改布局）。
  *
- * 导出的是一份正式诊断报告（见文件末尾 text()）：
+ * 导出内容为正式诊断报告（见文件末尾 text()）：
  *   报告头（编号 / 时间 / 结论）→ 环境 → 运行状态 → 错误摘要 → 错误明细
  *   → 事件时间线 → 机器可读的 JSON 附录
- *   前两节回答"他手上是什么"，中间回答"出了什么事"，最后给自动化分析留口子 ✓
+ *   前两节说明运行环境，中间说明故障经过，最后供自动化分析使用。
  */
 (function (window) {
   'use strict';
 
-  // 同一个页面里挂过就别重来（脚本被引两次 / 单文件版里被拼两次）
+  // 同一页面重复挂载时直接返回（脚本被引用两次 / 单文件版中被拼接两次）
   if (window.PDXLOG) return;
 
   /* ---- 上限 ----------------------------------------------------------------
-   * 日志是用来定位问题的，不是用来把内存吃掉的 ✗
-   * 尤其帧循环那种错：一秒能刷 60 条，一晚上能把标签页撑死 ✓
-   * 所以**同一处错只留一条**（后面只加次数），不同错最多留 MAX_ERR 条
+   * 日志用于定位问题，不能无限占用内存：
+   * 帧循环中的错误每秒可能产生 60 条。
+   * 因此同一处错误只保留一条（后续仅累加次数），不同错误最多保留 MAX_ERR 条。
    */
-  const MAX_ERR = 200;      // 不同的错误最多留几条
-  const MAX_EVENT = 400;    // 轨迹最多留几条
-  const MAX_MSG = 1200;     // 单条消息最多留几个字
-  const MAX_ARG = 20;       // 对象/数组展开到第几项
+  const MAX_ERR = 200;      // 不同错误的最大条数
+  const MAX_EVENT = 400;    // 轨迹的最大条数
+  const MAX_MSG = 1200;     // 单条消息的最大字符数
+  const MAX_ARG = 20;       // 对象/数组展开的最大项数
 
   // ---------------------------------------------------------------- 小工具
 
   const pad = (n, w) => String(n).padStart(w, '0');
 
-  /** 时刻：带上毫秒 —— "一秒 60 条"这种事，只有毫秒看得出来 ✓ */
+  /** 时刻，含毫秒（一秒多条错误只能靠毫秒区分） */
   function clock(t) {
     const d = new Date(t);
     return pad(d.getHours(), 2) + ':' + pad(d.getMinutes(), 2) + ':' + pad(d.getSeconds(), 2)
@@ -61,9 +60,9 @@
   }
 
   /**
-   * 把 console 的参数变成一个可读字符串。
-   * Error 要**把栈留住**（那是唯一能指出"哪一行"的东西），
-   * 普通对象展开一层就够 —— 再深就是一堆数字，反而看不动 ✗
+   * 把 console 的参数转换成可读字符串。
+   * Error 保留栈信息（唯一能指出出错行），
+   * 普通对象展开一层即可，更深层的数值意义不大。
    */
   function fmt(v, depth) {
     depth = depth || 0;
@@ -73,9 +72,9 @@
       if (t === 'string') return v;
       if (t === 'number' || t === 'boolean' || t === 'bigint') return String(v);
       if (t === 'function') return 'function ' + (v.name || '(匿名)');
-      // 鸭子式认 Error：跨 iframe / 被包装过的异常也能认出来 ✓
-      // 有栈就**只留栈** —— stack 第一行本来就是 "Error: 消息"，
-      // 再拼一遍会在日志里印成两行一样的 ✗
+      // 按特征识别 Error：可识别跨 iframe / 被包装过的异常
+      // 有栈时只保留栈：stack 首行本为 "Error: 消息"，
+      // 再次拼接会在日志中重复输出
       if (t === 'object' && (v.stack || v.message) && v.name !== undefined) {
         const head = (v.name || 'Error') + ': ' + (v.message || '');
         const st = String(v.stack || '');
@@ -114,7 +113,7 @@
     dropped: 0,          // 上限丢掉的条数
   };
 
-  /** 报告编号：一份报告一个号，客服/作者按号定位 ✓（同一次页面会话内固定） */
+  /** 报告编号：每份报告唯一，便于按号定位（同一页面会话内固定） */
   const reportId = 'PDX-' + idStamp(new Date()) + '-' + hex4();
 
   function idStamp(d) {
@@ -137,9 +136,9 @@
   }
 
   /**
-   * 记一条错。
-   * key 里**去掉数字**再比 —— "第 3 帧失败"和"第 4 帧失败"是同一处错，
-   * 不归一化的话 200 条上限几秒钟就被同一句话占满了 ✗
+   * 记录一条错误。
+   * 比较 key 前先去掉数字："第 3 帧失败"与"第 4 帧失败"属于同一处错误，
+   * 不归一化时 200 条上限会很快被同一句话占满。
    */
   function push(kind, msg, where, stack) {
     msg = cut(msg, MAX_MSG);
@@ -157,14 +156,14 @@
     return e;
   }
 
-  /** 轨迹：一件"做了什么"的事，不带立场、不用怕多（上限 400 条兜着 ✓） */
+  /** 轨迹：记录一次操作，不判断对错（上限 400 条） */
   function event(name, detail) {
     if (!name) return;
     if (rec.events.length >= MAX_EVENT) { rec.dropped++; return; }
     rec.events.push({ t: Date.now(), name: String(name), detail: cut(detail || '', 300) });
   }
 
-  /** app.js 主动记一条错（catch 里那条路 —— 比只 console.error 更明确 ✓） */
+  /** app.js 主动记录一条错误（用于 catch 分支，比仅调用 console.error 更明确） */
   function error(msg, err) {
     const stack = err && err.stack ? err.stack : '';
     const extra = err && err.message && String(msg).indexOf(err.message) < 0
@@ -175,14 +174,13 @@
   // ---------------------------------------------------------------- 钩子
 
   /* ---- console 拦截 --------------------------------------------------------
-   * 为什么非拦不可：这个项目的错误**本来就都往控制台走** ——
-   * 界面上的浮条被整体关掉了（app.js 的 TOAST_OFF，"这些提示都去掉好了"），
-   * 于是"导出失败""导入失败""分块初始化失败"全只剩一行控制台记录：
-   * 玩家看不见，来报问题只能说"它坏了" ✗
-   * 把这一行收进日志，现场就完整了 ✓ —— 这是这个功能最值钱的一块
+   * 拦截原因：错误信息主要输出到控制台，界面浮条已整体关闭
+   * （app.js 的 TOAST_OFF），"导出失败""导入失败""分块初始化失败"
+   * 仅剩控制台一行记录，界面上看不到。
+   * 将其收进日志可补全现场信息。
    *
-   * 原输出照旧转发（F12 里该怎么看还怎么看 ✓），包装只做一次
-   * （tools/ 那套桩里同一个 console 会被重复用到，叠六层就不好看了 ✗）
+   * 原输出照常转发（F12 中查看方式不变），包装仅执行一次
+   * （tools/ 的桩中同一 console 会被重复使用，避免多层包装）
    */
   function hookConsole() {
     if (!window.console || window.console.__pdxHooked) return;
@@ -198,17 +196,17 @@
             const sp = splitStack(text);
             push(lv === 'error' ? 'error' : 'warn', sp.msg,
                  args.length > 1 && typeof args[0] === 'string' ? '' : '', sp.stack);
-          } catch (e) { /* 记录自己出问题，也绝不能拦着原输出 ✗ */ }
+          } catch (e) { /* 记录失败也不能阻断原输出 */ }
           return raw.apply(null, arguments);
         };
       }
-    } catch (e) { /* 有些环境不让改 console —— 那就算了，别的钩子还在 ✓ */ }
+    } catch (e) { /* 部分环境不允许改写 console，跳过该钩子 */ }
   }
 
-  /* ---- 未捕获异常 / 没接住的 Promise --------------------------------------
-   * 这两条是**唯一**能兜住"编辑器自己崩了"的网 ✓
-   * 资源加载失败（img/script 404）也会走 error 这条：它没有 message，
-   * 只有 target —— 那种也要记（"地图打不开"十有八九就是它 ✓）
+  /* ---- 未捕获异常 / 未处理的 Promise --------------------------------------
+   * 这两类事件是捕获编辑器崩溃的唯一途径。
+   * 资源加载失败（img/script 404）同样触发 error：没有 message，
+   * 只有 target，也需要记录（地图无法打开多由此引起）。
    */
   function hookGlobal() {
     const on = window.addEventListener;
@@ -223,27 +221,27 @@
           push('未捕获', msg,
                (e && (e.filename || (isRes ? (tgt.src || tgt.href) : ''))) || '',
                (e && e.error && e.error.stack) || '');
-        } catch (err) { /* ✓ */ }
+        } catch (err) { /* 忽略 */ }
       });
       on.call(window, 'unhandledrejection', function (e) {
         try {
           const r = e && e.reason;
           const msg = (r && (r.message || r)) || '(空)';
           push('Promise', msg, '', (r && r.stack) || '');
-        } catch (err) { /* ✓ */ }
+        } catch (err) { /* 忽略 */ }
       });
-    } catch (e) { /* 没有 addEventListener 的环境就算了 ✓ */ }
+    } catch (e) { /* 无 addEventListener 的环境跳过 */ }
   }
 
   // ---------------------------------------------------------------- 对外
 
-  /** 登记一条环境信息（键值都直接写在导出的 [当时的状态] 里，用中文键 ✓） */
+  /** 登记一条环境信息（键值写入导出的运行状态段，使用中文键） */
   function env(k, v) {
     if (!k) return;
     rec.env[k] = String(v == null ? '' : v);
   }
 
-  /** 注册"导出时现取一份现状"（app.js 才知道当前视图/工具/WebGL 是什么 ✓） */
+  /** 注册"导出时现取状态"的回调（当前视图、工具、WebGL 状态由 app.js 提供） */
   function snapshot(fn) {
     if (typeof fn === 'function') rec.snaps.push(fn);
   }
@@ -262,8 +260,8 @@
     rec.dropped = 0;
   }
 
-  /** 构建戳：读 `<meta name="pdx-build">`（build_standalone.py 写打包时间）✓
-   *  ⚠ 不用 document.lastModified ✗ —— 单文件 / 某些浏览器里它是当前时间 ✓ */
+  /** 构建戳：读取 `<meta name="pdx-build">`（build_standalone.py 写入打包时间）
+   *  不使用 document.lastModified：单文件及部分浏览器中它等于当前时间。 */
   function buildStamp() {
     try {
       const doc = window.document;
@@ -273,7 +271,7 @@
     } catch (e) { return '开发版'; }
   }
 
-  /* ---- 环境信息：全是从浏览器现问的，问不到就写"取不到" ✓ ---------- */
+  /* ---- 环境信息：均从浏览器实时读取，取不到时写"取不到" ---------- */
   function basics() {
     const out = {};
     const put = (k, v) => { out[k] = (v === '' || v == null) ? '取不到' : String(v); };
@@ -295,7 +293,7 @@
         + ' @' + (window.devicePixelRatio || 1) + 'x'
         + '，窗口 ' + (window.innerWidth || '?') + '×' + (window.innerHeight || '?')) : '');
       put('User-Agent', ua);
-    } catch (e) { /* 问不到就少几行，不影响下面的正文 ✓ */ }
+    } catch (e) { /* 取不到时少输出几行，不影响正文 */ }
     return out;
   }
 
@@ -303,13 +301,13 @@
     try { return Intl.DateTimeFormat().resolvedOptions().timeZone || ''; } catch (e) { return ''; }
   }
 
-  /** 把 [当时的状态] 那一段拼出来：app.js 登记的 + 现取的快照 ✓ */
+  /** 拼接运行状态段：app.js 登记项 + 实时快照 */
   function stateLines() {
     const pairs = [];
     for (const k of Object.keys(rec.env)) pairs.push([k, rec.env[k]]);
     for (const fn of rec.snaps) {
       let got = null;
-      // 快照自己炸了不能把整份日志带走 ✗ —— 打不开现场还谈什么定位
+      // 快照抛错不能影响整份日志
       try { got = fn(); } catch (e) { got = { '（现状取不出来）': String((e && e.message) || e) }; }
       if (got && typeof got === 'object') {
         for (const k of Object.keys(got)) {
@@ -343,10 +341,10 @@
       + '.' + pad(Math.floor((s - Math.floor(s)) * 1000), 3);
   }
 
-  /** 从 UA 认浏览器 / 系统 —— 只做粗分，认不出就写"未知" ✓（不猜） */
+  /** 从 UA 识别浏览器 / 系统：仅做粗略分类，识别不出时写"未知" */
   function browserName(ua) {
     const s = String(ua || '');
-    // ⚠ Edge / Opera 的 UA 里**也带 Chrome/** ✗ 必须先认它们，再认 Chrome ✓
+    // Edge / Opera 的 UA 中也含 Chrome/，必须先识别它们，再识别 Chrome
     let m = /(?:Edg|Edge)\/([\d.]+)/.exec(s);
     if (m) return 'Edge ' + m[1];
     m = /OPR\/([\d.]+)/.exec(s);
@@ -379,9 +377,9 @@
     return 'ERROR';
   }
 
-  /** 报告里不要 ✓/✗ 这类手写标记：统一清掉、压掉多余空格 ✓
-   *  ⚠ 只用于**环境 / 状态 / 时间线**这些展示字段 ✗ —— 错误消息与堆栈保持原样，
-   *     那是现场证据，不能替它"美化" ✓ */
+  /** 清除展示字段中的勾叉标记并压缩多余空格
+   *  仅用于环境 / 状态 / 时间线等展示字段；错误消息与堆栈保持原样，
+   *  它们属于现场证据，不做改写。 */
   function cleanValue(v) {
     return String(v == null ? '' : v)
       .replace(/[✓✗]/g, '')
@@ -530,7 +528,7 @@
     line('  说明：本报告由编辑器自动生成，不包含涂色图片、地图数据或游戏文件。');
     line('  提交问题时请附完整报告；报告编号 ' + reportId + ' 便于定位。');
     line(hr);
-    return L.join('\r\n');   // CRLF：Windows 记事本里换行才不会挤成一行 ✓
+    return L.join('\r\n');   // CRLF：Windows 记事本中换行才不会挤成一行
   }
 
   function cleanMap(obj) {
@@ -575,9 +573,8 @@
 
   /**
    * 存成文件。
-   * 名字由 app.js 给（它才知道当前是哪个游戏 ✓）——给了就带上前缀和时间。
-   * **开头写 BOM**：老版记事本不认无 BOM 的 UTF-8，中文会变成乱码 ✗
-   * （玩家双击打开第一眼就是乱码，这份日志等于白导了 ✓）
+   * 文件名由 app.js 提供（它掌握当前游戏信息），传入时作为前缀并附带时间。
+   * 开头写入 BOM：旧版记事本不识别无 BOM 的 UTF-8，中文会显示为乱码。
    */
   function download(name) {
     try {
@@ -593,12 +590,12 @@
     }
   }
 
-  /** 启动页「导出诊断报告」按钮 —— **不依赖 app.js** ✓
+  /** 启动页「导出诊断报告」按钮：不依赖 app.js
    *
-   *  为什么放在 log.js 里：编辑器自己没起来（脚本报错 / 加载失败 / 渲染器建不出来）时，
-   *  app.js 里的导出入口根本挂不上；而这时正是最需要日志的场合 ✓
-   *  这里只**绑一个已经存在的按钮**，不创建 DOM、不改布局 ✓
-   *  （按钮在 web/index.html 的启动页署名区 ✓） */
+   *  放在 log.js 中的原因：编辑器未能启动（脚本报错 / 加载失败 / 渲染器创建失败）时，
+   *  app.js 中的导出入口无法挂载，而此时最需要日志。
+   *  此处只绑定已存在的按钮，不创建 DOM、不改布局
+   *  （按钮位于 web/index.html 的启动页署名区）。 */
   function bindBootExport() {
     try {
       const doc = window.document;
@@ -613,25 +610,24 @@
         btn.textContent = ok ? '已导出' : '导出失败';
         setTimeout(function () { btn.textContent = label; }, 2200);
       });
-    } catch (e) { /* 没有 DOM 就算了 ✓ */ }
+    } catch (e) { /* 无 DOM 环境跳过 */ }
   }
 
 
   /* ========================================================================
-     🔴 **启动看门狗**（2026-10-23）
-     有人报"白屏 / 黑屏 / 一打开就闪退"，但没过程、没日志 ✗
-     这里补两条命：
-       ① `tick(label)` —— app.js 每推进一个启动阶段就盖个时间戳（见 setBoot ✓）
-       ② 超过 25 秒**毫无推进**、且没置 `window.__PDX_BOOTED` → 把启动页
-          换成一张"没能启动"的说明卡：环境事实 + 常见原因 + 重新加载 + 复制诊断
-      这样连"app.js 压根没解析成功"（旧浏览器 / 私有模式禁 module / 文件损坏）
-      也能落到这张卡上，而不是一片白 ✓
+     启动看门狗
+     用于处理白屏 / 黑屏 / 打开即闪退且无日志的情况：
+       ① `tick(label)`：app.js 每推进一个启动阶段即记录时间戳（见 setBoot）
+       ② 超过 25 秒没有进展、且未设置 `window.__PDX_BOOTED` 时，将启动页
+          替换为"没能启动"说明卡：环境信息 + 常见原因 + 重新加载 + 复制诊断
+     app.js 未能解析时（旧浏览器 / 隐私模式禁用 module / 文件损坏）
+     同样会显示该卡，而不是空白页面。
      ====================================================================== */
   var _hb = { t: Date.now(), label: '（还没开始）' };
-  var _act = { t: 0 };            // 最后一次用户交互（点/按/滚 ✓ 有交互就不算卡死 ✓）
+  var _act = { t: 0 };            // 最后一次用户交互（点击/按键/滚动；有交互时视为未卡死）
   var _bootFailShown = false;
 
-  /** 启动进度心跳（app.js 的 setBoot 每步都调 ✓ 很便宜）*/
+  /** 启动进度心跳（app.js 的 setBoot 每步调用，开销很小）*/
   function tick(label) {
     _hb.t = Date.now();
     if (label) _hb.label = String(label);
@@ -646,14 +642,14 @@
 
   function _facts() {
     var f = [];
-    try { f.push('浏览器 ' + (navigator.userAgent || '?')); } catch (e) { /* ✓ */ }
-    try { f.push('WebGL2 ' + (window.WebGL2RenderingContext ? '有' : '**没有**')); } catch (e) { /* ✓ */ }
-    try { f.push('ES module ' + (_supportsESModule() ? '支持' : '**不支持**')); } catch (e) { /* ✓ */ }
-    try { f.push('打开方式 ' + (location.protocol || '?')); } catch (e) { /* ✓ */ }
-    try { f.push('窗口 ' + window.innerWidth + '×' + window.innerHeight); } catch (e) { /* ✓ */ }
-    try { if (navigator.deviceMemory) f.push('内存约 ' + navigator.deviceMemory + ' GB'); } catch (e) { /* ✓ */ }
-    try { f.push('最后进度 "' + _hb.label + '"（' + Math.round((Date.now() - _hb.t) / 1000) + ' 秒前）'); } catch (e) { /* ✓ */ }
-    try { f.push('已记录错误 ' + rec.errors.length + ' 条'); } catch (e) { /* ✓ */ }
+    try { f.push('浏览器 ' + (navigator.userAgent || '?')); } catch (e) { /* 忽略 */ }
+    try { f.push('WebGL2 ' + (window.WebGL2RenderingContext ? '有' : '**没有**')); } catch (e) { /* 忽略 */ }
+    try { f.push('ES module ' + (_supportsESModule() ? '支持' : '**不支持**')); } catch (e) { /* 忽略 */ }
+    try { f.push('打开方式 ' + (location.protocol || '?')); } catch (e) { /* 忽略 */ }
+    try { f.push('窗口 ' + window.innerWidth + '×' + window.innerHeight); } catch (e) { /* 忽略 */ }
+    try { if (navigator.deviceMemory) f.push('内存约 ' + navigator.deviceMemory + ' GB'); } catch (e) { /* 忽略 */ }
+    try { f.push('最后进度 "' + _hb.label + '"（' + Math.round((Date.now() - _hb.t) / 1000) + ' 秒前）'); } catch (e) { /* 忽略 */ }
+    try { f.push('已记录错误 ' + rec.errors.length + ' 条'); } catch (e) { /* 忽略 */ }
     return f;
   }
 
@@ -673,7 +669,7 @@
         navigator.clipboard.writeText(text);
         return true;
       }
-    } catch (e) { /* 走下面的兜底 ✓ */ }
+    } catch (e) { /* 走下面的兜底 */ }
     try {
       var ta = window.document.createElement('textarea');
       ta.value = text;
@@ -759,33 +755,33 @@
       host.textContent = '';
       host.appendChild(wrap);
       error('启动失败（看门狗）', String(body));
-    } catch (e) { /* 兜底里再出错就真的没办法了 ✓ */ }
+    } catch (e) { /* 兜底逻辑中出错时静默 */ }
   }
 
-  /* 每 2 秒看一眼：25 秒没推进、也没就绪 → 上说明卡 ✓
-   * ⚠ 只在启动页还在的时候管（地图都显示了就说明启动过了 ✓）*/
+  /* 每 2 秒检查一次：25 秒无进展且未就绪时显示说明卡
+   * 仅在启动页仍存在时生效（地图已显示说明启动完成）*/
   function _watchdog() {
     try {
       if (_bootFailShown || window.__PDX_BOOTED) return;
       var boot = window.document.getElementById && window.document.getElementById('boot');
       if (boot && boot.hidden) return;
-      /* ⚠ **正在选图不算卡住** ✗✗（2026-10-23）
-       *   启动页停在"选一张地图"时，人可能去倒杯水 —— 那不是白屏 ✓
-       *   选图面板可见 / 用户几秒前还在点 → 一律不报 ✓ */
+      /* 正在选图不计为卡住：
+       * 启动页停留在"选一张地图"时属于等待用户操作，并非白屏。
+       * 选图面板可见或最近几秒有交互时，一律不报告。 */
       var pick = window.document.getElementById && window.document.getElementById('map-pick');
       if (pick && !pick.hidden) return;
       if (Date.now() - (_act.t || 0) < 8000) return;
       if (Date.now() - _hb.t < 25000) return;
       bootFail('启动卡住了：' + Math.round((Date.now() - _hb.t) / 1000) + ' 秒没有新进展'
         + '（最后一步「' + _hb.label + '」）。');
-    } catch (e) { /* ✓ */ }
+    } catch (e) { /* 忽略 */ }
   }
   try {
     ['pointerdown', 'keydown', 'wheel', 'touchstart'].forEach(function (ev) {
       window.addEventListener(ev, function () { _act.t = Date.now(); }, { passive: true });
     });
-  } catch (e) { /* ✓ */ }
-  try { window.setInterval(_watchdog, 2000); } catch (e) { /* ✓ */ }
+  } catch (e) { /* 忽略 */ }
+  try { window.setInterval(_watchdog, 2000); } catch (e) { /* 忽略 */ }
 
   window.PDXLOG = {
     event: event,
@@ -800,7 +796,7 @@
     text: text,
     download: download,
     reportId: reportId,
-    //: 自己看自己（调试用：控制台里敲 PDXLOG.rec.errors 就能翻）
+    // 内部记录（调试用：控制台访问 PDXLOG.rec.errors）
     rec: rec,
   };
 

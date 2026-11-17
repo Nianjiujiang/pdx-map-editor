@@ -471,15 +471,15 @@ function readScript(htmlPath) {
        !!kit && inKit('palette-fav') && inKit('palette'),
        kit ? '有 .mob-color-kit ✓' : '没有（还藏在二级菜单里 ✗）');
     ok('色块的二级菜单在手机上收起了', !!(env.get('brush-menu') && env.get('brush-menu').hidden));
-    /* 点大色块 = 改颜色（系统取色器），不是再弹二级菜单 ✓ */
+    /* 点大色块 = 打开**自绘**调色器（2026-11-07 起不再走系统拾色器 ✓） */
     {
       const sw = env.get('brush-swatch');
-      const bc = env.get('brush-color');
-      let fired = false;
-      if (bc && typeof bc.addEventListener === 'function') bc.addEventListener('click', () => { fired = true; });
+      const pop = env.get('color-pop');
+      if (pop) pop.hidden = true;
       if (sw && typeof sw.onclick === 'function') sw.onclick();
-      ok('点大色块 = 打开系统取色器（改颜色 ✓）', fired,
-         fired ? '取色器被点开了 ✓' : '还是没走改颜色 ✗');
+      ok('点大色块 = 打开自绘调色器（改颜色 ✓）', !!(pop && pop.hidden === false),
+         pop && pop.hidden === false ? '调色面板弹出来了 ✓' : '还是没走改颜色 ✗');
+      if (pop) pop.hidden = true;
     }
     ok('长按删色的手势接上了（手机没有右键 ✓）',
        /bindLongDelete/.test(js) && /paletteRemoveAt/.test(js),

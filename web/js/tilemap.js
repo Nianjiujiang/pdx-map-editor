@@ -1,14 +1,14 @@
 // ================================================================ 省份 id 图：分块按需加载
 //
-// 为什么要有这个文件：EU5 的**原尺寸**地图是 16384×8192 ✓ —— 整张 id 图解压成
-// Uint16Array 要 268 MB JS 堆 ✗，做成一张 R16UI 纹理又要 268 MB 显存 ✗，
-// 而且 16384 正好顶到常见显卡的 MAX_TEXTURE_SIZE ✗。
+// 用途：EU5 原尺寸地图为 16384×8192，整张 id 图解压成
+// Uint16Array 需要 268 MB JS 堆，做成一张 R16UI 纹理又需要 268 MB 显存，
+// 且 16384 已触及常见显卡的 MAX_TEXTURE_SIZE 上限。
 //
-// 所以原尺寸那套数据（`build_eu5.py --scale 1` 产出）会**切成 4×4 张 4096×2048** ✓，
-// 前端只下"当前视野盖到的那几块" ✓ —— 每块解压后 16.8 MB ✓，同时最多留几块 ✓。
+// 因此原尺寸数据（`build_eu5.py --scale 1` 产出）切成 4×4 张 4096×2048，
+// 前端只加载当前视野覆盖的块：每块解压后 16.8 MB，同时保留若干块。
 //
-// 半尺寸那套（8192×4096）**不受影响** ✓：它还是走一整张 provinces_id.bin，
-// 只有当数据目录里有 tiles.json 时才启用分块。
+// 半尺寸数据（8192×4096）不受影响：仍使用单张 provinces_id.bin，
+// 仅当数据目录中存在 tiles.json 时才启用分块。
 
 /** 分块 id 图的读取器：只按需取块，带一个很小的 LRU 缓存。 */
 export class TileMap {
@@ -26,7 +26,7 @@ export class TileMap {
     this.fetchTile = fetchTile;
     this.cacheMax = cacheMax;
     this.cache = new Map();          // key "r_c" → Uint16Array
-    this.pending = new Map();        // key → Promise（同一块别重复下）
+    this.pending = new Map();        // key → Promise（避免同一块重复下载）
   }
 
   /** 地图像素 → 块号 */
@@ -97,7 +97,5 @@ export class TileMap {
   }
 }
 
-// 读 tiles.json 这件事**只在 data.js 的 api.tileManifest() 里做一遍**。
-// 这里原来还导出一个 loadTileManifest()，逻辑跟它一模一样（连 try/catch 的写法都相同），
-// 但没人 import 过 —— 两条路各改一次就是迟早对不上，删掉那条没人走的。
-// 需要清单请用 api.tileManifest()：它会认单文件版的内嵌数据，这里那份不会。
+// 读 tiles.json 只在 data.js 的 api.tileManifest() 中进行。
+// 需要清单请调用 api.tileManifest()：它支持单文件版的内嵌数据。
