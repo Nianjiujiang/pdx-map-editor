@@ -25,6 +25,9 @@ const { measure, MAP_KEYS } = require('./bench_core.js');
 
 const FILE = path.join(__dirname, 'perf_baseline.json');
 const DEFAULT_MAPS = ['EU4', 'EU5', 'VIC3'];
+const ROOT = path.join(__dirname, '..');
+/* 地图名 → 数据目录 ✓（跟 build_standalone.py 的 MAPS 对齐）*/
+const MAP_DIRS = { CK3: 'data', EU4: 'data_eu4', VIC3: 'data_vic3', EU5: 'data_eu5' };
 
 /* 每档指标的宽容度：{factor: 比例, floor: 绝对毫秒下限}
  * - 默认 1.25 倍 / 1.5ms —— 够宽容到不误报（Node 里同一函数来回跑本来就有 ±10%），
@@ -262,11 +265,23 @@ function report(check, runs, base) {
 
   const base = args.check ? loadBaseline() : (fs.existsSync(FILE) && !args.save ? loadBaseline() : null);
 
-  console.log(`量 ${keys.join(' / ')} …（每张图要重新 boot 一次，慢是正常的）`);
+  /* 缺 data_* 目录就**跳过**，别拿"源码起不来"吓人 ✓（2026-11-10）
+     以前这里直接把 EU5 崩出来，报错还写"能跑的是：CK3、EU4、VIC3、EU5" ✓ 自相矛盾 */
+  const available = keys.filter((k) => fs.existsSync(path.join(ROOT, MAP_DIRS[k] || '', 'meta.json')));
+  const missing = keys.filter((k) => !available.includes(k));
+  if (missing.length) {
+    console.log(`  跳过 ${missing.join(' / ')}：缺 ${missing.map((k) => MAP_DIRS[k] + '/').join('、')} 数据目录`);
+  }
+  if (!available.length) {
+    console.log('没有可量的地图数据：先烘 data_* 目录（build_eu4.py / build_eu5.py / build_vic3.py）');
+    return;
+  }
+
+  console.log(`量 ${available.join(' / ')} …（每张图要重新 boot 一次，慢是正常的）`);
   const runs = [];
-  for (const k of keys) {
+  for (const k of available) {
     try {
-      runs.push(await measureOne(k, keys.length));
+      runs.push(await measureOne(k, available.length));
     } catch (e) {
       console.error(`\n✗ 「${k}」量不下去：${e && e.message ? e.message : e}\n`
         + '  这类崩通常是源码本身起不来（先跑 node tools/test_modes.js ' + k + ' 确认功能没坏）');

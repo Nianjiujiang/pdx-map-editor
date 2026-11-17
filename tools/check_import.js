@@ -488,7 +488,9 @@ async function testUi() {
   // ---- ④ 导出（备份）：拿到的文件自己也得是个合法包（能再导回来）
   const btnExport = acts.find((x) => x.textContent === '导出');
   await btnExport.onclick({ stopPropagation() {}, preventDefault() {} });
-  ok('导出备份产生了一个文件', !!env.savedBlob && env.savedBlob.size > 10000,
+  /* 测试包本身只有 2 KB 左右（_local/packs 里的小夹具）→ 阈值跟着它走，
+     不写死 10 KB ✗（真包 1 MB 时也照样通过 ✓）*/
+  ok('导出备份产生了一个文件', !!env.savedBlob && env.savedBlob.size > 1000,
     env.savedBlob ? `${(env.savedBlob.size / 1048576).toFixed(2)} MB` : '没有');
   ok('导出成功的提示里带上了地图名字 ✓',
     /成功导出地图：/.test(env.get('map-msg').textContent || ''),
@@ -703,7 +705,7 @@ async function testBackupRoundTrip() {
   const metaBefore = await ex.api.meta();
 
   const bytes = await ex.exportPackBytes(PACK_ID, null);
-  ok('导出备份拿到字节', !!bytes && bytes.length > 10000,
+  ok('导出备份拿到字节', !!bytes && bytes.length > 1000,
     bytes ? `${(bytes.length / 1048576).toFixed(2)} MB` : '没有');
   await ex.removePack(PACK_ID);
   ok('删掉之后库里空了', (await ex.listPacks()).length === 0);

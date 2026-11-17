@@ -425,7 +425,9 @@ console.log('\n===== ③.5 小输入弹窗：不许铺满全屏 =====');
     const hideOk = rule(outer + '[hidden]', /display\s*:\s*none[^;]*!important/);
     ok(`「${id}」的 [hidden] 压得住 display:flex !important`, hideOk,
        hideOk ? '压得住 ✓' : '少了这句 → 一打开页面就杵在屏幕中间 ✗');
-    const card = rule(box, /height\s*:\s*auto/) && rule(box, /max-height\s*:\s*\d+(?:\.\d+)?(?:vh|px)/);
+    /* max-height 现在有 calc(100dvh - …) 的写法 ✓ 别只认"数字 + vh/px" ✗ */
+    const card = rule(box, /height\s*:\s*auto/)
+      && rule(box, /max-height\s*:\s*(?:calc\(|\d+(?:\.\d+)?(?:vh|px))/);
     ok(`「${id}」的卡片高度自适应（height:auto + max-height）`, card,
        card ? '小卡片 ✓' : '还是 100% 高 ✗ 会占满全屏');
     ok(`「${id}」的 id 也在宽屏 absolute 那条里（电脑上调试时跟着手机框 ✓）`,

@@ -202,8 +202,8 @@ async function e2eNoWebGL2() {
     await booting;
     const text = String((env.get('fatal-text') || {}).textContent || '');
     const bootText = String((env.get('boot-step') || {}).textContent || '');
-    ok('端到端：红字说"没能创建 WebGL2"（不再指着色器 ✗）',
-      /WebGL2/.test(text) && /没能创建/.test(text) && !/着色器编译失败/.test(text),
+    ok('端到端：红字说"不支持 WebGL2"（不再指着色器 ✗）',
+      /WebGL2/.test(text) && /不支持|没能创建/.test(text) && !/着色器编译失败/.test(text),
       text.split('\n')[0] || '（空）');
     ok('端到端：红字框里有「刷新重试」', !!env.get('fatal-reload'),
       env.get('fatal-reload') ? '在 ✓' : '没有 ✗');
@@ -220,6 +220,19 @@ async function e2eNoWebGL2() {
 (async () => {
   console.log('\n=== 渲染器初始化失败：启动链端到端 ===');
   await e2eNoWebGL2();
+
+  console.log('\n=== iOS 失败文案 ===');
+  {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'web', 'js', 'app.js'), 'utf8');
+    ok('无 WebGL2 时按 isAppleTouch 走 iOS 专用步骤',
+      /const _ios = isAppleTouch\(\);/.test(src)
+      && /iOS 15 起 Safari 才支持 WebGL2/.test(src)
+      && /iOS 上的 Chrome \/ Edge 也使用 WebKit/.test(src));
+    ok('上下文丢失不再建议 iOS 换浏览器',
+      /iPhone \/ iPad：先返回桌面再切回 Safari/.test(src));
+    ok('软件渲染在 iOS 上去掉「硬件加速」开关的说法',
+      /iPhone \/ iPad 没有「硬件加速」开关/.test(src));
+  }
 
   console.log('\n==========================================================');
   console.log(`通过 ${oks.length} 条，失败 ${fails.length} 条`);

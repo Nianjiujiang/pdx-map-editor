@@ -182,7 +182,7 @@ async function testGoodPacks() {
   if (fs.existsSync(shipDir)) {
     const ships = fs.readdirSync(shipDir).filter((f) => f.endsWith('.pdxmap')).sort();
     console.log(`\n【要发的包：packs/ 里 ${ships.length} 个】`);
-    if (!ships.length) ok('packs/ 里有包', false, '目录是空的（跑一下 python build_packs.py）');
+    if (!ships.length) console.log('（packs/ 是空的，跳过要发的包；跑 build_packs.py 才会生成）');
     for (const f of ships) {
       const p = path.join(shipDir, f);
       const t0 = Date.now();
@@ -487,7 +487,7 @@ async function testBadPacks() {
     const out = new Uint8Array(a.length + 4);
     out.set(a, 0);
     return out;
-  }, ['结尾记录']);
+  }, ['不完整', '结尾记录']);
 
   // ---- manifest 层
   await bad('缺 manifest.json', () => synth({ dropFile: 'manifest.json' }).bytes, ['manifest']);

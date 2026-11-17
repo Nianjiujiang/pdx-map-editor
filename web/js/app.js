@@ -14324,10 +14324,22 @@ async function createRendererWithRetry(meta, opts) {
  * @param {Error} err 带 `stage` / `detail` 的 `RendererSetupError`（见 gl.js）
  * @returns {{code:string,title:string,body:string,steps:string[],facts:string}}
  */
+/* 降级档位省掉的通道 → 界面上看得懂的名字 ✓（诊断报告 / 启动日志共用）*/
+const CUT_CHANNEL_NAMES = {
+  title: '本层边界', paint: '填色边界', extra: '父级/剧本边界',
+  water: '水域边界', waste: '荒地边界',
+};
+function cutChannelNames(list) {
+  return (list || []).map((k) => CUT_CHANNEL_NAMES[k] || k).join(' / ');
+}
+
 function describeRendererFailure(err) {
   const stage = _stageOfError(err) || 'renderer';
   const d = (err && err.detail) || {};
   const raw = String((err && err.message) || err || '');
+  /* iOS / iPadOS：所有浏览器都是 WebKit，且 iOS 15 以下没有 WebGL2。
+     "换 Chrome / Edge" 在苹果上是废话 ✓（2026-11-10）*/
+  const _ios = isAppleTouch();
   const facts = [
     d.unmaskedRenderer ? '显卡 ' + d.unmaskedRenderer
       : (d.renderer ? '渲染器 ' + d.renderer : ''),
@@ -14341,6 +14353,21 @@ function describeRendererFailure(err) {
   ].filter(Boolean).join(' · ');
 
   if (stage === 'no-webgl2') {
+    if (_ios) {
+      return {
+        code: 'WEBGL2_UNAVAILABLE',
+        title: '这台 iPhone / iPad 没有提供地图渲染所需的 WebGL2',
+        body: 'iOS 15 起 Safari 才支持 WebGL2。iOS 上的 Chrome / Edge 也使用 WebKit 内核，'
+          + '换浏览器不会补上这个能力。',
+        steps: [
+          '打开「设置 → 通用 → 软件更新」，升级到 iOS / iPadOS 15 或更高版本',
+          '用 Safari 打开这个页面（不要在「文件」预览里打开）',
+          '升级后重启设备，再重试',
+          '若仍无法解决，请点击下方「导出日志」并反馈给作者',
+        ],
+        facts,
+      };
+    }
     return {
       code: 'WEBGL2_UNAVAILABLE',
       title: '这个浏览器不支持地图渲染所需的图形功能（WebGL2）',
@@ -14366,7 +14393,9 @@ function describeRendererFailure(err) {
       steps: [
         '点击「刷新重试」，通常即可恢复',
         '关闭其他占用显存的标签页、游戏和视频，然后重试',
-        '手机端：先返回桌面再切回浏览器，或改用 Chrome / Edge',
+        _ios
+          ? 'iPhone / iPad：先返回桌面再切回 Safari；仍不行就重启 Safari 或设备'
+          : '手机端：先返回桌面再切回浏览器，或改用 Chrome / Edge',
         '若仍未恢复，请导出日志反馈（其中包含显卡型号与 GL 版本）',
       ],
       facts,
@@ -14397,12 +14426,20 @@ function describeRendererFailure(err) {
     if (d.softwareGL) {
       return {
         code: stage === 'shader-compile' ? 'SHADER_COMPILE_FAILED' : 'SHADER_LINK_FAILED',
-        title: '这台电脑正在使用软件渲染，性能不足以显示这张地图',
-        body: '浏览器没有启用显卡，而是由 CPU 逐像素计算（软件渲染 / SwiftShader）。'
+        title: _ios
+          ? '这台 iPhone / iPad 正在使用软件渲染，性能不足以显示这张地图'
+          : '这台电脑正在使用软件渲染，性能不足以显示这张地图',
+        body: (_ios
+          ? 'iPhone / iPad 没有启用显卡渲染，而是由 CPU 逐像素计算（软件渲染）。'
+          : '浏览器没有启用显卡，而是由 CPU 逐像素计算（软件渲染 / SwiftShader）。')
           + '同一着色器在真实显卡上仅需几毫秒，此处却需一分多钟，且常常直接失败。'
           + (log ? '\n驱动给的日志：' + log : '')
           + '\n**问题不在地图或编辑器本身**，而是这台设备的浏览器没有启用显卡加速。',
-        steps: [
+        steps: _ios ? [
+          'iPhone / iPad 没有「硬件加速」开关：请升级到 iOS 15 及以上，并用 Safari 打开',
+          '升级后重启设备，再重试',
+          '若均无效，请点击「导出诊断报告」，其中包含渲染器名称',
+        ] : [
           'Edge：设置 → 系统和性能 → 开启「使用图形加速」，然后重启浏览器',
           'Chrome：设置 → 系统 → 开启「使用可用的硬件加速」，然后重启浏览器',
           '确认未在远程桌面或虚拟机中打开（这两种环境通常只能软件渲染）',
@@ -15032,6 +15069,9 @@ async function boot() {
       else if (renderer.shaderTier === 'border') _mode.push('边界着色器（仅本层头衔/填色）');
       else if (renderer.shaderTier === 'title') _mode.push('最简边界（仅本层头衔）');
       else if (renderer.liteShader) _mode.push('精简着色器（无边界线）');
+      if (renderer.cutChannels && renderer.cutChannels.length) {
+        _mode.push('省略 ' + cutChannelNames(renderer.cutChannels));
+      }
       if (renderer._smallIds) _mode.push('id图缩' + (renderer.provScale || 1) + '倍');
       if (renderer.arrOk === 'bad') _mode.push('数组纹理采不出来');
       if (_mode.length) {
@@ -15316,6 +15356,9 @@ async function boot() {
           };
           out['当前渲染档位'] = (_tn[renderer.shaderTier] || renderer.shaderTier || '?')
             + (renderer.upgrading ? ' · 后台升级中' : '');
+          if (renderer.cutChannels && renderer.cutChannels.length) {
+            out['降级省略'] = cutChannelNames(renderer.cutChannels);
+          }
         }
       } catch (e) { /* 忽略 */ }
       /* 性能指标：玩家报告「卡」时，这几个数比描述有用 */
@@ -15678,6 +15721,25 @@ function flagBBoxOf(pids) {
     }
   }
   if (x1 < x0) {
+    /* 分块图：provinceIds 只放了一个占位元素，不能按像素扫 ✗
+       provPos 每组是「质心 x / 质心 y / 像素数」→ 用面积开方估外接框 ✓
+       （单省也能得到一块可见的方形，不再退化成 1×1 的质心点 ✓）*/
+    const pp = state.provPos;
+    if (pp && pp.length >= meta.numProvinces * 3) {
+      for (const p of pids) {
+        if (!(p > 0 && p < meta.numProvinces)) continue;
+        const x = pp[p * 3] || 0;
+        const y = pp[p * 3 + 1] || 0;
+        const a = Math.max(1, pp[p * 3 + 2] || 0);
+        const r = 0.5 * Math.sqrt(a);
+        if (x - r < x0) x0 = x - r;
+        if (x + r > x1) x1 = x + r;
+        if (y - r < y0) y0 = y - r;
+        if (y + r > y1) y1 = y + r;
+      }
+    }
+  }
+  if (x1 < x0) {
     let sx = 0, sy = 0, n = 0;
     for (const p of pids) {
       sx += state.provPos[p * 3] || 0;
@@ -15688,6 +15750,10 @@ function flagBBoxOf(pids) {
     x0 = x1 = sx / n;
     y0 = y1 = sy / n;
   }
+  x0 = Math.max(0, Math.min(W - 1, x0));
+  y0 = Math.max(0, Math.min(H - 1, y0));
+  x1 = Math.max(0, Math.min(W - 1, x1));
+  y1 = Math.max(0, Math.min(H - 1, y1));
   return [x0, y0, x1 + 1, y1 + 1];
 }
 
@@ -15708,11 +15774,16 @@ function flagPushGpu(regenLayers) {
   if (!renderer || !state.meta) return;
   if (!state.flags.length) { renderer.clearFlags(); return; }
   const n = state.meta.numProvinces;
-  const mask = new Uint8Array(n);
+  /* 每省 2 字节：低字节 + 高字节 ✓（RG8，最多 65535 面；R8 时 255 面就回绕 ✗）*/
+  const mask = new Uint8Array(n * 2);
   const slots = new Float32Array(state.flags.length * 12);
   state.flags.forEach((f, i) => {
     f.layer = i;
-    for (const p of f.pids) if (p > 0 && p < n) mask[p] = i + 1;
+    const idx = Math.min(65535, i + 1);
+    for (const p of f.pids) if (p > 0 && p < n) {
+      mask[p * 2] = idx & 255;
+      mask[p * 2 + 1] = (idx >> 8) & 255;
+    }
     const r = f.rect;
     slots[i * 12 + 0] = r[0];
     slots[i * 12 + 1] = r[1];
@@ -15890,6 +15961,11 @@ function flagPickFile(g, forIdx) {
 
 function flagAttach(g, img) {
   flagInit();
+  /* 旗号走 RG8（低字节 + 高字节）→ 最多 65535 面 ✓ 到顶就明说，别静默串号 ✗ */
+  if (state.flags.length >= 65535) {
+    flagTell('旗帜数量已达上限（65535 面）');
+    return;
+  }
   const pids = flagLandOnly(g.pids);
   if (!pids.size) { toast('这块地没有可贴旗的地块', true); return; }
   const bbox = flagBBoxOf(pids);

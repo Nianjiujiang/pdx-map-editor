@@ -74,6 +74,22 @@ console.log('\n=== B. RG8 的字节序（低字节在前）===');
     [decode(0), decode(1), decode(2)].join(' / '));
 }
 
+console.log('\n=== B2. 旗号表：RG8 两字节（>255 面不串号）===');
+{
+  ok('app 侧每省写 2 字节（低字节 + 高字节）',
+    /new Uint8Array\(n \* 2\)/.test(APP)
+    && /mask\[p \* 2\] = idx & 255/.test(APP)
+    && /mask\[p \* 2 \+ 1\] = \(idx >> 8\) & 255/.test(APP),
+    /new Uint8Array\(n \* 2\)/.test(APP) ? 'RG8 布局 ✓' : '还是 R8 ✗');
+  ok('渲染器上传用 RG8 / RG',
+    /gl\.RG8, W, H, 0, gl\.RG, gl\.UNSIGNED_BYTE/.test(GL),
+    /gl\.RG8/.test(GL) ? 'RG8 ✓' : '没找到 gl.RG8 ✗');
+  ok('着色器按低字节 + 高字节×256 解码',
+    /int\(fv\.r \* 255\.0 \+ 0\.5\) \+ int\(fv\.g \* 255\.0 \+ 0\.5\) \* 256/.test(CODE),
+    /int\(fv\.g/.test(CODE) ? '两通道解码 ✓' : '还是单通道 ✗');
+  ok('旗帜数量到顶有提示（65535）', /65535/.test(APP));
+}
+
 console.log('\n=== C. 精简版着色器（链接失败时的保底）===');
 {
   const a = FRAG.indexOf('/* @@LITE_CUT_BEGIN@@ */');
@@ -112,11 +128,19 @@ console.log('\n=== C2. 中间档着色器（Adreno 613 链接失败的退路）=
   const titleCode = stripComments(title || '');
 
   ok('mid 生成得出来', !!mid, mid ? `${mid.length} 字符` : 'null ✗');
-  ok('mid 还留着本层头衔 / 填色 / 多级链',
-    /uBorderTitle == 1/.test(midCode) && /viewsDiffer/.test(midCode)
-    && /uExtraW\[ex\] \* uMapPerPx/.test(midCode));
-  ok('mid 砍掉了水域 / 荒地两条独立通道',
-    !/qW && qtid/.test(midCode) && !/qX && qtid/.test(midCode));
+  /* 切掉 WATER / WASTE 之后：
+     - 水/荒地判据块和混色块都没了；
+     - `waterIs(q)` / `wasteIs(q)` 各只剩 **1 处**（pairW / pairX 的让位采样，必须留 ✓）；
+     - 混色用的半宽、`dWater < 1e8` 这些字符串都不该剩下 ✓ */
+  const cutWaterWaste = (code) => (code.match(/waterIs\(q\)/g) || []).length === 1
+    && (code.match(/wasteIs\(q\)/g) || []).length === 1
+    && !/0\.5 \* uWaterBorderW/.test(code)
+    && !/0\.5 \* uWasteBorderW/.test(code)
+    && !/dWater < 1e8/.test(code) && !/dWaste < 1e8/.test(code);
+  ok('mid 砍掉了水域 / 荒地两条通道（只剩 pairW/pairX 的让位采样）',
+    cutWaterWaste(midCode),
+    `waterIs=${(midCode.match(/waterIs\(q\)/g) || []).length} · `
+    + `wasteIs=${(midCode.match(/wasteIs\(q\)/g) || []).length}`);
   ok('mid 大括号 / 小括号配平',
     bal(mid || '', '{', '}') === 0 && bal(mid || '', '(', ')') === 0);
 
@@ -124,7 +148,7 @@ console.log('\n=== C2. 中间档着色器（Adreno 613 链接失败的退路）=
   ok('border 只留本层头衔 + 填色边界',
     /uBorderTitle == 1/.test(borderCode) && /viewsDiffer/.test(borderCode)
     && !/uExtraW\[ex\] \* uMapPerPx/.test(borderCode)
-    && !/qW && qtid/.test(borderCode) && !/qX && qtid/.test(borderCode));
+    && cutWaterWaste(borderCode));
   ok('border 大括号 / 小括号配平',
     bal(border || '', '{', '}') === 0 && bal(border || '', '(', ')') === 0);
 
@@ -133,7 +157,7 @@ console.log('\n=== C2. 中间档着色器（Adreno 613 链接失败的退路）=
     /uBorderTitle == 1/.test(titleCode)
     && !/viewsDiffer/.test(titleCode)
     && !/uExtraW\[ex\] \* uMapPerPx/.test(titleCode)
-    && !/qW && qtid/.test(titleCode) && !/qX && qtid/.test(titleCode));
+    && cutWaterWaste(titleCode));
   ok('title 大括号 / 小括号配平',
     bal(title || '', '{', '}') === 0 && bal(title || '', '(', ')') === 0);
 

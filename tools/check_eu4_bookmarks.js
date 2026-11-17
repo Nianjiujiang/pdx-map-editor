@@ -73,9 +73,18 @@ function tagsInYear(D, year) {
   const D = load();
   const M = D.M;
 
+  /* 96×48 夹具 / 老数据没有真实的 1.37 bookmarks → 跳过 ✓
+     （以前直接红 8 条，新克隆永远绿不了，看着像功能坏了 ✗）*/
+  const _eras = (M.eraDates || []).filter(Boolean);
+  if (M.mapWidth < 1000 || !Array.isArray(M.eraDates) || _eras.length <= 3) {
+    console.log(`  ·（data_eu4 是 ${M.mapWidth}×${M.mapHeight} 测试夹具 / 旧数据，`
+      + `只有 ${_eras.length} 个剧本层 → 跳过真实 1.37 检查）`);
+    process.exit(0);
+  }
+
   console.log('=== A. 剧本层：不写死，bookmarks 全读 ===');
   {
-    const eras = (M.eraDates || []).filter(Boolean);
+    const eras = _eras;
     ok('剧本层不止 3 个（bookmarks 全读进来了 ✓）', eras.length > 3,
       `${eras.length} 个：${eras.join(' ')}`);
     ok('原版 1.37 应该有 12 个剧本', eras.length === 12, `${eras.length} 个`);

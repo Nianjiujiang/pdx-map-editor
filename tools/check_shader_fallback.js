@@ -80,8 +80,18 @@ if (!pack) {
   const r = ex.renderer;
   const tier = r && r.shaderTier;
   const lite = !!(r && r.liteShader);
-  const ok = tier === expect && (expect === 'lite' ? lite === true : lite === false);
-  console.log(`force=${force}  expect=${expect}  got=${tier}  lite=${lite}  ${ok ? '✔' : '✘'}`);
+  /* 降级档位必须**明说**省掉了哪几条通道（诊断报告用 ✓ 2026-11-10）*/
+  const WANT_CUT = {
+    1: ['water', 'waste'],
+    2: ['extra', 'water', 'waste'],
+    3: ['extra', 'water', 'waste', 'paint'],
+    4: ['title', 'extra', 'paint', 'water', 'waste'],
+  };
+  const gotCut = (r && r.cutChannels) || [];
+  const wantCut = WANT_CUT[force] || [];
+  const cutOk = gotCut.length === wantCut.length && wantCut.every((c) => gotCut.includes(c));
+  const ok = tier === expect && (expect === 'lite' ? lite === true : lite === false) && cutOk;
+  console.log(`force=${force}  expect=${expect}  got=${tier}  lite=${lite}  cut=[${gotCut.join(',')}]  ${ok ? '✔' : '✘'}`);
   if (!ok) process.exit(1);
 })().catch((e) => {
   H.setForceLinkFail(0);

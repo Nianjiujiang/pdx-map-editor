@@ -410,16 +410,29 @@ function findTestPack() {
     const packAdj = await ex2.api.adjacency();
     const packTitles = await ex2.api.titles();
     const packMeta = await ex2.api.meta();
-    ok(`导入的包和${refName}逐字节一致（titlemap）`, sameArr(refTm, packTm), `${packTm.length} 项`);
-    ok(`导入的包和${refName}逐字节一致（adjacency）`, sameArr(refAdj, packAdj), `${packAdj.length} 字节`);
-    /* **国家 / 地区以及它们的颜色也在包里**（廿九点名要的那件事）——
-       名字、颜色、层级、父级、每层归属个数都在 titles.json 里 ✓
-       这条以前没验：只比了"归属图"和"邻接"，名字和颜色要是丢了就悄悄丢了 ✗ */
-    const tDiff = titlesDiff(refTitles, packTitles);
-    ok(`导入的包和${refName}一致（头衔表：名字 + 颜色 + 层级 + 父级）`,
-       tDiff === null,
-       tDiff || `${packTitles.keys.length} 个头衔 · ${packTitles.colors.length} 条颜色 · `
-         + `${(packMeta.tierNames || []).length} 层（${(packMeta.tierNames || []).join('/')}）`);
+    /* ⚠ 只有"测试包和参照物是同一张图"才比逐字节 ✗
+       _local/packs 里可能放着 CK3 真包，而参照物是内嵌的 EU4（96×48 夹具）——
+       直接比会把"包没放对"报成产品红 ✓（2026-11-09）*/
+    const sameShape = !!(refMeta && packMeta
+      && refMeta.mapWidth === packMeta.mapWidth
+      && refMeta.mapHeight === packMeta.mapHeight
+      && refMeta.numProvinces === packMeta.numProvinces);
+    if (!sameShape) {
+      console.log(`  （测试包不是同一张图：${(packMeta && packMeta.mapWidth) || '?'}×`
+        + `${(packMeta && packMeta.mapHeight) || '?'} ≠ ${(refMeta && refMeta.mapWidth) || '?'}×`
+        + `${(refMeta && refMeta.mapHeight) || '?'}，跳过逐字节对比）`);
+    } else {
+      ok(`导入的包和${refName}逐字节一致（titlemap）`, sameArr(refTm, packTm), `${packTm.length} 项`);
+      ok(`导入的包和${refName}逐字节一致（adjacency）`, sameArr(refAdj, packAdj), `${packAdj.length} 字节`);
+      /* **国家 / 地区以及它们的颜色也在包里**（廿九点名要的那件事）——
+         名字、颜色、层级、父级、每层归属个数都在 titles.json 里 ✓
+         这条以前没验：只比了"归属图"和"邻接"，名字和颜色要是丢了就悄悄丢了 ✗ */
+      const tDiff = titlesDiff(refTitles, packTitles);
+      ok(`导入的包和${refName}一致（头衔表：名字 + 颜色 + 层级 + 父级）`,
+         tDiff === null,
+         tDiff || `${packTitles.keys.length} 个头衔 · ${packTitles.colors.length} 条颜色 · `
+           + `${(packMeta.tierNames || []).length} 层（${(packMeta.tierNames || []).join('/')}）`);
+    }
     ok('切到包之后别的来源让开了（两个数据源不打架）', ex2.isPackMap() === true);
 
     // 再来一次真启动：选单里"原有的 + 刚导入的"，点导入那张能进去

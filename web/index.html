@@ -15,7 +15,7 @@
 <meta name="pdx-build" content="dev">
 <!-- 版本号：启动页「检查更新」用它对比 GitHub 最新 release 的 tag，升级版本只需改这一行。
      构建戳是时间，无法比较大小。 -->
-<meta name="pdx-version" content="1.11.1">
+<meta name="pdx-version" content="1.11.2">
 <title>悖论制图</title>
 <script>
 // 以 file:// 协议打开时，浏览器会因 CORS 拦截 ES module；
@@ -393,6 +393,16 @@ if (location.protocol === 'file:') {
         </div>
         <div class="boot-inner" id="boot-inner">
           <div class="boot-title" id="boot-title">悖论制图</div>
+
+          <!-- iOS / iPadOS「文件」App 预览 HTML 时不执行 JS（2026-11-09 用户反馈多起）
+               → 正常打开看不到这段；停在预览里的人至少知道下一步该干什么 ✓ -->
+          <noscript>
+            <div class="boot-noscript">
+              <b>当前页面没有执行 JavaScript。</b><br>
+              iPad / iPhone 的「文件」预览就是这样：请点右上角分享 → 用 Safari 打开；
+              或长按文件 → 共享 → Safari。安卓请在 Chrome 里打开。
+            </div>
+          </noscript>
 
           <div class="map-pick" id="map-pick" hidden>
             <div class="map-pick-hint" id="map-pick-hint">选一张地图</div>
